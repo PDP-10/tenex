@@ -1,0 +1,364 @@
+;<134-TENEX>PTP.MAC;25    28-APR-75 11:41:48    EDIT BY CLEMENTS
+;<134-TENEX>PTP.MAC;24    24-APR-75 14:21:22    EDIT BY CLEMENTS
+;<FILESYSTEM>PTP.MAC;23    29-JUN-72 10:27:36	EDIT BY TOMLINSON
+
+	SEARCH	STENEX,PROLOG
+IFDEF PTPN,<
+	TITLE	PTP
+	SUBTTL	R.S.TOMLINSON
+
+INTERN	PTPSV,PTPCHK,PTPRST
+
+; Ac's
+
+IOS=6
+
+; Parameters
+
+PTP=100		; Ptp device code
+PI==4		; Pi device
+PTPDON==10	; Done coni/o bit
+PTPBSY==20	; Busy coni/o bit
+PTPEOT==100	; No tape coni bit
+BUFSIZ==41	; Size of ptp buffer
+
+; Entries to this part
+
+INTERN	PTPSV		; Interrupt service routine
+INTERN	PTPCHK		; Entry to clock routine
+
+; Externally defined things
+
+EXTERN	PBYTSZ,PBYTPO
+EXTERN	CPOPJ,SKPRET,DISLET,DISLT,EDISMS,LCKTST
+EXTERN	PTPCHR	; Ptp interrupt return
+EXTERN	PTPTIM	; Clock word for ptp restart
+EXTERN	DISGET	; Greater/equal dismiss test
+
+; Storage
+
+LS(PTPBF1,BUFSIZ)	; First buffer
+LS(PTPBF2,BUFSIZ)	; Second buffer
+LS(PTPSTS)		; Status word
+LS(PTPLCK)		; Ptp open lock
+LS(PTPCNT)		; Count of full buffers
+LS(PTPITC)		; Count of items remaining in current buffer
+LS(PTPFDC)		; Count of lines of feed left to punch
+LS(PTPPTR)		; Byte bointer for emptying current buffer
+LS(PTPSVR)		; Interrupt return address
+LS(PTPSIO)		; Saved ios during interrupt
+
+; Flags in ptpsts and ios
+
+FLG(ALTP,L,IOS,400000)	; Buffer 2 for prog
+FLG(ALTI,L,IOS,200000)	; Buffer 1 for int
+FLG(OPN,L,IOS,040000)	; Ptp is open
+FLG(IMAGE,L,IOS,020000)	; Ptp is operating in image mode (10)
+FLG(PTPBI,L,IOS,010000)	; Ptp is operating in binary mode (14)
+FLG(PTPIB,L,IOS,004000)	; Ptp is operating in image binary mode (13)
+FLG(STOP,L,IOS,002000)	; Ptp is stopped due to no tape
+
+; Ptp dispatch table
+
+	USE	SWAPPC
+
+PTPDTB::CPOPJ		; Set directory
+	CPOPJ		; Name lookup
+	CPOPJ		; Extension lookup
+	CPOPJ		; Version lookup
+	CPOPJ		; Protection insertion
+	CPOPJ		; Account insertion
+	CPOPJ		; Status insertion
+	PTPOPN		; Ptp open
+	CPOPJ		; Input
+	PTPSQO		; Output
+	PTPCLZ		; Close
+	CPOPJ		; Rename
+	CPOPJ		; Delete
+	CPOPJ		; Dumpi
+	CPOPJ		; Dumpo
+	CPOPJ		; Mount
+	CPOPJ		; Dismount
+	CPOPJ		; Init directory
+	CPOPJ		; Mtopr
+	CPOPJ		; Get status
+	CPOPJ		; Set status
+
+; Initialize punch
+; Call:	PUSHJ P,PTPINI
+; Returns
+;	+1	; Always (called at system initialization time
+
+	USE	RESPC
+
+PTPINI::SETZM PTPSTS
+	SETOM PTPLCK
+	SETOM PTPCNT
+	SETZM PTPFDC
+	POPJ P,
+
+PTPRST:	SKIPL PTPCNT
+	CONO PTP,PTPDON+PTPCHN
+	POPJ P,
+
+; Open ptp
+; Call:	JFN	; Jfn
+;	PUSHJ P,PTPOPN
+; Returns
+;	+1	; Error, error number in 1
+;	+2	; Ok, 200 lines of feed is punched
+
+	USE	SWAPPC
+
+PTPOPN:	LOCK PTPLCK,<PUSHJ P,LCKTST>
+	MOVE IOS,PTPSTS
+	CONSZ PTP,PTPEOT	; Any tape in punch?
+	 JRST [	UNLOCK PTPLCK	; No. give error return
+		MOVEI A,OPNX8
+		POPJ P,]
+	TEST(OE,OPN)		; Test and set opn flag
+	 JRST [	UNLOCK PTPLCK	; Already opn
+		MOVEI A,OPNX9	; Give busy error return
+		POPJ P,]
+	TLZ IOS,ALTP!ALTI!IMAGE!PTPBI!PTPIB!STOP
+	LDB A,[POINT 4,STS,35]	; Get mode
+	JUMPE A,[LDB A,PBYTSZ	; In mode 0, infer mode from byte size
+		CAIN A,8
+		TEST(O,IMAGE)
+		CAIN A,^D36
+		TEST(O,PTPBI)
+		JRST PTPOP1]
+	CAIN A,14		; If binary
+	TEST(O,PTPBI)		; Set binary flag
+	CAIN A,13		; If image binary
+	TEST(O,PTPIB)		; Set image binary flag
+	CAIN A,10		; If image
+	TEST(O,IMAGE)		; Set image flag
+PTPOP1:	MOVEI B,7		; Get 7 bit bytes
+	TEST(NE,IMAGE)		; Unless image mode
+	MOVEI B,8		; Then 8 bits
+	TEST(NE,PTPBI,PTPIB)	; Unless binary or image binary
+	MOVEI B,6		; Then get 6
+	DPB B,[POINT 6,PTPPTR,11]
+				; Store in byte pointer
+	MOVEM IOS,PTPSTS	; Store status word
+	SETOM PTPCNT		; No full buffers
+	SETZM PTPITC		; No items left in current buffer
+	UNLOCK PTPLCK
+	MOVEI A,200
+	MOVEM A,PTPFDC		; Feed 200 lines
+	MOVEI A,PTPCHN
+	CONO PTP,PTPDON(A)	; Set done flag to cause interrupt
+	SETZM FILBYN(JFN)
+	SETZM FILLEN(JFN)
+	TEST(O,WNDF)
+	JRST SKPRET
+
+; Close ptp
+; Call:	JFN	; Jfn
+;	PUSHJ P,PTPCLZ
+; Returns
+;	+1	; Always
+
+PTPCLZ:	SKIPE FILBYN(JFN)
+	PUSHJ P,DMPBUF		; Dump partial buffer
+	MOVE A,[XWD PTPCNT,DISLT]
+	SKIPL PTPCNT
+	JSYS EDISMS		; Dismiss til last buffer being dumped
+	MOVE A,[XWD PTPITC,DISLET]
+	SKIPLE PTPITC
+	JSYS EDISMS		; Dismiss till last buffer out
+	MOVEI B,400
+	MOVEM B,PTPFDC
+	MOVEI A,PTPCHN
+	JRST [	CONO PI,400	; Pi off, (literal to make resident)
+		CONSO PTP,PTPBSY
+		CONO PTP,PTPDON(A)
+		CONO PI,200
+		JRST .+1]
+	MOVE A,[XWD PTPFDC,DISLET]
+	JSYS EDISMS		; Wait for feed
+	SETZM PTPSTS
+	JRST SKPRET
+
+; Ptp sequential output
+; Call:	A	; Byte
+;	JFN	; Jfn
+;	PUSHJ P,PTPSQO
+; Returns
+;	+1	; Always
+
+PTPSQO:	MOVE IOS,PTPSTS		; Get status word
+	PUSH P,A		; Preserve byte
+	TEST(ZE,WNDF)		; Buffers set up yet?
+	PUSHJ P,SETBUF		; No, do it
+	SOSGE FILCNT(JFN)	; Buffer full?
+	PUSHJ P,DMPBUF		; Yes, dump it
+	AOS FILBYN(JFN)		; Count bytes in buffer
+	POP P,A
+	IDPB A,FILBYT(JFN)	; Deposit in buffer
+	POPJ P,
+
+DMPBUF:	MOVSI IOS,ALTP
+	XORB IOS,PTPSTS		; Complement buffer
+	MOVEI A,PTPBF1
+	TEST(NN,ALTP)
+	MOVEI A,PTPBF2
+	PUSH P,A
+	MOVEI A,^D36
+	LDB B,PBYTSZ		; User's byte size
+	IDIV A,B		; User bytes per word
+	MOVEI B,5		; 5 punch bytes per word
+	TEST(NE,IMAGE)		; Unless image mode
+	MOVEI B,4		; Then 4
+	TEST(NE,PTPIB,PTPBI)	; Unless a binary mode
+	MOVEI B,1		; Then 1
+	IMUL B,FILBYN(JFN)
+	IDIV B,A		; Number of output bytes in buffer
+	SKIPE C
+	AOS B			; Round up
+	POP P,A			; Get buffer location
+	HRRZM B,(A)		; Store count in buffer word 0
+	TEST(NN,PTPBI)
+	JRST NOCHKS
+	PUSH P,A
+	MOVNS B			; Negate count
+	HRL A,B			; Make aobjn word
+	AOS A			; Start with word 1
+	SETZ B,			; Clear b
+
+CHKSML:	ADD B,(A)		; Sum words of buffer
+	AOBJN A,CHKSML
+	SETZ A,
+	ROTC A,^D12		; High 12 bits to a
+	ROT B,^D12		; Middle 12 to low end of b
+	ADDI A,(B)		; Add middle to high
+	ROT B,^D12
+	ANDI B,7777		; Get low 12
+	ADDB B,A		; Add everything together
+	ANDI A,7777		; Retain low 12 in a
+	LSH B,-^D12		; Get excess
+	JUMPN B,.-3		; Do end around carry for 1's comp
+	POP P,B			; Get back buffer loc
+	HRLM A,(B)		; Store checksum
+NOCHKS:	MOVEI A,PTPCHN
+	AOSN PTPCNT		; Count one more full buffer
+	CONO PTP,PTPDON(A)	; If this is first one, start punch
+	PUSHJ P,SETBUF
+	SOS FILCNT(JFN)
+	POPJ P,
+
+SETBUF:	MOVE A,[XWD PTPCNT,DISLET]
+	SKIPLE PTPCNT		; Are all buffers non-empty?
+	JSYS EDISMS		; Yes, wait for one to empty
+	MOVEI A,PTPBF1+1	; Use buffer 1
+	TEST(NE,ALTP)		; Unles alternate flag
+	MOVEI A,PTPBF2+1	; Then use 2
+	HRRM A,FILBYT(JFN)	; Point program byte pointer to buffer
+	MOVEI A,^D36
+	DPB A,PBYTPO		; Position to left of first word
+	MOVEI A,^D36
+	LDB B,PBYTSZ		; User's byte size
+	IDIV A,B		; Bytes per word
+	IMULI A,BUFSIZ-1	; Bytes per buffer
+	MOVEM A,FILCNT(JFN)	; Init filcnt
+	SETZM FILBYN(JFN)	; No bytes written yet
+	POPJ P,
+
+; Ptp interrupt routine
+
+	USE	RESPC
+
+PTPSV:	XWD PTPSVR,.+1
+	CONSO PTP,PTPDON	; Ptp interrupt?
+	JRST @PTPSVR		; No
+	MOVEM IOS,PTPSIO	; Save ios
+	MOVE IOS,PTPSTS		; Get status word
+	CONSZ PTP,PTPEOT	; Out of tape?
+	 JRST [	TEST(O,STOP)
+		CONO PTP,0
+		SETZM PTPTIM
+		JRST PTPXIT]
+	SKIPGE PTPFDC		; Negative?
+	JRST [	DATAO PTP,PTPFDC; Yes, has a special character to output
+		SETZM PTPFDC
+		JRST PTPXIT]
+	SKIPG PTPFDC		; Greater than 0?
+	JRST PTPSV1	; No, check for data
+	DATAO PTP,[0]		; Yes, punch blank line
+	SOS PTPFDC
+PTPXIT:	MOVEM IOS,PTPSTS
+	MOVE IOS,PTPSIO
+	JRST PTPCHR
+
+PTPSV1:	SKIPG PTPITC		; Items left in buffer?
+	JRST PTPSV2		; No.
+	ILDB A,PTPPTR		; Yes, get one
+	TEST(NE,PTPBI,PTPIB)	; A binary mode?
+	JRST PTPSV3		; Yes, skip the following
+	TEST(NE,IMAGE)		; Image mode?
+	JRST PTPSV4		; Yes, skip even more
+	CAIE A,0
+	CAIN A,177
+	JRST [	SOSLE PTPITC	; Skip nulls and rubouts
+		JRST PTPSV1	; Not empty, get another character
+		SOS PTPCNT
+		JRST PTPSV2]	; Empty, get another buffer
+	MOVEI B,10
+	CAIN A,14		; If form feed,
+	MOVEM B,PTPFDC		; Feed 10 lines after it
+	CAIE A,11		; After tab
+	CAIN A,13		; Or vert tab,
+	SETOM PTPFDC		; Punch rubout
+	MOVE B,A
+	IMULI B,200401		; Compute parity
+	AND B,[11111111]
+	IMUL B,[11111111]
+	TLNN B,(1B14)		; If even
+PTPSV3:	IORI A,200		; Set bit (here for binary too)
+
+PTPSV4:	DATAO PTP,A		; Jump here for image mode
+	SOSLE PTPITC		; Count items
+	JRST PTPXIT		; Some left
+	SOS PTPCNT
+	MOVEI B,10
+	TEST(NE,PTPBI)		; If binary,
+	MOVEM B,PTPFDC		; Folow each buffer with blank tape
+	JRST PTPXIT
+
+PTPSV2:	SKIPGE PTPCNT
+	JRST [	CONO PTP,0	; Turn off punch
+		JRST PTPXIT]
+	MOVEI A,PTPBF1
+	TEST(CE,ALTI)
+	MOVEI A,PTPBF2
+	HRRZ B,(A)		; Get item count of buffer
+	TEST(NE,PTPBI)		; If binary
+	AOSA B			; One more to include header
+	AOS A			; If not, start with word 1
+	TEST(NE,PTPIB,PTPBI)	; If a binary mode,
+	IMULI B,6		; There are six 6-bit bytes per word
+	MOVEM B,PTPITC
+	HRRM A,PTPPTR		; Point pointer to the first word
+	MOVEI A,44
+	DPB A,[POINT 6,PTPPTR,5]; Point to left of first byte
+	JRST PTPSV1		; And continue with the new buffer
+
+PTPCHK:	MOVEI A,^D60000
+	MOVEM A,PTPTIM
+	MOVE A,PTPSTS
+	TLNE A,OPN
+	TLNN A,STOP
+	POPJ P,
+	MOVEI A,^D5000
+	MOVEM A,PTPTIM
+	CONSZ PTP,PTPEOT
+	POPJ P,
+	MOVSI A,STOP
+	ANDCAM A,PTPSTS
+	CONO PTP,PTPDON+PTPCHN
+	POPJ P,
+
+>		; End of ifdef ptpn on page 1
+	END
+

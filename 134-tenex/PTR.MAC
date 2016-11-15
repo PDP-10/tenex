@@ -1,0 +1,316 @@
+;<134-TENEX>PTR.MAC;26    28-APR-75 11:42:08    EDIT BY CLEMENTS
+;<134-TENEX>PTR.MAC;25    24-APR-75 14:21:41    EDIT BY CLEMENTS
+;<FILESYSTEM>PTR.MAC;24    25-AUG-72 16:13:48	EDIT BY TOMLINSON
+;<FILESYSTEM>PTR.MAC;23    22-AUG-72 10:24:25	EDIT BY TOMLINSON
+;<FILESYSTEM>PTR.MAC;22    29-JUN-72 12:53:00	EDIT BY TOMLINSON
+;<FILESYSTEM>PTR.MAC;21    29-JUN-72 10:32:06	EDIT BY TOMLINSON
+
+	SEARCH	STENEX,PROLOG
+IFDEF PTRN,<
+	TITLE	PTR
+	SUBTTL	R.S.TOMLINSON
+
+INTERN	PTRSV,PTRRST
+
+; Ac's
+
+IOS=6
+
+; Parameters
+
+PTR=104		; Ptr device code
+PTRDON==10	; Done coni/o bit
+PTRBSY==20	; Busy coni/o bit
+PTRBIN==40	; Binary mode coni/o bit
+PTREOT==400	; End of tape coni bit
+BUFSIZ==41	; Size of ptr buffers
+
+; Externally defined things
+
+EXTERN	NSKED,RSKED
+EXTERN	PBYTSZ,PBYTPO
+EXTERN	DISGET,CPOPJ,SKPRET,EDISMS,LCKTST
+EXTERN	PTRCHR	; Return from ptr interrupt
+
+; MACROES
+
+DEFINE	PIOFF<	AOS NSKED
+		CONO PI,1000+1_<7-PTRCHN>>
+
+DEFINE	PION<	CONO PI,2000+1_<7-PTRCHN>
+		SOSG NSKED
+		XCT RSKED>
+
+; Storage
+
+LS(PTRBF1,BUFSIZ)	; First buffer
+LS(PTRBF2,BUFSIZ)	; Second buffer
+LS(PTRSTS)		; Status word
+LS(PTRLCK)		; Ptr open lock
+LS(PTRCNT)		; Count of full buffers
+LS(PTRITC)		; Count of room left in filling buffer
+LS(PTRCHC)		; Count of items inserted in buffer
+LS(PTRPTR)		; Byte pointer for filling buffers
+LS(PTRSVR)		; Interrupt return location
+LS(PTRSIO)		; Saved ios during int
+
+; Flags in ptrsts and ios
+
+FLG(ALTP,L,IOS,400000)	; Buffer 2 for prog
+FLG(ALTI,L,IOS,200000)	; Buffer 2 for int
+FLG(OPN,L,IOS,040000)	; Ptr is open
+FLG(IMAGE,L,IOS,020000)	; Ptr operating in image mode (10)
+FLG(PTRBI,L,IOS,010000)	; Ptr operating in binary mode (14)
+FLG(PTRIB,L,IOS,004000)	; Ptr operation in image binary mode (13)
+FLG(STOP,L,IOS,002000)	; Don't do datai next int
+FLG(FIRST,L,IOS,001000)	; First word of binary block
+FLG(EOTF,L,IOS,000400)	; End of tape seen -- eof
+
+; Initialize ptr
+; Call:	PUSHJ P,PTRINI
+; Returns
+;	+1	; Always (used at system initialization time)
+	USE	RESPC
+
+PTRINI::SETZM PTRSTS
+	SETOM PTRLCK
+	SETOM PTRCNT
+	POPJ P,
+
+PTRRST:	SKIPL PTRCNT
+	CONO PTR,PTRDON+PTRCHN
+	POPJ P,
+
+	USE	SWAPPC
+
+; Ptr dispatch table
+
+PTRDTB::CPOPJ		; Set directory
+	CPOPJ		; Name lookup
+	CPOPJ		; Extension lookup
+	CPOPJ		; Version lookup
+	CPOPJ		; Protection insertion
+	CPOPJ		; Account insertion
+	CPOPJ		; Status insertion
+	PTROPN		; Open
+	PTRSQI		; Input
+	CPOPJ		; Output
+	PTRCLZ		; Close
+	CPOPJ		; Rename
+	CPOPJ		; Delete
+	CPOPJ		; Dumpi
+	CPOPJ		; Dumpo
+	CPOPJ		; Mount
+	CPOPJ		; Dismount
+	CPOPJ		; Init directory
+	CPOPJ		; Mtopr
+	CPOPJ		; Get status
+	CPOPJ		; Set status
+
+; Open ptr
+; Call:	JFN	; The job file number
+;	PUSHJ P,PTROPN
+; Return
+;	+1	; Error, error number in 1
+;	+2	; Success
+
+PTROPN:	LOCK PTRLCK,<PUSHJ P,LCKTST>	; Lock up this routine
+	MOVE IOS,PTRSTS
+	CONSO PTR,PTREOT	; Any tape in reader?
+	 JRST [	UNLOCK PTRLCK	; No, fail
+		MOVEI A,OPNX8
+		POPJ P,]
+	TEST(OE,OPN)		; Set open bit, already open?
+	 JRST [	UNLOCK PTRLCK	; Yes, give busy error
+		MOVEI A,OPNX9
+		POPJ P,]
+	TLZ IOS,ALTP!ALTI!IMAGE!PTRIB!PTRBI!STOP!FIRST
+	LDB A,[POINT 4,STS,35]	; Get mode
+	JUMPE A,[LDB A,PBYTSZ	; Mode 0, default format by byte size
+		CAIN A,8
+		TEST(O,IMAGE)
+		CAIN A,^D36
+		TEST(O,PTRBI,FIRST)
+		JRST PTROP1]
+	CAIN A,14		; Binary?
+	TEST(O,PTRBI,FIRST)	; Yes, set binary and first flags
+	CAIN A,13		; Image binary?
+	TEST(O,PTRIB)		; Yes, set image binary flag
+	CAIN A,10		; Image?
+	TEST(O,IMAGE)		; Yes, set image flag
+
+PTROP1:	MOVEI A,7		; Store 7 bit bytes
+	TEST(NE,IMAGE)		; Unless image mode,
+	MOVEI A,8		; Then store 8 bit bytes
+	TEST(NE,PTRBI,PTRIB)	; Unless binary or image binary
+	MOVEI A,44		; Then 36 bit bytes
+	IORI A,4400
+	DPB A,[POINT 12,PTRPTR,11]
+	MOVEM IOS,PTRSTS
+	SETZM PTRCNT		; Zero full buffers
+	MOVEI A,5*<BUFSIZ-1>	; Character count
+	TEST(NE,IMAGE)
+	MOVEI A,4*<BUFSIZ-1>	; Unless image mode
+	TEST(NE,PTRBI,PTRIB)
+	MOVEI A,BUFSIZ-1	; Unless binary mode
+	MOVEM A,PTRITC
+	MOVEI A,PTRBF1
+	TEST(NN,PTRBI)
+	MOVEI A,PTRBF1+1
+	HRRM A,PTRPTR
+	SETZM PTRCHC
+	MOVEI A,PTRCHN
+
+	TEST(NE,PTRBI,PTRIB)
+	MOVEI A,PTRBIN(A)
+	CONO PTR,PTRBSY(A)	; Set busy and let it go
+	UNLOCK PTRLCK
+	SETZM FILLEN(JFN)
+	SETZM FILCNT(JFN)
+	JRST SKPRET
+
+; Ptr close
+; Call:	JFN	; Jfn
+;	PUSHJ P,PTRCLZ
+
+PTRCLZ:	CONO PTR,0
+	PUSHJ P,PTRINI
+	JRST SKPRET
+
+; Ptr sequential input
+; Call:	JFN	; Jfn
+;	PUSHJ P,PTRSQI
+; Returns
+;	+1	; Always, byte in a, sets eof if no more input
+
+PTRSQI:	MOVE IOS,PTRSTS		; Get status of ptr
+	SOSGE FILCNT(JFN)	; Any thing left in buffer?
+	PUSHJ P,WATBUF		; No, wait for it to fill
+	TEST(NE,EOFF)
+	POPJ P,
+	ILDB A,FILBYT(JFN)
+	POPJ P,
+
+WATBUF:	MOVSI A,EOTF
+	TDNE A,PTRSTS
+	 JRST [	SOSL PTRCNT
+		JRST WATBU1
+		TEST(O,EOFF)
+		POPJ P,]
+	MOVEI A,PTRCHN
+	TEST(NE,PTRIB,PTRBI)
+	MOVEI A,PTRCHN+PTRBIN
+	SOSN B,PTRCNT		; TAKE THE BUFFER AND IF ALL WERE FULL
+	 JRST PTRRSA		; RESTART THE READER
+	MOVE A,[XWD PTRCNT,DISGET]
+	CAIGE B,0
+	JSYS EDISMS
+WATBU1:	MOVSI IOS,ALTP
+	XORB IOS,PTRSTS
+	MOVEI A,PTRBF1
+	TEST(NN,ALTP)
+	MOVEI A,PTRBF2
+	HRRZ B,(A)		; Get count
+	JUMPE B,WATBUF		; Empty buffer, ignore it
+	PUSH P,B		; Save
+
+; Checksum check here
+	HRRM A,FILBYT(JFN)	; Point byte pointer to the buffer
+	MOVEI C,0
+	DPB C,PBYTPO
+	MOVEI C,5		; Number of bytes per word in ascii
+	TEST(NE,IMAGE)
+	MOVEI C,4		; In image
+	TEST(NE,PTRBI,PTRIB)
+	MOVEI C,1
+	LDB B,PBYTSZ		; Users byte size
+	MOVEI A,^D36
+	IDIV A,B		; Bytes per word for user
+	POP P,B
+	IMUL A,B
+	IDIV A,C
+	MOVEM A,FILCNT(JFN)
+	SOS FILCNT(JFN)
+	ADDM A,FILLEN(JFN)
+	POPJ P,
+
+	USE	RESPC
+
+PTRRSA:	PIOFF			; PREVENT PTR INTERRUPTS
+	MOVE IOS,PTRSTS		; SO THAT STATE DOESN'T CHANGE
+	TLZN IOS,STOP		; STOPPING?
+	 CONO PTR,PTRDON(A)	; NO--STOPPED. RESTART
+	MOVEM IOS,PTRSTS	; NEW STATE
+	PION
+	JRST WATBU1
+
+; Ptr interrupt service routine
+
+PTRSV:	XWD PTRSVR,.+1
+	CONSZ PTR,7
+	CONSO PTR,PTRDON
+	JRST @PTRSVR
+	MOVEM IOS,PTRSIO	; Save ios
+	MOVE IOS,PTRSTS
+	TEST(ZE,STOP)
+	JRST [	CONO PTR,0
+		JRST PTRXIT]
+	CONSO PTR,PTREOT
+	JRST PTROFF		; End of tape
+	DATAI PTR,A		; Read the character
+	TEST(ZE,FIRST)
+	JRST [	HRRZI B,(A)	; Get word conut
+		CAILE B,BUFSIZ-1	; Too big?
+		HRRI A,BUFSIZ-1	; Make it max
+		MOVEI B,1(A)
+		MOVEM B,PTRITC
+		JRST .+1]
+	TLNN IOS,IMAGE!PTRBI!PTRIB
+	JRST [	ANDI A,177	; Ascii
+		JUMPE A,PTRXIT
+		CAIN A,177
+		JRST PTRXIT
+		JRST .+1]
+	IDPB A,PTRPTR
+	AOS B,PTRCHC
+	SOSLE PTRITC
+	JRST PTRXIT
+
+PTRIN:	MOVEI A,PTRBF1
+	TEST(CE,ALTI)
+	MOVEI A,PTRBF2
+	TEST(ZN,FIRST)
+	TEST(NN,PTRBI)
+	HRRZM B,(A)
+	MOVEI A,PTRBF1
+	TEST(NE,ALTI)
+	MOVEI A,PTRBF2
+	SETZM PTRCHC
+	TEST(NN,PTRBI)
+	AOS A
+	HRRM A,PTRPTR
+	MOVEI A,44
+	DPB A,[POINT 6,PTRPTR,5]
+	MOVEI A,5*<BUFSIZ-1>
+	TEST(NE,IMAGE)
+	MOVEI A,4*<BUFSIZ-1>
+	TEST(NE,PTRIB,PTRBI)
+	MOVEI A,BUFSIZ-1
+	MOVEM A,PTRITC
+	TEST(NE,PTRBI)
+	TEST(O,FIRST)
+	AOSLE PTRCNT
+	TEST(O,STOP)
+PTRXIT:	MOVEM IOS,PTRSTS
+	MOVE IOS,PTRSIO
+	JRST PTRCHR
+
+PTROFF:	MOVE B,PTRCHC
+	TEST(O,EOTF)
+	CONO PTR,0
+	JRST PTRIN
+
+>			; END OF IFDEF PTRN ON PAGE 1
+
+	END
+

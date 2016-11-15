@@ -1,0 +1,963 @@
+
+
+
+
+
+               Converting to Hashed Passwords
+
+
+     TENEX 1.34 does not have text copies of passwords on the disk.  All
+passwords  are  stored  in  a  non-invertible hashed form, two words per
+password.
+
+
+     This  change  was  made  in   a   way   which   caused   very   few
+incompatibilities.   The CRDIR JSYS will accept either a hashed or clear
+password.  It tells the two apart by whether the pointer to the password
+argument  is a 36-bit or 7-bit byte pointer.  GTDIR now returns a 36-bit
+byte pointer and two words of data.   Therefore,  if  the  pointer  from
+GTDIR  is  returned  to  CRDIR,  the  right  thing always happens.  Most
+existing TENEX programs dealing with passwords already did this.
+
+
+     Since DLUSER stores data as a text file, it didn't  work  out  this
+nicely,  but  the  current  DLUSER  will  dump hashed passwords as octal
+numbers and will restore from a tape of  either  clear  text  or  hashed
+passwords.
+
+The procedure for changing over to hashed passwords is as follows:
+
+1) Get everybody off the system.
+2) Bring the system up with ENTFLG off, or just stay logged in on
+   CTY after the shutdown. Dump the user index with a current DLUSER.
+   This gives an up-to-date clear-text password dump.
+3) Load the new monitor with hashing code, setting DBUGSW/ 2.
+4) Start a job on CTY. It will automatically log in as SYSTEM.
+5) Run DLUSER and load the user index from the tape created in step 2.
+   This will put hashed passwords into the index. Any subsequent dump
+   will produce only hashed passwords, so keep the tape from step 2
+   around in case you have to back up to those passwords in clear text
+   because of running an old monitor.
+
+
+     Operationally, this means that if a user forgets  a  password,  you
+can't  tell  him what it is.  All you can do is create a new one for him
+and tell him the new  one.   Any  time  he  uses  the  @CHANGE  PASSWORD
+command, he's on his own.  Which is, of course, as it should be.
+
+
+
+
+
+                                                    Page   2
+
+
+
+                         The CRJOB JSYS
+
+Calling sequence:
+
+         MOVE 1,flag bits
+         MOVEI 2,address of argument block
+         CRJOB
+           fail, error in 1
+         success, new job number in 1
+
+Flag bits in AC1:
+B0:  On means attempt to log the new job in.
+B1:  On means use the name  and  password  in  the  argument
+     block for the login.
+     Off means log in as same user as executor of CRJOB.
+B2:  On means use the account supplied in the argument block
+     for the login.
+     Off means use the account currently in use by  executor
+     of CRJOB.
+     Note: B9 overrides B2.
+     Note: The account must be one which is available to the
+     user  being  logged in.  It will be verified by a LOGIN
+     done within CRJOB.
+B3:  On means Run the file whose name is  specified  in  the
+     argument block.
+     Off means just put an EXEC in the new job.  No inferior
+     of it.
+B4:  Put an EXEC above the  specified  file.   If  not,  the
+     specified file (B3) is the top fork of the job.
+B5:  If a file is to be run, other than the  EXEC,  set  its
+     AC's from the argument block.
+B6:  Disown the job.
+B7:  Don't let the new job start running until it  has  been
+     ATTACHED to a terminal.
+B8:  Don't check the password on LOGIN of the new job.  This
+     bit  is ignored unless the new job is logging in as the
+     same user as the one executing CRJOB, or WHEEL/OPER  is
+     enabled.
+B9:  Use the default account for the user being  logged  in.
+     Note: B9 overrides B2.
+B10: Don't update the login date for the user  being  logged
+     in.   This  bit is ignored under the same conditions as
+     B8 above.
+B11: Before starting the new job, do an SPJFN in  it,  using
+     the argument in word 8 of the argument block.
+B12: Set the RH of the new job's  ALLOWED  capabilities,  in
+     the  top  fork,  to  be  the same as my current ENABLED
+     capabilities, until it logs in.   (Used  by  privileged
+     processes   to  start  servers  which  may  log  in  as
+     unprivileged users.)
+B17: Don't Create a job.  I created one  a  while  ago,  its
+     number  is  in AC3.  When I created it, I didn't disown
+     it.  Please disown it now.  Note: B17 on overrides  all
+
+                                                    Page   3
+
+
+
+     the  above  bits.   When  a  job  is disowned, no other
+     change is made to its status.
+
+The argument block is as follows:
+Wd 0: LH - Address of an ASCIZ string,  the  name  to  login
+      under.
+      RH - Address of ASCIZ password.
+Wd 1: 5B2+n for numeric  account,  else  0,,addr  of  string
+      acct.
+Wd 2: LH Offset for SFRKV for fork to be run.
+      RH Address of ASCIZ string of file  name  to  be  run.
+      Note: the new job must have access to run this file.
+Wd 3: Terminal designator for new job's controlling TTY,  or
+      377777  for  a detached job.  If a terminal designator
+      is supplied, the terminal must be assigned by the  job
+      executing  the  CRJOB.   The terminal will be released
+      and given to the new job.
+Wd 4: CPU limit for new job before a LGOUT is forced on  it.
+      Zero means no limit.  (NOT YET IMPLEMENTED)
+Wd 5: Connect time limit for  new  job  before  a  LGOUT  is
+      forced   on  it.   Zero  means  no  limit.   (NOT  YET
+      IMPLEMENTED)
+Wd 6: Address of 20 word block to stuff  into  the  AC's  of
+      fork before starting it.
+Wd 7: Flags for EXEC AC1, as described below,  though  CRJOB
+      itself  will force the right state of B1 of this word.
+      Obviously this word will  grow  with  time,  so  leave
+      unspecified bits zero.
+Wd 8: Primary JFNs for EXEC to do SPJFN of new  job's  lower
+      fork.  Used by autojobs to get output on logging TTY.
+
+      Errors from CRJOB:
+      CRJBX1:    Illegal parameter or combination of  option
+      bits.
+      CRJBX2:    Illegal   instruction    interrupt    while
+      starting   new   job.    (Possibly  an  I/O  error  on
+      <SYSTEM>EXEC.SAV .)
+      CRJBX4:    TTY supplied is out  of  range  or  is  not
+      assigned to this job.
+      CRJBX5: No such directory as <login-name>.
+      CRJBX6:    System full, can't log in a new job.
+
+      Also, the following classes of errors can  occur:  For
+      the  requested file, all GTJFN and OPENF errors, SFRKV
+      errors starting the file, and for the LOGIN, all LOGIN
+      errors and account verification errors.
+
+                                                    Page   4
+
+
+
+          Related changes to other JSYSes and EXEC
+
+     Interface to the EXEC:
+When started at ENTRY VECTOR + 3, the EXEC will be given the
+following in its AC's:
+
+AC1: Flags
+AC2: Fork handle,,EntryVectorOffset (for SFRKV)
+
+     and the Flags are:
+B0: Suppress the Herald "BBN-TENEX 1.99.99...."
+B1: There is a fork handle in LH of 2.  Make yourself  aware
+     of it.
+B2: There is a fork described  in  AC2.   Start  it  at  the
+     offset in RH of 2 after initializing yourself.
+B3: Type out the sort of stuff one  gets  on  Login:  System
+     message  of the day, User X, TTY Y, Job N, You have new
+     Mail, etc.
+To do this last function, the previous-login-date is needed.
+That  number was returned by LOGIN in an AC.  Since the EXEC
+didn't do a LOGIN in this case, the date must  be  available
+in another way.  The second word of the GETAB table "LGNPAR"
+is set up with this date.  In fact, this will be done on all
+LOGINs, in case anyone else wants this number.
+
+                                                    Page   5
+
+
+
+     The ATACH JSYS:
+Both ATACH and DTACH were originally specified as  referring
+to  the  controlling terminal of the job executing the JSYS.
+Part of the reconnection procedure for TIPSER, and  the  new
+FTP  server, require that a terminal (an NVT) other than the
+controlling terminal of the service job be attached to a new
+job.   Fortunately, there are bits left in the specification
+of ATACH to allow it to be generalized.  Therefore, ATACH is
+extended as follows:
+
+B1 of AC2, if on, means instead of current job's controlling
+TTY,  take a TTY line number from RH of 4 and attach the job
+in 1 to it; if necessary, detach any job which  was  already
+on that line.
+B2 of AC2, if on, means Detach the job in 1  from  any  TTY.
+(This  subsumes DTACH, if the current job number is supplied
+in 1.)
+
+Legality checks on the  above:  If  you  are  enabled  as  a
+Wheel/Operator,  all  functions are OK.  If you are pointing
+at a job which you OWN, and a TTY which you  have  assigned,
+it's OK too.
+
+
+
+Addition to ATI JSYS:
+
+The "terminal code" 31 decimal has been  added,  meaning  "A
+job which you own has done a LGOUT and is waiting for you to
+release it." You can release such a job by either  DISOWNing
+it via CRJOB, or simply LGOUT with its job number in AC1.
+
+                                                    Page   6
+
+
+
+                An Interprocess/Job Signal Facility
+
+
+Herein is described an experimental interprocess/job communication
+facility (the "signal" mechanism).  The specifications are likely
+to change with little or no notice.  If the signal facility is
+made a permanent part of TENEX, the JSYS numbers will be changed
+to be in the range of standard numbers instead of the temporary ones
+which are used now.  STENEX.MAC will not contain definitions for
+either the JSYS or the error codes until the JSYSs are made permanent.
+
+
+Signals are identified by a system-wide handle called a Signal ID
+(SID).  There are some number of SIDs reserved for system
+jobs which can be assigned only by processes with WHEEL or
+OPERATOR special capabilities enabled.  The rest
+are available to anybody on a first-come-first-served basis.  SIDs
+are released only by RLSIG and LGOUT; a RESET will not release any
+SIDs.
+
+One 36-bit word of data may be transferred through a signal.  If this
+is not enough bits for the application in mind,  it can be
+expanded by using the data word to hold an address in some mutually
+agreed on file (for instance the JOBPMF).  The additional data would
+be stored in the file.
+
+The Signal Facility is not linked to the PSI system.  Although PSIs
+and Signals both serve to transmit events, they are very different
+in implementation and in actual use.  Signals may transmit data, and
+it is guaranteed that no signal events will be dropped whereas PSIs
+may be either dropped or spuriously added.  Further, the Signal Facility
+should be cheaper than PSIs in terms of the amount of system overhead
+needed.
+
+                                                    Page   7
+
+
+
+I.      JSYS for the Signal Facility
+
+
+        All JSYSs to be described have a skip return to indicate
+success and a non-skip return for failure.  Upon failure an error code
+will be provided in AC1.  These codes are described in section II.
+
+
+I.A.    Assigning a Signal ID (GTSIG, temporary JSYS 730)
+
+        AC1 = flags,,count .  AC2,3,... = more info if appropriate.
+
+Bit-0 of AC1 if on specifies that the following ACs contain a series
+of 9-bit bytes.  Each of these is either 777 (not used) or a
+TENEX job number.  This list tells which jobs may use the SIGNL JSYS
+on the SID being assigned.
+
+The SID may be declared accessible to all jobs by turning
+on Bit-3 in AC1.
+
+Bit-4 of AC1 requests assignment of a "system" SID and requires
+wheel or operator capabilies to be enabled.
+
+The count in the RH of AC1 is the initial value of the signal cell.
+If it is positive, it represents the number of WTFORs which
+may be done before one will hang if there are not intervening SIGNLs.
+If the SID is to be used as the standard "LOCK", the count would
+be given as 1.
+
+On the other hand, if the SID is to be used as a multiprocess "JOIN"
+with  N  other processes, a count of  -(N-1) would be specified.  This
+means  N  SIGNLs must be executed before a process waiting
+on the SID will be continued.
+
+The SID is returned in AC1.
+
+In panic situations, all processes waiting on a particular SID
+may be unhung by releasing the SID.
+
+                                                    Page   8
+
+
+
+I.B.    Release Signal ID (RLSIG, temporary JSYS 731)
+
+        RLSIG  accepts either a specific SID in AC1 or -1 to release
+all SIDs owned by the calling job.  Forks waiting in SIGNLs or WTFORs
+will receive fail returns.
+
+
+
+I.C.    Wait for Signal (WTFOR, temprorary JSYS 732)
+
+        WTFOR accepts an SID in RH(AC1) and control flags in LH(AC1).
+Bit-1 of AC1 is the "don't wait" bit.  If set WTFOR will give an
+immediate non-skip return if no SIGNLs are waiting; otherwise it will
+hang until the required number of SIGNLs have been done.  When this
+has happened a skip return will occur if data was available
+(from SIGNLs); a "no data available" error code and a non-skip return
+will be given if the wait completed but no data was queued.
+
+If a data word is available (see SIGNL), it will be returned in AC2
+and the job number of the fork which queued the data will be returned
+in the right half of AC3.  (The left half of AC3 may contain other
+information in the future.)  Note that having this job number does not
+guarantee that the job will be listening for replies on one of its
+SIDs; the job number serves only to aid in bookkeeping.
+
+Turning on Bit-5 of AC1 at the WTFOR call causes a "peek" operation to
+be done.  WTFOR returns a copy of the data and job number at the head
+of the queue without actually operating on the semaphore or dequeueing
+the data.  A "no data returned" error may occur.
+
+
+Note: It is the responsibility of the user to guarantee that data is
+provided if it should be, and that it does not get stolen by the
+"wrong" forks.
+
+
+
+I.D.    Generating a Signal (SIGNL, temporary JSYS 733)
+
+        SIGNL accepts  FLAGS,,SID  in AC1  and a data word in AC2 if
+appropriate.
+
+Flag bit-2 means "data supplied".  The data is queued.
+
+Flag bit-1 is a "don't wait" bit.  With this bit on, any data is queued,
+the signal event generated and an immediate return given.  If the
+bit is off, the fork waits for the queued data to be received by
+a WTFOR; this will be true immediately if no data was supplied.
+
+Even if no data is supplied, some data may have already been queued
+by other forks and the SIGNL will simply make it seen by a WTFOR.
+
+                                                    Page   9
+
+
+
+NOTE:  SIGNL with data supplied waits for any previously queued data
+by the calling fork to be read by a WTFOR before acting on the
+current call.  This means that a fork can get only one datum ahead on
+all SIDs before hanging.  This restriction is due to the fact that
+queue storage is provided by the forks themselves.  Theoretically this
+is sufficient because more data can be queued by creating more forks
+to do the queuing.  Changing this arrangement is discussed in a
+subsequent section.
+
+                                                    Page  10
+
+
+
+II.     Examples
+
+II.A.   Interlock
+
+        Frequently it is required that at most one process be executing
+some "critical section" of code.  Normally this is handle with the
+LOCK-UNLOCK macros.  In terms of the signal facility it would
+appear as:
+
+        Initialization
+        _______
+              |
+              |
+              |
+        LKSID := GTSIG(count=1)
+              |
+        create and start other forks
+        or jobs.  They will discover
+        LKSID in some common file or
+        shared address space.
+              |
+              .
+              .
+              .
+
+
+
+
+
+        Reentrant code run by all processes
+        _________________
+                        |
+                        |
+                        |
+                 WTFOR(LKSID)
+                        |
+                        |
+                 "critical section"
+                        |
+                        |
+                        |
+                 SIGNL(LKSID, no wait)
+                        |
+                        |
+                        .
+                        .
+                        .
+
+
+
+                                                    Page  11
+
+
+
+II.B.   User-controlled Resource Allocation
+
+        In some cases a user process may have some maximum number (N)
+items (buffers, window pages, TTY lines, etc.) which may be in use
+simultaneously.  A process attempting to assign the "N+1 th" item
+must wait until an item becomes free.
+
+
+        Initialization
+        _______
+              |
+              |
+          Count := GTSIG(count=N)
+              |
+        Mark all N items as NOT BUSY
+              |
+              |
+              |
+        Create and start all user
+        processes.  There may be more
+        or less than N.  All processes
+        will become aware of Count.
+              |
+              .
+              .
+              .
+
+
+
+
+
+        Reentrant Code to Assign an Item
+        ________________
+                        |
+                        |
+                   WTFOR(Count)          ;Hang until there is a
+                        |                ;free item.
+                        |
+              Find a free item.  Set I to
+                its address.  Mark Item(I)
+                as "BUSY".
+                        |
+                        |
+              Return  I  to caller.
+                        |
+                        X
+
+
+
+        Reentrant Code to Deassign item I
+        ________________
+                        |
+                        |
+
+                                                    Page  12
+
+
+
+              Mark Item(I) as NOT BUSY (free)
+                        |
+                        |
+                   SIGNL(Count, no wait)
+                        |
+                        X
+
+                                                    Page  13
+
+
+
+II.C.   MultiProcess Synchronization
+
+        Conway's FORK-JOIN process control primitives may be implemented
+using the signal facility in addition to the standard TENEX fork control
+JSYSs.  Assume that TASK0, TASK1, TASK2 and TASK3 are to be run
+in parallel.  When all have completed, the processes running TASK1,
+TASK2, and TASK3 are to go away and TASK0 (the "superior") is to
+continue.
+
+
+
+            Start
+            __
+              |
+              |
+        Flag := GTSIG(-2)
+              |
+              |
+        Fork1 := CFORK(same map, start at TASK1) ------------->TASK1
+              |                              .
+              |                              .
+        Fork2 := CFORK(same map, start at TASK2) ------>TASK2
+              |                             .   .
+              |                             .   .
+        Fork3 := CFORK(same map, start at TASK3) ->TASK3  .   .
+              |                              .     .   .
+              |                              .   .   .
+            TASK0                            .   .   .
+              .                               .   .  .
+              .                                .   . .
+              .                                .   .    .
+              .                                 .  .  .
+        WTFOR(Flag, wait)                SIGNL(Flag, no wait)
+              |                             |
+        KFORK(Fork1)                      WAIT
+        KFORK(Fork2)                        |
+        KFORK(Fork3)                        X
+              |
+              .
+              .
+              .
+
+                                                    Page  14
+
+
+
+II.D.   Semaphores, Djikstra's Producer-Consumer Problem
+
+        Consider two processes: a Producer which fills buffers and a
+Consumer which empties them.  The Producer must wait until a buffer
+becomes free before filling it.  The Consumer must wait until a full
+buffer exists before it can be emptied.  In this example, the data
+passing facility is used to pass buffer addresses.
+
+
+
+                Begin
+                __
+                  |
+                  |
+        Empty := GTSIG(count=0)
+          Full := GTSIG(count=0)
+                  |
+                  |
+               CFORK -------------------------------->|
+                  |                            |
+                  |                      for i:=1 to N do
+                  |                      { Bfr := GetBlock()
+                  |                        SIGNL(Empty,Bfr,wait)
+                  |                      }
+                  |                            |
+                  |                            |
+               PRODUCER                    CONSUMER
+               ____                        ____
+                  |                            |
+                  |                                   |
+  --------------->|                                   |<---------------
+  |               |                                   |               |
+  |      PBuf := WTFOR(Empty,wait)            CBuf := WTFOR(Full,wait)|
+  |               |                                   |               |
+  |         fill PBuf                         empty CBuf              |
+  |               |                                   |               |
+  |    SIGNL(Full,no wait,data=PBuf)    SIGNL(Empty,no wait,data=CBuf)|
+  |               |                                   |               |
+  |<---------------                                   --------------->|
+
+
+
+Note:   This example contains a "deadly embrace" and cannot
+        work.  A correct solution is shown on the next page.
+
+                                                    Page  15
+
+
+
+II.E.   Semaphores Example, Correct Solution
+
+
+
+
+                Begin
+                __
+                  |
+                  |
+        Empty := GTSIG(count=0)
+         Full := GTSIG(count=0)
+                  |
+                  |
+               CFORK ---------------->|
+                  |                   |
+                  |             for i:=1 to N do
+                  |             { Bfr := GetBlock()
+                  |               SIGNL(Empty,Bfr,wait)
+                  |             }
+                  |                WAIT (forever!)
+                  |
+                  |
+                  |
+                  |
+                CFORK-------------------------------->|
+                  |                            |
+                  |                            |
+                  |                            |
+                  |                            |
+               PRODUCER                    CONSUMER
+               ____                        ____
+                  |                            |
+                  |                                   |
+  --------------->|                                   |<---------------
+  |               |                                   |               |
+  |      PBuf := WTFOR(Empty,wait)            CBuf := WTFOR(Full,wait)|
+  |               |                                   |               |
+  |         fill PBuf                         empty CBuf              |
+  |               |                                   |               |
+  |    SIGNL(Full,no wait,data=PBuf)    SIGNL(Empty,no wait,data=CBuf)|
+  |               |                                   |               |
+  |<---------------                                   --------------->|
+
+
+
+Note:   This solution has several shortcomings which make it impractical
+        for actual use.  First, there is no provision made for stopping
+        the program.  Second, the initialization fork is left in the
+        WAIT forever when it should be killed (This can be fixed using
+        another SID).
+
+
+                                                    Page  16
+
+
+
+II.F.   Multiprocess Server
+
+
+In order to decrease latency one may require that several forks
+be able to execute some code which provides some function.
+If that code requires "a long time" to complete, subsequent requests
+(SIGNLs) for service will see an excessive latency time.
+
+This may be reduced by writing the service code in a reentrant fashion
+and using multiple forks in the server.
+
+
+
+                Begin
+                __
+                  |
+                  |
+          ReqSID := GTSIG(1)
+                  |
+                  |
+        for i := 1 to NumberOfServers-1 do CFORK(start at SERVE)-->|
+                  |                           |
+                  |                           |
+                SERVE <---------------------------------------------
+                  |
+                  |
+        |-----> WTFOR(ReqSID)
+        |         |
+        |         |
+        |         |
+        |         .
+        |         .
+        |       reentrant code
+        |         .
+        |         .
+        |         .
+        |         |
+        |         |
+        |<--------|
+
+                                                    Page  17
+
+
+
+III.    Error Returns
+
+
+
+Until the signal facility is made a permanent part of TENEX the
+error mnemonics listed below have been assigned values by the
+rule:  SGNLXi = 602000+i  .
+
+
+SGNLX1:         Bad job number to GTSIG.  Out of range or not logged in.
+
+SGNLX2:         GTSIG.  No SIDs available.
+
+SGNLX3:         Illegal SID.  Out of range.
+
+SGNLX4:         SID not accessible to this job.  Either not owned
+                for RLSIG or not willing to receive SIGNLs from this
+                job.
+
+
+SGNLX5:         SID not owned by any job.  Can happen if owner released
+                the SID and an attempt is made to use it.  Also occurs
+                if the SID gets released while this fork was in a
+                WTFOR or SIGNL when the SID got released.
+
+SNGLX6:         Not really an error.  Program started
+                in a SINGL wait on one SID but finished on a different
+                one. Due to a SIGNL in a PSI routine.
+
+
+SNGLX7:         No signals waiting.  "No wait" case of WTFOR.
+
+SNGLX8:         No data returned.  Waiting WTFOR completed because
+                enough SIGNLs were supplied, but none transmitted data.
+
+
+                                                    Page  18
+
+
+
+       High Priority Scheduling for Critical Sections
+
+
+     The Tenex network control program contains  portions  of  code  and
+certain  tables  which  may  be  accessed  by  any process utilizing the
+network.  To avoid chaos, these resources are protected by  use  of  two
+network-related  locks.   Recently,  complaints of slow echoing response
+when accessing Tenex via an NVT were traced to the following  situation:
+a  process  with  low scheduling priority would seize one of the network
+locks in order to access one of the above-mentioned resources,  but  due
+to  its  lack  of  priority  would  take  inordinate  amounts of time to
+complete the critical section and release the lock,  thus  making  these
+resources  unavailable  to  other  processes.   By  way  of  curing this
+problem, a general mechanism was devised to provide  special  scheduling
+for  processes  executing critical sections of monitor code with special
+care given to insure that such processes cannot usurp the entire  system
+by  deliberately  executing  JSYSes,  for  example,  which  are known to
+contain critical sections.
+
+
+
+                Improved NVT Output Packing
+
+
+     During the process of moving characters from TTY output buffers  to
+network buffers for output to the network, the characters pass through a
+small intermediate buffer, purely for implementation  reasons.   It  was
+observed  recently  that  the  size of this buffer was having a profound
+influence on the size of NVT  network  output  messages.   This  becomes
+serious  when  the  source  and destination host are many hops apart and
+RFNM delay is significant; it behooves one in such a situation  to  make
+output  messages as large as possible to minimize the per-character RFNM
+overhead.  The NCP has been modified accordingly such  that  NVT  output
+message  sizes  are  influenced  only by number of characters in the TTY
+output buffer, or by allocation, or, ultimately, by the  8-packet  limit
+imposed by the sub-net.
+
+
+                                                    Page  19
+
+
+
+                  Fixed-size Input Buffers
+
+     It  has  been  found  that  the  network  control  program  has   a
+considerable  appetite  for  processor  cycles,  particularly on heavily
+loaded network-only systems such as BBN.  Using program counter sampling
+techniques, it was found that the NCP was spending fully 1/4 of its time
+assigning and releasing space for buffers.  This was clearly due to  the
+use  of  the  same  free  storage  package  as  is  used  for  the Tenex
+file-system,  a  best-fit  algorithm   employing   incremental   garbage
+collection.  While this is now known to be a sub-optimal approach to the
+storage management problem, it is clearly far less  appropriate  in  the
+NCP  buffer management context than in the file-system context where the
+calling frequency is  lower.   Analysis  of  the  distribution  of  free
+storage  requests  made  by  the NCP led to the adoption of a fixed-size
+free storage management scheme.  The NCP now consumes less  than  2%  of
+its time in buffer management at the sacrifice of some address-space but
+very little real memory, clearly a worthwhile improvement.
+
+
+
+
+          Fair Scheduling of Swap-Bound Processes
+
+     The 1.33 scheduler goes about the task of enforcing  the  pie-slice
+policy  by dividing the schedulable processes into two categories: those
+'behind-schedule'   and   those    'ahead-of-schedule',    where    this
+determination  is  made  by comparing a process' current cpu-utilization
+(actually an exponential  average  of  same)  with  its  current  target
+utilization  (its  pie-slice  group  share  divided  by  the  number  of
+processes currently active in the group).  The behind-schedule processes
+are  serviced  in  preference  to  the  ahead-of-schedule  processes, of
+course, but within each of  these  categories  no  distinction  is  made
+between  processes, except to scale their quanta by a value proportional
+to their target  utilizations.   Thus,  each  category  is  serviced  in
+something   approximating   a   round-robin  sequence.   By  failing  to
+distinguish swap-limited from processor-limited tasks, highly concurrent
+operation  of the processor and the swapper is not always achieved, thus
+inflating the average completion  time  of  the  tasks  involved.   Upon
+recognition   of   this   deficiency,  a  new  pie-slice  regulator  was
+implemented, which keeps a single queue of schedulable processes, sorted
+by  'most-behind-schedule'  to  'least-behind-schedule',  thus making an
+N-way distinction amongst  its  processes,  as  compared  to  the  2-way
+distinction  made  previously.   Since  swap-bound  tasks  by definition
+accumulate cpu time less quickly than cpu-bound  tasks,  this  regulator
+automatically achieves concurrent scheduling of the swapper and cpu.
+
+                                                    Page  20
+
+
+
+                Fast Process Wakeup Facility
+
+     In the past, while certain event handlers in Tenex  were  cognizant
+of  the  fact that a fork known to them would unblock as a result of the
+event they were processing, no mechanism existed for them to communicate
+their  knowledge  to  the scheduler save for simply setting a flag which
+indicated to the scheduler that in fact SOME fork had awakened;  it  was
+left to the scheduler to then search for that fork -- a regrettable lack
+of communication.  There now exists  a  routine  in  the  scheduler  for
+handling  this  situation; it is callable at process level and accepts a
+fork handle  as  an  argument.   It  greatly  reduces  the  overhead  in
+awakening  a  fork  in  the  circumstance  described above.  Examples of
+places in the monitor now using this feature are the PSI logic and  JSYS
+traps.
+
+                                                    Page  21
+
+
+
+                            RCTE
+
+     The code to implement the RCTE option of the  new  TELNET  protocol
+for  TENEX  has  been completed.  The RCTE option permits a reduction in
+network traffic by deferring the transmission of characters  which  will
+not  cause  the receiving user program to be activated until a character
+which will cause the user program to be activated.  A further  reduction
+is  achieved  by minimizing the flow of echo characters back to the user
+TELNET program.  This is done by having the  server  instruct  the  user
+TELNET  to  echo  the  group  of  characters  up through the next wakeup
+character.  By sending this command as the user program is about to read
+the  first character of that group, the echo is guaranteed to follow any
+response to the preceding group of characters.
+
+     Significant problems with the RCTE protocol were encountered.   The
+handling  of  spontaneous  output  was  specified in a way that made the
+implementation extremely  difficult  to  do  correctly  (if,  indeed,  a
+correct   implementation   is  possible).   The  solution  here  was  to
+completely isolate the control of input transmission  and  echoing  from
+the  characters  flowing in the output stream.  Synchronization of input
+and output then occurs directly by virtue of the  embedding  of  control
+information  in  the  output stream.  This approach permits a simplified
+coding of both the user TELNET and server TELNET.
+
+     A second problem was the handling  of  interrupt  characters.   The
+RCTE  protocol  fails  to  provide  an  explicit mechanism for interrupt
+characters thus necessitating the handling of  interrupt  characters  as
+program  wakeup  characters.   Since  the  interrupt  characters are not
+actually handled as program wakeup characters and, in fact,  bypass  the
+terminal  input  buffer,  a  special provision had to be made to get the
+command sent back to the user TELNET  to  indicate  that  the  character
+stream  should  be echoed beyond the point where the interrupt character
+was typed.  The transmission must be synchronized with the processing of
+the  terminal  input  buffer so that it will be sent at the proper time.
+This was achieved by putting a marker in the input buffer at  the  point
+where  the  interrupt  character was.  This marker is never given to the
+user's program and must not be counted as an  input  character.   A  new
+counter was installed indicating the number of such markers in the input
+buffer and the SIBE JSYS  modified  to  indicate  "empty"  only  if  the
+difference  of  the  total  characters  in  the buffer and the number of
+markers in the buffer is greater than 0.
+
+     A third problem is handling the case  where  the  input  buffer  is
+cleared.   Since  the  buffer  may contain various wakeup characters and
+special markers, when the buffer is cleared, the user TELNET and  SERVER
+may  get  out  of synch.  It is infeasible to scan the buffer and send a
+RCTE command for each such wakeup character or special marker.  Instead,
+a  command  is  sent to the user TELNET meaning "clear your input buffer
+and reset your counters".  This command is implemented by sending  "WILL
+RCTE".   This is the reverse case from a normal RCTE (i.e.  DO RCTE) and
+thus cannot be confused with the normal use of the  RCTE  option.   This
+saves adding a new option.
+
+                                                    Page  22
+
+
+
+            Measurement Facility for 3330 driver
+
+     Since the release of Tenex  1.33,  an  effort  was  undertaken  and
+completed  to measure the delays incurred by a disk-transfer task during
+the various stages of its existence.  This effort  was  motivated  by  a
+desire  to determine the adequacy of the 3330 disks as a swapping medium
+for a KA-10/TENEX system.  This new  facility  measures  delays  due  to
+queuing,  arm  positioning, rotational latency and actual transfer.  The
+data is segregated by direction of transfer  (read/write).   It  is  not
+possible  at  this  time  to  provide a definitive interpretation of the
+results obtained to-date, as further experimentation is necessary and is
+presently being conducted.  The results of this work will be reported at
+some future time.
+
+                                                    Page  23
+
+
+
+                   Modifications to SETNM
+
+     The conflict between the  TOPS10  SETNAM  function  and  the  TENEX
+Statistics  version of SETNM got bad enough for some rearrangement to be
+done.  Specifically, the HELPER file of DEC cusps wants to find out what
+file  to  read  for  Help info by doing a GETNM-equivalent UUO.  When it
+finds that its name is .OTHER, there is little likelihood of finding the
+right .HLP file.
+
+     At the same time, it is still desirable to take  paging  statistics
+on  a  smaller  number  of  programs,  the  original use of TENEX SETNM.
+Therefore, the following implementation has been done.
+
+     There are two kinds of SETNM: Ordinary and Insist.  The Insist form
+does  about  what SETNM always did: It takes a statistics slot, and puts
+you in a .OTHER statistics slot if none were free.   The  Ordinary  form
+puts you in an already exisiting statistics slot with a matching name if
+there is one, or .OTHER if there isn't a match, regardless of whether  a
+free  slot  exists.   Both  forms  also  put  the sixbit argument into a
+parallel job table, JOBNM2, even if the statistics slot used is  .OTHER.
+Therefore, you can always get the argument back from the latest SETNM by
+reading JOBNM2.  PA1050 uses GETNM which  looks  in  JOBNM2.   The  exec
+(SYSTAT  and  WHERE)  reads  JOBNM2 if it exists, else in the case of an
+older monitor it reads the old  JOBNAM  table.   Insist  form  SETNM  is
+distinguished  by  AC1/  1,,0  and the argument is in AC2.  The Ordinary
+SETNM is done by left-adjusted sixbit in AC1.
+
+     A frill: The argument in AC1 of an Ordinary SETNM or AC2 of  Insist
+SETNM  may  be a JFN.  If so, the name field of the file is converted to
+sixbit and truncated to six characters and used as the SETNM argument.
+
+     Who does Insist SETNM's? At the  moment  just  SYSJOB  on  the  BBN
+systems.   A  command  was  added  to  SYSJOB, and put in our SYSJOB.RUN
+files, to set the names we want statistics on.  The form is
+                  	SETNAME name1,name2,...
+which causes SYSJOB to do Insist form SETNM's with those names, and then
+switch  itself  back to SYSJOB, thus leaving those names in the table to
+be found by later ordinary SETNM's.  We didn't put any capability  check
+on the Insist SETNM.  If someone starts abusing this, it could be added.
+

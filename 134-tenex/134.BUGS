@@ -1,0 +1,449 @@
+ 5-JAN-76 19:37:03-EST,901;000000000001
+Mail from BBN-TENEX rcvd at 5-JAN-76 1936-EST
+Mail from PARC-MAXC rcvd at 5-JAN-76 1927-EST
+Date:  5 JAN 1976 1627-PST
+From: TAFT at PARC-MAXC
+Subject: BUG IN ASOFN
+To:   ALLEN at BBN
+
+Bill Plummer (I think) put some changes into ASOFN to handle the
+case of running out of OFNs better.  This is most likely to happen
+while reloading the file system (many files opened and closed but
+not much demand on memory) on a system like ours with a lot of memory.
+The fix is to force a core garbage collection and then wait until
+it has been done (by DDMP).  Unfortunately, if the caller of ASOFN
+is job 0 (say, doing a GTJFN on the bug string file), you end up in
+a deadlock.  My solution (as shown in the source comparisons I
+sent you a while back) is to make a test for FORKX=DDMPFK and giving
+an immediate fail return in that case.  Undoubtedly other solutions
+are possible.
+	Ed
+-------
+31-DEC-75 07:06:15-EST,493;000000000001
+Mail from BBN-TENEX rcvd at 31-DEC-75 0706-EST
+Mail from CCA-TENEX rcvd at 31-DEC-75 0702-EST
+Date: 31 DEC 1975 0702-EST
+From: HGM at CCA
+Subject: BUG
+To:   ALLEN at BBN
+
+THE CVHST NAME CHECK IN THE SEND RST LOOP KLOBBERS THE HOST# THAT
+USED TO BE IN AC-1.  I DON'T KNOW WHAT HAPPENS IN YOUR SYSTEM, BUT
+I HAVE A TRAP IN PKBYT FOR FREE/DELETED LINKS, AND IT GOES OFF.
+I DON'T UNDERSTAND WHAT GOES WRONG, BUT IT SEEMS ALIVE AND WELL IF
+A FEW INSTRUCTIONS ARE MOVED AROUND.
+-------
+16-JAN-76 21:00:09-EST,1075;000000000001
+Mail from BBN-TENEX rcvd at 16-JAN-76 2100-EST
+Mail from PARC-MAXC rcvd at 16-JAN-76 2052-EST
+Date: 16 JAN 1976 1752-PST
+From: TAFT at PARC-MAXC
+Subject: GETAB table problems
+To:   allen at BBN, plummer at BBN
+cc:   DEUTSCH
+
+When the "SYSTAT" GETAB table was broken up into separate tables
+("LOADTB", "EVENTS", etc.) at about the time of the Tenex 1.32 release,
+some of us went around religiously converting programs that used
+the "SYSTAT" table to instead use the new tables.  We did this
+because the demise of the "SYSTAT" table was advertised as "imminent".
+Are there in fact any plans to eliminate the "SYSTAT" table?  The
+reason I ask is that there are two items that are accessible only
+via "SYSTAT".  The "date system scheduled back up" (at the end of
+the "EVENTS" table) is inaccessible because the count of entries in
+that table (NEVENT) is one too small.  The "reason for downtime"
+is accessible only through the "SYSTAT" table.  These problems
+ought to be corrected if you are really serious about eliminating
+"SYSTAT".  Thanks.
+	Ed
+-------
+22-JAN-76 19:11:37-EST,1867;000000000001
+Mail from BBN-TENEX rcvd at 22-JAN-76 1911-EST
+Mail from PARC-MAXC rcvd at 22-JAN-76 1909-EST
+Date: 22 JAN 1976 1609-PST
+From: TAFT at PARC-MAXC
+Subject: HIQ bug
+To:   allen at BBN
+
+I believe I have tracked down the cause of forks falling out of HIQ.
+There are two bugs.  The first, as I reported before, is that calling
+SETHIQ does not set the HIQFK flag if the fork is already on HIQ 
+(= INTERQ) for some other reason.  The second is that if you call
+SETSPQ and RELSPQ while on HIQ, RELSPQ fails to recognize that you
+had HIQFK set before the call to SETSPQ, and bumps you down to
+COMPQ (despite the fact that HIQFK is still set).  This is the
+symptom I observed, namely a fork with HIQFK set but running on
+COMPQ.
+
+Source compare follows.  I haven't tested this fix yet but I am
+pretty certain that it is correct.
+	Ed
+
+
+
+; SCHED.MAC;34304 & SCHED.MAC;34303 22-JAN-76 1559	PAGE 1
+
+
+
+LINE 1, PAGE 1
+1)	;<134>SCHED.MAC;34304    22-JAN-76 15:59:38    EDIT BY TAFT
+1)	; Fix glitches in SETHIQ et al that caused forks to fall out of
+1)	; HIQ in some circumstances
+1)	;<134>SCHED.MAC;34303    13-JAN-76 20:36:34    EDIT BY TAFT
+LINE 1, PAGE 1
+2)	;<134>SCHED.MAC;34303    13-JAN-76 20:36:34    EDIT BY TAFT
+
+
+LINE 62, PAGE 49
+1)		 JRST [MOVSI 1,PHIQFK+HIQFK  ;YES, MAKE NOTE OF THAT
+1)			IORM 1,FKFLGS(7)
+LINE 62, PAGE 49
+2)		 JRST [MOVSI 1,PHIQFK	;YES, MAKE NOTE OF THAT
+2)			IORM 1,FKFLGS(7)
+
+
+LINE 84, PAGE 49
+1)		ANDCAB 1,FKFLGS(7)
+1)		TLZN 1,PHIQFK		;WAS HE PREVIOUSLY ON INTERQ?
+LINE 84, PAGE 49
+2)	RELHI3:	ANDCAB 1,FKFLGS(7)
+2)		TLZN 1,PHIQFK		;WAS HE PREVIOUSLY ON INTERQ?
+
+
+LINE 89, PAGE 49
+1)	RELHI3:	POP P,7
+1)		POP P,2
+LINE 89, PAGE 49
+2)		POP P,7
+2)		POP P,2
+
+
+LINE 133, PAGE 49
+1)		ANDCAM 1,FKFLGS(7)	; SPQFK off but still on HIQ
+1)		JRST RELHI3
+LINE 133, PAGE 49
+2)		JRST RELHI3
+
+
+-------
+20-JAN-76 05:20:53-EST,1991;000000000001
+Mail from BBN-TENEX rcvd at 20-JAN-76 0520-EST
+Mail from PARC-MAXC rcvd at 20-JAN-76 0516-EST
+Date: 20 JAN 1976 0215-PST
+From: TAFT at PARC-MAXC
+Subject: Tenex 1.34 bugs
+To:   allen at BBN
+
+I got 1.34 running here with little difficulty.  The biggest hassle
+was getting all our local patches reinserted in the fragments of the
+former SWPMON and JSYS files, but those files really were getting
+awfully large so I guess breaking them up made sense.
+
+Here are a few bugs:
+
+1) GACTJ fails to return string accounts correctly.  The problem is
+in the MOVSTR routine in ACCTJS.  Change
+	MOVST1/ ILDB A,C      to     ILDB A,B
+
+2) Calling SETHIQ fails to lock you onto HIQ if you already happen
+to be on HIQ for some other reason.  In the literal at SETHIQ+10 in
+SCHED, change      MOVSI 1,PHIQFK    to     MOVSI 1,PHIQFK+HIQFK
+
+3) At .SPLFK+3 in FORKS there is an "XCTUM [HRRZS 1]" which looks
+like it's intended to read from AC block +1 and write into hardware
+AC1.  Does that work on a real PDP-10?  It sure doesn't on Maxc.
+I have replaced it with a more conventional "XCTUU [HRRZ 1,1]".
+
+Aside from that, everything seems to work fine.  I have two other
+comments to make:
+
+1) I wish you would check out string accounts, even if you don't
+regularly use them at BBN.  Every release since 1.31 (at least)
+has had some bug in the string account logic.
+
+2) I notice that some of the newer JSYSes, such as CRJOB and some
+of the account JSYSes, are passed 18-bit pointers rather than
+general string pointers to string arguments, meaning that the
+string must be word-aligned and in 7-bit bytes.  This is contrary
+to general Tenex standards, which permit arbitrary string pointers
+to string arguments.  I'd like to see this cleaned up.
+
+I'll keep you posted on any additional glitches I discover.  
+Additionally, I will be glad to send you another set of source
+comparisons after the system has been stable for a week or two,
+if you would like.
+	Ed
+-------
+20-JAN-76 21:57:09-EST,2249;000000000001
+Mail from BBN-TENEX rcvd at 20-JAN-76 2156-EST
+Mail from PARC-MAXC rcvd at 20-JAN-76 2152-EST
+Date: 20 JAN 1976 1642-PST
+From: TAFT at PARC-MAXC
+Subject: Another account jsys glitch
+To:   allen at BBN
+cc:   plummer at BBN
+
+I don't know whether this one is properly a Tenex problem or an Exec
+problem, but I am treating it as the former.  The Exec passes
+VACCT and GDACC in ac1 the full word returned by STDIR, including
+flags in the left half.  VACCT and GDACC in turn pass this full word
+to DIRST.  DIRST in turn treats the left half as flags with
+completely different meaning.  As it happens, the STDIR flags defined
+by BBN do not correspond (in position) to the single flag (B17)
+defined in DIRST (which has something to do with device designators),
+but we have defined STDIR flag 17 to mean "message-only user".
+The result was that message-only users couldn't log in because B17
+being on was causing the DIRST inside of VACCT and GDACC to fail.
+I have fixed this by explicitly clearing the LH before doing the
+DIRST in each case.  An alternative is to change the Exec to clear the
+LH before calling VACCT or GDACC.  Source compare follows.
+	Ed
+
+
+
+; ACCTJS.MAC;1703 & ACCTJS.MAC;1701 20-JAN-76 1632	PAGE 1
+
+
+
+LINE 1, PAGE 1
+1)	;<134>ACCTJS.MAC;1703    20-JAN-76 16:31:43    EDIT BY TAFT
+1)	; Clear LH of user# arg in VACCT and GDACC before calling DIRST
+1)	;<134>ACCTJS.MAC;1702    20-JAN-76 03:09:36    EDIT BY TAFT
+1)	; Fix bug in MOVSTR routine that made GACTJ not work
+1)	;<134>ACCTJS.MAC;1701     9-JAN-76 15:03:21    EDIT BY TAFT
+LINE 1, PAGE 1
+2)	;<134>ACCTJS.MAC;1701     9-JAN-76 15:03:21    EDIT BY TAFT
+
+
+LINE 33, PAGE 4
+1)			JRST .+1]
+1)		HRRO A,0(P)			; WHERE TO PUT USER NAME
+1)		HRRZS B				; Clear LH of user #
+1)		DIRST
+LINE 33, PAGE 4
+2)			HRRZS B			; WHAT ONLY RIGHT 1/2
+2)			JRST .+1]
+2)		HRRO A,0(P)			; WHERE TO PUT USER NAME
+2)		DIRST
+
+
+LINE 27, PAGE 5
+1)	GDACC3:	HRRO A,0(P)
+1)		HRRZS B				; WANT ONLY DIR #
+1)		DIRST				; USER NAME
+LINE 27, PAGE 5
+2)		HRRZS B				; WANT ONLY DIR #
+2)	GDACC3:	HRRO A,0(P)
+2)		DIRST				; USER NAME
+
+
+LINE 78, PAGE 5
+1)	MOVST1:	ILDB A,B
+1)		JUMPE A,MOVST2
+LINE 78, PAGE 5
+2)	MOVST1:	ILDB A,C
+2)		JUMPE A,MOVST2
+
+-------
+
+31-JAN-76 22:01:34-EST,1930;000000000001
+Mail from BBN-TENEX rcvd at 31-JAN-76 2201-EST
+Mail from PARC-MAXC rcvd at 31-JAN-76 2155-EST
+Date: 31 JAN 1976 1853-PST
+From: TAFT at PARC-MAXC
+Subject: More on HIQ bug
+To:   allen at BBN
+
+Maxc finally crashed (due to hardware failure) after 250+ hours
+running Tenex 1.34, so I got a chance to try out my fix to the 
+falling out of HIQ problem, which turns out not to be quite right
+either.  Calling SETSPQ/RELSPQ while on HIQ now updates the flags
+properly but fails to bump the process from SPQ back down to HIQ --
+though it eventually gets down there anyway when it exhausts its
+quantum (unlike what happened when a fork was erroneously bumped
+down to COMPQ, never to return).  Anyway, here is an updated fix,
+which I HAVE tested!!
+	Ed
+
+
+
+; SCHED.MAC;34305 & SCHED.MAC;34303 31-JAN-76 1844	PAGE 1
+
+
+
+LINE 1, PAGE 1
+1)	;<134>SCHED.MAC;34305    31-JAN-76 18:44:02    EDIT BY TAFT
+1)	; Addition to RELSPQ fix
+1)	;<134>SCHED.MAC;34304    22-JAN-76 15:59:38    EDIT BY TAFT
+1)	; Fix glitches in SETHIQ et al that caused forks to fall out of
+1)	; HIQ in some circumstances
+1)	;<134>SCHED.MAC;34303    13-JAN-76 20:36:34    EDIT BY TAFT
+LINE 1, PAGE 1
+2)	;<134>SCHED.MAC;34303    13-JAN-76 20:36:34    EDIT BY TAFT
+
+
+LINE 62, PAGE 49
+1)		 JRST [MOVSI 1,PHIQFK+HIQFK  ;YES, MAKE NOTE OF THAT
+1)			IORM 1,FKFLGS(7)
+LINE 62, PAGE 49
+2)		 JRST [MOVSI 1,PHIQFK	;YES, MAKE NOTE OF THAT
+2)			IORM 1,FKFLGS(7)
+
+
+LINE 67, PAGE 49
+1)	SETHI1:	CALL PSSKD2
+1)	SETHI2:	POP P,7
+LINE 67, PAGE 49
+2)		CALL PSSKD2
+2)	SETHI2:	POP P,7
+
+
+LINE 84, PAGE 49
+1)		ANDCAB 1,FKFLGS(7)
+1)		TLZN 1,PHIQFK		;WAS HE PREVIOUSLY ON INTERQ?
+LINE 84, PAGE 49
+2)	RELHI3:	ANDCAB 1,FKFLGS(7)
+2)		TLZN 1,PHIQFK		;WAS HE PREVIOUSLY ON INTERQ?
+
+
+LINE 133, PAGE 49
+1)		ANDCAM 1,FKFLGS(7)	; SPQFK off but HIQFK still on
+1)		JRST SETHI1		; Go put back on HIQ
+1)	
+LINE 133, PAGE 49
+2)		JRST RELHI3
+2)	
+
+-------
+ 8-FEB-76 20:10:38-EST,1756;000000000001
+Mail from BBN-TENEX rcvd at 8-FEB-76 2010-EST
+Mail from PARC-MAXC rcvd at 8-FEB-76 2009-EST
+Date:  8 FEB 1976 1711-PST
+From: TAFT at PARC-MAXC
+Subject: Long file bug
+To:   allen at BBN
+
+Long files get their page count computed incorrectly.  This is because
+in the code following CNTLNG in DISC, the page count in E (= ac 7)
+is clobbered by the call to ASOFN, which was changed in 1.34 to clobber
+ac 7.  I have fixed it by changes to CNTLNG, as shown in the following
+source comparison.  Obviously one could also change ASOFN to preserve
+ac 7.
+	Ed
+
+
+
+; DISC.MAC;11302 & DISC.MAC;11301  8-FEB-76 1704	PAGE 1
+
+
+
+LINE 1, PAGE 1
+1)	;<134>DISC.MAC;11302     8-FEB-76 17:04:23    EDIT BY TAFT
+1)	; Fix bug in counting of long file pages at CNTLNG
+1)	;<134>DISC.MAC;11301     9-JAN-76 14:33:37    EDIT BY TAFT
+LINE 1, PAGE 1
+2)	;<134>DISC.MAC;11301     9-JAN-76 14:33:37    EDIT BY TAFT
+
+
+LINE 4, PAGE 19
+1)		PUSH P,ZERO##		; Init count of pages
+1)		JUMPL A,CNTLN4		; If still in use, skip counting
+1)		MOVSI C,-1000		; Count thru 1000 page tables
+1)		HRR C,FILLFW(JFN)	; At fillfw
+1)	CNTLNL:	SKIPN A,(C)
+LINE 4, PAGE 19
+2)		JUMPL A,CNTLN4		; If still in use, skip counting
+2)		MOVSI C,-1000		; Count thru 1000 page tables
+2)		HRR C,FILLFW(JFN)	; At fillfw
+2)		SETZ E,			; Total count
+2)	CNTLNL:	SKIPN A,(C)
+
+
+LINE 20, PAGE 19
+1)		ADDM A,-1(P)		; Add into sum
+1)		POP P,C
+LINE 20, PAGE 19
+2)		ADD E,A			; Add into sum
+2)		POP P,C
+
+
+LINE 26, PAGE 19
+1)	CNTLN4:	SETOM 0(P)		; Remember we have no valid page count
+1)	CNTLN3:	HRRZ B,FILLFW(JFN)
+1)		SETZ A,
+LINE 26, PAGE 19
+2)	CNTLN4:	SETO E,			; Remember we have no valid page count
+2)	CNTLN3:	PUSH P,E		; Save
+2)		HRRZ B,FILLFW(JFN)
+2)		SETZ A,
+
+-------
+12-MAR-76 17:33:49-EST,1533;000000000001
+Mail from BBN-TENEX rcvd at 12-MAR-76 1733-EST
+Mail from USC-ISIB rcvd at 12-MAR-76 1726-EST
+Date: 12 MAR 1976 1425-PST
+From: DALE at USC-ISIB
+Subject: Security hole
+To:   ALLEN at BBN
+cc:   MCKINLEY, DALE
+
+***	TENEX security hole via Copy-on-Write	***
+
+One can gain unexpected read access to files by the following
+method:
+
+ 1) Get a JFN for the desired file
+
+ 2) Open the file, specifying no access bits (B19-B23)
+
+ 3) Map existing file pages into private core pages with
+    Copy-on-Write as the only access
+
+ 4) Touch the page with a SETZM instruction
+
+You now have a private page which you can play with.  It is
+now a simple matter to change its access to allow read, and
+copy the page to an output source.  (To obtain an undamaged
+version of the original, you merely need to map it into two
+core pages and touch them in different locations...)
+
+ISI has patched this hole by forcing the source page to have
+read access before allowing a Copy-on-Write.  The patch is
+in WCPY of PAGEM:
+
+WCPY6+15 (or so)
+	CALL SETSPG		;Map the PT (existing inst)
+	MOVSI 2,READB		;Do not allow if no read access!
+	TDNN 2,CSWPGA(1)	; ..
+	 JRST [	CALL RELSPG
+		JRST ILRD ]
+	MOVSI 2,RWX		;OK, proceed with copy-on-write
+--------
+
+Don,
+  This problem was recently found by us in our attempts to get
+execute only code completely operational.  We have installed the
+indicated patch on all ISI machines.  I'm not sure how you wish
+to handle this, but I would suggest immediate action.  Thanx
+--Dale
+-------
+17-Jun-76 09:52:45-EDT,702;000000000001
+Mail from BBN-TENEX rcvd at 14-Jun-76 1939-EDT
+Mail from USC-ISIB rcvd at 14-Jun-76 1934-EDT
+Date: 14 JUN 1976 1634-PDT
+From: DALE at USC-ISIB
+Subject: Terminal service & BUGHLTs
+To:   ALLEN at BBN
+cc:   DALE
+
+Don,
+  We recently had a crash while emptying the big character buffer.
+In traferring a character into a line buffer, echoing was called
+for.  No output buffers were assigned, and not enuf were avaiable
+for assignment, so an EDISMS was attempted (TCEO3 plus a few).
+It also appears that full output buffers would have led to the
+same BUGHLT, "call to scheduler while already in scheduler".  Is
+there an existing fix to this problem?  Thanx for your attention
+--Dale
+-------
+  
