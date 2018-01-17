@@ -1,0 +1,1160 @@
+;<134>PUPNM2.MAC;4     1-MAR-81 20:55:34    EDIT BY TAFT
+; Misc bug fixes
+;<134>PUPNM2.MAC;3     1-MAR-81 17:18:27    EDIT BY TAFT
+; Initial checkout
+
+; Copyright Xerox Corporation 1981
+
+; The following declaration ensures that the symbols are linked externally
+; rather than binding to local PC values in the UNIVERSAL file.
+	EXTERN PPUPUN,PPBPHN,PPBPHH,PPBPHS,PUPLEN,PUPTCB,PUPTYP
+	EXTERN PUPID,PPUPDN,PPUPDH,PPUPD0,PPUPD1,PPUPSN,PPUPSH,PPUPSS
+
+	SEARCH STENEX,PROLOG,PUPFMT
+	TITLE PUPNM2
+	SUBTTL PUP NETWORK DIRECTORY LOOKUP  /  E. A. Taft, February 1981
+
+; This is the version that does lookups by interrogating other name
+; servers and keeping a local cache of recently-looked-up entries.
+; It does NOT keep a local copy of the Pup-network.directory file.
+
+; Defined in PARAMS.MAC:
+; NTDSIZ	number of pages devoted to network directory cache
+
+; Storage
+
+NGSP NTDCHE,NTDSIZ	; Network directory cache
+NGS NTDFRE,7		; Free-storage header for NTDCHE
+NGS NTDCQH		; Cache queue header (PUP.MAC queue conventions)
+NGS NTDVER		; Version # of Pup-network.directory file
+NGS NTDHIT		; Number of cache hits
+NGS NTDMIS		; Number of cache misses
+LS NTDLCK		; Lock against changes to NTDCHE
+
+; Name lookup protocol constants
+SOCMSC==4		; Miscellaneous services socket number
+PTNLRQ==220		; Pup type for Name Lookup Request
+PTNLRP==221		; Pup type for Name Lookup Reply
+PTALRQ==223		; Pup type for Address Lookup Request
+PTALRP==224		; Pup type for Address Lookup Reply
+PTDLER==222		; Pup type for Directory Lookup Error
+
+NLPBLN==MNPBLN+^D<20*6+3>/4 ; Name lookup Pup length (words) --
+			;  room for 20 address blocks or very long string
+
+; JSYS error macros, adapted from JSYS.MAC
+
+DEFINE ERR(ERRORN,EXTRA) <
+IFB <ERRORN'EXTRA>,<JRST ERRD##>
+IFNB <ERRORN'EXTRA>,<
+	JRST [	EXTRA
+		IFNB <ERRORN>,<MOVEI A,ERRORN>
+		JRST ERRD##]
+>>
+
+DEFINE ERUNLK(ERRORN,EXTRA) <
+IFB <ERRORN'EXTRA>,<JRST ERRD##>
+IFNB <ERRORN'EXTRA>,<
+	JRST [	EXTRA
+		IFNB <ERRORN>,<MOVEI A,ERRORN>
+		JRST ERUNLD##]
+>>
+
+DEFINE ERABRT(ERRORN,EXTRA) <
+IFB <ERRORN'EXTRA>,<JRST ERRD##>
+IFNB <ERRORN'EXTRA>,<
+	JRST [	EXTRA
+		IFNB <ERRORN>,<MOVEI A,ERRORN>
+		JRST ERABRD##]
+>>
+
+; Error exit from PUPNM JSYS
+DEFINE ERRPNM(ERRORN,EXTRA) <
+IFB <ERRORN'EXTRA>,<JRST PNMERR>
+IFNB <ERRORN'EXTRA>,<
+	JRST [	EXTRA
+		IFNB <ERRORN>,<MOVEI A,ERRORN>
+		JRST PNMERR]
+>>
+
+; Network directory cache queue entry format:
+
+CQEHDR==-1		; Header word for free storage allocator
+CQELNK==0		; Predecessor ,, successor links
+CQECNT==1		; Flags and counter
+  CEVALF==1B0		; Cache entry valid (results from successful lookup)
+  CEVPNF==1B1		; Entry contains valid primary name for address(es),
+			;  i.e., results from address lookup rather than
+			;  name lookup.
+  CEVADF==1B2		; Entry contains valid address list for name,
+			;  i.e., results from name lookup rather than
+			;  address lookup.
+  CEPINF==1B3		; Entry is pinned in cache
+  ; RH:			; Count of hits on this cache entry
+CQEADR==2		; - # addresses ,, pointer to first address
+CQENAM==3		; Name starts here: BCPL string with unused bytes zero
+; Addresses are stored following name as an array of Tenex Pup addresses:
+;	net ,, host
+;	socket (right-justified)
+
+CQEOVH==4		; Total size of CQE overhead
+
+; Cache entry conventions:
+; A cache entry nominally associates a name with a set of addresses.
+; Complications arise from the existence of synonyms, the fact that
+; the name lookup protocol maps in only one direction at a time,
+; and the desire to cache answers to failing lookups as well as
+; successful ones.
+
+; If CEVALF is false then either the name or the address is missing,
+; and the entry corresponds to an unsuccessful lookup of whichever of
+; the name or the address is present; this is called an "invalid" entry.
+; A subsequent lookup that hits an invalid entry can immediately fail
+; with "name/address not found".
+
+; If CEVALF is true then both name and address are present and the entry
+; is valid.  However, the entry may or may not be usable for mapping
+; between names and addresses in both directions.  If CEVADF is true
+; then the entry may be used to map from names to addresses; that is, the
+; entry contains the complete set of addresses corresponding to the name.
+; Similarly, if CEVPNF is true then the entry may be used to map from
+; addresses to names; that is, the entry contains the actual primary
+; name for those addresses.
+
+; When the name lookup protocol is invoked, a successful name-to-address
+; mapping can only set CEVADF in the cache entry, since it isn't known whether
+; the name being looked up is the primary name for the resulting addresses
+; (as opposed to a synonym).  Similarly, a successful address-to-name
+; mapping can only set CEVPNF in the cache entry, since it isn't known whether
+; the address being looked up constitutes the entire set of addresses for
+; the name.  Consequently, the only way to obtain a "complete" entry
+; (CEVADF and CEVPNF both set) is to look up both the name and one of the
+; addresses using the name lookup protocol.
+
+; Because of this, there may be several entries in the cache for a given
+; set of addresses, each with a different name (synonym) and at most
+; one with CEVPNF set.  There is at most one entry for a given name.
+; If there is an invalid entry for a given name or address, there is
+; no other entry with the same name or address.
+
+USE SWAPPC
+
+; Initialize network directory cache and/or interrogate current version.
+; Called from SYSINI and from OPRFN.
+;	B/ current directory version number
+;		-1 => don't know, just return current version
+;		0 => don't know, flush cache unconditionally
+; Returns +1:  Unsuccessful, 1/ Error # (assuming call from OPRFN)
+;	+2:  Successful, B/ current directory version number
+
+NDCINI::
+; Lock out all access to the network directory cache before changing it
+	SKIPN SYSIFG##		; System initialized?
+	 SETOM NTDLCK		; No, unlock NTDLCK
+	NOINT
+	LOCK(NTDLCK,,HIQ)	; Get the lock
+
+; See if we need to flush the cache
+	JUMPL B,NDCINX		; Skip init if caller doesn't know version
+	CAMN B,NTDVER		; New version same as current?
+	 JUMPN B,NDCINX		; Yes, don't flush if nonzero version
+
+; Set the version number and initialize the cache
+	MOVEM B,NTDVER
+	MOVE A,[[NTDCHE,,-1	; Initialize cache free storage header
+		-1		; (see ASGFRE for format)
+		NTDSIZ*1000
+		0
+		NTDCHE+NTDSIZ*1000,,NTDCHE],,NTDFRE]
+	BLT A,NTDFRE+4
+	MOVEI A,NTDSIZ*1000	; Initially all one big block
+	MOVEM A,NTDCHE
+	MOVE A,[NTDCQH,,NTDCQH]	; Reset cache queue to empty
+	MOVEM A,NTDCQH
+
+; Insert pinned entry for local host
+	MOVEI A,[PHSTNM]	; Expands to BCPL string for local host name
+	MOVEI B,NPHSTA		; Number of addresses
+	PUSHJ P,CHEINS		; Insert into cache
+	MOVSI B,(CEVPNF+CEVADF+CEPINF) ; Make it be pinned
+	IORM B,CQECNT(A)
+	MOVE B,CQEADR(A)	; Build address array
+	MOVEI C,PHSTAD
+NDCIN3:	MOVE D,0(C)
+	MOVEM D,0(B)
+	SETZM 1(B)
+	ADDI B,1
+	ADDI C,1
+	AOBJN B,NDCIN3
+
+NDCINX:	MOVE B,NTDVER		; Return current version
+	SKIPE SYSIFG##		; Initial call or OPRFN?
+	 UMOVEM B,2		; OPRFN, return value to user AC
+	UNLOCK(NTDLCK,RESIDENT,HIQ)
+	OKINT
+	JRST SKPRET##		; Return +2 always
+
+; Array of local host addresses for pinned entry
+DEFINE X(NET,HOST,FLAGS) <
+	NET ,, HOST
+>
+PHSTAD:	PUPHST(X)
+	NPHSTA==.-PHSTAD
+
+; Do Pup name/address translation.
+; Note: arguments, operations, and results marked "**" are not implemented
+; in this version of PUPNM.
+;	1/ Source/destination designator (must be string ptr if source)
+;	2/ B0 off: Lookup address pointed to by 2, output resulting
+;		   name string to 1 (or attribute string if B4 on)
+;	      on:  Lookup name string given by 1, return address(es)
+;		   in block pointed to by 2
+;	   B1 off: Output something for each field (B0 off)
+;		   Do not allow recognition (B0 on)
+;	      on:  Omit fields where possible (B0 off)
+;		   ** Allow recognition (B0 on)
+;	   B2 off: Error if address not found (B0 off)
+;	      on:  Output octal numbers for unknown fields
+;	   B3 on:  Return version and address block pointer in 3 (B0 off)
+;	   B4 on:  ** Lookup attribute name string given by 4, output
+;		   corresponding attribute value string to 1
+;		   (B0 must be off, and B4 on suppresses outputting
+;		   of name string and forces B2 off)
+;	   B9-17:  Block length (words) (ignored unless B0 on)
+;	   B18-35: Block address
+;	4/ ** Destination designator for attribute value string (B4 on)
+; Returns +1:  Unsuccessful, 1/ Error #
+;	+2:  Successful
+;		1/ Updated where relevant (string pointer)
+;		2/ Updated only if B0 on:
+;		   LH: # words used in block (i.e. 2*number of
+;		       matching addresses, which can be greater
+;		       than the number of words in the block)
+;		   RH: Unchanged
+;		3/ LH: Version # of Pup-network.directory
+;		   RH: ** 16-bit byte address of first word of address
+;		   block (if B3 on in call 2).  Zero if not found.
+;		4/ ** Updated where relevant
+
+; Block format (pointed to by 2), any number of repetitions of:
+;	Net ,, Host
+;	Socket
+
+; Errors:
+;	PUPNX1	Name or address not found
+;	PUPNX2	** Recognition invoked and name ambiguous
+;	PUPNX3	Syntax error or illegal address
+;	PUPNX4	Inconsistent overlapping elements in name string
+;	PUPNX5	** Syntax error in attribute name string
+;	PUPNX6	** Attribute name not found
+; 	PUPNX7	Unable to contact name lookup server
+;	PUPNX8	Internal malfunction
+
+; Offsets in PUPNM temp region pointed to by E
+PNTHDR==-1		; Header word for free storage allocator
+PNTFRE==0		; Address of first free word
+PNTSTR==1		; String being looked up (room for 8 words)
+PNTADR==11		; Intermediate address array (3 2-word addresses)
+PNTCQE==17		; Beginning of array of copied CQEs
+
+PNTLEN==PNTCQE+1+3*<CQEOVH+8+^D10*2> ; Length of region --
+			; room for 3 CQEs containing max-length name
+			; and 10 addresses.
+
+.PUPNM::JSYS MENTR##
+	UMOVE E,2		; Get flags
+	UMOVE JFN,1		; Check designator
+	PUSHJ P,CHKJFN##
+	 ERR()			; Bad
+	 JRST .+2		; TTY
+	 TLNN JFN,-1		; Special, always ok if byte ptr
+	JUMPL E,[ERUNLK(DESX1)]	; TTY and files not allowed for input
+	PUSHJ P,UNLCKF##	; Unlock
+
+	NOINT
+	MOVEI B,PNTLEN-PNTHDR
+	PUSHJ P,ASGJFR##	; Acquire temporary storage block
+	 ERR(PUPNX8)
+	HRRI E,-PNTHDR(A)	; Save address of storage block
+	MOVEI A,PNTCQE(E)	; Set free pointer
+	MOVEM A,PNTFRE(E)
+
+	JUMPL E,PNMNTA		; Jump if looking up name
+
+; Do address to name conversion
+PNMATN:	UMOVE B,2		; Get address arguments
+	UMOVE A,0(B)		;  from user block
+	UMOVE B,1(B)
+	TDNN A,[777400,,777400]	; Range check
+	TLNE B,740000
+	 ERRPNM(PUPNX3)		; Illegal address
+	MOVEM A,PNTADR(E)	; Ok, store in temp block
+	MOVEM B,PNTADR+1(E)
+
+; Lookup the complete address
+	PUSHJ P,PADLUK		; Lookup address
+	 JRST [	TLNN E,(1B2)	; Not found, is that ok?
+		 ERRPNM()	; No, give error
+		SETZ A,		; Yes, note no match yet
+		JRST .+1]	; Print as best we can
+
+	PUSHJ P,PNMWRT		; Write name string for address
+
+; Here to take success exit.
+PNMXIT:	MOVEI A,JSBFRE		; Free temp storage block
+	MOVEI B,PNTHDR(E)
+	PUSHJ P,RELFRE##
+	HRLZ A,NTDVER		; Return version if caller asked for it
+	TLNE E,(1B3)
+	 UMOVEM A,3
+	JRST SKMRTN##		; Skip return
+
+; Here to take error exit
+PNMERR:	PUSH P,A		; Save error code
+	MOVEI A,JSBFRE		; Free temp storage block
+	MOVEI B,PNTHDR(E)
+	PUSHJ P,RELFRE##
+	POP P,A
+	JRST ERRD##		; Take error return
+
+; PUPNM address to name conversion (cont'd)
+
+; Subroutine to write name for address
+;	A/ ptr to CQE matching entire address (0 if none)
+;	E/ Flags ,, ptr to PUPNM temp block
+;	PNTADR(E)/ Net ,, host being looked up
+;	PNTADR+1(E)/ Socket
+; If B1 of E is off, outputs all fields separately, with
+;  punctuation between fields.
+; If B1 is on, simply outputs the first name for that entry, if found.
+; Returns +1 always
+; Clobbers A-D, UNIT
+
+PNMWRT:	MOVEI UNIT,2		; Set initial state
+	JRST PNMWR0		; Perform conversion
+
+; Recursive calls here for preceding fields
+PNMWRA:	MOVE A,PNTADR(E)	; Get address being looked up
+	MOVE B,PNTADR+1(E)
+	PUSHJ P,PADLUK		; Look up address thru current field
+	 SETZ A,		; Not found, remember so
+
+; Here with A/ index of matching entry, or zero if no exact match
+PNMWR0:	TLNE E,(1B1)		; Want field omission?
+	 JUMPN A,PNMWR3		; Yes, if found entry just print it
+	JUMPE UNIT,PNMWR2	; Skip following if state=0
+	PUSH P,A		; Save entry pointer if have one
+	PUSH P,PNTADR(E)	; Save address being looked up
+	PUSH P,PNTADR+1(E)
+	MOVE A,FLDMSK(UNIT)	; Mask to just preceding fields
+	ANDB A,PNTADR(E)
+	JUMPE A,PNMWR1		; Do nothing if all zero
+	SETZM PNTADR+1(E)
+	SUBI UNIT,1		; State _ State-1
+	PUSHJ P,PNMWRA		; Recursive call for preceding field(s)
+	ADDI UNIT,1		; Back to current state
+PNMWR1:	POP P,PNTADR+1(E)	; Restore address
+	POP P,PNTADR(E)
+	POP P,A			; Restore entry pointer
+PNMWR2:	MOVE B,FLDMSK(UNIT)	; Mask out preceding fields
+	ANDCAB B,PNTADR(E)	; (Following fields masked by caller)
+	SKIPN PNTADR+1(E)	; Current field zero?
+	 JUMPE B,PNMWR7		; If so, print zero or nothing
+	JUMPN A,PNMWR3		; Print name and exit if have entry
+	MOVE A,PNTADR(E)	; Get address being looked up
+	MOVE B,PNTADR+1(E)
+	PUSHJ P,PADLUK		; Lookup just this field
+	 JRST PNMWR8		; Not found
+
+; PUPNM address to name conversion (cont'd)
+
+; Here to output name string for entry
+;	A/ ptr to matching CQE (as returned by PADLUK)
+PNMWR3:	TLON UNIT,(1B1)		; Preceding field printed?
+	 JRST PNMWR5		; No, no prefix needed
+	JUMPGE UNIT,PNMWR4	; Yes, numeric?
+	MOVEI B,"#"		; Yes, output 3-state# trailing #'s
+	HRREI C,-3(UNIT)
+	PUSHJ P,BOUTN##		; Assumed not to clobber A
+	AOJL C,.-1
+PNMWR4:	MOVEI B,"+"		; Now separator
+	PUSHJ P,BOUTN##
+PNMWR5:	TLZ UNIT,(1B0)		; Remember symbolic field printed
+	MOVEI A,CQENAM(A)	; Make string ptr to name
+	HRLI A,(POINT 8)
+	ILDB C,A		; Get byte count
+PNMWR6:	ILDB B,A		; Get byte
+	PUSHJ P,BOUTN##		; Output it (via caller's ac1)
+	SOJG C,PNMWR6		; Repeat for all bytes
+	POPJ P,			; Return from PNMWRT
+
+; Here if current field is zero
+PNMWR7:	JUMPL UNIT,PNMWR8	; Preceding numeric field printed?
+	CAIE UNIT,2		; Last field and none printed yet?
+	 POPJ P,		; No, do nothing
+
+; Here to print field value as octal number
+PNMWR8:	TLNN UNIT,(1B1)		; Preceding field printed?
+	 JRST PNMWR9		; No, no prefix needed
+	MOVEI B,"+"		; Yes, use "+" if symbolic
+	TLNE UNIT,(1B0)		; "#" if numeric
+	 MOVEI B,"#"
+	PUSHJ P,BOUTN##		; Output separator
+PNMWR9:	XCT FLDFET(UNIT)	; Fetch current field into B
+	CAIE UNIT,2		; Last field and none printed yet?
+	 JUMPE B,PNMWRX		; No, don't print if zero
+	PUSH P,E		; Save (clobbered by NOUTX)
+	MOVEI C,10		; Octal radix
+	PUSHJ P,NOUTX##		; Print value of field in octal
+	 BUG(HLT,<PNMWRT: Impossible fail return from NOUTX>)
+	POP P,E
+PNMWRX:	TLO UNIT,(1B0+1B1)	; Remember numeric field printed
+	POPJ P,			; Return from PNMWRT
+
+
+; State-indexed tables controlling the operation of PNMWRT
+
+; Mask covering all preceding fields
+FLDMSK:	0			; Net
+	-1 ,, 0			; Host
+	-1 ,, -1		; Socket
+
+; Instruction to fetch current field into B
+FLDFET:	HLRZ B,PNTADR(E)	; Net
+	HRRZ B,PNTADR(E)	; Host
+	MOVE B,PNTADR+1(E)	; Socket
+
+; PUPNM (cont'd)
+; Do name to address conversion
+
+PNMNTA:	MOVEI F,PNTADR(E)	; Make AOBJN pointer to temp
+	HRLI F,-6		;  address region
+PNMNT1:	SETZM 0(F)		; Init address
+	SETZM 1(F)
+	PUSHJ P,PNMSIN		; Get a string
+	 ILDB C,1		; Inst to "XCTUU" to get char
+	 JRST [	CAIN C,"#"	; None, start of octal constant?
+		 JRST PNMNT2	; Yes
+		ERRPNM(PUPNX3)]	; No, syntax error
+	JUMPGE D,PNMNT3		; Jump if numeric
+	PUSH P,C		; Save user terminator
+	MOVEI A,PNTSTR(E)
+	PUSHJ P,PNMLUK		; Look up string
+	 ERRPNM()		; Not found
+	POP P,C			; Restore terminator
+	HRROM A,0(F)		; Store entry pointer
+	JRST PNMNT4		; On to next
+
+; Here to do octal constants
+PNMNT2:	PUSHJ P,PNMSIN		; Get next field
+	 ILDB C,1		; Inst to "XCTUU" to get char
+	 TDZA D,D		; Empty means zero
+	JUMPL D,[ERRPNM(PUPNX3)] ; Error if non-numeric string
+PNMNT3:	EXCH D,1(F)		; Store new socket, get old
+	MOVE A,0(F)		; Get old net/host
+	TLNN A,-1		; Error if already had net
+	CAILE D,377		; Error if new host too big
+	 ERRPNM(PUPNX3)
+	HRLI A,(D)		; Net_Host, Host_Socket
+	MOVSM A,0(F)
+	CAIN C,"#"		; More numbers?
+	 JRST PNMNT2		; Yes, continue
+
+; Repeat if necessary for next field
+PNMNT4:	ADD F,BHC##+2		; Advance field pointer
+	CAIN C,"+"		; More fields?
+	 JUMPL F,PNMNT1		; Yes, go process
+	CAIE C,"+"		; Error if have special char now
+	CAIN C,"#"
+	 ERRPNM(PUPNX3)
+
+; Now check all input fields for consistency, and return all
+;  possible addresses by iterating names over all their values
+	SUBI F,PNTADR(E)	; Compute # words input
+	HRLOI F,-1(F)		; Reset AOBJN pointer
+	EQVI F,PNTADR(E)
+	UMOVE IOS,2		; Get block pointer from user
+	TLZ IOS,(-1B8)
+	TLC IOS,-1		; Make AOBJN pointer to user block
+	ADD IOS,[1,,0]
+	SETZB A,B		; Init merged address to zero
+	PUSHJ P,PNMEAD		; Emit address(es)
+	UMOVE A,2		; Get user block pointer again
+	SUBI IOS,(A)		; Compute # words used
+	TRNN IOS,-1		; Did we emit any addresses?
+	 ERRPNM(PUPNX4)		; No, means no consistent combinations
+	XCTUU [HRLM IOS,2]	; Yes, return count
+	JRST PNMXIT
+
+; PUPNM name to address conversion (cont'd)
+
+; Get string or octal number from user
+;	E/ pointer to storage block
+;	+1:  Instruction to "XCTUU" to get next char into C
+; Returns +2:  No characters input before terminator
+;	+3:  At least one character input before terminator
+;	C/ Terminating character (on either return)
+;	D/ Numeric value if all chars were digits, or -1 if not
+; Does not return if error (string too long)
+; Input terminates on "+", "#" or any character outside the range
+;  41-176.  If called from monitor, "!" is also a terminator
+;  (for the sake of GTJFN).  The terminator is not stored in the buffer.
+;  String is stored in BCPL format, with leftover bytes zero.
+; Clobbers A-D
+
+PNMSIN:	PUSH P,F		; Save another ac
+	SETZM PNTSTR(E)		; Zero out string region
+	MOVSI A,PNTSTR(E)
+	HRRI A,PNTSTR+1(E)
+	BLT A,PNTSTR+7(E)
+	MOVEI B,PNTSTR(E)	; Make storage byte pointer
+	HRLI B,(POINT 8,,7)
+	MOVSI A,-^D32		; Max # chars +1
+	SETZ D,			; Init number
+PNMSI1:	XCTUU @-1(P)		; Get next char
+	CAIE C,"+"		; One of special chars?
+	CAIN C,"#"
+	 JRST PNMSI3		; Yes, terminate
+	CAIL C,41		; In range of printing characters?
+	CAILE C,176
+	 JRST PNMSI3		; No, terminate
+	CAIN C,"!"		; Special terminator for GTJFN?
+	 JSP F,[TLNE F,(1B7)	; Yes, call from monitor?
+		 JRST PNMSI3	; Yes, terminate on that
+		JRST PNMSI2]	; No, treat as ordinary character
+	CAIL C,"0"		; An octal digit?
+	CAILE C,"7"
+	 JRST PNMSI2		; No, try other things
+	LSH D,3			; Yes, shift previous number
+	TLNN D,740000		; Skip if too big or not number
+	 TROA D,-"0"(C)		; Ok, add value of new digit
+PNMSI2:	SETO D,			; Not ok, remember can't be number
+	AOBJP A,[ERRPNM(PUPNX3)] ; If too long, give syntax error
+	IDPB C,B		; Ok, store char
+	JRST PNMSI1		; Back for more
+
+; Here when hit end of input string
+PNMSI3:	TRNE A,-1		; Were any characters input?
+	 AOS -1(P)		; Yes, preset +3 return
+	DPB A,[POINT 8,PNTSTR(E),7] ; Store string length
+	POP P,F			; Restore saved ac
+	JRST SKPRET##		; Done, return +2 or +3
+
+; PUPNM name to address conversion (cont'd)
+
+; Emit address(es) and do consistency checking (recursively)
+;	A/ Net,,Host so far compiled
+;	B/ Socket so far compiled
+;	F/ AOBJN ptr to address table
+;		Entries are 2 words each:
+;		Net,,Host and Socket, or
+;		-1 ,, pointer and 0
+;	IOS/ AOBJN ptr to user block to return addresses in
+; Returns +1:  IOS/ Updated AOBJN pointer
+; This routine iterates recursive calls of itself over all
+;  possible addresses corresponding to fields which are names.
+;  Each branch is followed until either (a) an address is
+;  encountered with a nonzero field that conflicts with the
+;  address so far compiled, in which case that branch is
+;  terminated, or (b) the end of the branch is reached (i.e.
+;  all fields have been used up), in which case the compiled
+;  address is passed back to the user (and IOS is advanced).
+; Clobbers A-D, F
+
+PNMEAD:	JUMPGE F,PNMEA7		; Emit address if at terminal node
+	SKIPGE C,0(F)		; Numeric field?
+	 JRST PNMEA2		; No, symbolic
+
+; Here for numeric field
+	MOVE D,1(F)		; Get socket too
+	PUSHJ P,PNMMRG		; Merge and check consistency
+	 POPJ P,		; Inconsistent, terminate branch
+	ADD F,BHC##+2		; Ok, advance to next field
+	JRST PNMEAD		; Merge it in too
+
+; Here for symbolic field
+PNMEA2:	PUSH P,A		; Save current address
+	PUSH P,B
+	MOVE A,CQEADR(C)	; Get address table pointer from CQE
+PNMEA3:	PUSH P,A
+	MOVE C,0(A)		; Get address from table
+	MOVE D,1(A)
+	MOVE A,-2(P)		; Restore current address
+	MOVE B,-1(P)
+	PUSHJ P,PNMMRG		; Merge and check consistency
+	 JRST PNMEA4		; Inconsistent, omit branch
+	PUSH P,F		; Save current field pointer
+	ADD F,BHC##+2		; Advance to next field
+	PUSHJ P,PNMEAD		; Recursive call to process it
+	POP P,F			; Restore field pointer
+PNMEA4:	POP P,A
+	ADDI A,1
+	AOBJN A,PNMEA3
+	SUB P,BHC##+2		; Done, fix stack and return
+	POPJ P,
+
+; Here to emit address in A,B
+PNMEA7:	JUMPGE IOS,.+2		; Don't store if block exhausted
+	UMOVEM A,(IOS)		; Store address in block
+	AOBJP IOS,.+2
+	UMOVEM B,(IOS)
+	AOBJP IOS,.+1
+	POPJ P,
+
+; PUPNM name to address conversion (cont'd)
+
+; Merge addresses and check consistency
+;	A,B/ Current address
+;	C,D/ Address to be merged in
+; Returns +1:  Inconsistent, ac's unchanged
+;	+2: Consistent, A,B/ Combined address
+
+PNMMRG:	PUSH P,A		; Save current address
+	PUSH P,B
+	XORM C,-1(P)		; Compute differences
+	XORM D,0(P)
+	TLNE A,-1		; Unspecified net?
+	TLNN C,-1
+	 HRRZS -1(P)		; Yes, scratch that difference
+	TRNE A,-1		; Unspecified host?
+	TRNN C,-1
+	 HLLZS -1(P)		; Yes, that's a match
+	SKIPE B			; Unspecified socket?
+	SKIPN D
+	 SETZM 0(P)		; Yes, match
+	SKIPN -1(P)		; Any inconsistencies?
+	SKIPE 0(P)
+	 JRST PNMMR1		; Yes, give fail return
+	IOR A,C			; No, now do the merge
+	IOR B,D
+	AOS -2(P)		; Set skip return
+PNMMR1:	SUB P,BHC##+2		; Fix stack
+	POPJ P,			; Return
+
+; PUPNM subroutines
+
+; Pup name lookup
+;	A/ ptr to BCPL string (unused bytes must be zero)
+;	E/ ptr to PUPNM temp region
+; Returns +1: not found, A/ error code
+;	+2: found, A/ ptr to copy of cache entry (in temp region)
+; Cache must NOT be locked by caller.
+; Clobbers A-D
+
+PNMLUK:	PUSH P,A
+	LOCK(NTDLCK,,HIQ)
+PNMLU1:	PUSHJ P,CNMLUK		; Look up name in cache
+	 JRST PNMLU2		; Not found
+	AOS C,CQECNT(A)		; Found, increment hit count
+	AOS NTDHIT
+	TLNE C,(CEVADF)		; Valid address list for name?
+	 JRST [	SUB P,BHC##+1	; Yes, return copy of cache entry
+		JRST COPCHE]
+	TLNN C,(CEVALF)		; Valid entry?
+	 JRST [	MOVEI A,PUPNX1	; No, return "name not found"
+		JRST PNMLU8]
+	TLNN C,(CEVPNF)		; Valid primary name?
+	 BUG(HLT,<PNMLUK: Valid entry with invalid name and address>)
+
+; Either did not find name, or found name without valid address list.
+; Invoke name lookup protocol to map name to address.
+PNMLU2:	UNLOCK(NTDLCK,RESIDENT,HIQ)
+	AOS NTDMIS		; Increment miss count
+	HRRZS -1(P)		; Init flags for eventual new entry
+	MOVEI B,NLPBLN
+	PUSHJ P,ASGJFR##	; Assign storage for name lookup operation
+	 JRST [	MOVEI A,PUPNX8	; Can't, return "internal malfunction"
+		JRST PNMLU9]
+	PUSH P,PB
+	HRRZ PB,A		; Address of block
+	MOVE A,-1(P)		; Address of BCPL string to look up
+	HRLI A,(POINT 8)
+	ILDB B,A		; A _ string ptr, B _ byte count
+	MOVEI C,PTNLRQ		; Name lookup request Pup type
+	PUSHJ P,DONMLP		; Do name lookup protocol
+	 JRST [	MOVEI A,JSBFRE	; +1: no name lookup server responded
+		HRRZ B,PB	; Free the storage
+		PUSHJ P,RELFRE##
+		POP P,PB
+		MOVEI A,PUPNX7	; Return "no name lookup server responded"
+		JRST PNMLU9]
+	 SETZ B,		; +2: name not found, set address count to 0
+
+; Name lookup server responded.  Insert cache entry whether or not
+; name was found by the server.
+	LOCK(NTDLCK,,HIQ)
+	PUSH P,A		; Save string ptr to body of reply
+	IDIVI B,6		; Convert body length to number of addresses
+	PUSH P,B
+	MOVE A,-3(P)		; Look up the name in the cache again (since
+	PUSHJ P,CNMLUK		;  it might have changed while unlocked)
+	 JRST PNMLU5		; Not found, continue
+	MOVSI C,(CEVPNF)	; Found, valid primary name?
+	TDNN C,CQECNT(A)
+	 JRST PNMLU4		; No, continue
+	IORM C,-4(P)		; Yes, remember flag for new entry
+	MOVSI B,CQENAM(A)	; Copy name from entry to caller
+	HRR B,-3(P)		;  so as to obtain preferred capitalization
+	LDB C,[POINT 6,0(B),5]
+	ADDI C,0(B)
+	BLT B,0(C)
+PNMLU4:	PUSHJ P,CHEDEL		; Delete existing entry from cache
+
+; PNMLUK (cont'd)
+
+; Insert new cache entry
+PNMLU5:	MOVE A,-3(P)		; Pointer to name
+	POP P,B			; Number of addresses
+	PUSHJ P,CHEINS		; Cache insert
+
+; Copy addresses from name lookup reply to cache entry
+	POP P,B			; String ptr to body of reply
+	SKIPL C,CQEADR(A)	; - number of entries ,, addr of first entry
+	 JRST PNMLU7		; None
+PNMLU6:	ILDB D,B		; Net number
+	HRLM D,0(C)
+	ILDB D,B		; Host number
+	HRRM D,0(C)
+	TLC B,(30B11)		; Change source to 16-bit byte ptr
+	ILDB D,B		; High 16 bits of socket
+	LSH D,^D16
+	MOVEM D,1(C)
+	ILDB D,B		; Low 16 bits of socket
+	IORM D,1(C)
+	TLC B,(30B11)		; Change source back to 8-bit byte ptr
+	ADDI C,1		; Advance to next address
+	AOBJN C,PNMLU6
+
+	HLLZ B,-2(P)		; Done, get flags for new entry
+	TLO B,(CEVADF)		; This is a valid address list
+	IORM B,CQECNT(A)
+PNMLU7:	MOVEI A,JSBFRE		; Free the work storage
+	HRRZ B,PB
+	PUSHJ P,RELFRE##
+	POP P,PB
+	MOVE A,0(P)		; Recover pointer to name being looked up
+	JRST PNMLU1		; Repeat cache lookup -- will always succeed
+
+; Various failure exits.  A/ error code
+PNMLU8:	UNLOCK(NTDLCK,RESIDENT,HIQ)
+PNMLU9:	SUB P,BHC##+1
+	POPJ P,
+
+; Success exit: copy cache entry, unlock cache, and return +2.
+; A/ pointer to actual cache entry.
+COPCHE:	HRRZ B,CQEHDR(A)	; Size of cache entry (including header)
+	SUBI B,1		; Don't include header
+	MOVSI C,0(A)		; Source ,, destination
+	HRR C,PNTFRE(E)
+	HRRZ A,PNTFRE(E)
+	ADDI A,0(B)		; Last destination +1
+	CAILE A,PNTLEN(E)
+	 JRST [	MOVEI A,PUPNX8	; No room in temp region, fail
+		JRST COPCHX]
+	BLT C,-1(A)		; Copy the CQE
+	EXCH A,PNTFRE(E)	; Update free pointer, get this CQE
+	MOVEM B,CQELNK(A)	; Store CQE size in link field
+	AOS 0(P)
+COPCHX:	UNLOCK(NTDLCK,RESIDENT,HIQ)
+	POPJ P,
+
+; Pup address lookup
+;	A/ net ,, host
+;	B/ socket (right-justified)
+;	E/ ptr to PUPNM temp region
+; Returns +1: not found, A/ error code
+;	+2: found, A/ ptr to copy of cache entry (in temp region)
+; Cache must NOT be locked by caller.
+; Clobbers A-D
+
+PADLUK:	PUSH P,A
+	PUSH P,B
+	LOCK(NTDLCK,,HIQ)
+PADLU1:	MOVSI C,(CEVALF+CEVPNF)	; Accept only entries with valid primary names
+	PUSHJ P,CADLUK		; Look up address in cache
+	 JRST PADLU2		; Not found
+	AOS CQECNT(A)		; Found, increment hit count
+	AOS NTDHIT
+	SUB P,BHC##+2
+	JRST COPCHE		; Copy cache entry and return +2
+
+; Did not find address with valid primary name.
+PADLU2:	MOVE A,-1(P)
+	MOVE B,0(P)
+	SETZ C,			; Accept any entry for this address
+	PUSHJ P,CADLUK		; Look up address in cache
+	 JRST PADLU3		; Not found
+	AOS C,CQECNT(A)		; Found, increment hit count
+	AOS NTDHIT
+	TLNN C,(CEVALF)		; Valid entry?
+	 JRST [	MOVEI A,PUPNX1	; No, return "address not found"
+		JRST PADLU8]
+
+; Either did not find address, or found entry without valid primary name.
+; Invoke name lookup protocol to map address to name.
+PADLU3:	UNLOCK(NTDLCK,RESIDENT,HIQ)
+	AOS NTDMIS		; Increment miss count
+	MOVEI B,NLPBLN
+	PUSHJ P,ASGJFR##	; Assign storage for name lookup operation
+	 JRST [	MOVEI A,PUPNX8	; Can't, return "internal malfunction"
+		JRST PADLU9]
+	PUSH P,PB
+	HRRZ PB,A		; Address of block
+
+; Convert address to network format
+	HRLI A,(POINT 8)	; Use header area for work storage
+	AOS B,A
+	HLRZ C,-2(P)		; Net number
+	IDPB C,B
+	HRRZ C,-2(P)		; Host number
+	IDPB C,B
+	TLC B,(30B11)		; Convert destination byte ptr to 16 bits
+	MOVE C,-1(P)		; Socket number
+	ROT C,-^D16
+	IDPB C,B
+	MOVEM C,2(PB)
+	MOVEI B,6		; Length of request body
+	MOVEI C,PTALRQ		; Address lookup request Pup type
+	PUSHJ P,DONMLP		; Do name lookup protocol
+	 JRST [	MOVEI A,JSBFRE	; +1: no name lookup server responded
+		HRRZ B,PB	; Free the storage
+		PUSHJ P,RELFRE##
+		POP P,PB
+		MOVEI A,PUPNX7	; Return "no name lookup server responded"
+		JRST PADLU9]
+	 SETZ B,		; +2: address not found, set name length to 0
+
+; PADLUK (cont'd)
+
+; Name lookup server responded.  Insert cache entry whether or not
+; address was found by the server.
+	LOCK(NTDLCK,,HIQ)
+	MOVEI C,1(PB)		; Convert string to BCPL format, using
+	PUSH P,C		;  PB header as work area
+	PUSH P,B		; Save string length
+	HRLI C,(POINT 8)
+	IDPB B,C		; First byte is string length
+	JUMPE B,PADL3B
+PADL3A:	ILDB D,A		; Copy character of name
+	CAIN D,"+"
+	 JRST [	SETZM 1(PB)	; Answer contains "+" -- there was not really
+		SETZM 0(P)	;  an exact match to the address
+		JRST PADL3C]
+	IDPB D,C
+	SOJG B,PADL3A
+PADL3B:	IDPB B,C		; Zero leftover bytes in last word
+	IDPB B,C
+	IDPB B,C
+PADL3C:	MOVE A,-4(P)		; Look up address in the cache again (since
+	MOVE B,-3(P)		;  it might have changed while unlocked)
+	SETZ C,			; Accept any entry matching address
+	PUSHJ P,CNMLUK
+	 JRST PADLU5		; Not found, continue
+	MOVSI C,(CEVALF)	; Found, valid entry?
+	TDNN C,CQECNT(A)
+	 PUSHJ P,CHEDEL		; Invalid, delete it and press on
+	SKIPG 0(P)		; Successful address lookup?
+	 JRST PADLU5		; No, just insert invalid entry
+	MOVE A,-1(P)		; Yes, see if resulting name is in cache
+	PUSHJ P,CNMLUK
+	 JRST PADLU5		; No, just insert new entry
+	MOVSI C,(CEVALF)	; Found, valid entry?
+	TDNN C,CQECNT(A)
+	 JRST PADLU4		; No, delete it and press on
+	HRLZ B,-1(P)		; Yes, copy name from lookup result to entry
+	HRRI B,CQENAM(A)	;  so as to obtain preferred capitalization
+	LDB C,[POINT 6,0(B),5]
+	ADDI C,0(B)
+	BLT B,0(C)
+	JRST PADLU6		; Go mark entry as valid primary name
+
+; Insert new entry (perhaps invalid).
+PADLU4:	PUSHJ P,CHEDEL		; Delete old cache entry
+PADLU5:	MOVE A,-1(P)		; Address of name string
+	MOVEI B,1		; Number of addresses
+	PUSHJ P,CHEINS		; Cache insert
+	MOVE B,CQEADR(A)	; Put address looked up into entry
+	MOVE C,-4(P)		; Net ,, host
+	MOVEM C,0(B)
+	MOVE C,-3(P)		; Socket
+	MOVEM C,1(B)
+PADLU6:	MOVSI B,(CEVPNF)
+	SKIPE 0(P)		; Successful address lookup?
+	 IORM B,CQECNT(A)	; Yes, mark entry as valid primary name
+
+	MOVEI A,JSBFRE		; Free the work storage
+	HRRZ B,PB
+	PUSHJ P,RELFRE##
+	POP P,PB
+	SUB P,BHC##+2		; Flush result string ptr and length
+	MOVE A,-1(P)		; Recover address being looked up
+	MOVE B,0(P)
+	JRST PADLU1		; Repeat cache lookup -- will always succeed
+
+; Various failure exits.  A/ error code
+PADLU8:	UNLOCK(NTDLCK,RESIDENT,HIQ)
+PADLU9:	SUB P,BHC##+2
+	POPJ P,
+
+; Cache name lookup
+;	A/ ptr to BCPL string (unused bytes must be zero)
+; Returns +1: not found
+;	+2: found, A/ ptr to cache entry
+; Cache must be locked by caller.
+; Clobbers A-D
+
+CNMLUK:	LDB B,[POINT 6,0(A),5]	; String length in words -1
+	MOVNI B,1(B)
+	HRLI A,0(B)		; Make AOBJN ptr
+	PUSH P,A
+
+	MOVEI A,NTDCQH		; Start at head of queue
+CNMLU1:	MOVE B,0(P)
+
+; This loop checks queue entries until one is found whose name matches
+; in the first word (length and first 3 characters).
+CNMLU2:	HRRZ A,0(A)		; Advance to next queue entry
+	CAIN A,NTDCQH		; Returned to head?
+	 JRST [	SUB P,BHC##+1	; Yes, name not found
+		POPJ P,]
+	MOVE C,0(B)		; First word of name being looked for
+	XOR C,CQENAM(A)		; First word of cache entry
+	TDNE C,[BYTE(8) 137,137,137,137] ; Only check these bits; ignore case
+	 JRST CNMLU2		; Mismatch, on to next entry
+
+; Found a possibly matching entry.  Inspect it more thoroughly.
+	MOVEI D,CQENAM+1(A)
+CNMLU3:	AOBJP B,CNMLU4
+	MOVE C,0(B)		; Next word of name being looked for
+	XOR C,0(D)		; Next word of cache entry
+	TDNE C,[BYTE(8) 137,137,137,137] ; Only check these bits; ignore case
+	 JRST CNMLU1		; Mismatch, on to next entry
+	AOJA D,CNMLU3
+
+; Found matching entry.  Promote to front of queue and return it.
+CNMLU4:	PUSHJ P,DELITQ##	; Delete this item from queue
+	MOVE B,A
+	HRRZ A,NTDCQH		; Current head item = new successor
+	PUSHJ P,INSITQ##	; Insert at front of queue
+	MOVE A,B		; Return this entry
+	SUB P,BHC##+1		; Flush lookup string ptr
+	JRST SKPRET##
+
+; Cache address lookup
+;	A/ net,,host
+;	B/ socket (right-justified)
+;	C/ flags that must be on in entry for a match to occur
+; Returns +1: not found
+;	+2: found, A/ ptr to cache entry
+; Cache must be locked by caller.
+; Clobbers A-D
+
+CADLUK:	HLLM C,0(P)
+	MOVEI C,NTDCQH		; Start at head of queue
+CADLU2:	HRRZ C,0(C)		; Advance to next queue entry
+	CAIN C,NTDCQH		; Returned to head?
+	 POPJ P,		; Yes, address not found
+	SKIPL D,CQEADR(C)	; Get ptr to array of addresses
+	 JRST CADLU2		; Invalid entry, advance to next
+CADLU3:	CAMN A,0(D)		; Match this?
+	CAME B,1(D)
+	 AOJA D,[AOBJN D,CADLU3	; No, advance to next address in array
+		JRST CADLU2]	; End of array, advance to next cache entry
+
+; Found a possibly matching entry.  Inspect it more thoroughly.
+CADLU4:	HLLZ A,0(P)		; Are all the required flags on?
+	ANDCM A,CQECNT(C)
+	TLNE A,-1
+	 JRST CADLU2		; No, ignore this and keep looking
+
+; Found desired entry.  Promote to front of queue and return it.
+	MOVE A,C
+	PUSHJ P,DELITQ##	; Delete this item from queue
+	MOVE B,A
+	HRRZ A,NTDCQH		; Current head item = new successor
+	PUSHJ P,INSITQ##	; Insert at front of queue
+	MOVE A,B		; Return this entry
+	JRST SKPRET##
+
+; Cache insert
+;	A/ pointer to BCPL string (unused bytes must be zero);
+;		string length may be zero for an "invalid" entry.
+;	B/ number of addresses; may be zero for an "invalid" entry.
+; Either the name or the addresses (but not both) may be absent.
+; Returns +1 always.
+;	A/ pointer to new cache entry
+; Cache must be locked by caller.
+; Copies name into entry and initializes CQECNT and CQEADR cells.
+; Sets CEVALF if appropriate.  Caller must fill in address array.
+; Clobbers A-D
+
+CHEINS:	PUSH P,B
+	PUSH P,A
+	LDB A,[POINT 6,0(A),5]	; String length in words -1
+	LSH B,1			; Size of address array
+	ADDI B,CQEOVH+1(A)	; Total length of CQE
+CHEIN1:	MOVEI A,NTDFRE		; Free storage zone
+	PUSHJ P,ASGFRE##	; Attempt to allocate block
+	 JRST CHEIN4		; Failed
+	MOVEI B,-CQEHDR(A)	; Ok, make pointer to entry
+	HRRZ A,NTDCQH		; Insert as head item in cache
+	PUSHJ P,INSITQ##
+	MOVE A,B
+	MOVSI B,(CEVALF)	; Assume entry is valid
+	MOVEM B,CQECNT(A)
+
+; Copy name string into CQE.
+	POP P,B			; Restore name pointer
+	LDB C,[POINT 8,0(B),7]	; String length in bytes
+	SKIPN C
+	 SETZM CQECNT(A)	; Reset valid flag for zero-length string
+	LSH C,-2		; Convert to word count -1
+	ADDI C,CQENAM+1(A)	; Point to last word of destination +1
+	MOVSI B,0(B)
+	HRRI B,CQENAM(A)	; Source ,, destination
+	BLT B,-1(C)		; Copy name string
+
+; Set up address array pointer.
+	POP P,B			; Restore number of addresses
+	MOVN B,B
+	HRLI C,0(B)		; - number of addresses ,, destination array
+	MOVEM C,CQEADR(A)
+	SKIPL C
+	 SETZM CQECNT(A)	; Reset valid flag for zero-length array
+	POPJ P,
+
+; Here if failed to allocate block.
+; Delete a cache entry from tail of queue and try again.
+CHEIN4:	PUSH P,B		; Save block size
+	MOVEI A,NTDCQH
+CHEIN5:	HLRZ A,0(A)		; Get tail item
+	CAIN A,NTDCQH		; Make sure queue not empty!
+	 BUG(HLT,<CHEINS: Failed to allocate but cache queue is empty>)
+	MOVE B,CQECNT(A)
+	TLNE B,(CEPINF)		; Entry pinned in cache?
+	 JRST CHEIN5		; Yes, skip it and try its predecessor
+	PUSHJ P,CHEDEL		; Delete from cache
+	POP P,B			; Restore block size and try again
+	JRST CHEIN1
+
+
+; Cache delete
+;	A/ pointer to cache entry
+; Returns +1 always.
+; Cache must be locked by caller.
+; Clobbers A-D
+
+CHEDEL:	PUSHJ P,DELITQ##	; Delete this item from queue
+	MOVEI B,CQEHDR(A)	; Point to header of cache entry
+	MOVEI A,NTDFRE		; Free storage zone
+	PUSHJ P,RELFRE##	; Release the block
+	POPJ P,
+
+; Do name lookup protocol
+;	A/ string ptr to body of request (name or address), in
+;		network format (8-bit bytes)
+;	B/ length of that string in bytes
+;	C/ Pup type for request; successful response is this type +1
+;	PB/ adr of buffer of length NLPBLN for request/response Pups
+; Returns +1: failed: no response or network problems
+;	+2: failed: name not found by server
+;	+3: found: A/ string ptr to body of response, B/ length in bytes
+; Cache must be locked by caller.
+; Clobbers A-D, PB[LH]
+
+DONMLP:	PUSH P,A
+	PUSH P,B
+
+; Leave local and remote ports completely unspecified in the network
+; filename so as not to precipitate a recursive call on PUPNM.
+	MOVSI A,(1B17)
+	HRROI B,[ASCIZ /PUP:!J./]
+	GTJFN
+	 JRST DONML9
+	HRLI PB,0(A)		; Save JFN here
+	MOVE B,[16B9+1B19+1B20]	; Raw packet mode, read, write
+	OPENF
+	 JRST DONML8
+
+	PUSH P,C
+	MOVE A,TODCLK		; Use current time (mod 2^32) as Pup ID
+	TLZ A,(17B3)
+	PUSH P,A
+	MOVEI A,^D10		; Try 10 times at 2-second intervals
+
+; Here to (re)transmit lookup request
+DONML1:	HRLM A,-4(P)		; Save current retry count
+	SETZM PBHEAD(PB)	; Zero out header
+	MOVSI A,PBHEAD(PB)
+	HRRI A,PBHEAD+1(PB)
+	BLT A,PBCONT-1(PB)
+	MOVSI A,(POINT 8)	; Copy request body into Pup
+	HRRI A,PBCONT(PB)
+	MOVE B,-3(P)
+	MOVN C,-2(P)
+	SOUT
+	MOVE A,-2(P)		; Set Pup length
+	ADDI A,MNPLEN
+	DPB A,PUPLEN
+	MOVE A,-1(P)		; Set Pup type
+	DPB A,PUPTYP
+	MOVE A,0(P)		; Set Pup ID
+	DPB A,PUPID
+	MOVEI A,SOCMSC		; Set destination socket = miscellaneous
+	DPB A,PPUPD1
+
+	HLRZ A,PB
+	HRLI A,(1B1)		; Let PUPO compute Pup checksum
+	MOVEI B,PBHEAD(PB)
+	HRLI B,NLPBLN-PBHEAD
+	PUPO			; Broadcast request on default network
+	 BUG(CHK,<DONMLP: PUPO failed>)
+
+; DONMLP (cont'd)
+
+; Now await the response(s)
+DONML2:	HLRZ A,PB
+	HRLI A,(1B1+1B3)	; Check checksum, invoke timeout option
+	MOVEI B,PBHEAD(PB)
+	HRLI B,NLPBLN-PBHEAD
+	MOVEI C,^D2000		; Time out in 2 seconds
+	PUPI
+	 JRST [	CAIE A,PUPX3	; Empty input queue?
+		 JRST DONML2	; No, other error, keep waiting
+		HLRZ A,-4(P)	; Yes, get retry count
+		SOJG A,DONML1	; Retransmit if not exhausted
+		JRST DONML5]	; Exhausted, give +1 failure return
+
+	LDB A,PUPID		; Correct Pup ID?
+	CAME A,0(P)
+	 JRST DONML2		; No, ignore
+	LDB A,PUPTYP
+	CAIN A,PTDLER		; Directory lookup error?
+	 JRST DONML4		; Yes, give +2 failure return
+	SUBI A,1
+	CAME A,-1(P)		; Request type + 1? (= success reply)
+	 JRST DONML2		; No, other Pup, ignore
+	AOS -4(P)		; Yes, preset +3 success return
+DONML4:	AOS -4(P)
+DONML5:	HLRZ A,PB
+	CLOSF
+	 BUG(CHK,<DONMLP: CLOSF failed unexpectedly>)
+	MOVEI A,PBCONT(PB)	; Return string ptr to body
+	HRLI A,(POINT 8)
+	LDB B,PUPLEN		; Return length of body string
+	SUBI B,MNPLEN
+	SUB P,BHC##+4
+	POPJ P,
+
+DONML8:	BUG(CHK,<DONMLP: PUP OPENF failed>)
+	HLRZ A,PB
+	RLJFN
+	 CAI
+	JRST .+2
+
+DONML9:	BUG(CHK,<DONMLP: PUP GTJFN failed>)
+	SUB P,BHC##+2
+	POPJ P,
+
+
+	END
