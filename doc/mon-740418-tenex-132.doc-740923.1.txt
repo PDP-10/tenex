@@ -1,0 +1,1692 @@
+
+
+
+
+
+                     TENEX System 1.32
+
+
+
+                        J. Burchfiel
+
+
+                        R. Tomlinson
+
+
+
+                      15 February 1974
+
+                                                    Page   2
+
+
+
+                     TENEX System 1.32
+
+
+I. Introduction
+
+II. Improved Reliability and Accessibility
+
+ A.  Network Reliability
+ B.  Error Reporting
+
+III. Improvements in Resource Management
+
+ A.  Network Efficiency
+ B.  New Scheduler
+ C.  System Measurements
+ D.  Core Manager
+
+IV. Improved Security and Protection
+
+ A.  Accounting Improvements
+ B.  Monitor Security
+
+V. New Monitor Features
+
+ A.  Fork Structure Manipulation
+ B.  Raw Network Messages
+ C.  Scope Scrolling
+ D.  New TELNET Protocol
+ E.  Automatic Dialler
+ F.  KI-10X System
+ G.  DEC System Compatibility
+
+VI. RSEXEC Development
+
+ A.  RSEXEC User Environment
+ B.  RSEXEC Measurement System
+ C.  TIPSER
+
+VII. Other Subsystems
+
+ A.  EXEC
+ B.  File Transfer Protocol (FTP)
+ C.  TECO
+ D.  IDDT
+ E.  BSYS
+ F.  SNDMSG
+ G.  READMAIL
+ H.  MAILER
+ I.  RD
+ J.  BCPL
+ K.  PAL11X Cross Assembler
+
+                                                    Page   3
+
+
+
+I.  Introduction
+
+     This  document  attempts  to  summarize  the  year   of   TENEX
+development  work  spent  since  distribution of TENEX version 1.31.
+TENEX version 1.32 is now being  readied  for  distribution  to  all
+sites: it features major improvements in reliability and efficiency,
+and provides the user with a number of new facilities.  Probably the
+most important new facility is the distributed computing environment
+provided by the RSEXEC: we plan to capitalize on our  work  in  this
+area   to   provide   continuing  improvements  in  reliability  and
+performance.
+
+                                                    Page   4
+
+
+
+II.  Improved Reliability and Accessibility
+
+     A.  Network Reliability
+
+     As part of our continued  effort  to  improve  the  observed
+reliability  of  TIP/TENEX  usage,  we  have  made  a  number  of
+improvements in TENEX's NCP.  (Network Control Program).
+
+     TENEX is now able to retransmit messages that fail to arrive
+at  their destination due to momentary subnet partitioning.  This
+appears to improve overall reliability.
+
+     We spent three days in a coordinated effort with the BBN-TIP
+group  to  capture  and  diagnose all instances of misbehavior or
+inconsistency  in  TIP/TENEX  connections.    These   experiments
+revealed several problems: first, there were some timing-and-load
+dependent  inconsistencies  appearing  in  the  connection  table
+because  several  possible  event sequences managed to bypass the
+connection table interlock.
+
+     After this problem was corrected, we found  that  TENEX  was
+still  sufficiently unresponsive to its IMP that the IMP declared
+TENEX to be dead several  times  a  day,  destroying  all  active
+connections.    The   reason   for  this  was  that  the  process
+responsible for handling input messages was being locked out  due
+to  an  interlock  being  set by aher process having insufficient
+priority to not run to completion and clear  the  interlock.   To
+cure  this,  any  process setting the interlock is prevented from
+dropping to low priority until after the  interlock  is  cleared.
+This  measure  has  improved,  but  not cured, the responsiveness
+problem: further investigations are now in progress  to  diagnose
+the problem in detail.
+
+     Two problems were solved which had  been  causing  increased
+frustration  to  users  who  had been detached from their jobs by
+unreliability  of  network  service.   First,  under  heavy  load
+conditions,  users  found  that  they could not obtain service on
+reconnecting to TENEX due to a  "drum  full"  or  other  overload
+condition.   This  meant that even though their jobs were already
+using system resources, they could not regain  control  of  those
+jobs.   This  problem was solved by defining an intermediate load
+level  beyond  which  ATTACH  commands  are  allowed,  but  LOGIN
+commands are not allowed.  Thus, detached users can almost always
+regain control of their jobs.  
+
+     Second, sometimes upon re-attaching  to  a  job  the  user's
+terminal  would  not  respond  when  interacting  with an already
+running program.  This was found to be due to the new  connection
+being established via a different network virtual Terminal number
+from that which had been  in  use  before  the  DETACH  occurred.
+(This  problem  also  existed  for local users.) This problem was
+solved by taking specific note of the  fact  that  I/O  had  been
+requested  from  the  controlling terminal (as opposed to another
+
+                                                    Page   5
+
+
+
+terminal used as an I/O device), and steering this I/O to the new
+terminal  after  an attach.  Previously, it had not been possible
+to change this in the midst of a system call.
+
+     B.  Error Reporting
+
+     Error reporting has also been improved: when TENEX  receives
+an  "IMP  going  down"  message,  it  types out the notice on all
+terminals, specifying how soon the IMP is expected  to  go  down,
+for what reason, and when it is expected back up again.
+
+                                                    Page   6
+
+
+
+III.  Improvements in Resource Management
+
+     A.  Network Efficiency
+
+     The efficiency  of  TENEX  IO  has  been  greatly  increased
+through  improvements  made  to  the monitor code for the SIN and
+SOUT JSYS's.  By taking advantage of  the  BLT  (block  transfer)
+instruction  and  tightly  coded  program  loops the CPU time for
+these monitor calls has been reduced by more  than  a  factor  of
+ten.   As  a  consequence, the cost of network transfers has been
+reduced from about three CPU seconds per  megabit  to  about  one
+second per megabit.
+
+     To evaluate the efficiency of TENEX network applications, we
+made  a  series of measurements of the CPU time cost of using the
+FTP (File  Transfer  Protocol)  subsystem.   The  tests  involved
+moving  a  one-megabit  file between BBN System A and System B in
+various modes and connection byte sizes.   The  results  obtained
+are summarized in the following table:
+
+
+Operation    Byte Size             Type          CPU sec/megabit
+                             
+
+
+Get               8              ASCII               7.9
+Send              8              ASCII               7.9
+Get              32            Local Byte            1.8
+Send             32            Local Byte            1.7
+Get              36            Local Byte/Image      1.8
+Send             36            Local Byte/Image      1.0
+
+
+     The cost of using ASCII mode  is  quadruple  that  of  other
+modes.   This is due primarily to the conversion required between
+TENEX ASCII 7-bit bytes and network ASCII 8-bit bytes.
+
+     A second network application of interest is the RJS  (Remote
+Job Submission) subsystem, which submits batch jobs from TENEX to
+the 360/91 at UCLA-CCN using a private protocol.   Results  of  a
+previous   experiment  with  this  subsystem  (performed  at  the
+University of Utah, and reported by  Hicks  and  Wessler  in  RFC
+#392)  indicated  that  unacceptably  high TENEX CPU charges were
+incurred in preparing and submitting batch jobs to  the  UCLA-CCN
+360/91.
+
+     To investigate the matter further, we obtained a copy of the
+subsystem  and  its support programs and made them operational on
+BBN TENEX.  Experiments were performed sending a one-megabit file
+from BBN to UCLA-CCN: the results were a CPU cost of 96.5 seconds
+per megabit,  confirming  the  results  in  RFC  #392.   However,
+changing  the  connection  from  unbuffered  to buffered mode and
+removing an  unnecessary  'dismiss  until  output  buffer  empty'
+system call reduced the CPU time to 32 seconds/megabit.  Changing
+
+                                                    Page   7
+
+
+
+the input file accessing from  byte-at-a-time  to  page-at-a-time
+resulted in a further reduction to about 19 seconds/megabit for a
+total 500% speed improvement.  Of this 19 seconds, 6 seconds  are
+spent in TENEX I/O, and the remainder is consumed in the RJS user
+program.
+
+     Since similar processing (conversion of 7  bit  TENEX  ASCII
+bytes to 8 bit network ASCII bytes) is performed in ASCII mode of
+the FTP at a total cost of 9 seconds/megabit, we feel that either
+the  RJS  protocol  is  too  complicated and inefficient, or that
+further substantial improvements are possible in  the  coding  of
+the RJS program.
+
+     In the meantime,  our  improved  version  of  RJS  has  been
+returned  to  the  University  of Utah to reduce their remote job
+submission costs.
+
+     B.  New Scheduler
+
+     Measurement performed on TENEX version  1.31  running  under
+heavy  load  at  BBN  with 192k of memory showed the system to be
+severely processor limited.  It was determined that 30 to 40%  of
+the  processor  was  being  devoted  to  scheduling  - clearly an
+unacceptably high level of overhead.
+
+     Time lost due to page-wait  was  found  to  be  unexpectedly
+small and, in fact, virtually non-existent on a fully loaded 192k
+system.
+
+     An internal TENEX device (called NOSKED) was also  found  to
+be  contributing  significantly  (typically 5%) to lost time when
+used in conjunction with monitor code  that  causes  page-faults.
+Measurements  were  made  to  identify  the  areas of the monitor
+affected by this problem and changes  were  made  to  essentially
+eliminate this source of lost time.
+
+     A substantial revision of the TENEX scheduler was undertaken
+with the goal of reducing scheduling overhead.
+
+     The scheduling function in TENEX is divided into  two  major
+segments:
+
+    a)  Wait-list management--When a process reaches a  point  in
+        its  execution  where  it  can  no longer make use of the
+        processor it is placed on a list called the wait-list.  A
+        pointer to an "activation" routine and, in some cases, an
+        argument to the activation  routine,  is  recorded  in  a
+        process-indexed table.  In addition, the time-of-entry to
+        the wait-list  is  recorded  in  another  process-indexed
+        table.   The activation routine, when called, answers the
+        question  "can  this  process  now  make   use   of   the
+        processor?"  There  are many such activation routines for
+        each of the various "wait-conditions"  e.g.   awaiting  a
+
+                                                    Page   8
+
+
+
+        character  from the TTY, waiting for a real-time interval
+        to elapse, etc.  The list of waiting  processes  must  be
+        polled  periodically  (the  activation  test  invoked) in
+        order to discover potentially runnable processes.
+
+             It was found  that  the  TENEX  1.31  scheduler  was
+        polling  the wait-list approximately 20 times per second.
+        The  BBN  system  was  exhibiting  an  average  wait-list
+        occupancy   of  100-120  processes.   The  cost  of  this
+        too-frequent polling of so  many  processes  amounted  to
+        10-12% of the processor.  TENEX 1.32 has been modified to
+        eliminate some injudicious wait-list scan requests  which
+        were a side-effect of a need to reschedule upon queuing a
+        pseudo-interrupt request.
+
+             The primary improvement was  a  result  of  noticing
+        that  most  of the wake-ups were confined to a relatively
+        small number of processes.  The ordering of the wait-list
+        was  reversed  to  newest-arrival through oldest-arrival,
+        and the wait-list  scan  modified  to  terminate  when  a
+        process  is  found  which  has been on the wait-list more
+        than 3 seconds.  Every 3/4  second  the  entire  list  is
+        scanned.  The average scan depth was reduced from 100-120
+        to 12-15 and the time consumed to less  than  1%  of  the
+        processor.
+
+    b)  Balance set management--The responsibility of the balance
+        set manager is two-fold.
+
+        1)  Determining which processes shall occupy the  balance
+            set  (the  subset  of  runnable  processes  which are
+            candidates for control of  the  processor  and  whose
+            pages are protected from overlay).
+
+        2)  Deciding which process next receives control  of  the
+            processor.
+
+             Here again, it was found that the 1.31 scheduler was
+        spenting large amounts of time performing these functions
+        (10-15%).  Unfortunately, the cause of this was  imbedded
+        in  the  organization  of the scheduler data base and was
+        less amenable to repair than was the  wait-list  manager.
+        Basically, the difficulty lay in the requirement that the
+        scheduler apply an algorithm to per-process data in order
+        to  determine  the  relative priority of a process.  This
+        has the advantage of permitting a very flexible  priority
+        function at the expense of examining every process in the
+        balance set, for example, when trying to find  a  process
+        to  run,  or examining every non-balance-set but runnable
+        process when trying to  increase  the  occupancy  of  the
+        balance set.
+
+                                                    Page   9
+
+
+
+             The solution adopted was to  organize  all  (balance
+        set and non-balance set) runnable processes into a set of
+        n lists, where n = the number  of  desired  queue  levels
+        (presently  5).   These  lists  contain  both forward and
+        backward pointers to eliminate the need for searching  in
+        list-maintenance  operations.   The  lists  are  kept  in
+        strict priority order, thus a process' relative  priority
+        is  now determined solely by its position in its RUNLIST.
+        As a result of this change, time spend in the balance set
+        manager  has  been reduced to under 5%.  It is recognized
+        that a beneficial aspect of the 1.31  scheduler,  namely,
+        the  tendency  of  a  process to accrue priority when not
+        running,  has  been  eliminated  by   the   new   scheme.
+        Restoration of this desirable feature is possible without
+        incurring  the  unacceptable   overhead   of   the   1.31
+        scheduler.   This  is scheduled for implementation in the
+        near future.
+
+     In addition to  the  changes  described  above,  TENEX  1.32
+contains   various   detail  changes  to  the  memory  management
+algorithm, which was seen to be deficient  in  TENEX  1.31.   The
+area  of  memory management is scheduled for substantial revision
+in TENEX 1.33.  One of the changes currently implemented has  the
+undesirable  side-effect  of  reducing  system  responsiveness to
+interactive requests, such as the EXEC ^C and ^T  functions.   An
+effort  is  now being made to eliminate this side-effect prior to
+system release.
+
+     C.  System Measurements
+
+     We have also expended effort in  an  attempt  to  develop  a
+measurement tool that would give us a better understanding of the
+behavior of the running system.  Event counters  were  placed  in
+the  scheduler  and  memory management modules and a user program
+was developed to present the data in  a  concise  and  meaningful
+fashion.
+
+     A new table has been added to provide a breakdown of how the
+system  spends its time.  Included in this table are measurements
+of sold-time, idle-time, swap-wait time, etc.
+
+     The RSEXEC will be able to collect this CPU utilization cost
+accounting  information  from  all TENEX systems, making possible
+the remote  diagnosis  of  system  bottlenecks.   The  data  base
+collected  in this fashion will be invaluable for ARPA's resource
+management decision-making.
+
+     D.  Core Manager
+
+     It is the responsibility  of  the  balance  set  manager  to
+decide  which  processes shall occupy the balance set and thus be
+candidates for control of the  processor.   The  balance  set  is
+usually  a  proper  subset  of the set of all runnable processes.
+            
+
+                                                    Page  10
+
+
+
+This is necessary because of the extremely deleterious effects of
+memory  overload, i.e.  thrashing and reduced performance.  Thus,
+the balance set manager must limit the occupancy of  the  balance
+set in such a way as to maximize, but not overload, memory usage,
+while at the same time providing  good  response  to  interactive
+processes.
+
+     TENEX maintains several pieces of data that play a  role  in
+balance set management.
+
+  1.  FKNR - an estimate  of  the  process'  steady-state  memory
+          requirement.
+
+  2.  FKWSP - number of pages in core and owned by the process (a
+          process  becomes  the  owner of a page if it causes the
+          pager trap which results in the page being  moved  into
+          core.)
+
+  3.  Priority - a process priority that is implicity a  function
+          of  its  position  in  the  RUNLIST  which  is itself a
+          function of processor time consumed and the  length  of
+          its blocked (non-runnable) periods.
+
+
+     TENEX 1.31 measured the "fullness" of memory by  maintaining
+a  quantity,  SUMNR,  which  is  equal to the sum of FKNR for all
+balance set processes plus the number of pages referenced  by  at
+least  one balance set process, but not explicity owned by any of
+them (BALSHC).  It would attempt at all times  to  prevent  SUMNR
+from  exceeding MAXNR which is essentially equal to the amount of
+memory available to the system for swapping.
+
+     If fork I desired admission to the balance set and  was  the
+highest  priority  such  fork,  a test was performed to determine
+whether FKNR(I) + SUMNR exceeded  MAXNR.   If  not,  fork  I  was
+admitted to the balance set and was given a real-time balance set
+residence guarantee.  Otherwise, fork I  was  not  admitted.   At
+fixed  real  time intervals, the MAXNR restriction was relaxed if
+the lowest priority balance set fork was of lower  priority  than
+fork I.  Since the effect of loading fork I was to cause SUMNR to
+exceed MARNR, fork I would be dropped from the balance set in  an
+attempt to rectify this.
+
+     There are several problems with the above strategy:
+
+ 1)  SUMNR is not a measure of actual core in  use  -  it  is  an
+              
+     estimate of the core required to support the current balance
+     set if each of its processes is in its  steady  state  i.e.,
+     the  size  of  its  working set is not increasing with time.
+     Experience  has  shown  that  this  estimate  tends  to   be
+     inaccurate on the high side.  Thus, it is probably unwise to
+     take so drastic an action as dropping a balance set  process
+     simply  because  SUMNR  predicts  that  core  will  overflow
+
+                                                    Page  11
+
+
+
+     sometime in the future.  It is better to defer  this  action
+     until an actual near-overflow occurs.
+              
+
+ 2)  If fork I leaves the balance set but some of its  pages  are
+     being  actively  shared by a balance set process, the shared
+     pages remain counted  in  SUMNR  in  the  BALSHC  component.
+     These  pages,  however, contributed to FKNR(I) and should be
+     deducted either from SUMNR or from FKNR(I) when testing  for
+     core-overflow when fork I tries to re-enter the balance set.
+     As the above strategy does not do this, fork I is  penalized
+     twice for these pages.
+
+ 3)  In the scenario involving the displacement of  fork  I,  the
+     scheduler  made  its  decision  to  load fork I based on its
+     priority relative to fork J.  This can lead to  a  situation
+     
+     where,  upon  loading fork I and then dropping fork J, SUMNR
+     still exceeds MAXNR, perhaps causing fork I to  be  dropped.
+     This  is wasteful, as the loading of a fork into the balance
+     set causes several overhead pages to be  pre-loaded.   These
+     I/O  operations  are wasted in this situation.  In addition,
+     fork J has been removed.
+
+
+     The following strategy has been adopted  to  deal  with  the
+above objections.
+
+     SUMNR has been redefined (and renamed to SUMNRX) to equal
+
+Sum(FKNR) + Sum(FKWSP) + unowned pages not on replaceable queue.
+
+
+     When a process leaves the balance set, the quantity
+
+                         FKNR-FKWSP
+
+is deducted from SUMNRX, instead of deducting  FKNR,  as  before.
+Thus  SUMNRX still retains a contribution from the pages actually
+in core for the deleted process.  At  the  same  time,  FRWSP  is
+added to a cell called POTEN, to indicate these pages potentially
+collectable.  Furthermore,  the  fork  is  flagged  as  "awaiting
+collection".   The  POTEN  cell  is zeroed at each global garbage
+collection and all "awaiting collection" flags  are  turned  off.
+When  a  fork  is  being considered for entry to the balance set,
+MAXNRX is compared to the quantity FKNR(I)-POTEN + SUMNRX if fork
+awaits  collection  or  FKNR(I)-POTEN+SUMNERX  otherwise.  If the
+quantity exceeds MAXNRX,  then  the  fork  is  admitted  only  if
+FKNR(I)  is  less  than  or equal to Sum(FKNR) of all balance set
+processes of lower priority than fork I + potentially collectable
+pages  of  non  balance  set  forks  other  than  I.   The double
+accounting of shared (and locked) pages is thereby eliminated.
+
+                                                    Page  12
+
+
+
+     The criterion for removal from  the  balance  set  has  been
+changed.   This  action  is taken only when the replaceable queue
+becomes nearly empty and only after it has been  determined  that
+garbage collection is not likely to alleviate the situation or an
+actual garbage collection fails to alleviate it.
+
+     The  periodic  relaxation  of  the  MAXNR  test   has   been
+eliminated, as has the real-time residency guarantee.
+
+                                                    Page  13
+
+
+
+IV.  Improved Security and Protection
+
+     A.  Accounting Improvements
+
+     In preparation for improved accounting procedures throughout
+the  network,  the TENEX accounting procedures have been extended
+and improved.
+
+     First, an access authentication check has been added to  the
+LOGIN  and  CHANGE  ACCOUNT procedures to verify that the account
+number supplied by the user is a valid account, and that  he  has
+been authorized to charge against that account.
+
+     This facility is provided through a matrix that contains  an
+entry   for  each  user,  account  pair.   Each  entry  currently
+specifies whether the user can charge to the account, and whether
+the user can see accounting information relative to that account.
+As  an  added  convenience,  a  default  account  number  can  be
+specified  for  each  user.   This allows him to type <escape> to
+invoke (and echo) his default account whenever an account  number
+is expected.
+
+     This facility eliminates unauthorized use of  accounts,  and
+also  eliminates the need for the operators to manually translate
+mistyped accounts.
+
+     The second  improvement  involves  accounting  for  resource
+usage  which  was  previously  charged  against  computer  center
+overhead.  Two such usages are the FTP server process, (providing
+file  system access to remote network users) and the line printer
+unspooler process (which services queued requests for listings).
+
+     The accounting information kept by the FTP server is now  in
+a  binary  format  compatible  with  the  TENEX system accounting
+files.  The programs necessary to process  this  information  are
+being  tested,  and  the  logging will be done in the main system
+accounting file as soon as the analysis programs are completed.
+
+     The line printer unspooler underwent  several  modifications
+primarily  aimed  at  accounting  for  the  time  used to produce
+listings.  This was accomplished by changing the  account  number
+of  the job to that of the file being printed for the duration of
+the listing.  The result is that several hours of  CPU  time  per
+week that previously went unaccounted are now charged against the
+accounts of the people making listings.
+
+                                                    Page  14
+
+
+
+     B.  Monitor Security
+
+     A hole in the TENEX integrity was recently discovered by the
+RISOS  (Research in Secured Operating Systems, Lawrence Livermore
+Labs) effort.  In checking the validity of their  discovery,  the
+BBN   system   was  accidentally  crashed.   Fortunately,  system
+programmers were on hand at  the  time  this  occurred,  and  the
+system was patched to solve the problem within a half hour of the
+crash.  This patch was distributed to  the  other  network  sites
+that same evening.
+
+     As a result of the system crash which occurred  during  this
+test,  new  procedures  are  being set up to allow both RISOS and
+TENEX service to proceed cooperatively and productively.
+
+                                                    Page  15
+
+
+
+V.  New Monitor Features
+
+     A.  Fork Structure Manipulation
+
+     Performance analysis efforts pointed up the need for some of
+the   previously   unimplemented   JSYS's   for   examining  fork
+structures.  To support this work, the two  monitor  calls  GFRKH
+(Get   Fork   Handle)   and  RFRKH  (Release  Fork  Handle)  were
+implemented  as  previously  specified.   With  these  JSYS's   a
+measurement process can more completely monitor the activities of
+a program with multiple forks.  As a result of  this  effort,  it
+became   clear   that  the  specification  for  GFRKS  (Get  Fork
+Structure) is inadequate.  GFRKS has not  been  implemented  yet,
+but is planned soon.
+
+     B.  Raw Network Messages
+
+     Two new  system  calls  have  been  added  to  TENEX  on  an
+experimental  basis  to  provide a privileged user with access to
+"raw network messages", i.e.  messages which conform to 1822-type
+host-IMP  protocol.   This  permits  a  user  to  create  his own
+experimental host-to-host protocol and  write  his  NCP  in  user
+code.   These  JSYS's  are  privileged,  and require the "NETWIZ"
+(Network Wizard) user capability bit to  be  enabled.   They  are
+"Send-to-IMP" (SNDIM) and "Receive-from-IMP" (RCVIM).
+
+     In order to permit non-interfering  network  access  by  the
+current  NCP  and  the SNDIM/RCVIM facility, these two facilities
+are assigned mutually exclusive ranges  of  message  identifiers.
+In  order  for  a message to satisfy SNDIM/RCVIM restrictions, it
+must either:
+
+    1.  Have the "to IMP/from IMP" bit set
+
+or
+
+    2.  Have a 12-bit message identifier number greater or  equal
+        to  2200  octal.   This  corresponds  to  links  above 71
+        decimal in the original 1822 specification.
+
+     We are now using  this  facility  for  cross-network  PDP-11
+loading  and debugging, and the BBN-TIP group is using it for TIP
+monitoring and statistics.
+
+                                                    Page  16
+
+
+
+     C.  Scope Scrolling
+
+     Another feature added to TENEX allows more convenient use of
+high-speed   terminals.    This  feature  counts  the  number  of
+line-feeds output since  the  last  input  operation  to  prevent
+terminal output from scrolling out of view before the user has an
+opportunity to read it.  Just  before  outputting  the  line-feed
+that  would  cause  the  count  to reach the page length terminal
+parameter, a bell is printed and output is suspended  by  waiting
+for  any  character  to  be  typed in.  The character so typed is
+thrown  away  and  output  continues  (remember  that  any  input
+operation  zeroes  the  line-feed counter).  To prevent confusing
+type-ahead  with  the  continuation  character,  output  is   not
+suspended  if  type-ahead  exists  (i.e.  the input buffer is not
+empty).  This feature is implemented by use  of  a  new  terminal
+type  (number  10  octal).   The EXEC command "TERMINAL (TYPE IS)
+SCOPE" allows the user to specify this terminal  type.   The  new
+"LENGTH  (OF  PAGE  IS)"  command  allows  the  page  length of a
+terminal to be specified.  Note that use of this command  is  not
+restricted  to display terminals.  Other terminal type names have
+also been added to combine terminal type  "SCOPE"  and  the  page
+length of particular brands of display terminals.
+
+     D.  New TELNET Protocol
+
+     In  accordance  with  the  January  1,  1974,  deadline  for
+implementing  the new TELNET protocol, we have installed a TELNET
+server into TENEX which understands  option  negotiation  and  is
+willing to negotiate modes such as echo, binary, supress goahead,
+and character-at-a-time.  We were able to make the implementation
+backward compatible with the old TELNET protocol, so both old and
+new TELNET user programs may utilize this server.
+
+     In addition, we have implemented the  earlier  specification
+change  that  output buffer clearing is accomplished by using the
+INS-data mark protocol facility.  This change makes  it  possible
+for  a  TIP  user to stop unwanted output instantly by typing two
+control-C's to TENEX.
+
+                                                    Page  17
+
+
+
+     E.  Automatic Dialler
+
+     A considerable amount of effort has been spent  during  this
+quarter  on  hardware  and  software additions to the BBN-TENEX-A
+system to drive an automatic dialler attached to a dataset.  This
+device   is   being   used  by  the  staff  responsible  for  TIP
+development, to test modem  ports  on  the  TIPs  throughout  the
+ARPANET.   Due to the hardware involved, this particular facility
+will not be useful to other sites at present,  but  it  would  be
+straightforward  to  standardize  and  distribute  these  changes
+should standard hardware become available at this and other TENEX
+sites.
+
+     F.  KI-10X System
+
+     In preparation for TENEX system operation on the  two  KI-10
+processors on the network, code has been merged with the standard
+TENEX sources  to  conditionally  assemble  for  KI-10  or  KA-10
+systems.   This  merging  has  not  been  completed,  due  to the
+parallel development of KA-10 TENEX  and  the  lack  of  a  KI-10
+system  at  BBN  for  testing purposes.  It is expected that this
+will be tested in early 1974 at the USC-ISI installation,  and  a
+working  KI-10 system will be distributed shortly after the TENEX
+system 1.32 release.
+
+     G.  DEC System Compatibility
+
+     To support the users of TENEX, we are bringing various newly
+released DEC software products onto the system, notably DEC's new
+FORTRAN and LINK10 (which  will  supercede  LOADER).   These  new
+programs  require  DEC monitor features beyond those in existence
+at the time of writing the  DEC  Compatibility  Package,  PA1050.
+This  package has been updated as required by those programs.  At
+the same time, new  versions  of  the  existing  LOADER  and  CCL
+subsystems have been installed.
+
+
+
+                                                    Page  18
+
+
+
+VI.  RSEXEC Developments
+
+     A.  RSEXEC User Environment
+
+     The second version of the RSEXEC system has been distributed
+to the ARPANET TENEX sites.  The new version greatly enlarges the
+capabilities of RSEXEC.  An article in the September ARPANET NEWS
+(NIC  #18748)  announced  the  new  RSEXEC  system to the ARPANET
+community.
+
+     An RSEXEC user may now enter into a distributed file  system
+environment.   Within this environment many of the standard TENEX
+EXEC file system commands have an effect that extends across Host
+boundaries  to  include  all  TENEX Hosts on the ARPANET.  To use
+distributed  file  system  features,  a  user  first  defines   a
+"profile"  that  specifies Hosts and file directories he commonly
+uses.  From that  specification  a  "composite  file  directory",
+which includes all files in the directories specified, is created
+and maintained for the duration of the RSEXEC session.  After the
+composite  directory  is defined, the user may use standard TENEX
+EXEC  file  system  commands  in  a  site   independent   manner,
+specifying  only  file name and extension, to access files in his
+composite directory.  In addition, files  not  in  the  composite
+directory  may  be  referenced  by  using  "full  pathnames" that
+include a Host specification; for example, the command
+
+          _TYPE (File) [SRI-AI]<BJONES>REPORT.OLD
+
+prints the file REPORT.OLD in  directory  BJONES  at  the  SRI-AI
+Host.
+
+     At the end of a session RSEXEC can be instructed to maintain
+a  permanent copy of the user's profile.  By saving his profile a
+user can use the file system features in future  RSEXEC  sessions
+without   the  necessity  of  first  respecifying  his  composite
+directory.  If a  permanent  record  of  his  profile  is  to  be
+maintained,  a  copy  of  a  profile  file  is  sent to each Host
+specified in the profile.  By distributing copies in this  manner
+RSEXEC  insures that the user can use the file system features of
+RSEXEC from any TENEX Host without first having to  redefine  his
+profile.   The  profile  file itself is transparent to the RSEXEC
+user, being accessible only indirectly via  the  profile  editing
+commands of RSEXEC.
+
+     While RSEXEC attempts to make the  network  transparent,  it
+also  helps  the user take advantage of the distributed nature of
+the file system.  One way it does this is by allowing the user to
+increase  the  "accessibility" of files he considers important by
+making it easy to maintain multiple copies or  "images"  of  such
+files at different sites.  For example, the following user-RSEXEC
+dialogue results from an attempt to rename a multi-image file:
+
+                                                    Page  19
+
+
+
+    _RENAME (File) DATA.OLD (to be) DATA.NEW
+     Rename each Image ? N
+     Image at [BBN-TENEX] <JONES> ? Y
+     Image at [I4-TENEX]<RTJ> ? N
+     Image at [SRI-ARC]<BJONES> ? Y
+    _
+
+Before the RENAME command occurred there were three images of the
+file  DATA.OLD (one each at BBN, I4 and SRI-ARC); after it, there
+is one image of DATA.OLD (at I4) and two of DATA.NEW (at BBN  and
+SRI-ARC).   As  suggested  in the previous paragraph user profile
+files are maintained by RSEXEC as multi-image files.
+
+     In distributed systems such as RSEXEC it may  often  be  the
+case that the peripheral devices needed by a user are not located
+at the Host where the user's process is executing.  To help users
+cope  with  this  sort  of  problem  the  RSEXEC  includes a BIND
+command.  With BIND a user can declare that a  particular  device
+name  is to refer to that device at a Host he specifies.  After a
+device has been "bound" in this manner, subsequent references  to
+the  device  are  directed to the Host specified.  For example, a
+user at the AMES-TIP using an RSEXEC on the BBN-TENEX Host  could
+use the following sequence of commands:
+
+     _BIND (Device) LPT (to Site) AMES-TIP
+     _LIST (Files) FILE.ONE FILE.TWO
+     _COPY (File) FILE.THREE (to file) LPT:
+     _BIND (Device) LPT (to site) CASE-10
+     _LIST (Files) FILE.ONE
+
+to produce listings of files FILE.ONE,  FILE.TWO  and  FILE.THREE
+for  himself  at  device port #1 on the AMES-TIP and a listing of
+FILE.ONE for a friend at the CASE-10 TENEX.  At present the  line
+printer  is the only device that can be bound by RSEXEC.  We plan
+to extend the binding capability to include other devices such as
+DEC tapes.
+
+     The user interface to the distributed file system  has  been
+changed to correct two problems which we feel have prevented more
+wide spread use of RSEXEC.  First, users have  pointed  out  that
+the   ENTER  command  (which  is  used  to  gain  access  to  the
+distributed file system environment) was difficult to  understand
+and  to  use.   The  source  of confusion was that there were two
+totally different forms of the command depending upon whether the
+user  had a permanent RSEXEC profile (additional information from
+the user on his first use of ENTER  is  required  to  create  the
+profile for him).  The ENTER command has been rewritten to prompt
+first-time users for the  additional  information  necessary  for
+profile   creation.   The  second  problem  was  that  the  means
+available to a user for managing  his  Composite  Directory  were
+fairly  crude  in  the  sense  that  all  files  in all component
+directories were automatically part  of  it.   (Recall  that  the
+Composite  Directory  is  the  file  directory seen by the RSEXEC
+
+                                                    Page  20
+
+
+
+user; it consists of  the  files  in  the  component  directories
+specified  in  his  profile.)  As a result, when a user's profile
+contained a large number of component  directories  or  when  the
+directories  themselves were large, construction of the Composite
+Directory (done as part of the ENTER command)  was  a  very  time
+consuming  operation.  Furthermore, there were many situations in
+which it was unnecessary or even inconvenient (i.e., in terms  of
+file  naming  conflicts)  to  have  all  files from all component
+directories in the Composite Directory.   We  have  improved  the
+situation  by  giving  the  user  more control over his Composite
+Directory by allowing him to specify (in his profile, at the time
+he  uses  ENTER, or both) that only certain component directories
+are to be included in his Composite Directory at ENTER time  and,
+in  addition, to dynamically add and remove component directories
+from the Composite Directory  during  the  course  of  an  RSEXEC
+session.
+
+     RSEXEC includes features that enable a user to automatically
+initiate and conveniently control jobs on other TENEXs.  In order
+to give the user more flexibility in dealing  with  the  network,
+those  features  have  been  augmented with a general user TELNET
+facility.
+
+     The RSEXEC server  program  (RSSER)  has  been  modified  to
+maintain  a  more  comprehensive  log  of  its  activity.  It now
+maintains a histogram of the various commands it performs,  keeps
+a  log of all files transferred into or out of its site including
+who initiated the transfer, and keeps  long  term  statistics  on
+file transfer throughput.
+
+     The new version of  the  RSEXEC  system  solves  a  deadlock
+problem  involving the exchange of Host status information by the
+RSEXEC  server  (RSSER)  programs.    The   problem   itself   is
+interesting  in  that it did not appear until the system had been
+running nearly four months.  The  "lurking  bug"  in  RSSER  that
+caused  the  deadlock  became  evident  when  a  relatively minor
+modification was made  to  the  way  the  TENEX  Network  Control
+Program (NCP) manages network buffer allocations.  The appearance
+of  this  kind  of  bug  in  a  program  that  uses  the  network
+demonstrates  how  sensitive  such programs are to even minor NCP
+changes.
+
+     Each RSSER program includes a process  (STASER)  responsible
+for  exchanging  status  information  with  the RSSER programs at
+other network sites.  STASER accomplishes its task by:
+
+    1.  Periodically waking up and requesting status  information
+        from each of the other RSSER programs, and;
+    2.  Maintaining a socket in a "listening" state  which  other
+        RSSER  programs may connect to in order to request status
+        information from it.
+
+                                                    Page  21
+
+
+
+In order to prevent the occurrence of so-called "deadly  embrace"
+situations  in which two STASER processes at different Hosts each
+attempt to read status information  from  one  another  and  thus
+become  "hung"  because  each is waiting on the other to send the
+information, STASER is programmed to:
+
+    1.  Give higher priority to status transmission, and;
+    2.  Abort a transmission to a site if  it  is  simultaneously
+        attempting  to  acquire  status information from the same
+        site.  (This prevents two STASERs, each trying to send to
+        the  other,  from becoming hung as network buffers become
+        full since neither process is emptying them.)
+
+We realized that  this  approach  prevented  the  deadly  embrace
+situation  between  any  two STASER processes but did not prevent
+such situations from occurring between "looped daisy  chains"  of
+three  or  more  processes  (i.e., A trying to send to B which is
+trying to send to C which is trying to send to A, etc.)  However,
+we  (unwisely)  felt  that the occurrence of such chains would be
+extremely rare and therefore  not  a  real  problem.   Experience
+seemed  to  justify  our feeling.  For the first four months that
+the RSSER programs were  operational  not  a  single  case  of  a
+multi-STASER deadly embrace occurred.
+
+     In reality, the looped daisy chain situation was (unknown to
+us)  occurring  fairly  frequently.   The  deadly embrace did not
+occur because the NCP buffer management strategy used at the time
+was  to  allocate  enough  buffer  space to hold an entire status
+report when network  connections  were  initially  opened;  as  a
+result, each STASER in a looped chain was able to safely send its
+entire report to the "next" STASER in the  chain  before  reading
+the  report  requested  from  the  "previous"  STASER.  (In other
+words, the NCP's buffer allocation strategy made  precaution  (b)
+above   unnecessary.)  Then,  the  TENEX  NCP  buffer  management
+strategy was changed to defer allocation of buffer space until  a
+receiving  process first attempted to read from a connection.  As
+soon as this NCP change was  installed  the  looped  daisy  chain
+deadly  embrace  began  to  occur  several  times a day; since no
+STASER on the chain attempted to read until  it  transmitted  its
+report   (sending   is   considered  higher  priority)  none  had
+allocation to send and a deadlock resulted in which all processes
+on the chain became hung.
+
+     To prevent such deadlocks  the  new  RSSER  program  uses  a
+simple  strategy:  two  processes  are  used  to  maintain status
+information.  One process is dedicated to requesting information;
+the other, to sending out reports when they are requested.
+
+     In order to enlarge  the  scope  of  the  RSEXEC  system  to
+include non-TNEX Hosts, the network protocol that supports RSEXEC
+activity has been  redesigned  to  be  less  TENEX-specific  and,
+therefore,  more  easily  implementable  by  non-TENEX Hosts.  An
+unfortunate side effect of this protocol change is  that  further
+
+                                                    Page  22
+
+
+
+interaction  via  RSEXEC  with  the  MIT  ITS  systems (MIT-DMCG,
+MIT-AI, MIT-ML) will not be possible until the ITS user and sever
+programs are converted to the new protocol.
+
+     Both  the  AMES-67  and  MIT-MULTICS  sites  have   recently
+implmented  prototype  user  and server programs that provide the
+inter-site  user-user  interaction  features  of   RSEXEC   (WHO,
+WHERE(is),  LINK,  etc.).   As  a  result of experimentation with
+these three very different time sharing systems (TENEX,  TSO  and
+MULTICS) we, have further refined the RSEXEC protocol.
+
+     B.  RSEXEC Measurement System
+
+     The RSSER programs  that  support  RSEXEC  activity  at  the
+various  TENEX  sites interact with one another (via the network)
+on a regular basis to exchange status information.  The notion of
+programs  on  different hosts that regularly communicate with one
+another is one which we have just begun to exploit.
+
+     Each RSSER  program  maintains  the  status  information  it
+collects from the others in a data base for use by local users of
+the  RSEXEC.   A  program  called  LDINF  periodically  (every  3
+minutes) reads that data base and records what it sees on a file.
+This provides an accurate  picture  of  how  heavily  loaded  the
+different  network  TENEX sites are and how that load varies with
+time.  LDINF is currently run on BBN-TENEX as  an  autostart  job
+and  produces  daily load information files.  In addition another
+program called MONTH produces  weekly  or  monthly  summaries  of
+TENEX load data from the daily files generated by LDINF.
+
+     The RSSER program is implemented to allow us, via our  RSSER
+program  at BBN, to exercise control over other RSSER programs on
+the  network.   That  is,  in  addition   to   exhanging   status
+information among themselves, the RSSER programs will (subject to
+a  protection  mechanism)  perform   commands   "issued"   by   a
+"controlling"  RSSER  program  (at  BBN).   We currently use this
+capability to update various tables and  parameters  internal  to
+RSSER  itself;  for  example a table of Hosts which regularly run
+the RSSER is kept up to date in this way.  We plan to extend  the
+capability  so that we can install new versions of RSSER from BBN
+without requiring direct intervention from the other sites.
+
+     Although the RSSER programs at  present  exchange  primarily
+status  information and parameter updates, it is clear that other
+kinds of information could be exchanged.  For example, the  group
+of  RSSER programs could provide the basis for the collection and
+distribution of network Host accounting information.
+
+                                                    Page  23
+
+
+
+     C.  RSEXEC as a Network Executive
+
+     The RSEXEC is now avialable to TIP users (as well  as  other
+network users) for use as a network command language interpreter,
+preparatory to logging into a particular Host.   TIP  users  gain
+access to it via the old TIP NEWS command.  Once connected to the
+RSEXEC they  can  use  it  to  obtain  network  and  Host  status
+information,  read  the  latest network news and communicate with
+other network users either via  terminal  linking  or  net  mail.
+This  use  of the RSEXEC by non-logged-in users is supported by a
+program called TIPSER, which runs on BBN-TENEX and USC-ISI.
+
+     TIPSER is run at more than one TENEX site  to  increase  the
+availability  of  the RSEXEC to TIP users so that it is available
+whenever at least one TIPSER site is up.  To  accomplish  this  a
+new  initial  connection  protocol  (ICP)  which enables a TIP to
+connect to an RSEXEC rather than to one at BBN.  Using  this  new
+                                      
+mechanism (called "broadcast" ICP) a TIP simultaneously initiates
+connections with TIPSER programs at all  the  TIPSER  sites.   It
+completes  the  connection  only  with  the  TIPSER  program that
+responds first, aborting the connections  with  all  the  others.
+This  procedure  allows the TIP to connect its user to the RSEXEC
+most "responsive" at the time.  The multi-site nature  of  TIPSER
+requires  that  the TIPNEWS file be a multi-image file.  (The TIP
+NEWS file contains timely items of interest which  network  users
+can  read by an RSEXEC command.) An image of the TIP NEWS file is
+maintained at each TIPSER site.  Additions to it can be made from
+any TIPSER site and are guaranteed to appear in each image of the
+file.  The mechanism for adding an item to the TIP NEWS  file  is
+the following:
+
+    1.  Add the new item to the local image of the TIP NEWS file.
+
+    2.  Place the item in a "package"  for  transmission  to  the
+        other TIPSER sites.
+
+    3.  TIPSER periodically looks for packages.   When  it  finds
+        one it transmits a copy of it to each TIPSER site that is
+        up and has not yet received it.
+
+    4.  Upon receipt of such a package, TIPSER adds the  contents
+        of  the  package to the local image of the TIP NEWS file,
+        and returns an acknowledgement.
+
+    5.  After each TIPSER site  has  acknowledged  receipt  of  a
+        given package, the package may be discarded.
+
+
+                                                    Page  24
+
+
+
+VII.  Other Subsystems
+
+     A.  EXEC
+
+     EXEC 1.51 has been distributed to all  TENEX  sites.   Aside
+from  a large number of bug-fixes, several new features have been
+added.  "NETLOAD" is a command which  references  the  data  base
+kept by the RSSER (Resource Sharing Server) and displays the load
+average and number of users at each cooperating TENEX site on the
+ARPANET.   The  NETLOAD  command  does  not  require a user to be
+logged in.  The typeout appears as follows:
+
+@NETLOAD
+
+ SITE        LOAD        USERS
+
+UTAH-10      2.43          16
+BBN-TENEX    2.60          28
+BBN-TENEXB   0.31           2
+CASE-10      0.96          13
+USC-ISI      2.77          35
+CCA-TENEX    1.51           6
+
+
+     Advantage has been taken of  the  speed  up  in  the  system
+string  handling  routines  (SIN  and SOUT) to improve the EXEC's
+"LIST" command.  This command now produces formatted listings  up
+to eight times faster than before.
+
+     Password security has been improved by modifying the  action
+of  (retype  line)  and (delete character) so that they no longer
+retype characters which were typed in as part of a password.
+
+     Some human engineering has been done to improve  the  "feel"
+of  the  EXEC  to  users.   An  instance  of this is given by the
+handling of incorrectly spelled file names.  The EXEC now types a
+question  mark  at  the  instant the error is discovered, goes to
+sleep for a half second, then clears any waiting type-ahead (user
+input),  and  finally starts looking for a valid file name again.
+The crucial factor is the half second  delay  between  announcing
+the  error and clearing type-ahead; empirically, this is how long
+it seems to take a typical user to realize  his  error  and  stop
+typing.
+
+     The EXEC now has an "IDDT"  command  which  splices  a  fork
+containing  the  IDDT  debugger  into  the  user's fork structure
+without  loss  of  information  and  without  altering  the  fork
+structure  seen  by the user's program.  The fork containing IDDT
+can be removed using the "NO IDDT"  command.   This  facility  is
+provided by a new 'splice fork' JSYS.
+
+     The EXEC's "FORK n" command may be used to direct the EXEC's
+attention  to  either  the  IDDT  fork  or  the user fork for the
+
+                                                    Page  25
+
+
+
+purpose of doing MEMSTAT's and the like.
+
+     In cooperation with SRI-ARC personnel, the "ADVISE"  command
+(and supporting system call) have been incorporated into standard
+TENEX.  The ADVISE command allows one user to assist  another  by
+causing the assisted job to accept input from the terminal of the
+person being assisted or the person offering assistance.
+
+     The EXPUNGE command has been modified to accept the keywords
+TEMPORARY,  SCRATCH,  DELETED, and ALL to provide more control in
+the selection of files which are to be permanently eliminated.
+
+     Ephemeral programs have been implemented.   These  programs,
+usually  subsystems,  are run in an address space parallel to the
+normal user space and are invoked  by  typing  the  name  of  the
+emphemeron.   Because  ephemeral  programs  are  run  in separate
+address spaces, a user may  interrupt  his  program  and  use  an
+ephemeron  without  destroying  the  state  of his previous work.
+Subsystems such as DELVER and DSKAGE have been declared ephemeral
+using the new EXEC command "EPHEMERAL (FILE)...".
+
+     The EXEC now allows space as a  terminator  when  specifying
+the  name  of  a  program  to  be run.  When the named program is
+started, it is then able to parse the rest of the command line in
+any way it chooses.  For instance, it might use GTJFN to accept a
+file name or NIN to  allow  a  number  to  be  input.   A  sample
+activation of the DSKAGE subsystem might look like:
+
+          @DSKAGE <SYSTEM>*.*;*
+
+This appears to  be  a  normal  command  to  the  EXEC,  but  the
+function, including reading the file designator <SYSTEM>*.*;*, is
+actually performed by a subsystem.  Thus  users  can  extend  the
+EXEC  command  set  to meet their own desires.  If these extended
+functions are declared  ephemeral,  a  ^C  interrupt  during  the
+execution  on  such  a function will cause an immediate return to
+the EXEC command level, having restored the state of  the  user's
+main  address space to what it was prior to the activation of the
+pseudo command.
+
+     It is possible to convert some of the current EXEC functions
+into   ephemeral   programs.    For  instance,  SYSTAT  could  be
+implemented this way.   The  advantage  to  this  would  be  that
+ordinary  user  programs  could  then  also  call  such routines.
+Currently, NETSTAT is one ephemeral file which is called both  by
+the EXEC and TELNET.
+
+     The EXEC now contains commands  for  redirecting  input  and
+output   files   ("REDIRECT"   and   "DETACH")   and  determining
+("TRMSTAT") the parameters associated with the terminal  as  seen
+by a user program running under the EXEC.
+
+                                                    Page  26
+
+
+
+     Files listed by the "DIRECTORY" command are now flagged with
+;S  if  the  file  is  a scratch file and ;T if it is a temporary
+file.  If a file has been declared ephemeral, a ;E flag will also
+be  included.   The  distinction  of  scratch files and temporary
+files is an aid when the user is attempting to  decide  which  of
+the options to "EXPUNGE" to select -- previously both scratch and
+temporary files were printed with ;T thus creating confusion.
+
+     In the past some amount of difficulty was  experienced  with
+the  accounting  system  if  the  time  and  date  were specified
+incorrectly when the system was restarted.  To help prevent these
+errors, the EXEC checks the time typed in by the operator against
+the last write date  of  the  FACT  (accounting)  file.   If  the
+specified  time  is  not  within eleven hours after the last FACT
+file entry, the time given by the operator  is  typed  out  in  a
+verbose format and he is asked to reconfirm it.
+
+     The EXEC has been modified so that it never outputs  a  code
+037 meaning TENEX END-of-line.  The ASCII standard CR-LF sequence
+is used instead.  This means that files written by the  EXEC  are
+now compatible with non-TENEX sites.
+
+     The  deferred  control-C  interrupt   mechanism   has   been
+implemented  in the EXEC.  This makes it possible to include ^C's
+in the input stream.  The interrupt does not effect  the  process
+until  the  ^C  is  read from the input buffer.  Thus, type-ahead
+after ^C's is preserved.
+
+     B.  File Transfer Protocol (FTP)
+
+     The DELETE and RENAME operations have now been  implemented.
+To  allow  another mode of communication between unlike machines,
+specifically the AMES-67 and TENEX, the TENEX  implementation  of
+IMAGE  mode  FTP  transfers  was  modified.   These sites are now
+communicating successfully in that mode.
+
+     To allow timing and efficiency measurements to  be  made,  a
+pseudo-file  of a million bits have been implemented in the TENEX
+FTP server.  Whenever a  RETRIEVE  request  from  device  NIL  is
+received,  the  server  sends  one  million  bits  of data in the
+current mode.
+
+     A site-dependent option was provided to permit access by  an
+anonymous  user,  i.e.   a  person  at another site who wishes to
+access files without going  through  the  FTP  "login"  sequence.
+This  user  is  permitted  to  access  only those files which are
+specified to be accessible to everyone.  This option is currently
+in use at BBN and at the University of Utah.
+
+     FTP has also  been  changed  to  make  use  of  the  account
+validation  mechanism  used  for system login.  A remote user may
+either make use of his default account  number  for  FTP  service
+charges,  or  he may supply an account number.  FTP then verifies
+
+                                                    Page  27
+
+
+
+that this user may access the account in question.
+
+     C.  TECO
+
+     Several additions have been made to  TECO,  the  main  TENEX
+text  editor.   The  search  routine was modified, resulting in a
+speedup factor of 8.3 in one typical case.  Also,  searches  (and
+replace  operations)  may be directed to proceed in reverse, that
+is, toward the beginning of the buffer, rather  than  toward  the
+end.
+
+     A "save" command ( ;S ) was  implemented  which  copies  the
+text  buffer  onto  a file without clearing it as with the normal
+"unload" command.
+
+     The  "dated  unload"  command  ( ;D )  outputs  the  buffer,
+prefixing  it with information such as the file name, date, time,
+and editor's name.  This information is prefixed with  a  comment
+character  which previously was always a semicolon.  Now a string
+is allowed, and unless specifically  overidden,  this  string  is
+automatically  defaulted  by  TECO  based on the extension of the
+file being written.  Thus, "C" is used if the file  extension  is
+.F4  for  FORTRAN,  whereas  "//"  is  used  for  BCPL files with
+extension .BCP.
+
+     The backspace key now  acts  as  a  character  delete  which
+behaves in a terminal-dependent manner.  The user informs TECO of
+the type of  terminal  he  is  using  with  a  newly  implemented
+command.  Basically, this tells TECO what character sequence will
+cause the  printhead  or  cursor  to  physically  backspace,  and
+whether  or  not  typing  a space will erase a character from the
+screen.  Thus, on scope  terminals,  TECO  will  echo  <backspace
+sequence><space><backspace  sequence> in response to a control-H.
+This causes the error to be removed from the screen and from  the
+command buffer.
+
+     D.  IDDT
+
+     IDDT has been extensively modified to include  a  whole  new
+class  of  commands.  The modifications included renaming certain
+commands to be somewhat easier to  remember.   In  fact  the  new
+command  names  are  parallel  to  those in the TECO editor which
+perform analogous functions.  For instance, ;Y "YANKS" (reads in)
+an input file, ;U "UNLOADS" a copy of the current core image onto
+a file, and ;H "HALTS" and returns control to the EXEC.
+
+     IDDT is now capable  of  handling  many  symbol  tables  and
+switching between them using the ;S command.
+
+     Details of these changes have been published  in  the  TENEX
+USER'S GUIDE.
+
+                                                    Page  28
+
+
+
+     E.  BSYS
+
+     BSYS was written by Don Wallace at SRI Augmentation Research
+Center.   Before  it  was placed in operation at BBN, we improved
+the magtape error recovery routines for more reliable  operation.
+The  program  can now make use of redundant information stored on
+the tape  to  reconstruct  tapes  which  suffered  errors  during
+writing.
+
+     Previous improvements made by Tomlinson and Bokor at BBN and
+Wallace  at  SRI-ARC  have  been integrated into the new version.
+Several internal changes  have  been  made  such  as  recognizing
+industry-compatible  end-of-tape  marks  as  well  as  BSYS style
+EOT's.
+
+     Steps have also been taken to improve the human  engineering
+of  the program.  One such change is simply clearing the terminal
+input buffer a half second after  an  operator  typing  error  is
+discovered.  This helps prevent BSYS from interpreting type-ahead
+as erroneous commands.
+
+     F.  SNDMSG
+
+     A very impressive example of the usefulness of  the  ARPANET
+is  the  network  mail  service.   This  service  has attracted a
+multitude of users who find it a more convenient instrument  than
+the telephone for the bulk of their interactions.
+
+     As part of our effort to provide more reliable mail service,
+we  have  rewritten  SNDMSG to improve its reliability, correct a
+number of known bugs, and improve its error diagnostics.
+
+     In order  to  provide  software  which  is  as  reliable  as
+possible,  we are adhering to a standard certification procedure.
+The original SNDMSG has not been changed;  the  improved  version
+has been installed as the subsystem NSNDMSG, for all users to try
+out on an experimental basis.  If no new problems  are  found  in
+NSNDMSG by March 1, SNDMSG will be renamed to OSNDMSG and NSNDMSG
+will be renamed to SNDMSG.
+
+
+NSNDMSG differs from SNDMSG in the following ways:
+
+1.  New features
+
+     a.   Control-O  (^O)  is  an   interrupt   character   which
+     suppresses  typeout.   If you type ^O while no typeout is in
+     progress, nothing happens.  If you type it while typeout  is
+     in  progress,, the current typeout is suppressed.  A ^O will
+     be echoed on your terminal if any output is indeed lost,  so
+     you  can  tell  from  the typescript that output is missing.
+     This feature is useful, for example,  for  aborting  a  help
+     message after you have seen the part of interest.
+
+                                                    Page  29
+
+
+
+     b.  The distribution list feature described in the user list
+     help  message  now works as specified.  That is, group names
+     terminated by ":" may be included in  the  user  list.   The
+     message  is sent, as usual, to all users in the list; but if
+     any group names appear, then only the group names  (not  the
+     individual  user names) appear in the "cc" list of the final
+     message.  There is currently no way  to  delimit  groups  so
+     that  some  user  names (those not included in groups) would
+     also appear in the cc list.
+
+2.  Improvements in user list input:
+
+     The following improvements make user list input behave  more
+     sensibly.
+
+     a.  Leading and trailing blanks in user names,  host  names,
+     and  distribution  list names are ignored.  Inner blanks are
+     not.  If the user list is retyped (for  example,  with  ^S),
+     the ignored blanks will not show up.
+     For example, the group name "TENEX GROUP"  will  retain  its
+     blank,  but "SUSSMAN @BBN" will lose the blank ("SUSSMAN" is
+     a correct user name although "SUSSMAN " is not).
+
+     b.  A carriage return in a  file  being  inserted  will  not
+     terminate  the  user list.  Only a carriage return from your
+     terminal will do so.  
+
+     c.  If the last character on a line is comma, the user  list
+     will not be terminate and you can continue on the next line.
+     (This is not new, but works better now.)
+
+     d.   After  a  successful  user  or  host  name   completion
+     (alt-mode  typed),  you  can continue to edit (^A, ^Q, etc.)
+     the name.
+
+3.  Bugs fixed
+
+     Many bugs have been fixed.  Some of the major ones are:
+
+     a.   NSNDMSG  will  not  create  mail  files  in  files-only
+     directories.   A  directory  must  have a MESSAGE.TXT (which
+     may, of course, have been deleted or renamed)  in  order  to
+     receive mail.
+
+     b.  If an error was encountered in a file inserted into  the
+     user list, and you then proceeded to complete the user list,
+     SNDMSG would previously die with an illegal instruction.
+
+     c.  Several bugs associated with the use of permanent  hosts
+     ("@<host>") in the user list have been fixed.  They now work
+     correctly in all cases.
+
+                                                    Page  30
+
+
+
+4.  Improved error messages
+
+     a.  Several messages have been reworded for greater clarity.
+
+     b.  Most errors in the user list  are  now  explained.   For
+     example, you get "? No such local user" instead of just "?".
+
+     c.  If for any reason the text of  your  message  cannot  be
+     saved  on  MESSAGE.COPY  (as  the  help  message promises) a
+     message is given.
+
+5.  Miscellaneous
+
+     a.  Confirmation of inserted files:
+     For added safety when inserting files  with  ^B,  after  you
+     type  the  file  name  you  are required to confirm it.  The
+     usual rules for confirming file names in TENEX apply  -  for
+     example, carriage return will confirm and rubout will abort.
+
+     b.  The format of mail headings  ("Date:",  etc.)  has  been
+     changed  slightly  to  make it compatible with other network
+     hosts (see RFC 561).  This will affect the output of RD.   A
+     new version of RD is available as NRD, which works with both
+     the old and new formats.
+
+                                                    Page  31
+
+
+
+G.  READMAIL
+
+
+1.  Improved and expanded error messages
+
+     a.  Several existing messages have been reworded for greater
+     clarity.
+
+     b.  Several incorrect messages have been eliminated.
+
+     c.  A complete  diagnostic  message  is  printed,  not  just
+     "can't open", upon failure to open a file.
+
+     d.  If the message file does not exist (as happens if it  is
+     deleted or renamed) "No messages" is printed and the program
+     exits.  Formerly it  typed  "?  Need  a  file"  and  awaited
+     another command.
+
+2.  Bugs fixed
+
+     a.  If the specified output file could not  be  opened,  the
+     program used to bomb out.
+
+     b.  Echoing of typeahead is correct.  The first  typed-ahead
+     character used to echo before the "*" instead of after.
+
+     c.  Certain date header formats on very large message  files
+     used to fail to be recognized, causing READMAIL to think the
+     file format was bad and type the message in question whether
+     or not it was requested.
+
+3.  Improved defaults
+
+     a.  If the mail file has never been read (this happens for a
+     new user only), the entire file is processed.  The user used
+     to be required to  supply  a  date  -  which  is  especially
+     confusing to a new user.
+
+     b.  The default start date (i.e.  from date of last reading)
+     applies   to  user-specified  input  files  as  well  as  to
+     MESSAGE.TXT.  Date specification used to be required for any
+     specified  file  (even MESSAGE.TXT if explicitly specified).
+     However, if the date is defaulted for a user-specified  file
+     a  warning  message  is  printed when message output begins.
+     This makes it unlikely that someone will inadvertently  miss
+     messages  by  forgetting  to  supply  a  date when reading a
+     public message file.
+
+                                                    Page  32
+
+
+
+H.  MAILER
+
+     The background program called  "MAILER"  which  periodically
+attempts  to send queued mail (mail destined for hosts which were
+not available at the tim  the  mail  was  originally  sent),  was
+converted into a subsystem to allow a user to attempt to send all
+his queued mail without waiting  for  the  next  attempt  by  the
+background  process.   In  addition,  MAILER  now  sends negative
+acknowledgements back to the author's message file if  a  message
+can't be delivered.
+
+
+1.  Local mail
+
+     If a local mail file had been deleted or renamed, MAILER was
+failing   to   resurrect   it,   and   would   declare  the  mail
+undeliverable.  Such mail is now delivered properly.
+
+
+2.  Network mail
+
+     a.  If the login sequence failed for a host  which  requires
+     it for mail transmission (notably MULTICS), the reason given
+     for undeliverability was blank in certain cases.
+
+     b.  Although  MAILER  used  a  timer  interrupt  to  prevent
+     excessively  long  waits  to  get  permission  to transmit a
+     message, it had  no  timer  on  during  the  actual  message
+     transmission.   Thus  if  the foreign host failed to respond
+     (give  positive  acknowledgement)   after   the   mail   was
+     transmitted,  or if it started sending a response during the
+     transmission but never finished  sending  it,  MAILER  would
+     hang  forever  waiting  for  the  response (assuming the net
+     connection  was  not  closed  -  a  case  which   it   could
+     recognize).   This  has  indeed happened - the known case is
+     due to a MULTICS FTP server bug, causing it to think it  has
+     sent  the  response when it hasn't.  The current MAILER thus
+     uses a 1-hour timeout while transmitting a message.
+
+     c.  If the network connection is prematurely  closed  during
+     mail  transmission, the mail is requeued.  Previously it was
+     either requeued or considered  undeliverable,  depending  on
+     when    the    connection    closed.    In   the   case   of
+     undeliverability, the reason given (mailed  to  the  sender)
+     was blank.
+
+     d.   If  an  error  reply  is  received  during   or   after
+     transmission   of  a  message,  the  message  is  considered
+     undeliverable.  Previously it was requeued.   The  rationale
+     behind this is as follows.  The FTP protocols defining error
+     messages   pertaining   to   mail   are    inadequate    for
+     distinguishing  between  types  of failures.  Thus the TENEX
+     FTP server sends  back  the  same  error  message  for  both
+
+                                                    Page  33
+
+
+
+     permanent  (e.g.   the  message  is  too long to handle) and
+     transient (e.g.  an  I/O  error)  conditions.   MAILER  thus
+     can't  make  an intelligent decision about requeueing versus
+     giving up.  Rather than unnecessarily drain the resources of
+     all  concerned  by  repeatedly trying to send mail that will
+     never go through, it thus gives up  even  on  mail  that  is
+     likely  to  get through on the next attempt.  After all, the
+     sender can always requeue the message  if  he  suspects  the
+     failure is not real.
+
+
+3.  General
+
+     a.   MAILER  was  failing  to  release   JFNs   of   renamed
+     (undeliverable)  files.   Thus if it ran long enough without
+     being restarted, it could conceivably run out  of  available
+     JFNs and start giving spurious errors.  This has been fixed.
+
+     b.  After encountering an undeliverable file, MAILER used to
+     stop  processing  the  current  directory.  There might be a
+     long delay before the rest of the mail in the directory  was
+     ever processed.  It now finishes properly.
+
+     c.  Privacy of mail has been improved.   Previously,  queued
+     messages   that  were  declared  undeliverable  reverted  to
+     standard protection; they now retain the original protection
+     (no access except by owner).
+
+     d.  Running of MAILER by  a  normal  user  (not  an  enabled
+     wheel)
+
+          1) Queued mail for both  the  connected  and  logged-in
+          directories   is  processed,  as  before;  but  if  the
+          connected directory is the  logged-in  one,  it  is  no
+          longer repeated.
+
+          2) In every case, usually  after  other  messages,  the
+          final   disposition   of   the   queued   message  file
+          ("renamed",  "deleted",  or  "requeued")  is  reported.
+          Previously  it  was  not  always clear from the message
+          what the upshot was.
+
+          3) The user's MAILER and the  system  MAILER  will  not
+          conflict  -  i.e.  will not process the same message at
+          the same time.   Simultaneous  processing  used  to  be
+          possible,  resulting  in  duplicate  transmission,  and
+          sometimes  in  anomalous   situations   (such   as   an
+          undeliverable file being both renamed and deleted).
+
+                                                    Page  34
+
+
+
+     e.    The   heading   (Date:   and   From:)   of    negative
+     acknowledgements  (for  undeliverable  mail)  mailed  to the
+     sender is slightly  modified  to  match  the  form  used  by
+     NSNDMSG.  Uniformity in headers improves analysis of mail by
+     programs.
+
+     One of the changes in SNDMSG was in the  format  of  message
+headings, putting them into a form compatible with RFC#561, which
+attempts to standardize the format of message headings sent  over
+the  network.   Since  RD  tries  to make enough sense out of the
+header to print a 1-line summary of it, this change  necessitated
+a  corresponding change to RD.  The new RD (currently called NRD)
+not only handles both new and old SNDMSG header formats (handling
+even  old  formats  better than RD did), but also many forms that
+conform even partially to RFC#561.
+
+
+
+     I.  RD
+
+     The two versions of RD understand headings approximately  as
+follows:
+
+
+RD
+
+     If there is no occurrence of  "Date:"  in  the  message,  RD
+gives up and types the first line of the message.  Otherwise it
+
+     1) types the 10 characters following "Date:"
+     2) assumes the next line starts with "From:" and  types  all
+     but the first five characters of that line
+     3) assumes the next line starts with "Re:" and types all but
+     the first three characters of that line.
+
+Thus if the date is in a different format than expected,  if  the
+header  items  are  in  a different order, if there is no subject
+line, or if different keywords are used for "From" and "Re", RD's
+summary will be partly garbage.
+
+                                                    Page  35
+
+
+
+NRD
+
+     The end of the heading is recognized by being either a  null
+line  (RFC#561)  or  a  "-  -" (old SNDMSG format) and within the
+header  all  occurrences  of  "Date: ",  "From: ",   "Re: ",   or
+"Subject: "  in  any  order  and  in any combination of upper and
+lower case are recognized.  For "From:" and "Subject:" (and "Re")
+lines,  the  rest  of  the  line  is  typed.   For "Date:" lines,
+everything up to the last space is typed (on the assumption  that
+a  time  with no embedded blanks follows the date, separated from
+it by a space).  If the header end cannot be found or  there  are
+no  recognizable items in the header, NRD types the first line of
+the message.
+
+     J.  BCPL
+
+     TENEX BCPL is becoming more powerful and convenient to  use,
+and  we  hope  to  do  future  subsystem  implementation  in this
+high-level language instead of assembly language.
+
+     The BCPL system has been improved and extended.  The current
+M.I.T.   Lincoln Labs TX-2 compiler was brought over the network,
+TENEX-ized,  and  bootstrapped  into  operation.   New   compiler
+features  include symbol tables, (to be available at run time for
+the  BDDT  debugger),  a  listing  option,  much  improved  error
+handling,   floating  point  operations,  externals,  the  direct
+generation of relocatable  binary  files,  an  interface  to  CCL
+(Concise  Command  Language),  an  increase in speed, and minimal
+requirements for run time initiations (just setting up the  stack
+pointer  is all that is required).  Run-time improvements include
+an expanded I/O library, an  interface  to  FORTRAN  subroutines,
+some  basic  facilities  for  debugging,  a  flexible  hash-coded
+dictionary package, a "heap" free storage allocation package,  an
+ARPANET  I/O package, and a much simplified procedure for loading
+BCPL programs.  We are currently working on a carefully  designed
+pseudo-interrupt  package,  and measurements to pinpoint compiler
+inefficiencies so that we can choose subroutines to hand-code and
+parts of the BCPL code generators to improve.
+
+     K.  PAL11X Cross-Assembler
+
+     The TENEX PAL11X cross assmbler was adapted  from  the  PALX
+assembler  at  Massachusetts  Institute  of Technology Artificial
+Intelligence Labs.  PALX was converted to run under TENEX, and to
+produce  relocatable  binary output which is directly loadable by
+either PDP-10 linking loader.  Three pseudo-ops  were  added  for
+the  definition  of  external  symbols  and entry points, and the
+listing format was  altered  to  indicate  such  definitions.   A
+temporary  TENEX  subsystem,  SAVBIN,  was written to convert the
+PDP-10 core image into PDP-11 absolute loader format.
+
