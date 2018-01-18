@@ -1,0 +1,435 @@
+
+		Tenex 1.33
+
+	The following is a discussion of the various changes
+and additions to Tenex included in the 1.33 release.
+
+1. Pie-slice scheduler
+
+	The pie-slice scheduler provides system administrators with a
+mechanism for dividing their user communities into groups ("pie-slices")
+and establishing minimum service levels for each group. These 
+minimum service levels are guarantees which are met by the system
+regardless of activity in other groups. It is possible, of course, to
+observe a level of service in excess of the guarantee. This may
+happen either as a result of your group being explicitly assigned
+the unclaimed share of an unrepresented group (the so-called "windfall")
+or simply as a result of small system load; no cycles are ever deliberately
+discarded.
+ 
+
+	Jobs are assigned to pie-slice groups as a function of account
+designator. Account to pie-slice group mapping information is
+stored in the account validation file <SYSTEM>UACHK.FILE. This
+file is compiled from an ASCII source file which contains two sections
+as follows:
+
+	1. Account validation section
+	   This section contains an entry for each user-name, giving
+the user's valid accounts in the form
+
+USERNAME:acct1,acct2,...,acctn
+
+followed by a carriage-return-line-feed sequence (CRLF). One
+account entry per user may be followed immediately by an asterisk,
+indicating default account. The last user entry in this section
+must be followed by one and only one null line, which serves
+as a section delimiter.
+
+	2. Account to pie-slice group mapping
+	   This section contains an entry for each pie-slice
+group, giving the group's member account designators in the form
+
+GROUPNAME:acct1,acct2,...,acctn
+
+followed by a CRLF. The group-name is restricted to six characters
+from the SIXBIT character set.
+
+	The compilation of UACHK.FILE is accomplished by RUNFIL'ing
+UACHK.RUNFIL. Note that you must edit this RUNFIL to reflect the
+name of your ASCII source file, which is given as ACCOUNT.NMBRS
+in the distributed version. You must also have previously created
+the skeleton file FRESH.FILE by running the program CRFILE.SAV.
+This particular operation needn't be done each time UACHK.FILE
+is rebuilt; the skeleton file need be re-created only if the
+need to alter a file parameter, such as hash table capacity, arises.
+This is highly unlikely. During compilation, messages will indicate
+any inconsistancies between the two sections of the source file e.g.
+an account being valid for a user but not assigned a pie-slice group.
+By way of apology for this somewhat cumbersome process, it should be
+noted that incremental maintenance of this database is currently
+under development.
+
+
+	Having successfully compiled a new UACHK.FILE (this must, of
+course, be done in some directory other than SYSTEM) you activate
+this new version by issuing the new EXEC privileged command
+^EINITIALIZE ACCOUNTS (^E meaning cntrl-E). This will rename
+the latest version of UACHK.FILE in the connected directory into
+SYSTEM and re-initialize certain system-global parameters
+relating to account verification.
+
+
+	Data describing the various pie-slice groups is kept
+in a separate data base <SYSTEM>PIE-SLICE-GROUP.DATA. This file
+is mapped into the monitor address space during system initialization
+and contains an entry for each group giving the SIXBIT groupname,
+number of shares allotted the group, the group's start date, and
+CPU time used to-date. The file also contains the total shares
+allotted the groups, thus, a group's guaranteed minimum
+service fraction is the ratio the the group's shares to the total.
+This database is prepared and maintained by use of the subsystem
+PIE.
+
+ The user must be a wheel or operator to run the program, otherwise a 
+ message will be printed saying the user doesn't have access to the
+ data file. Also, if the data file does not exist, the user will be
+ given the option of creating a data base file.
+
+ A question mark "?" can be used to get prompting or a list of commands.
+ Using an altmode (or escape) will cause noise words to be printed, much
+ like the EXEC does.
+
+ Description of the commands are as follows:
+
+ ALTER - Changes an existing entry or creates a new group entry. ALTER has
+	the following sub-commands:
+
+	CPU TO DATE - Changes the # of milliseconds used by this group
+
+	PRINT - Print the current status of the entry being altered.
+		(With any modifications that have been made)
+
+	QUIT - Exit from the ALTER command WITHOUT making any changes
+		to the group.
+
+	SHARES - Changes the number of shares that the group has.
+
+	START DATE - Date the group's work started. This date is 
+		important for the computation of windfall.
+
+	UPDATE - This command and carriage return require confirmation
+		and will then cause the changes (if any) to be made
+		to the data base.
+
+ DELETE - Delete a given group from the data base.
+
+ EXAMINE - Examine a group, or all groups by typing a carriage return
+	for a group name.
+
+ HELP - Will type out a brief explaination of the program and some 
+	commands.
+
+ QUIT - Exits the program.
+
+
+	The pie-slice scheduler is a Tenex option which may be selected
+at system assembly time by setting the assembly switch PIESLC, located
+in the PARAMS file, to 1.
+
+	Two ephemerons, GROUP and GRPSTS may be used to obtain 
+information regarding the status of the pie-slice system.
+
+
+
+
+2. Multi-pack swapping
+
+	This feature redistributes the disk swapping area from
+a single drive to the center cylinders of all drives in use, the
+intent being to increase the efficiency of disk swapping by
+decreasing and overlapping seek-time, and with certain controllers
+e.g. 3330 or equivalent, overlapping rotational positioning as well.
+To make use of this feature you must assemble your system
+using the file MDSK.MAC and MDSKPA.MAC. In addition you MUST use
+the distributed version of CHECKDISK; an absolute imperative!
+The name of CHECKDISK has purposely been changed in SWPMON  from
+CHECKDSK to CHECKDISK to avoid the possibility of running an
+old version with the multi-pack system; obviously not a fool-
+proof measure. Conversely, should you choose not to use
+the multi-pack swap system , you MUST NOT use the new CHECKDISK.
+
+Using the multipack swap feature requires a complete reload of your file
+system; this nuisance will be justified by the performance improvement
+on a disk-only system, particularly if rotational positioning
+can be overlapped by your controller.
+
+
+
+3. Operator function jsys
+
+
+
+A privileged JSYS has been added for TENEX 1.33 which allows
+programs in user code to perform many of the functions which
+we have been doing via MDDT. The JSYS is called OPRFN (for 
+OPeRator FuNctions).
+
+This jsys is multiplexed in that a sixbit function name is supplied
+as the first argument, to allow a number of different operations
+to be performed without using up a lot of JSYS numbers. The search
+for the sixbit function name takes a little time, of course, but
+these functions should be executed infrequently so that's not a
+serious drawback.
+
+Note to field sites: BBN will never define a sixbit name starting with
+the letter "X" in this table. This allows field sites to add
+subfunctions without conflicting with future BBN additions.
+
+Each function requires a specific capability and calls a short
+routine in SWPMON to do its task.
+
+Calling sequence:
+
+	MOVE 1,[SIXBIT /FUNCTION-NAME/]
+	MOVE 2,argument dependent on function
+	MOVE 3,more arguments if needed
+	OPRFN
+	  error return, error number in 1
+	success return
+
+Possible errors include:
+
+OPRFX1:	Function requested is not defined
+OPRFX2:	Illegal parameters to an OPRFN function
+
+
+
+Functions currently implemented in OPRFN:
+
+SIXBIT	CAPABILITIES	ARGUMENTS
+NAME	REQUIRED	IN AC2, AC3
+
+KFACT	W or OP		Fltg Pt number from 0 thru 1.0
+
+NETON	W or OP or 	zero or -1
+	MAINT
+
+JTRPON	W or OP		zero or -1
+
+MKPGSA	W or OP or	first page number in 2, last
+	MAINT		page number in 3
+
+MKPGSU	W or OP or	first page number in 2, last
+	MAINT		page number in 3
+
+DDTRCL	W or OP		None
+
+DDTFSH	W or OP		None
+
+DBUGSW	W or OP		Zero or 1 or 2
+
+DCHKSW	W or OP		Zero or 1
+
+The functions KFACT, NETON, JTRPON, DBUGSW and DCHKSW simply
+check and then store their argument in the named monitor
+control cell.
+
+DDTRCL and DDTFSH call those named routines.
+
+MKPGSA and MKPGSU call those routines for the pages supplied.
+
+Functions to be added in the near future include the ONLINE and
+OFFLINE requests for our tape drive sharing. Other
+suggestions welcomed. The intent is to keep people out of
+MDDT where they may accidentally do damage, and to add
+ephemerons or exec commands to do these tasks.
+
+
+4. Efficient wakeup strategy after conflicts on non-resident locks.
+
+	This feature eliminates the necessity for a process to
+periodically retry a non-resident lock which it has failed to lock,
+thus eliminating a source of unnecessary system overhead. This
+mechanism simply uses a resident flag, GLOCK, to note the occurrence
+of a conflict on a non-resident lock. Whenever a lock on which a 
+conflict has occurred is unlocked, GLOCK is reset. It is this state
+of GLOCK which the previously failing process(es) are awaiting;
+they are now awakened to retry their locks.
+
+5. New balance set holding strategy
+
+	This change is an attempt to reduce scheduling and paging
+overhead and improve response time for processes which dismiss
+for short intervals (NCP, magtape processes, etc.). The new
+technique is simply that any process which dismisses for an
+interval less than the value of MAXBSH (initialized to 100 ms.)
+will be held in the balance set after the next dismissal for
+a period not exceeding MAXBSH, in the hope that it will awaken
+sooner than that.
+
+6. RS04 and RP03 device drivers
+
+7. Account verification and pie-slice group lookup integrated
+with the monitor.
+
+	The above functions, previously implemented in user
+code, are now part of the monitor. Several new Jsys's have
+been added. A new version of EXEC is now available
+which makes use of these new Jsys's, rather than the
+now-obsolete UACHK.SAV.
+
+The jsys descriptions follow:
+
+
+		CGRP	JSYS 327
+
+ Change pie-slice group, but not account.
+
+ACCEPTS IN	1: SIXBIT group name
+
+		CGRP
+
+RETURNS	+1: unsuccessful, error # in 1
+	+2: successful
+
+CGRP ERROR MNEMONICS:
+
+PIEX1:	Not a pie-slice scheduler system
+CGRPX1:	No such group name
+WHELX1:	WHEEL or OPER special cap not enabled
+
+
+
+
+
+		VACCT	JSYS 330
+
+ Verify a user and account designator pair as valid.
+
+ACCEPTS IN	1: user directory # (-1 for self)
+		2: account designator, which is:
+		   500000000000+account number or a string pointer
+
+		VACCT
+
+RETURNS +1: unsuccessful, error # in 1
+	+2: successful, account is ok for given user
+
+
+NOTE: VACCT is a NOP for enabled WHEEL's or OPERATORs.
+
+
+VACCT ERROR MNEMONICS:
+
+VACX1:	No such user
+VACX2:	Invalid name/account pair
+
+
+
+
+		GDACC	JSYS 331
+
+Obtain the default account for a user (if it exists).
+
+ACCEPTS IN	1: Address of an 8 word block for a string account
+		2: user directory # (-1 for self)
+
+		GDACC
+
+RETURNS	+1: unsuccessful, error # in 1
+	+2: Successful, account designator in 1
+
+
+GDACC ERROR MNEMONICS:
+
+GDACX1:	User name not in acount matrix
+GDACX2:	No default for this user
+ACCTX1: No user/account data file
+
+
+
+
+		ATGRP	JSYS 332
+
+Get the pie slice group for a given account.
+
+ACCEPTS IN	1: account designator, which is:
+		   500000000000+account number or a string pointer
+
+		ATGRP
+
+RETURNS	+1: Unsuccessful, error # in 1
+	+2: Successful, SIXBIT group name in 2
+
+
+ATGRP ERROR MNEMONICS:
+
+ACCTX1: No user/account data file
+PIEX1:	Not a pie-slice scheduler system
+ATGPX1:	Invalid account or no group for this account
+
+
+
+
+
+MODIFICATIONS to CACCT:
+
+ACCEPTS IN 	1: account designator, which is:
+		   500000000000+account number or a string pointer
+		2: bits described below
+
+		CACCT
+
+RETURNS	+1: unsuccessful, error # in 1
+	+2: successful, updated string pointer in 1 (if pertinent)
+
+	B0 - Do account change, but not a pie slice group change
+	B1 - Don't print an entry on the logging teletype
+
+	The above bits require WHEEL or OPER privileges to use and
+	ignored completely if the caller does not have one or more
+	of these enabled.
+
+CACCT ERROR MNEMONICS:
+
+CACTX1:	illegal account number or string
+CACTX2:	not logged in
+PIEX1:	Not a pie-slice scheduler system
+
+
+
+
+
+		GACTJ	JSYS 333
+
+Get the current account for this job.
+ACCEPTS IN	1: Address of 8 word block for string account
+		2: job # (-1 for self)
+
+		GACTJ
+
+RETURNS	+1: Unsuccessful, error # in 1
+	+2: Successful, account designator in 1
+
+
+GACTJ ERROR MNEMONICS:
+
+GCTJX1:	Invalid job #
+GCTJX2:	Job doesn't exist
+
+
+
+
+
+		GPSGN	JSYS 334
+Get the pie-slice group name in which this job is running.
+
+ACCEPTS IN	1: TENEX destination designator
+		2: job # (-1 for self)
+
+		GPSGN
+
+RETURNS	+1: unsuccessful, error # in 1
+	+2: successful, updated string pointer in 1 (if pertinent)
+
+GPSGN ERROR MNEMONICS:
+
+PIEX1:	Not a pie-slice scheduler system
+GCTJX1:	Invalid job #
+GCTJX2: Job doesn't exist
+ACCTX1:	No user/account data file
+
+
+
+
