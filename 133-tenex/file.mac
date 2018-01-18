@@ -1,0 +1,472 @@
+;<133-TENEX>FILE.MAC;65     5-SEP-74 15:18:21    EDIT BY ALLEN
+; REVISE UNLOCK MACRO
+;<133-TENEX>FILE.MAC;64     1-AUG-74 10:56:13    EDIT BY ALLEN
+; NEW LOCK AND UNLOCK MACROS FOR IMPROVED COLLISION-ON-NON-RESIDENT-
+; LOCK WAKEUP STRATEGY
+;<TENEX-132>FILE.MAC;63    13-MAY-74 08:57:16    EDIT BY TOMLINSON
+; DEFINE XCTBU AS XCT 3,
+;<TENEX-132>FILE.MAC;62    16-APR-74 13:05:14	EDIT BY ALLEN
+;<TENEX-132>FILE.MAC;60    18-MAR-74 21:02:22	EDIT BY TOMLINSON
+; ADDED CALL AND RET DEFS
+;<TENEX-132>FILE.MAC;59    13-MAR-74 21:31:03	EDIT BY TOMLINSON
+; Added fdb bit for undeletable files
+;<TRAP>FILE.MAC;4    19-MAR-74 08:57:03	EDIT BY BTHOMAS
+;<TRAP>FILE.MAC;3    13-MAR-74 13:08:15	EDIT BY BTHOMAS
+; DEFINE CALL AND RET
+;<TRAP>FILE.MAC;1     4-MAR-74 15:07:55	EDIT BY BTHOMAS
+; CHANGES FOR CFGRP JSYS
+;<TENEX-132>FILE.MAC;57    23-NOV-73 13:53:15	EDIT BY PLUMMER
+; ADD DIREXL FOR BSYS -- NB: NOT A LOCK AS IN SRI BSYS
+;<TENEX-132>FILE.MAC;56    21-NOV-73 17:12:22	EDIT BY CLEMENTS
+; MADE "LOG" HAVE SAME VALUE AS IN PROLOG!!
+;<TENEX-132>FILE.MAC;55    10-NOV-73 20:03:34	EDIT BY CLEMENTS
+;<TENEX-132>FILE.MAC;54     9-NOV-73 19:55:42	EDIT BY CLEMENTS
+;<TENEX-132>FILE.MAC;53    14-MAY-73 11:42:46	EDIT BY TOMLINSON
+; Added SCRF and SCRTF flags for scratch files
+;<TENEX-132>FILE.MAC;52    14-MAY-73 10:26:22	EDIT BY TOMLINSON
+; Added FDBEPH def'n
+;<TENEX-132>FILE.MAC;51    13-FEB-73 19:01:25	EDIT BY CLEMENTS
+;<TENEX-130>FILE.MAC;50    28-DEC-72 15:29:13	EDIT BY TOMLINSON
+;<TENEX-130>FILE.MAC;49    21-NOV-72  0:23:33	EDIT BY TOMLINSON
+;<TENEX-130>FILE.MAC;48    20-NOV-72 23:54:17	EDIT BY TOMLINSON
+;<TENEX-130>FILE.MAC;47    20-NOV-72 17:13:53	EDIT BY TOMLINSON
+;<TENEX-130>FILE.MAC;46    20-NOV-72 13:47:21	EDIT BY TOMLINSON
+; MOVED BUGSTRING AND TITLE-END THINGS OUT TO PARAMS
+;<TENEX-130>FILE.MAC;45    18-NOV-72 18:45:12	EDIT BY WALLACE
+;<TENEX-130>FILE.MAC;44    10-NOV-72 11:03:44	EDIT BY TOMLINSON
+;<TENEX-130>FILE.MAC;43    10-NOV-72 10:44:55	EDIT BY TOMLINSON
+;<TENEX-130>FILE.MAC;42    10-NOV-72 10:34:39	EDIT BY TOMLINSON
+; CHANGE IN BUG STRING ALLOCATION
+;<TENEX-130>FILE.MAC;41     9-NOV-72 20:30:16	EDIT BY TOMLINSON
+;<DLM/TEMP>FILE.MAC;40    30-OCT-72 13:35:47	EDIT BY TOMLINSON
+;<FILESYSTEM>FILE.MAC;39    25-AUG-72 17:24:59	EDIT BY TOMLINSON
+;<FILESYSTEM>FILE.MAC;38    25-JUL-72 10:53:30	EDIT BY TOMLINSON
+;<FILESYSTEM>FILE.MAC;37    17-JUL-72 13:59:44	EDIT BY TOMLINSON
+
+	UNIVERSAL FILEDEFINITIONS
+	SUBTTL	R.S.Tomlinson 28 JUN 72  1005:
+RESPC==.
+DEFINE .OLDPC(VAL)<RESPC==VAL>
+
+NUFKS==30		;MAX NUMBER OF FORKS/JOB AS DEF'D IN PROLOG
+OPR==OPER
+LOG==:040000
+RESPC==.
+
+IFN KAFLG,<
+OPDEF	XCTUU	[XCT 7,0]
+OPDEF	XCTMU	[XCT 1,0]
+OPDEF	XCTUM	[XCT 6,0]
+OPDEF	XCTBU	[XCT 3,0]
+OPDEF	CALL	[PUSHJ 17,]
+OPDEF	RET	[POPJ 17,]
+>
+IFN KIFLG,<
+OPDEF	XCTUU	[XCT 3,0]
+OPDEF	XCTMU	[XCT 2,0]
+OPDEF	XCTUM	[XCT 1,0]
+OPDEF	XCTBU	[XCT 3,0]
+DEFINE UMOVE(A,L)
+<	XCTUU	[MOVE A,L]>
+DEFINE UMOVEM(A,L)
+<	XCTUU	[MOVEM A,L]>
+DEFINE UMOVEI(A,L)
+<	PRINTX !UMOVEI NOT AVAILABLE ON KI-10!>
+DEFINE UMOVES(A,L)
+<	XCTUU	[MOVES A,L]>
+>;END OF KI FLAG
+DEFINE	OKINT	<XCT INTDFF>
+DEFINE	NOINT	<AOS INTDF>
+DEFINE	NOSKED <AOS NSKED>
+DEFINE OKSKED <
+	SOSG NSKED
+	XCT RSKED >
+DEFINE	LOCK(LCK,FAIL)<
+	AOSE LCK
+	IFIDN <FAIL>,<>,<JSYS CNTLCK##>
+	IFDIF <FAIL>,<>,<FAIL>>
+DEFINE UNLOCK(LCK)<
+	SOSL LCK
+	PUSHJ P,CNFLCT##
+>
+
+; The following macro is used to define flag bits
+; In conjunction with the test macro, it provides for automatic
+; Insertion of the ac holding the flag, and trxx or tlxx to reference
+; The proper halfword
+
+DEFINE	FLG(FL,LR,REG,BIT)<FL'%==<T'LR'N REG,BIT>
+IFL BIT-20,<FL==BIT>
+IFGE BIT-20,<FL=BIT>>
+
+DEFINE	TEST(COND,FL1,FL2)<IFIDN <FL2>,<>,<<TR'COND>!FL1'%>
+IFDIF <FL2>,<>,<<TR'COND>!FL1'%!FL2'%
+IFN <FL1'%>&777777000000-<FL2'%>&777777000000,<
+PRINTX	FL1 & FL2 ARE IN DIFFERENT HALF WORDS>>>
+
+; Macros to allocate storage
+
+DEFINE	DFS(N,PC)<
+ DEFINE	N(VAR,SIZE)<
+	IFIDN <SIZE><><ASSIGN VAR,PC>
+	IFDIF <SIZE><><ASSIGN VAR,PC,SIZE>>>
+
+DFS(JS,JSBLOC)
+DFS(LS,RESVLC)
+DFS(PS,TSBLOC)
+DFS(NR,NRESLC)
+DFS(NRP,NRPLOC)
+
+; Accumulators
+
+STS=:0		; Lh - file status, rh miscellaneous flags
+A=:1		; General temporary
+B=:2		; General temporary
+C=:3		; General temporary
+D=:4		; Genearl temporary
+UNIT=:5		; UNIT NUMBER
+IOS=:6
+E=:7		; Pointer to user parameter block
+F=:10		; Flags
+JFN=:11		; Job file number
+NUM=:12		; Used around gtjfn loop to accumulate numbers
+DEV=:13		; Lh device bits, rh device dispatch table
+F1=:14		; More flags for gtjfn and lookup routines
+NSAC==F1+1	; Number of acs to save when calling other routines
+P=:17
+
+; Variables in psb associated with files
+
+PS(CAPMSK)
+PS(CAPENB)
+PS(PRIMRY)		; Primary io indirection pointers
+PS(LSTERR)		; Last error number
+PS(ERRSAV,10)		; Block of error parameters
+
+; Resident storage for file system
+
+LS(DIOFN,NDSKS)		; Ofn for directory index file
+LS(FDOFN,NFDIB*NDSKS)	; Table of ofns for fd
+LS(FDLOFN,NDSKS)	; Long file ofn for fd
+
+; Externals
+
+EXTERN	MSTKOV		; Where to go when stack overflows
+EXTERN	ASOFN		; Assign ofn for disc address
+EXTERN	BLOCK1		; Block until previous inst skips
+EXTERN	BUGCHK		; Bug check
+EXTERN  BUGNTE		; BUG NOTE
+EXTERN	FPC		; Return pc for fast jsys's
+EXTERN	BUGHLT		; Bug halt routine
+EXTERN	DSKASN		; Assign a disk page
+EXTERN	DISKP		; Disk exists switch
+EXTERN	DISGE		; Call schedular to dismiss until a word is +
+EXTERN	DISL		; Call schedular to dismiss until a word is -
+EXTERN	ERRSAV		; Block of words for saving error parameters
+EXTERN	FORKN		; Rh has this fork number
+EXTERN	INTDF		; Cell to aos to disable psi
+EXTERN	INTDFF		; Cell to execute to reenable psi
+EXTERN	ITRAP		; Cause instruction trap
+EXTERN	JOBNO		; Job number of currrent job
+EXTERN	JOBPT		; Lh has controlling tty (indexed by job)
+EXTERN	MENTR		; Routine to set up slow jsys
+EXTERN	MRETN		; Routine to return from slow jsys
+EXTERN	MRPACS		; Routine to read page access
+EXTERN	MRMAP		; Read monitor map
+EXTERN	PJMA		; Origin of job mapped area
+EXTERN	PPMA		; Origin of process mapped area
+EXTERN	FREJP,FREJPA	; Free job page
+EXTERN	PPMPG		; Per process map page
+EXTERN	PSIRQ0		; Initiates a psi in this process
+EXTERN	PSIBIP		; Word is non-zero if any breaks are in progress
+EXTERN	RELOFN		; Release ofn routine
+EXTERN	SETMPG		; Map page subroutine
+EXTERN	TTFORK		; Lh has job of tty assignment
+EXTERN	TCI		; Tty type character in routine
+EXTERN	TCO		; Tty type character out routine
+EXTERN	NSKED		; word to AOS to disable sched.
+EXTERN	RSKED		; cell to execute on re-enable of sched.
+
+; Variables in jsb associated with files
+
+EXTERN	RJFN		; Range of jfn index
+
+DEFINE JFS(SYM)<ASSIGN SYM,JFNPC,1>
+ASSIGN JFN0,JFNPC,0
+JFS(FILBYT)		; Byte pointers to current window
+JFS(FILBYN)		; Byte number of current byte
+JFS(FILLEN)		; Total length of file in bytes
+JFS(FILCNT)		; Bytes remaining in current buffer
+JFS(FILLCK)		; File lock word
+JFS(FILWND)		; Lh ==> current page number
+			; Rh ==> location of current window
+JFS(FILSTS)		; Lh ==> file status bits
+			; Rh ==> device dependent dispatch address
+JFS(FILDEV)		; Device dependent  information
+JFS(FILOFN)		; Lh ==> ofn for this file
+			; Rh ==> ofn of long file pt table
+JFS(FILLFW)		; Lh ==> current page table number
+			; Rh ==> location of page table table
+JFS(FILDDN)		; Lh ==> pointer to device string block
+			; Rh ==> directory number
+JFS(FILNEN)		; Lh ==> pointer to file name string block
+			; Rh ==> pointer to extension string block
+JFS(FILVER)		; Lh ==> fork number of originator of this jfn
+			; Rh ==> version number
+
+; The following variables overlay the space in the above definitions
+; This is possible since they are used only during gtjfn
+
+ASSIGN	FILTMP,FILBYT,0	; Lh ==>0 ptr to temp string block for default
+			; Rh ==>0 point to temp string block
+ASSIGN	FILPRT,FILBYN,0	; Pointer to protection string or protection #
+ASSIGN	FILACT,FILLEN,0	; Pointer to account string or account number
+ASSIGN	FILOPT,FILWND,0	; Byte pointer to store string in gtjfn
+
+JS(JFNLCK)		; Lock to prevent tampering with jfn's
+JS(MAXJFN)
+JS(JOBUNT)		; CONNECTED DSK UNIT
+JS(JBCLCK)		; LOCK FOR ASGPAG
+JS(JBCOR,4)		; Page allocation bit table
+JS(JSBFRE,7)		; Job area free storage header
+JS(JSFREE,IJSFRE)	; Free storage area in job block
+
+; Bit definitions in sts (also filsts)
+
+FLG(OPNF,L,STS,400000)	; File is open
+FLG(READF,L,STS,200000)	; File is ok to read
+FLG(WRTF,L,STS,100000)	; File is ok to write
+FLG(XCTF,L,STS,040000)	; File is ok to execute
+FLG(RNDF,L,STS,020000)	; File is ok to reset pointer (i.e. not append)
+FLG(ASPF,L,STS,010000)	; File is ok to access as specified in p.t.
+FLG(CALLF,L,STS,004000)	; File is ok to call as a procedure
+FLG(LONGF,L,STS,002000)	; File is a long file
+FLG(EOFF,L,STS,001000)	; End of file if read attempted
+FLG(ERRF,L,STS,000400)	; Bytes read may be erroneous
+FLG(NAMEF,L,STS,000200)	; Name is associated with this jfn
+FLG(ASTF,L,STS,000100)	; A * was typed in
+FLG(ASGF,L,STS,000040)	; Jfn is being assigned
+FLG(HLTF,L,STS,000020)	; Halt if i-o error
+FLG(WNDF,L,STS,000010)	; A window page has been set up
+FLG(ENDF,L,STS,000004)	; File is past end of maximum length
+FLG(SIZF,L,STS,000002)	; Illegal to change size of byte
+FLG(FRKF,L,STS,000001)	; File is restricted to fork in lh(filver)
+; In flags
+
+FLG(OUTPF,L,F,400000)	; Bit 0 for output use
+FLG(NEWNF,L,F,200000)	; Bit 1 new file name only
+FLG(OLDNF,L,F,100000)	; Bit 2 old file only
+FLG(PONFF,L,F,040000)	; Bit 3 print "old file"/"new file" etc.
+FLG(CFRMF,L,F,020000)	; Bit 4 confirmation required
+FLG(TMPFF,L,F,010000)	; Bit 5 temporary file
+FLG(RTYPF,L,F,004000)	; Bit 6 retype whole file name when complete
+FLG(NACCF,L,F,002000)	; Bit 7 no access to other forks
+FLG(IGDLF,L,F,001000)	; Bit 8 ignore deleted bit in files
+FLG(JFNF,L,F,000400)	; Bit 9 use jfn given in e+11
+FLG(JFNAF,L,F,000200)	; Bit 10 use alternate if jfn in e+11 na
+FLG(ASTAF,L,F,000100)	; Asterisk allowed
+FLG(OSTRF,L,F,000040)	; Output stars allowed
+FLG(RLHFF,L,F,000020)	; RETURN LEFT HALF FLAGS
+FLG(SCRF,L,F,000010)	; Make this file a scratch file
+FLG(FILF,L,F,000002)	; If short form, 2 has xwd infile,outfile
+FLG(SHTF,L,F,000001)	; Dummy bit to cause 1 to be taken as flags
+
+; Flags in rh of f used by gtjfn
+
+FLG(DEVF,R,F,400000)	; Device is specified
+FLG(DIRF,R,F,200000)	; Directory specified
+FLG(NAMF,R,F,100000)	; Name specified
+FLG(EXTF,R,F,040000)	; Extension specified
+FLG(VERF,R,F,020000)	; Version specified
+FLG(PRTF,R,F,010000)	; Protection specified
+FLG(ACTF,R,F,004000)	; Account specified
+FLG(DEVTF,R,F,002000)	; Device was typed in
+FLG(DIRTF,R,F,001000)	; Directory was typed in
+FLG(NAMTF,R,F,000400)	; Name was typed in
+FLG(EXTTF,R,F,000200)	; Extension was typed in
+FLG(VERTF,R,F,000100)	; Version was typed in
+FLG(ACTTF,R,F,000040)	; Account was typed in
+FLG(PRTTF,R,F,000020)	; Protection was typed in
+FLG(TMPTF,R,F,000010)	; Temporary flag was set by type in
+FLG(SCRTF,R,F,000004)	; SCRATCH FLAG SET BY TYPE-IN
+FLG(CNTVF,R,F,000002)	; Control-v typed
+
+; Flags in rh of sts used locally
+
+FLG(MTCHF,R,F1,400000)	; Match seen during lookup ooerations
+FLG(AMBGF,R,F1,200000)	; More than one match seen during operations
+FLG(OCTF,R,F1,100000)	; Octal number is being collected
+FLG(NEGF,R,F1,040000)	; Minus sign was typed
+FLG(UNLKF,R,F1,020000)	; Used by directory to remember to unlock
+FLG(STRF,R,F1,010000)	; String input exists
+FLG(NREC,R,F1,004000)	; Don't perform recognition
+FLG(NREC1,R,F1,002000)	; Used by lookup routines as for norec
+FLG(DIRXF,R,F1,001000)	; Directory was stepped
+FLG(NAMXF,R,F1,000400)	; Name was stepped
+FLG(DIRFF,R,F1,000200)	; Directory is being specified
+FLG(EXTFF,R,F1,000100)	; Extension is being specified
+FLG(PRTFF,R,F1,000040)	; Protection is being specified
+FLG(ACTFF,R,F1,000020)	; Account is being specified
+FLG(NUMFF,R,F1,000010)	; Number is being collected
+FLG(KEYFF,R,F1,000004)	; Looking for t, p, a
+FLG(NEWF,R,F1,000002)	; A new file name was created
+FLG(NEWVF,R,F1,000001)	; A new version of an existing file was created
+
+; Flags in lh of f1 (scan control)
+
+FLG(DIRSF,L,F1,100000)	; Scan directories <*>
+FLG(NAMSF,L,F1,040000)	; Scan names (^*.)
+FLG(EXTSF,L,F1,020000)	; Scan extensions (^.*)
+FLG(VERSF,L,F1,010000)	; Scan versions (;*)
+FLG(RVERF,L,F1,004000)	; Most recent version specified
+FLG(HVERF,L,F1,002000)	; New version specified
+FLG(LVERF,L,F1,001000)	; Lowest version specified
+FLG(FXPRT,L,F1,000400)	; ;P SPECIFIED
+FLG(FXACT,L,F1,000200)	; Account specified with *'s
+FLG(FXTMP,L,F1,000100)	; ;t specified with *'s
+FLG(EXTXF,L,F1,000040)	; Extension was stepped
+FLG(NNAMF,L,F1,000020)	; No name device
+FLG(NVERF,L,F1,000010)	; No versions etc.
+FLG(DFSTF,R,F1,000004)	; * in default string
+FLG(STARF,L,F1,000002)	; Set by *
+FLG(STEPF,L,F1,000001)	; Step flag
+
+; Device dispatch indices
+
+TPC==0
+USE TPC
+
+DLUKD::!BLOCK 1		; Directory setup routine
+NLUKD::!BLOCK 1		; Name lookup
+ELUKD::!BLOCK 1		; Extension lookup
+VLUKD::!BLOCK 1		; Version lookup
+PLUKD::!BLOCK 1		; Protection insertion
+ALUKD::!BLOCK 1		; Account insertion
+SLUKD::!BLOCK 1		; Status insertion (temporary permanent etc)
+OPEND::!BLOCK 1		; Open file
+BIND::!	BLOCK 1		; Byte input
+BOUTD::!BLOCK 1		; Byte output
+CLOSD::!BLOCK 1		; Close file
+REND::!	BLOCK 1		; Rename
+DELD::!	BLOCK 1		; Delete file
+DMPID::!BLOCK 1		; Dump mode input
+DMPOD::!BLOCK 1		; Dump mode output
+MNTD::!	BLOCK 1		; Mount device
+DSMD::!	BLOCK 1		; Dismount device
+INDD::!	BLOCK 1		; Initialize directory of device
+MTPD::!	BLOCK 1		; Do mtape operation
+GDSTD::!BLOCK 1		; Get device status
+SDSTD::!BLOCK 		; Set device status
+
+INTERN	DIRDSK,DIRLCK,DIRUSE,DDBMAX
+
+; Variables in directory
+
+DIRTPC==750000		; Directory origin
+	USE	DIRTPC
+
+DIRORG:	BLOCK 0		; Directory origin
+DIRLCK:	BLOCK 1		; Directory lock
+DIRUSE: BLOCK 1		; Directory use indicator
+DIRNUM:	BLOCK 1		; Number of this directory
+SYMBOT:	BLOCK 1		; Symbol table bottom
+SYMTOP:	BLOCK 1		; Symbol table top
+DIRFRE:	BLOCK 7		; Free storage header
+FRETOP:	BLOCK 1		; Current top of free storage area
+DIRDPW:	BLOCK 1		; Default file protection word
+DIRPRT:	BLOCK 1		; Directory protection word
+DIRDBK:	BLOCK 1		; Default backup specification
+DIRGRP:	BLOCK 1		; Groups having access to this directory
+DIRSAV:	BLOCK 1		; A place to put pointers to be gc'ed
+DIRDSK:	BLOCK 1		; LH - max allocation this directory,
+			; RH - current allocation
+DIREXL:	BLOCK 1		; -1 PREVENTS EXPUNGE
+SPARE:	BLOCK 1		; Locations for additional variables
+DIRLOC:	BLOCK 1		; Temp used for saving location in the directory
+DIRINP:	BLOCK 1		; Temp to save pointer to input for lookup
+DIRINC:	BLOCK 1		; Temp to hold increment for searching
+DIRMSK:	BLOCK 1		; Temp to hold mask for lookups
+DIRSCN:	BLOCK 1		; Temp to save pointer to pointer
+DIFREE:	BLOCK 0		; Beginning of free area
+
+; Variables in subindex directory block 0
+
+DIRHTO==DIRDPW		; Directory number hash table origin
+DIRHTL==DIRPRT		; Directory number hash table length
+FDADR==:DIRDBK		; Disc address of fd ib
+; DEFINED LSTDNO
+LSTDNO==DIRGRP		; LAST ASSIGNED DIRECTORY NUMBER
+
+SBIDTB:	BLOCK <200+4>/5	; Directory subindex dispatch
+ESBIDT:
+
+; Parameters and bits pertinent to directories
+
+	USE	TPC,0	; Pc to use to define fdb offsets
+
+	BLOCK 1		; The header, not referenced symbolically
+FDBCTL:!BLOCK 1		; Lh ==> control bits (see below)
+			; Rh ==> location of file name block
+FDBEXT:!BLOCK 1		; Lh ==> location of extension block
+			; Rh ==> pointer to other extensions
+FDBADR:!BLOCK 1		; The file address & class field
+FDBPRT:!BLOCK 1		; File protection word
+FDBCRE:!BLOCK 1		; Creation date & time of version 1
+FDBUSE:!BLOCK 1		; Lh ==> last writer directory number
+			; Rh ==> use count (+1 for each indirect pointer
+			;  and saved environment)
+FDBVER:!BLOCK 1		; Lh ==> version number
+			;  this is job number for temp files
+			; Rh ==> pointer to other versions
+FDBACT:!BLOCK 1		; Account infor for charging
+			;  + for location of string block
+			;  - for number
+FDBBYV:!BLOCK 1		; 0-5 ==> number of version to retain
+			; 6-11 ==> last byte size
+			; Rh ==> count of actual pages in file
+FDBSIZ:!BLOCK 1		; Length of file in bytes
+FDBCRV:!BLOCK 1		; Creation date and time of this version
+FDBWRT:!BLOCK 1		; Date & time of last write
+FDBREF:!BLOCK 1		; Date & time of last reference
+FDBCNT:!BLOCK 1		; Lh ==> count of writes
+			; Rh ==> count of references
+FDBBCK:!BLOCK 5		; Words for backup system
+FDBUSW:!BLOCK 1		; User settable word
+FDBLEN:			; Length of fdb
+
+; Bits in lh of fdbctl
+
+FDBTMP==400000		; File is temporary
+FDBPRM==200000		; File is permanent
+FDBNEX==100000		; No extension for this fdb yet
+			;  the file does not really exist
+FDBDEL==040000		; File is deleted
+FDBNXF==020000		; File does not exist (first write not complete)
+FDBLNG==010000		; Long file
+FDBSHT==004000		; Compressed page table
+FDBENV==002000		; Environment file
+FDBSUB==001000		; Subroutine file
+FDBUND==000400		; Undeletable file
+FDBEPH==000001		; Ephemeral subsys file
+
+; Symbols in directory descriptor block
+
+	USE	TPC,0	; Pc to define offsets into ddb
+
+	BLOCK 1		; Header not referenced symbollically
+DDBNAM:!BLOCK 1		; Lh ==> pointer to password string block
+			; Rh ==> pointer to name string block
+DDBMAX:!BLOCK 1		; Maximum disk storage for this directory
+DDBLOG:!BLOCK 1		; Time and date of last login
+DDBPRV:!BLOCK 1		; Privilege bits
+DDBMOD:!BLOCK 1		; Mode bits
+DDBRES:!BLOCK 1		; Special resource information
+DDBNUM:!BLOCK 1		; Lh ==> directory number
+			; Rh ==> pointer to special information block
+			; 0 means no special info
+DDBDAT:!BLOCK 1		; Date and time of last login
+DDBGRP:!BLOCK 1		; Groups to which this user belongs
+DDBLEN:!
+
+	.END
+
