@@ -1,0 +1,3896 @@
+COMMENT    VALID 00038 PAGES
+C REC  PAGE   DESCRIPTION
+C00001 00001
+C00004 00002		TITLE	SPELL	SPELLING CHECK  & CORRECTION.
+C00013 00003		SUBTTL	BIG COMMENT 
+C00050 00004		SUBTTL	INITIALIZATION
+C00057 00005		SUBTTL	THE LOOP WHERE ALL THE WORK GETS DONE.
+C00060 00006		SUBTTL	THE DEBUG QUEUE AND TRACE DUMP ROUTINE
+C00064 00007		SUBTTL	FULL DUMP AND INCREMENTAL DUMP ROUTINES
+C00066 00008		SUBTTL	GETLIN	READ A LINE OF DATA INTO LIBUF
+C00069 00009		SUBTTL	RDDATA THE READING ROUTINE
+C00074 00010		SUBTTL  CHKLIN ROUTINE
+C00080 00011		SUBTTL	PUTLIN
+C00083 00012		SUBTTL	DESCRIPTION OF ENDTST
+C00096 00013		SUBTTL	ENDTST	TEST THE SUSPECT WORD BY REMOVING THE ENDINGS
+C00106 00014		SUBTTL	ROUTINES USED BY ENDTST
+C00109 00015		SUBTTL	LOAD WORD
+C00112 00016		SUBTTL	CHANNEL INITIALIZATION
+C00114 00017		SUBTTL	I/O STUFF:
+C00116 00018		SUBTTL	THE DICTIONARY LOADER.
+C00120 00019		SUBTTL	READ A DICTIONARY WORD.
+C00122 00020		SUBTTL	THE HASH COMPUTATION.
+C00124 00021		SUBTTL	SCAN TTY FOR A FILE NAME
+C00128 00022		SUBTTL	ERROR MESSAGES
+C00131 00023		SUBTTL	SEARCH	LOOK IN DICTIONARY FOR A WORD.
+C00134 00024		SUBTTL	INSERT
+C00137 00025		SUBTTL	CORE ROUTINES
+C00138 00026		SUBTTL	TYPE FILE NAMES,READ NAMES, PLAY WITH TTY
+C00140 00027		SUBTTL	TRYFIX	OUR HUMBLE ATTEMPT TO CORRECT THE WORD.
+C00150 00028		SUBTTL	TRYIII	FOR III DISPLAY OF GUESSES.
+C00156 00029		SUBTTL	THE HELP MESSAGE
+C00159 00030		SUBTTL	CHECK FOR REPEATS OF THE SAME WORD.
+C00161 00031		SUBTTL	TYPE OUT ALL THE WORDS WE FOUND
+C00163 00032		SUBTTL	X1SRCH	TRY TO CORRECT ONE MISSPELLED LETTER
+C00166 00033		SUBTTL	X1EXL	MAYBE HE TYPED ONE EXTRA LETTER
+C00168 00034		SUBTTL	XTRNP	ONE PAIR TRANSPOSITION
+C00169 00035		SUBTTL	ONE LETTER MISSING
+C00172 00036		SUBTTL	SAVEME  WRITE OUT CORE IMAGE USING SWAP UUO.
+C00174 00037	IFN XCNT,<
+C00178 00038		SUBTTL	SOME OF THE STORAGE STUFF
+C00181 ENDMK
+C;
+	TITLE	SPELL	SPELLING CHECK  & CORRECTION.
+;			R. E. Gorin 20 February, 1971
+;			Revised July 23, 1972 III displays
+;			I HAVE YOU UNDER MY SPELL
+	SUBTTL	DEFINITIONS
+
+COMMENT $
+
+Acknowledgements:
+
+	The work reported here was supported in part by the  Advanced
+Research  Projects Agency of the Department of Defense under contract
+SD-183, and in part by the National  Science  Foundation,  which  has
+supported the author as a Fellow.
+
+
+Report Problems with this program to:
+			Ralph E. Gorin
+			Artificial Intelligence Laboratory
+			Stanford University
+			Stanford, California 94305
+$
+
+IFDEF FOR,<MACRO__0;>MACRO==1		;SELECT ASSEMBLER
+
+IFE MACRO,<
+	DEFINE	DEF(A,B)<
+	A_B>
+	DEFINE	SDEF(A,B)<
+	A__B>
+>
+IFG MACRO,<
+	DEFINE	DEF(A,B)<
+	A=B>
+	DEFINE	SDEF(A,B)<
+	A==B>
+>
+
+
+COMMENT/  ASSEMBLY SWITCHES.
+
+STANSW	GIVES SIXBIT PPN AND STANFORD SWAP UUO
+
+COUNTS	GIVES THE EXECUTION COUNTS AND DEBUGGING TRACE OF THE
+	LAST 100 AREAS EXECUTED. (not recommended - reg)
+
+XCNT	ADDS CODE TO WRITE A FILE CONTAINING THE HASH CHAIN LENGTHS
+
+IF STANSW IS 0 THEN IF SANSW IS 1 YOU GET DECIMAL PPN, ELSE OCTAL PPN
+
+/
+	SDEF(COUNTS,0)
+	SDEF(XCNT,0)
+IFNDEF STANSW,<SDEF(STANSW,0)>
+IFNDEF SANSW,<SDEF(SANSW,0)>
+IFN SANSW,<SDEF(SANSW,1)>	;NORMALIZE
+IFE STANSW,<SDEF(PPNMUL,10+SANSW+SANSW)>
+IFNDEF COUNTS,<SDEF(COUNTS,0)>
+IFNDEF XCNT,<SDEF(XCNT,0)>	;SPECIAL COUNT CODE - LENGTH OF CHAINS
+	DEF(FL,0)
+	DEF(A,1)
+	DEF(B,2)
+	DEF(C,3)
+	DEF(D,4)
+	DEF(W,5)
+	DEF(X,6)
+	DEF(Y,7)
+	DEF(Z,10)
+	DEF(K,11)
+	DEF(L,12)
+	DEF(M,13)
+	DEF(N,14)
+IFG COUNTS,<
+	DEF(DEBA,15)
+	DEF(DEBX,16)
+>
+	DEF(P,17)
+
+	EXTERN	JOBFF,JOBSA,JOBREL
+
+;I-O CHANNELS:
+	SDEF(DICT,15)	;FOR DICTIONARY READIN AND DICTIONARY DUMPS
+	SDEF(DATA,16)	;FOR FILE TO CORRECT
+	SDEF(EXCP,17)	;EXCEPTIONS
+	SDEF(CORR,14)	;CORRECTED FILE.
+
+;COMMON DEC CALLIS
+OPDEF	RESET	[CALLI	0]
+OPDEF	EXIT	[CALLI	12]
+OPDEF	CORE	[CALLI	11]
+
+;STANFORD-DEC TTY CALLS 
+OPDEF	TTCALL	[51B8]
+OPDEF	INCHRW	[TTCALL 0,]
+OPDEF	OUTCHR	[TTCALL 1,]
+OPDEF	INCHRS	[TTCALL 2,]
+OPDEF	OUTSTR	[TTCALL 3,]
+OPDEF	INCHWL	[TTCALL 4,]
+OPDEF	GETLCH	[TTCALL 6,]
+OPDEF	CLRBFI	[TTCALL 11,]
+
+;	RIGHT HALF FLAGS
+
+	SDEF(FRSTOP,1)		;FIRST I/O OPERATION ON DATA CHANNEL
+	SDEF(TECO,2)		;FOUND A TECO FILE ON DATA CHANNEL
+	SDEF(LEFT,4)		;HASH ON LEFT, NOT ON RIGHT
+	SDEF(ERRLIN,10)		;THERE IS AN ERROR IN THIS LINE
+	SDEF(NOCORR,100)	;CHECK ONLY, NO CORRECT
+	SDEF(IDUMP,200)		;DO INCREMENTAL DUMP, OR INCREMENTAL INSERT
+	SDEF(SHUTUP,400)	;DON'T CORRECT HIM, OR ASK ADVICE. WRITE 
+				;EXECPTIONS, THOUGH.
+	SDEF(HELPSN,1000)	;ONCE ONLY PUBLICATION OF HELP-1
+	SDEF(HELP2S,2000)	;ONCE ONLY PUBLICATION OF HELP-2
+	SDEF(NOEXCP,4000)	;DON'T WRITE EXCEPTION FILE
+	SDEF(NOTRAC,10000)	;DON'T ADD TO TRACE WHILE DUMPING TRACE
+	SDEF(PICKUP,20000)	;ALLOW A PICKUP IN THE MIDDLE OF FILE
+	SDEF(TRAIN,40000)	;INSERT ALL EXCEPTIONS INTO DICTIONARY #I1.
+				;(CREATE A TRAINING SET)
+	SDEF(QTRAIN,100000)	;TRAIN AND MARK CLOSE WORDS IN EXCEPTION FILE
+IFN STANSW,<
+	SDEF(IIISW, 200000)	;WE ARE ON A STANFORD III
+>
+	SDEF(TVE,400000)	;FILE IS IN TV/E FORMAT: FLUSH THE DIRECTORY PAGE
+
+;LEFT HALF FLAGS
+	SDEF(UPPER,1)		;INPUT WORD IS ALL UPPER CASE
+	SDEF(MIXED,2)		;FIRST LETTER UPPER CASE, REST LOWER
+	SDEF(LOWER,4)		;ALL LETTERS LOWER CASE
+
+
+
+	DEFINE	BCHECK	(BYP,BOUND)<
+	PUSH	P,A
+	MOVEI	A,@BYP	;GET ADDRESS OF BYTE.
+	CAILE	A,BOUND
+	PUSHJ	P,INTCFN
+	POP	P,A
+>
+	DEFINE	ICOUNT<
+	IFG COUNTS,<
+	SDEF(%QXX,%QXX+1)
+	AOS	ICTAB+%QXX
+	MOVEI	DEBA,%QXX
+	PUSHJ	P,DEBQUE
+>>
+
+IFG COUNTS,<SDEF(%QXX,<-1>)
+	LALL>
+
+IFN STANSW,<				;COMPILE FOR STANFORD FEATURES
+OPDEF	SWAP	[CALLI	400004]		;STANFORD SWAP UUO.
+OPDEF	DPYCLR	[701B8]			;CLEAR DISPLAY
+OPDEF	PPIOT	[702B8]			;
+OPDEF	DPYPOS	[PPIOT	2,]		;SET Y POSITION OF PAGE PRINTER
+OPDEF	DPYSIZ	[PPIOT	3,]		;SET SIZE OF PAGE PRINTER.
+OPDEF	UPGIOT	[703B8]
+	SDEF(VBRT,4000)			;LVW BRIGHTNESS FIELD
+	SDEF(VSIZ,1000)			;LVW SIZE FIELD
+	SDEF(VABS,100)			;LVW ABSOLUTE FIELD
+	SDEF(VENDP,20)			;LVW ENDPOINT FIELD
+	SDEF(VINVIS,40)			;LVW INVISIBLE FIELD
+		DEFINE	LVW(X,Y,TYPE,MODE,BRT,SIZ)<
+		IFIDN <MODE><A>,<SDEF(MD,1);>SDEF(MD,0)
+		IFIDN <TYPE><I>,<SDEF(TT,2);>SDEF(TT,0)
+		IFIDN <BRT><>,<SDEF(BQ,0);>SDEF(BQ,BRT)
+		IFIDN <SIZ><>,<SDEF(SQ,0);>SDEF(SQ,SIZ)
+		BYTE(11)<X>,<Y>(3)BQ,SQ(2)MD,TT(4)6
+		>
+
+
+COMMENT/
+A LONG VECTOR WORD (LVW) FOR THE III DISPLAY HAS THE FOLLOWING FORMAT
+
+BITS  0-10	X	COORDINATE
+BITS 11-21	Y	COORDINATE
+BITS 22-24	BRT	BRIGHTNESS. 0=NO CHANGE, 1-7 INCREASING BRIGHTNESS
+BITS 25-27	SIZ	SIZE. 0=NO CHANGE, 1-7 INCREASING BRIGHTNESS
+BIT     29	M	MODE. 0=RELATIVE TO LAST, 1=ABSOLUTE FROM CENTER
+BITS 30-31	T	TYPE. 0=VISIBLE, 1=ENDPOINT, 2=INVISIBLE
+BITS 32-35		6.  DENOTES LVW IN DISPLAY PROCESSOR
+
+/
+>;IFN STANSW
+
+	LOC 137
+	4		;MARCH 11, 1974 VERSION
+	RELOC 0
+	SUBTTL	BIG COMMENT 
+COMMENT %
+
+	SPELL: Spelling Check and Correction Program
+
+				Ralph E. Gorin
+				Artificial Intelligence Laboratory
+				Computer Science Department
+				Stanford University
+				Stanford, California 94305
+
+				4 March 1971
+				11 March 1974 revision
+
+
+
+Introduction
+
+	SPELL reads  text files  and checks  them for correctness  of
+spelling.    In addition  to  the spelling  check  this  program will
+attempt to correct words that it thinks are misspelled.
+
+	This program can be assembled with either MACRO-10 or FAIL.
+
+	The data  structure is  the heart  of the  program,  and  any
+efficiency in  the program operation is due  primarily to this choice
+of data structure.   The data  structure is  basically a hash  coding
+scheme where dictionary entries are accessed by both their alphabetic
+order and  by their length.  There is a base table that contains 26 *
+26 * 10  halfwords; this table gives  anchors for 6760 chains.   Each
+chain contains exactly all words  with the same two first letters and
+some given length.  To be precise, the hashing function is:
+	(l1*26+l2)*10+min(wl-2,9),
+where l1 and l2  are numeric representations of the  first and second
+letters  (a=0, b=1, ...  z=25) and  wl is the  length of the  word in
+characters.
+
+	This scheme was chosen since it provides  both  an  efficient
+way  to probe the dictionary and a quick way to select a small subset
+of all words that are close to a given input word.
+
+	The program contains about 2K of pure code plus about 4.5K of
+tables  and  I/O  buffers.  With DDT and a 10,500 word dictionary, it
+runs in 34K.
+
+
+
+Dictionary Structure
+
+	Entries are added to the appropriate hash chain by the INSERT
+subroutine.   Entries are added to the head  of the chain, saving the
+time and effort of  searching to the end of  the chain.  This  scheme
+means that the last item entered on a chain is the first item seen by
+a search. The format of the entry is given by:
+
+	Word 0:	xwd flags,nextlk
+	Word 1: 5 bit representation
+	Word 2: 5 bit representation
+		...
+	There are precisely 1+ceiling(wl/7) machine  words  used  for
+each  dictionary entry.  Wl is the length of the entry in characters.
+Nextlk is the pointer to the next entry in the list, or zero if  this
+is  the  last  in the chain.  The left side contains flags, bit 17 is
+used to mark an incremental entry to the dictionary;  bits  0-4  must
+always  be  zero.    One  can imagine that bits 5-16 could be used to
+store semantic information about the entry.    The  unused  bytes  in
+the last word of an entry should be zero, since they are used to stop
+the routine that converts the five bit to 7 bit.  To  make  an  ascii
+letter  into  fivebit the following code is recommended.  Suppose a 7
+bit character is in register A:
+
+	TRZ	A,140	;MAKE UPPER CASE AND FIVEBIT
+
+	There is no provision for deleting words from the dictionary.
+Hence, there is never any need to form a  free  storage  list  or  to
+garbage collect.
+
+
+Spelling Correction Heuristics
+
+	There are four kinds  of errors that the program  attempts to
+correct:
+	one wrong letter.
+	one missing letter.
+	one extra letter.
+	two transposed letters.
+
+	For a wrong letter in the third or subsequent character,  all
+words  that  are  candidates  must  exist on  the same chain that the
+suspect word hashes to.  Hence, each entry on that chain is inspected
+to determine if the suspect  differs  from  the  entry by exactly one
+character.  This is accomplished by an exclusive-or (XOR) between the
+suspect  and  the  dictionary.    Then a JFFO instruction selects the
+first non zero byte in the XOR.  This  byte  is  zeroed  and  if  the
+result  is all zero then the dictionary word differs from the suspect
+in only one letter.  All such words are listed at CANDBF, where  they
+can  be  inspected later.
+
+	For a  wrong letter  in the  first or  second character,  the
+program  tries  varying the  second  letter through  all  26 possible
+values, searching for an exact match.  Then all 26 possible values of
+the first  letter are tried, after  setting the second letter  to its
+original  value.   This means  that 52  more chains are  searched for
+possible matches.
+
+	To correct transposed letters, all combinations of transposed
+letters are tried.  There are only wl-1  such combinations,  so it is
+fairly cheap to do that.
+
+	To correct one extra letter, wl copies of the word are  made,
+each with some letter removed.   Each of  these is  looked  up in the
+dictionary.
+
+	To correct one  missing letter, wl+1  copies of the  word are
+made, each  time inserting a null character in  a new position in the
+suspect.   The null  character  is never  part of  any word,  so  the
+suspect word  augmented by an  embedded null can  be thought of  as a
+word with one wrong letter (the null) then the algorithm for matching
+one wrong letter is used.
+
+
+
+Possible Expansions
+
+	The dictionary should be expanded to include all suffixes for
+every word.   There is a feature that strips suffixes for the purpose
+of finding  the  stem  of the  word  in  the dictionary,    but  this
+heuristic  is error  prone and  incompatible with  later attempts  to
+correct the word.
+
+	If semantic information  were included in the  dictionary, it
+could help guide the selection of a correction.
+
+	Either of  these would require  a major restructuring  of the
+program, since the dictionary would no longer fit in core.  Probably,
+the dictionary should  be kept on  the disk,   with a data  structure
+similar to the one used in core, but arranged to keep each hash chain
+in  the minimum number of  disk pages,  so  that searches through the
+dictionary can be made efficient.
+
+
+Other Features
+
+	The program will read  SOS or TECO format disk  files for the
+file  to be corrected;  the output file  will be written  in the same
+format, with the same SOS line numbers, if present, that the original
+file had.   The  dictionary may be  either SOS or  TECO format.   The
+dictionary  need  not  be alphabetical  and  an  arbitrary  number of
+auxiliary  dictionaries  may  be   loaded,    bounded  only   by  the
+availability  of core.    TV/E format  files  can also  be read;  the
+directory page will be ignored on input, and absent on output.
+
+	When a word is corrected,  the  output file will be rewritten
+with either upper case, lower case of mixed (first letter Upper,  the
+remainder in lower) depending on the format of the original word.
+
+
+Compilation Instructions
+
+	There are two assembly  time switches, STANSW and SANSW.   If
+STANSW  is set  then there  are SIXBIT ppn's  and the  SWAP UUO.   If
+STANSW is zero, then normally there are octal ppn's, except  if SANSW
+is set there are decimal ppn's.
+
+	Compile the program  using MACRO or  FAIL, and load it.   The
+program will  demand an initial dictionary when  it is first started.
+The file  SLOVAR  can be  used for  the  dictionary.   The  resulting
+core-image should be saved after the dictionary load is complete.
+
+
+
+
+Using SPELL
+
+	Incant the command:  "R SPELL" to invoke the  spelling  check
+program.  Assuming  that all is normal, it will type: "Do you want to
+augment the dictionary?" If you don't have  an  auxiliary  dictionary
+anywhere then type <return> and skip the next paragraph.
+
+	If  you have a dictionary that you want to load then type "Y"
+and <return> and you will be asked for the name  of  your  dictionary
+file.  The dictionary file must be on disk. The format of the file is
+one dictionary entry  (word)  on  a  line;  words  must  be  strictly
+alphabetic  characters  and less than 40 letters long. The dictionary
+entries need not be in alphabetical order.   After  typing  the  file
+name  you  will  be  asked whether you want the new entries marked as
+incremental  insertions.     If  the  new  entries  are   marked   as
+incremental  then they will be included in an incremental dump of the
+dictionary.    To have the new entries marked as incremental type "I"
+and <return>, otherwise, type <return>.  (If any of the words in your
+auxiliary dictionary are already  in  the  main  dictionary  then  no
+second copy of the word will be made.  Hence if your words are marked
+as incremental then in a subsequent incremental dump, any words  that
+were  already in the dictionary will not be dumped.) After loading an
+auxiliary dictionary the program will type the total number of  words
+in  the dictionary and the amount of core used.  At present there are
+about 10,700 words in the dictionary, using  35K  of  core.     After
+loading  an  auxiliary,  you will have an opportunity to save the new
+core image on your disk area (probably not worth it). Also  you  will
+get an opportunity to load another auxiliary dictionary.
+
+	Next you will be asked for the name of the file that you want
+to check for spelling errors.  File names are specified in the  usual
+format  of "name.ext[prj,prg]" where name is the filename, ext is the
+file extension, and [prj,prg] is the name of the  file  owner,  which
+may be omitted if the file is on the present user's disk area. If you
+omit the file name then you will immediately enter the exit  sequence
+(see below).
+
+	You will be asked to specify a name for the output file.  The
+output file is where the corrected version of the input goes.  If you
+omit this name then no corrections will be made. (Only the exceptions
+will  typed,  and  if  you  specify an exception file then it will be
+made).
+
+	You  will be asked to name an exception file.  This file will
+contain all the lines on which exceptions were found and the rejected
+words.  (This  file  is  probably not worth it). If you omit the name
+then no such file will be created.
+
+	After you have specified all the files, the program ought  to
+respond  with  "working..."  and  start  checking  the input file for
+spelling errors.
+
+	When the spelling checker encounters a word that isn't in the
+dictionary, it will type the page number, the line on which the  word
+was  found  and  the word itself.  The very first time this happens a
+message that explains the choices you have will be typed.
+
+	These choices are:
+
+A	Accept this word, this one time.
+
+I	Accept this word and insert it  in  the  dictionary  so  that
+subsequent occurrences  of this word will be recognized and accepted.
+Words that are inserted this way are marked as incremental insertions
+and they may be dumped to form an auxiliary dictionary.
+
+R	Replace  this  word.   Type "R" <return> and the program will
+ask you for the replacement word.  If the  replacement  word  is  not
+already  in  the dictionary, the program will give you an opportunity
+to insert it.
+
+X	Accept this word and finish.  The word will be accepted. Then
+the  remainder  of  the input file will be copied without checking to
+the output file.
+
+W	Save my incremental insertions.  After you type "W"  <return>
+you  will  be asked for a file name.  Then an incremental dump of the
+dictionary will be written into the file.  After the dump is complete
+you may then decide what to do with the excepted word.
+
+D	Display  the  line and offending word again. The line that is
+displayed will not have any corrections shown in it. If  a  line  has
+more  than  one  error the line will only be typed once.   Subsequent
+errors on that line will cause only the particular word to be  typed,
+unless this command is used.
+
+S	If  this  choice  is  offered  then  the spelling checker has
+discovered several words that could be possible corrections  of  this
+word.   If you type "S" <return> then you will enter a mode where you
+can look at the words that found  by  the  program  and  (optionally)
+select one of the words from the list.
+
+	When  you  enter this selection submode for the first time an
+explanation will be typed.  The first word in the  list  of  possible
+corrections  will be typed followed by an asterisk. Then you have the
+following choices.
+
+	Y<return>	Use this word as the correction.
+
+	<return>	Show the next  possible  choice.    When  you
+exhaust  the  choices  you  are returned to the outer mode, and asked
+again.
+
+	^<return>	Back up in the list.
+
+	<alt mode>	Escape from this submode and  return  to  the
+outer command mode.
+
+	In  general,  when  a  word  is  found  that  is  not  in the
+dictionary a brief message, either "Type A,I,R,X,W  or  D"  or  "Type
+A,I,R,X,W,D  or  S"  will  be  typed  to  remind  you of the possible
+choices.   In the special case that the  program  finds  exactly  one
+possible  correction  for the word, then the message "I guess <word>.
+Type C to make this correction or A,I,R,X,W or D" will be typed.   If
+you type "C"  <return>  then the indicated substitution will be made,
+otherwise you have the usual choices.
+
+	When the input file is  exhausted  the  correction  file  and
+exception  file  are  closed  and  all I/O channels are released. The
+program types "Finished."
+
+	The exit sequence is entered next.  The user is given several
+options.  They are:
+
+E	Exit now.
+
+S	Save this core image
+
+C	Go back and correct another file.
+
+A	Augment the dictionary and correct another file.
+
+D	Complete  dump of the dictionary to disk.  This will create a
+large file, which usually you won't want.
+
+I	Incremental dump of the dictionary to disk.   All  the  words
+that  were inserted while running the program are dumped to the disk.
+The user specifies a file name (the  default  is  WORDS.LST).    This
+incremental dump is in a format suitable for editing or for use as an
+auxiliary dictionary.  The words in this dump are not in alphabetical
+order.    These  words  will appear in groups sorted by the first two
+letters of the word and by the length of the word.  Otherwise, within
+a group the words will appear in last in - first out order.
+
+X	This command is used to get a trace count of the program.  It
+is for diagnostic purposes only.
+
+
+Using Multiple Dictionaries
+
+
+	Spell  has  a  set of features whereby the user can cause the
+creation of several disjoint incremental dictionaries.  In this  way,
+the   user   may  collect  several  dictionaries  of  special  terms.
+Internally,  all dictionary  entries  are  considered  equivalent  as
+regards  searches  for  words.   The distinction between dictionaries
+has its greatest impact when doing incremental dumps (the  I  command
+during  the  exit  sequence  or  the W command while in the middle of
+execution).  When an incremental dump  is  requested,  the  user  may
+specify  a  number, e.g. W9, which selects the particular incremental
+dictionary to dump.  In this example, dictionary #9 will be dumped.
+
+	Dictionary 0 is the main dictionary.  Words cannot  be  added
+to this dictionary, except by reading an auxiliary file.  In general,
+words  that  are  inserted  incrementally  are  marked  as  being  in
+dictionary  #1.   All  words  that  are incremental insertions in the
+dictionary  will  be  marked  in  dictionary  #1,  unless  the   user
+specifies otherwise.
+
+	The following places are where the  user  may  specify  which
+dictionary to add to:
+
+	1.	When loading an auxiliary  dictionary,  if  the  user
+responds  with  "Inn"  to  the  question about marking new entries as
+incremental, then the new entries will be marked in dictionary number
+nn (where nn is interpreted as decimal and should be less than 32).
+
+	2.	After  a word has been rejected, type "Inn" to insert
+the word in dictionary number nn.
+
+	3.	After replacing a word, if the replacement is not  in
+the  dictionary  then  type  "Inn"  to  insert  the  replacement into
+dictionary nn.
+
+
+	When requesting an incremental dump, the user may specify the
+particular dictionary to dump.  This is allowed in two cases:
+
+	1.	After some word has been rejected, the command  "Wnn"
+will cause dictionary number nn to dumped.
+
+	2.	During  the  exit  sequence,  the  command "Inn" will
+cause dictionary number nn to be dumped.
+
+
+	In  all  five cases above, if nn is either 0 or omitted, then
+it will be taken as being 1.
+
+	Caution. There is no provision in Spell for remembering which
+dictionary  numbers  have  been  used.    Therefore,  it  remains the
+individual user's responsibility to remember the numbers of  all  the
+dictionaries  that he creates.  (Forgetting the number will mean that
+the forgotten dictionary can not be dumped incrementally.  The  words
+in  a  forgotten dictionary will still be available, but the only way
+to actually get them dumped out is to dump the entire dictionary).
+
+
+The Pickup Feature
+
+	If any of the three file names in the  entry  sequence (where
+the source, correction and exception files are specified) is followed
+by the switch "/P" then, after accepting the three file names,  SPELL
+will  enter  pickup  mode.   The user will be asked to specify a page
+number and, if the file is in SOS format, a line number  for  pickup.
+The  effect  is  to suspend spelling checking until the page and line
+specified.   When a user has a partially corrected file, this command
+will enable him to skip over the portion of the file that has already
+been corrected.  The input file will be copied  without  checking  to
+the output until the page and line specified, at which point spelling
+checking begins.
+
+
+Training Feature
+
+	If  the file name of the input file is followed by the switch
+"/T" then instead of correcting the file, Spell will treat  the  file
+as  a  training  set.   All  words in the file that are unfamiliar to
+Spell will be entered in the dictionary  as  incremental  insertions.
+After Spell finishes reading the file, the user has an opportunity to
+dump all the words that were inserted this way.  The  resulting  list
+of words  may  be  edited  and  any  words which are incorrect may be
+deleted.  Then this file can be used as an auxiliary dictionary while
+correcting the original source file.
+
+	This  feature  is  provided  for  the  purpose  of easing the
+problem  of  creating  a  specialized  dictionary   of   jargon   and
+infrequently used words.
+
+
+Q-Training
+
+	Q-Training is specified by the switch /Q.  In this mode,  all
+words  in  the source file that are unfamiliar to Spell will be added
+to the dictionary; the difference is, if any "new" word is "close to"
+some old word then the new word will be output in the exception file.
+The exception file will contain only such words.  In  this  way,  the
+spelling  checker calls to your attention the fact that this word may
+be misspelled.
+
+
+No Suffix Removal
+
+	The /N  switch suppresses the attempt  to remove suffixes  to
+find  a correctly  spelled root word.   /N  mode will find  many more
+questionable words,  however, it will  work more  correctly than  the
+heuristic suffix removal.
+
+Upper Case Acceptor
+
+	The /U switch will cause all words  that are written entirely
+in upper case to  be inserted in the dictionary.  This is useful when
+a manuscript file  contains jargon  terms that are  written in  upper
+case, and text-processor (e.g., PUB, TJ6 or RUNOFF) commands in upper
+case.   After the /U switch is seen, SPELL  will ask for a dictionary
+number to use  for all words  inserted this  way (see "Using Multiple
+Dictionaries").
+
+	-------------------------------------------------
+
+			Abnormal Conditions.
+
+	While the program is running  it  is  possible  that  certain
+abnormal conditions may obtain.  The usual response of the program is
+to type some sort of error message.
+
+	The following is a list of the error messages in SPELL,  with
+an indication of the severity of the error.
+
+Huh?		The  user  has  typed something illegal.   He will be
+given another chance, usually  after  reviewing  the  list  of  valid
+responses.
+
+Default name is WORDS.LST	The  user  has  typed <return> when a
+name for a dictionary output file was requested.  The name  Words.Lst
+is used.
+
+Default name is SPELL.DMP	The  user  has  typed <return> when a
+name for a core dump file was requested. The name Spell.Dmp is used.
+
+Illegal dictionary entry: <word>	This error occurs if an entry
+in  a  dictionary  file exceeds 40 (decimal) characters.  The word is
+ignored.
+
+0 LENGTH WORD AT HASHCP		Somebody just asked  to  compute  the
+hash address of an empty word.  The program continues, but there is a
+possibility of great evilness.
+
+HASHING ERROR			Somebody asked for the  hash  address
+of  a  word  that  doesn't  begin  with  letters  as  the  first  two
+characters. The program halts.
+
+ILLEGAL CHARACTER IN SCAN.	This is a message  from  the  routine
+that reads file names.  You will be asked to try retyping the name.
+
+Can't get there from here	This   means  that  from  the  select
+submode you typed ^ to see the previous choice and you  were  at  the
+first choice. The first choice is repeated.
+
+DEVICE DATA ERROR (OUTPUT)	This message means that while writing
+a file, something screwed up.  The program halts.
+
+DEVICE ERROR (INPUT)		The input file is screwed up in  some
+way.  The program halts.
+
+INIT FAILED ON DEVICE DSK:	This  indicates  tremendous confusion
+external to this program.  The program halts.
+
+FILE NOT FOUND. DSK:<filename>	The  indicated  file  could  not   be
+found. The user gets to specify some other file.
+
+Enter failed on: <file name>	An  enter  uuo failed while trying to
+select the indicated file for output.  The user may  specify  another
+name.
+
+INSUFFICIENT CORE AVAILABLE.  I GIVE UP.	Program requires more
+core, but none is available.  The program exits.
+
+Null term illegal.		The user typed <return> where a  file
+name  is  needed.   The  user  has another opportunity to specify the
+name.
+
+Internal confusion in the  spelling  checker.  Called  from  location
+<loc>.  The  spelling  checker  has  discovered  a  (possible) bug in
+itself.   The program halts, but the user may type continue.   Please
+note  the  location  mentioned  and the circumstances that evoked the
+message.
+
+Dictionary number too large. Maximum is 31.	This  message   means
+that  the  user  attempted  to  select  for  insertion  or  dumping a
+dictionary beyond the range of allowed numbers.  The  user  will  get
+another chance to do the right thing.
+
+You can't use Training Switch and have output or exceptions.	This
+message  occurs  when  the switch "/T" is typed following the name of
+the output or exception file.  If the "/T" switch is used, it  should
+follow the name of the input file.
+
+Unrecognized switch.	This message is typed whenever a file name is
+followed by a switch that is not one of the Spell switches.
+
+
+
+%
+	SUBTTL	INITIALIZATION
+CRLF:	BYTE(7)15,12
+
+BEGIN:	RESET	
+	MOVEI	FL,0			;FLAGS
+	MOVE	P,[IOWD PDLEN,PDLIST]	;STACK
+
+IFN STANSW,<
+	MOVEI	FL,IIISW		;ASSUME III. SET FLAG
+	MOVNI	A,1
+	GETLCH	A
+	CAME	A,[-1]
+	TLNN	A,400000		;SKIP IF III
+	MOVEI	FL,0			;NOT III.
+>
+
+IFG COUNTS,<	MOVE	A,[XWD ICTAB,ICTAB+1]
+		SETZM	ICTAB
+		BLT	A,ICTABX
+		MOVE	DEBX,[IOWD 2*%DTL,%DBT]	>
+
+	SKIPE	DICTFL			;IF ZERO WE ARE VIRGIN
+	SKIPA	A,DICTFF		;NOT VIRGIN USE OLD DICTFF AS JOBFF
+	MOVE	A,JOBFF
+	MOVEM	A,DICTFF		;ADDRESS OF DATA BUFFERS
+	MOVEM	A,JOBFF
+	PUSHJ	P,INDICT		;INIT DICT AND BUFFER IT.
+	MOVE	A,NEWFF
+	MOVEM	A,DATAFF		;JOBFF FOR BUFFERING DATA
+	PUSHJ	P,INDATA		;INIT AND BUFFER DATA.
+	MOVE	A,NEWFF
+	MOVEM	A,EXCPFF		;JOBFF FOR EXCEPTION FILE
+	PUSHJ	P,INEXCP		;INIT AND BUFFER
+	MOVE	A,NEWFF
+	MOVEM	A,CORRFF		;JOBFF FOR THE CORRECTION CHANNEL
+	PUSHJ	P,INCORR		;INIT AND BUFFER.
+	MOVE	A,NEWFF
+	MOVEM	A,JOBFF			;SAVE IT WHERE IT COUNTS
+	SKIPN	DICTFL			;NOT REDEFINED IF DICT LOADED
+	MOVEM	A,LISTFF		;MUST BE LOCATION FOR LISTS.
+	MOVE	A,LISTFF
+	SKIPN	DICTFL
+	MOVEM	A,DICTBO		;BOTTOM OF DICTIONARY
+	MOVEM	A,JOBFF			;WORKS OUT ANY HOW
+	SKIPN	DICTFL			;SKIP IF DICTIONARY EXISTS
+BEGIN0:	PUSHJ	P,LOADER		;NO DICTIONARY, OR LOADING AUX
+	OUTSTR	[ASCIZ/
+Do you want to augment the dictionary? /]
+	INCHWL	A			;WAIT FOR ANSWER
+	PUSHJ	P,FLUTTY		;FLUSH TO NEXT DELIM
+	CAIE	A,"Y"
+	CAIN	A,"y"
+	JRST	BEGIN0			;OFF TO LOAD MORE.
+
+BEGIN1:	SETZM	NOEND			;ASSUME THAT WE DO ENDTST
+	SETZM	UCASE			;ASSUME UPPERCASE IS NORMAL
+	OUTSTR	[ASCIZ/
+Name of the file to check and correct: /]
+	PUSHJ	P,GETFIL		;GET A FILE NAME IN SOME WAY.
+	JRST	ENDIT
+	LOOKUP	DATA,K
+	JRST	[PUSHJ	P,FNOTFM
+		JRST	BEGIN1]
+	TRNE	FL,TRAIN
+	JRST	BEGIN5			;GIVE US SOME TRAINING
+	TRNE	FL,QTRAIN		;OR SPECIAL TRAINING
+	JRST	[OUTSTR	[ASCIZ/An exception file is needed.  /]
+		JRST	BEGIN3]
+BEGIN2:	OUTSTR	[ASCIZ/
+File name for output: /]
+	PUSHJ	P,GETFIL
+	JRST	[OUTSTR	[ASCIZ/No corrections.
+/]
+		TRO	FL,NOCORR	;DO NO CORRECTIONS
+		TRNE	FL,TRAIN
+		JRST	BEGIN5		;TRAINING
+		JRST	BEGIN3]
+	TRZ	FL,NOCORR
+	TRNE	FL,TRAIN
+	JRST	[OUTSTR	T.MSG
+		JRST	BEGIN1]
+	ENTER	CORR,K
+	JRST	[PUSHJ	P,ENTFAI
+		JRST	BEGIN2]
+BEGIN3:	OUTSTR	[ASCIZ/
+File for exceptions: /]
+	PUSHJ	P,GETFIL
+	JRST	[TRNE	FL,QTRAIN
+		JRST	BEGIN3
+		OUTSTR	[ASCIZ/No exception file.
+/]
+		TRO	FL,NOEXCP
+		TRNE	FL,TRAIN
+		JRST	.+1
+		JRST	BEGIN5]
+	TRZ	FL,NOEXCP
+	TRNE	FL,TRAIN
+	JRST	[OUTSTR	T.MSG
+		JRST	BEGIN1]
+	ENTER	EXCP,K
+	JRST	[PUSHJ	P,ENTFAI
+		JRST	BEGIN3]
+BEGIN5:
+IFN STANSW,<
+	TRNE	FL,IIISW		;III?
+	PUSHJ	P,DPYINI		;YES. INITIALIZE THE DISPLAY
+>;IFN STANSW
+	OUTSTR	[ASCIZ/working...
+/]
+	TRZ	FL,TECO!SHUTUP		;NOTE THAT HELPSN AND HELP2S WILL BE
+					;ZERO THE VERY FIRST TIME THRU
+	TRO	FL,FRSTOP		;FLAG UP FOR FIRST I/O ON DATA
+	PUSHJ	P,LOOP			;GO OFF AND DO ALL THE WORK
+ENDIT:	OUTSTR	[ASCIZ/Type:
+E	Exit
+S	Save this core image
+C	Correct another file
+/]
+IFG COUNTS,<
+	OUTSTR	[ASCIZ/X	Dump the trace counts (for debugging only)
+/]
+>
+
+	OUTSTR	[ASCIZ/A	Augment the dictionary and correct another file
+D	Dump the dictionary to disk (writes a big file)
+I	Dump incremental. (Rewrites a file!)
+*/]
+	TRZ	FL,TRAIN!QTRAIN	;EXIT TRAINING MODE
+	INCHWL	A
+	TRZ	A,40	;MAKE UPPER
+	CAIN	A,"I"
+	JRST	[PUSHJ	P,SETNUM
+		PUSHJ	P,IDMPD
+		JRST	ENDIT]
+	CLRBFI			;FLUSH TO BE SURE.
+	CAIN	A,"E"
+	EXIT
+
+IFN COUNTS, <	CAIN	A,"X"
+		JRST	DTRACE 	>
+
+	CAIN	A,"S"
+	JRST	SAVET
+	CAIN	A,"C"
+	JRST	XBEG.1
+	CAIN	A,"A"
+	JRST	BEGIN
+	CAIN	A,"D"
+	JRST	[PUSHJ	P,DUMPD
+		JRST	ENDIT]
+	OUTSTR	[ASCIZ/Huh? /]
+	JRST	ENDIT
+
+XBEG.1:	RESET
+	PUSHJ	P,INDICT
+	PUSHJ	P,INDATA
+	PUSHJ	P,INCORR
+	PUSHJ	P,INEXCP
+	JRST	BEGIN1
+
+SAVET:	PUSHJ	P,SAVEME
+	JRST	ENDIT
+
+T.MSG:	ASCIZ/
+You can't use Training Switch and have output or execeptions
+/
+
+IFN STANSW,<
+DPYINI:	DPYCLR					;CLEAR THE SCREEN
+	DPYPOS	-200				;PUSH THE PAGE PRINTER TO THE BOTTOM
+	DPYSIZ	4002				;SET GLITCHES ETC
+	POPJ	P,				;THAT'S ALL FOR NOW.
+>;IFN STANSW
+
+	SUBTTL	THE LOOP WHERE ALL THE WORK GETS DONE.
+
+COMMENT %
+
+	This file depicts what happens to a word as it is checked
+and corrected by the spelling checker.
+
+			 <begin>
+			    I
+			    V
+			    O_--------------------------------------_O
+			    I					     ^
+			    V					     I
+		----------------------------			     I
+		I			   I			     I
+O_-(if eof)_----I	read next word	   I			     I
+I		I			   I			     I
+I		I    lookup in dictionary  I--(if success: win)----->O
+I		I			   I			     ^
+I		I	(failure)	   I			     I
+I		I			   I			     I
+I		I	call endtst	   I--(if success: win)----->O
+I		I			   I			     ^
+I		I	(failure)	   I			     I
+I		I			   I			     I
+I		I	call tryfix	   I			     I
+I		I			   I			     I
+I		I    (correct/accept word) I			     I
+I		----------------------------			     I
+I			    I					     I
+I			    V					     I
+I			    O--------------------------------------->O
+I
+V
+O-------------------------->O
+			    I
+			    V
+		----------------------------
+		I			   I
+		I	end sequence	   I
+		I			   I
+		----------------------------
+
+%
+
+LOOP:	ICOUNT
+	PUSHJ	P,GETLIN
+	JRST	FLOOP		;EOF ON DATA
+	PUSHJ	P,CHKLIN	;CHECK/CORRECT LINE
+	PUSHJ	P,PUTLIN	;OUPUT LINE
+	JRST	LOOP
+
+FLOOP:	CLOSE	DATA,		;YOU KNOW WHAT TO DO
+	CLOSE	CORR,		;CLOSE OUTPUT CHANNEL
+	STATZ	CORR,740000	;CHECK IT
+	JRST	DDE		;DEVICE DATA ERROR (OUTPUT)
+	CLOSE	EXCP,		;CLOSE EXCEPTIONS
+	STATZ	EXCP,740000	;CHECK STATUS
+	JRST	DDE		;ERROR
+	RELEAS	DATA,
+	RELEAS	EXCP,
+	RELEAS	CORR,
+	OUTSTR	[ASCIZ/
+Finished.
+/]
+	POPJ	P,
+	SUBTTL	THE DEBUG QUEUE AND TRACE DUMP ROUTINE
+COMMENT  $
+IF COUNTS IS DEFINED AS GREATER THAN ZERO THEN A QUEUE OF THE
+LAST 100 LABELS PASSED WILL BE KEPT.
+
+$
+
+IFN COUNTS,<
+DEBQUE:	TRNE	FL,NOTRAC
+	POPJ	P,
+	ADD	DEBX,[XWD 1,1]
+	MOVEM	DEBA,(DEBX)
+	JUMPL	DEBX,[POPJ P,]	;God forbid you should jump to CPOPJ
+	MOVE	DEBX,[XWD %DBT+%DTL,%DBT]
+	BLT	DEBX,%DBT+%DTL-1
+	MOVE	DEBX,[IOWD %DTL,%DBT+%DTL]
+	POPJ	P,
+
+QDUMP:	MOVEI	B,[ASCIZ/
+DUMP OF THE QUEUE OF STATEMENTS EXECUTED.
+/]
+	PUSHJ	P,WRSDCT
+	HRRZ	C,DEBX		;LAST ADDRESS STORED IN
+	MOVEI	D,%DBT
+QDUMP1:	MOVE	A,(D)
+	PUSHJ	P,OCTPEX
+	MOVEI	B,[ASCIZ/
+/]
+	PUSHJ	P,WRSDCT
+	CAMGE	D,C
+	AOJA	D,QDUMP1
+	POPJ	P,
+CRASH:	TRO	FL,NOTRAC
+	PUSHJ	P,INDCTO
+	MOVE	K,[SIXBIT/CRASH0/]
+CRASH0:	MOVSI	L,'TRC'
+	SETZ	M,
+	MOVE	N,XPPN
+	LOOKUP	DICT,K
+	JRST	.+2
+	AOJA	K,CRASH0
+	MOVSI	L,'TRC'
+	SETZ	M,
+	MOVE	N,XPPN
+	ENTER	DICT,K
+	POPJ	P,
+	JRST	DTRACX
+
+XPPN:	SIXBIT	/  SREG/
+
+DTRACE:	PUSHJ	P,DTRACY
+	JRST	ENDIT
+DTRACY:	OUTSTR	[ASCIZ/File name for the trace counts:  /]
+	TRO	FL,NOTRAC
+	PUSHJ	P,GETFIL
+	JRST	[OUTSTR	[ASCIZ/default name is TRACE.DAT
+/]
+		MOVE	K,[SIXBIT/TRACE/]
+		MOVSI	L,'DAT'
+		SETZB	M,N
+		JRST	.+1]
+	PUSHJ	P,INDCTO
+	ENTER	DICT,K
+	JRST	[PUSHJ	P,ENTFAI
+		JRST	DTRACE]
+DTRACX:	PUSHJ	P,QDUMP
+	MOVEI	B,[ASCIZ/	Statement execution counts
+
+/]
+	PUSHJ	P,WRSDCT
+	SETZ	Y,
+DTRA.1:	CAIL	Y,ICTABX-ICTAB
+	JRST	DTRA.2
+	MOVE	A,Y
+	PUSHJ	P,OCTPEX
+	MOVEI	A,11
+	PUSHJ	P,WDICT
+	MOVE	A,ICTAB(Y)
+	PUSHJ	P,DECPTY
+	MOVEI	B,[ASCIZ/
+/]
+	PUSHJ	P,WRSDCT
+	AOJA	Y,DTRA.1
+DTRA.2:	CLOSE	DICT,
+	RELEAS	DICT,
+	POPJ	P,
+OCTPEX:	IDIVI	A,10
+	PUSH	P,B
+	JUMPE	A,.+2
+	PUSHJ	P,OCTPEX
+	POP	P,A
+	ADDI	A,60
+	PUSHJ	P,WDICT
+	POPJ	P,
+
+DECPTY:	IDIVI	A,12
+	PUSH	P,B
+	JUMPE	A,.+2
+	PUSHJ	P,DECPTY
+	POP	P,A
+	ADDI	A,60
+	PUSHJ	P,WDICT
+	POPJ	P,
+>
+
+IFN COUNTS!XCNT<
+WRSDCT:	HRLI	B,(<POINT 7,0>)
+WRSDC1:	ILDB	A,B
+	JUMPE	A,CPOPJ
+	PUSHJ	P,WDICT
+	JRST	WRSDC1
+>
+	SUBTTL	FULL DUMP AND INCREMENTAL DUMP ROUTINES
+
+DUMPD:	TRZA	FL,IDUMP
+IDMPD:	TRO	FL,IDUMP
+DUMPD1:	PUSHJ	P,INDCTO	;INIT DICTIONARY CHANNEL IN OUTPUT MODE
+	OUTSTR	[ASCIZ/file name: /]
+	PUSHJ	P,GETFIL
+	JRST	[OUTSTR	[ASCIZ/Default name is WORDS.LST
+/]
+		MOVE	K,[SIXBIT/WORDS/]
+		MOVSI	L,'LST'
+		SETZB	M,N
+		JRST	.+1]
+	ENTER	DICT,K
+	JRST	[PUSHJ	P,ENTFAI
+		JRST	DUMPD1]
+
+	SETZM	TLET.1			;COUNT WORDS/PAGE OUTPUT
+	MOVSI	Z,-HASHTL
+DODMP1:	HLRZ	X,HASHTB(Z)
+	PUSHJ	P,CHASED		;DO LEFT SIDE
+	HRRZ	X,HASHTB(Z)
+	PUSHJ	P,CHASED		;DO RIGHT SIDE
+	AOBJN	Z,DODMP1		;LOOP
+	CLOSE	DICT,0
+	STATZ	DICT,740000
+	JRST	DDE
+	POPJ	P,
+
+DDCVR3:	SETOM	TLET.1			;RESET COUNT/PAGE
+	MOVEI	A,14
+	PUSHJ	P,WDICT
+DDCVR2:	MOVEI	A,15
+	PUSHJ	P,WDICT
+	MOVEI	A,12
+	PUSHJ	P,WDICT
+	AOS	A,TLET.1
+	CAILE	A,400			;ENOUGH ON THIS PAGE?
+	JRST	DDCVR3			;YES. DO FF.
+CHAS.2:	MOVEI	X,(Y)			;LINK ONWARDS
+CHASED:	JUMPE	X,CPOPJ
+	HRRZ	Y,0(X)			;REMEMBER THE LINK AHEAD
+	TRNN	FL,IDUMP
+	JRST	CHAS.1
+	LDB	A,[POINT 5,(X),17]	;GET SUB-DICTIONARY NUMBER
+	CAME	A,IDNUM
+	JRST	CHAS.2			;SKIP THIS WORD
+CHAS.1:	ADD	X,[POINT 5,1]
+DDCVR1:	ILDB	A,X
+	JUMPE	A,DDCVR2
+	TRO	A,100
+	PUSHJ	P,WDICT
+	JRST	DDCVR1
+	SUBTTL	GETLIN	READ A LINE OF DATA INTO LIBUF
+
+GETLIN:	ICOUNT
+	SETZM	LIBUF
+	MOVE	A,[XWD LIBUF,LIBUF+1]
+	BLT	A,LOBUF+37	;CLEAR BOTH INPUT AND OUTPUT LINES
+	PUSHJ	P,RDDATA
+	POPJ	P,		;NON-SKIP AT EOF.
+	TRNE	FL,TECO		;ARE WE A TECO FILE?
+	JRST	GETLTC		;GET A TECO LINE
+	MOVE	B,[POINT 36,LIBUF]	;SET FOR WORD BY WORD
+	JRST	GETLN2		;A IS SET WITH FIRST DATA
+GETLN1:	ICOUNT
+	PUSHJ	P,RDDATA	;READ DATA (SKIP RETURN)
+	POPJ	P,		;NOT GOOD MANNERS TO EOF 
+				;IN THE MIDDLE OF A LINE
+GETLN2:	ICOUNT
+	IDPB	A,B		;SAVE THE DATA IN THE LINE
+	BCHECK(B,LOBUF)
+	ANDI	A,377		;MASK ALL BUT THE LAST 8 BITS
+	LSH	A,-1		;A_THE FIFTH ASCIZ CHARACTER THAT HAD BEEN IN A,
+				;RIGHT JUSTIFIED IN A.
+	JUMPE	A,GETLN3	;END OF A LINE IN SOS FORMAT
+	CAIE	A,12		;OR LF WILL END A LINE
+	JRST	GETLN1		;BACK FOR MORE OF THIS LINE
+GETLN3:	ICOUNT
+	MOVE	A,[XWD LIBUF,LOBUF]
+	BLT	A,LOBUF+1	;COPY FIRST TWO MACHINE WORDS TO OUTPUT
+				;WE WILL USE ONLY THE FIRST 6 CHARACTERS
+				;THE LINE NUMBER AND THE TAB.
+	MOVE	A,[POINT 7,LIBUF+1,6]	;SET TO GRAB THE FIRST REAL 
+					;CHARACTER BY ILDB.
+	MOVEM	A,INPTR			;SAVE AS THE "IN POINTER"
+	HRRI	A,LOBUF+1		;FIX ADDRESS
+	MOVEM	A,OUTPTR		;SAVE THE OUT POINTER
+	TRNN	FL,PICKUP
+	JRST	CPOPJ1			;AND GIVE A SKIP RETURN
+	MOVE	A,PAGENO
+	CAMGE	A,PICKPG
+	JRST	CPOPJ1
+	CAME	A,PICKPG
+	JRST	[TRZ	FL,PICKUP
+		JRST	CPOPJ1]
+	MOVE	A,LIBUF
+	TRZ	A,1
+	CAML	A,PICKLN
+	TRZ	FL,PICKUP
+	JRST	CPOPJ1
+
+GETLTC:	ICOUNT
+	MOVE	B,[POINT 7,LIBUF]
+	JRST	GETEC1
+GETTEC:	ICOUNT
+	PUSHJ	P,RDDATA
+	POPJ	P,
+GETEC1:	ICOUNT
+	IDPB	A,B
+	BCHECK(B,LOBUF)
+	CAIE	A,12
+	CAIN	A,14
+	JRST	.+2
+	JRST	GETTEC
+	MOVE	A,[POINT 7,LIBUF]
+	MOVEM	A,INPTR
+	HRRI	A,LOBUF
+	MOVEM	A,OUTPTR
+	TRNN	FL,PICKUP
+	JRST	CPOPJ1
+	MOVE	A,PAGENO
+	CAML	A,PICKPG
+	TRZ	FL,PICKUP
+	JRST	CPOPJ1
+	SUBTTL	RDDATA THE READING ROUTINE
+
+RDDATA:	SOSLE	DATABF+2
+	JRST	RDATA1
+	INPUT	DATA,
+	STATZ	DATA,740000
+	JRST	DIE
+	STATZ	DATA,20000
+	POPJ	P,
+	TRZE	FL,FRSTOP
+	JRST	CKTECO		;CHECK FOR A TECO FILE.
+RDATA1:	ICOUNT
+	ILDB	A,DATABF+1
+	JUMPE	A,RDDATA	;BACK FOR MORE IF NULL
+	JRST	CPOPJ1
+
+CKTECO:	MOVEI	A,1		;SINCE WE ARE AT FIRSTOP, WE MIGHT AS
+	MOVEM	A,PAGENO	;WELL INITIALIZE THE PAGE COUNT
+	SETZM	LINENO		;AND ZERO THE LINE NUMBER
+	MOVE	A,DATABF+1
+	ILDB	A,A
+	TRNE	A,1
+	JRST	CKTEC1		;THIS IS AN SOS FILE. PRESERVE LINE NUMBERS
+	TRZ	FL,TVE		;ASSUME NOT TV/E FORMAT
+	CAMN	A,[ASCII/COMME/]
+	JRST	[MOVE A,DATABF+1
+		IBP A
+		ILDB A,A
+		CAMN A,[ASCII/NT  /]
+		TRO FL,TVE
+		JRST .+1]
+	TRO	FL,TECO		;UNNUMBERED FILE. TECO OR TV/E FORMAT
+	MOVEI	A,5
+	IMULM	A,DATABF+2	;MAKE WORD COUNT INTO CHAR COUNT
+	MOVSI	A,(<POINT 7,0,35>)	;WHEN ILDB HITS THIS YOU GET THE
+					;RIGHT BYTE, (FROM THE NEXT WD)
+	HLLM	A,DATABF+1	;UPSET THE BYTE POINTERS
+	SETSTS	DATA,1		;CHANGE SO THAT IN THE FUTURE HONESTY PREVAILS
+;WE ALSO HAVE TO CHANGE THE MODE OF THE CORR CHANNEL
+;SO THAT IT WILL ACCEPT CHARACTER AT A TIME BYTE POINTERS.
+	SETSTS	CORR,1		;HAVE TO SCREW AROUND WITH BYTE POINTERS
+	HLLM	A,CORRBF+1 	;SINCE OUTBUF HAS ALREADY SET THEM
+	TRNN	FL,TVE		;TV/E FILE?
+	JRST	CKTEC1		;NO.
+	OUTSTR	[ASCIZ ?TV/E directory page will be deleted.
+Page 2
+?]
+	AOS	PAGENO
+	AOS	DATABF+2	;BECAUSE THEY EXPECT THE COUNT TO BE 1 TOO BIG
+CKTEC0:	PUSHJ	P,RDDATA	;CALL MAIN READER RECURSIVELY (1 LEVEL ONLY)
+	JRST	[OUTSTR [ASCIZ/Unexpected end of file while skipping the directory.
+/]
+		POPJ P,]
+	CAIE	A,14		;FF YET?
+	JRST	CKTEC0		;NO. READ MORE
+	
+CKTEC1:	SKIPN	UCASE		;UPPER CASE HACK?
+	JRST	CKTEC2
+	OUTSTR	[ASCIZ/Dictionary number for uppercase words: /]
+	PUSHJ	P,SETNUM
+	MOVEM	B,UCASE		;SET DICTIONARY NUMBER FOR INSERTION
+CKTEC2:	TRNN	FL,PICKUP
+	JRST	CKTEC3
+	OUTSTR	[ASCIZ/On what page do you want to pickup?  /]
+	PUSHJ	P,SETPAG
+	TRNE	FL,TECO
+	JRST	CKTEC3
+	OUTSTR	[ASCIZ/and what line do you want to start at?  /]
+	PUSHJ	P,SETLNO
+CKTEC3:	TRZN	FL,TVE		;SKIP IF TV/E FILE
+	JRST	RDATA1
+	JRST	RDDATA		;BLETCH! (THIS IS TO MAKE THE WORLD SAFE?)
+
+SETPAG:	SETZ	B,
+SETPG1:	INCHWL	A
+	CAIL	A,"0"
+	CAILE	A,"9"
+	JRST	SETPG2
+	IMULI	B,12
+	ADDI	B,-"0"(A)
+	JRST	SETPG1
+SETPG2:	JUMPE	B,[OUTSTR [ASCIZ/Default is page 1
+/]
+		MOVEI	B,1
+		JRST	.+1]
+	MOVEM	B,PICKPG
+	PUSHJ	P,FLUTTY
+	POPJ	P,
+
+SETLNO:	MOVE	B,[ASCII/00000/]
+SETLO1:	INCHWL	A
+	CAIL	A,"0"
+	CAILE	A,"9"
+	JRST	SETLO2
+	LSH	B,7
+	LSH	A,1
+	OR	B,A
+	JRST	SETLO1
+SETLO2:	PUSHJ	P,FLUTTY
+	MOVEM	B,PICKLN
+	POPJ	P,
+	SUBTTL  CHKLIN ROUTINE
+CHKLIN:	ICOUNT
+	TRZ	FL,ERRLIN		;NO ERROR YET
+	AOS	LINENO			;INCREMENT LINE NUMBER
+IFN STANSW,<
+	TRNE	FL,IIISW
+	PUSHJ	P,DPGL			;DISPLAY PAGE/LINE NUMBER
+>
+CHKLN1:	ICOUNT
+	PUSHJ	P,LDWORD		;GET A WORD
+	JRST	CHKLN2			;NOT A WORD
+	TRNE	FL,SHUTUP+PICKUP
+	JRST	CHKL1A			;DON'T BOTHER
+	PUSHJ	P,HASHCP
+	PUSHJ	P,SEARCH		;LOOK FOR IT
+	JRST	CHKLN3			;WASN'T THERE
+CHKL1A:	ICOUNT
+	PUSHJ	P,COPYIO		;COPY TO OUTPUT
+	JRST	CHKLN1			;BACK FOR THE REST
+CHKLN2:	ICOUNT
+	PUSHJ	P,COPYIO
+	JUMPE	A,CPOPJ			;SUPER NULL, EO LINE
+	CAIN	A,14			;CHECK FOR FF
+	JRST	[AOS	PAGENO		;COUNT ANOTHER PAGE.
+		SETZM	LINENO
+		POPJ	P,]
+	CAIN	A,12			;LF OR
+	POPJ	P,
+	JRST	CHKLN1			;BACK FOR THE REST OF THE LINE
+
+;HERE WHEN WORD LOOKUP FAILED.
+CHKLN3:	ICOUNT
+	SKIPE	UCASE			;UPPER CASE ACCEPTANCE?
+	TLNN	FL,UPPER		;YES. WAS IT REALLY UPPERCASE?
+	JRST	CHKL3A			;NOT UPPERCASE OR NOT ACCEPTING UC
+	SKIPA	K,UCASE
+CHKL3B:	MOVEI	K,1			;TRAINING SET USES DICTIONARY NUMBER 1
+	MOVEM	K,IDNUM			;SET DICTIONARY NUMBER
+	PUSHJ	P,HASHCP
+	PUSHJ	P,INSRTX		;ADD WORD TO TRAINING SET OR UC SET
+	JRST	CHKL1A
+	
+
+CHKL3A:	PUSHJ	P,ENDTST		;TRY REMOVING ENDINGS
+	JRST	.+2			;FAILED TO FIND WORD
+	JRST	CHKL1A			;ACCEPT WORD
+	TRNE	FL,TRAIN		;SKIP UNLESS WE ARE TRAINING
+	JRST	CHKL3B			;INSERT IN TRAINING SET
+	TRNE	FL,QTRAIN
+	JRST	CHKLN5
+	PUSHJ	P,CONVRT		;MAKE 7 BITS ASCII IN WORDIX
+IFN STANSW,<
+	TRNE	FL,IIISW
+	PUSHJ	P,DPYLIN		;DISPLAY SPECIAL IF ON III
+>
+	TROE	FL,ERRLIN
+	JRST	CHKLN4			;LINE HAS BEEN PUBLISHED ONCE 
+	PUSHJ	P,PPAGE			;PUBLISH PAGE
+IFN STANSW,<TRNN FL,IIISW>
+	OUTSTR	LIBUF			;PUBLISH LINE
+	MOVEI	B,LIBUF
+	PUSHJ	P,WRSEXC		;IN EXCEPTION FILE TOO
+CHKLN4:	ICOUNT
+IFN STANSW,<TRNN FL,IIISW>
+	OUTSTR	WORDIX
+	MOVEI	B,WORDIX
+	PUSHJ	P,WRSEXC
+	MOVEI	B,[ASCIZ/
+/]
+IFN STANSW,<TRNN FL,IIISW>
+	OUTSTR	(B)
+	PUSHJ	P,WRSEXC
+	TRNN	FL,NOCORR+SHUTUP	;SKIP IF HE DOESN'T WANT IT
+CHKLN5:	PUSHJ	P,TRYFIX		;TRY TO FIX IT
+	PUSHJ	P,COPYIO
+	JRST	CHKLN1
+
+IFN STANSW,<
+DPYLIN:	MOVE	B,OUTPTR		;GET THE OUTPUT POINTER
+	SETZ	A,
+	IDPB	A,B			;STUFF A ZERO IN BEYOND THE OUTPUT LINE.
+	MOVE	Z,[IOWD DPYLEN,DPYBUF]
+	PUSH	Z,[0]
+	PUSH	Z,[LVW(-1000,0,I,A,2,2)]	;SET TO LEFT MIDDLE OF SCREEN
+	MOVEI	C,1
+	MOVE	Y,[POINT 7,C]
+	MOVE	X,[POINT 7,LOBUF]	;GET POINTER TO LINE OUTPUT BUFFER
+	PUSHJ	P,COPX
+	SKIPN	WORDIX
+	JRST	DPYL1
+	PUSH	Z,C
+	PUSH	Z,[LVW(20,0,I,,7,4)]	;SET BRIGHTNESS AND SIZE FOR OFFENDER
+	MOVE	Y,[POINT 7,C]
+	MOVEI	C,1
+	MOVE	X,[POINT 7,WORDIX]
+	PUSHJ	P,COPX
+	PUSH	Z,C
+	PUSH	Z,[LVW(20,0,I,,2,2)]	;RESTORE NORMAL BRIGHTNESS AND SIZE
+	MOVEI	C,1
+	MOVE	Y,[POINT 7,C]
+DPYL1:	MOVE	X,INPTR1
+	PUSHJ	P,COPX
+	PUSH	Z,C
+	HLRE	A,Z
+	ADDI	A,DPYLEN
+	MOVEM	A,DPYSIZ
+	UPGIOT	2,DPYHDR
+	POPJ	P,
+
+DPGL:	MOVE	Z,[IOWD DPYLEN,DPYBUF]
+	PUSH	Z,[0]
+	PUSH	Z,[LVW(-1000,40,I,A,2,2)]
+	MOVEI	C,1
+	MOVE	Y,[POINT 7,C]
+	MOVE	X,[POINT 7,[ASCIZ/Page /]]
+	PUSHJ	P,COPX
+	MOVE	A,PAGENO
+	PUSHJ	P,DECDIS
+	MOVE	X,[POINT 7,[ASCIZ/  Line /]]
+	PUSHJ	P,COPX
+	TRNE	FL,TECO			;HAS THIS GOT LINE NUMBERS
+	JRST	DPGL1			;NO.
+	MOVE	X,LIBUF			;GET A LINE NUMBER
+	TRNN	X,1			;REAL LINE NUMBER?
+	JRST	DPGL1			;NOPE.
+	MOVEM	X,WORDIX
+	SETZM	WORDIX+1
+	MOVE	X,[POINT 7,WORDIX]
+	PUSHJ	P,COPX
+	JRST	DPGL2
+
+DPGL1:	MOVE	A,LINENO
+	PUSHJ	P,DECDIS
+DPGL2:	PUSH	Z,C
+	HLRE	A,Z
+	ADDI	A,DPYLEN
+	MOVEM	A,DPYSIZ
+	UPGIOT	3,DPYHDR
+	POPJ	P,
+
+>					;IFN STANSW
+
+	SUBTTL	PUTLIN
+PUTLIN:	ICOUNT
+	TRNE	FL,TECO
+	JRST	PUTLN2
+	MOVE	B,[POINT 36,LOBUF]
+PUTLN1:	ICOUNT
+	ILDB	A,B
+	PUSHJ	P,WRCORR
+	LSH	A,-1
+	ANDI	A,177
+	JUMPE	A,CPOPJ		;DONE WITH LINE
+	CAIE	A,12
+	JRST	PUTLN1
+	POPJ	P,
+
+PUTLN2:	ICOUNT
+	MOVE	B,[POINT 7,LOBUF]
+PUTLN3:	ICOUNT
+	ILDB	A,B
+	PUSHJ	P,WRCORR
+	CAIE	A,12
+	CAIN	A,14
+	POPJ	P,
+	JRST	PUTLN3
+
+
+WRCORR:	ICOUNT
+	TRNE	FL,NOCORR
+	POPJ	P,		;NO CORECCTIONS MEANS THAT
+	SOSLE	CORRBF+2
+	JRST	WCORR1
+	OUTPUT	CORR,
+	STATZ	CORR,740000
+	JRST	DDE
+WCORR1:	ICOUNT
+	IDPB	A,CORRBF+1
+	BCHECK(CORRBF+1,@DICTBO)
+	POPJ	P,
+
+WRSEXC:	ICOUNT
+	HRLI	B,(<POINT 7,0>)
+WRSEX0:	ICOUNT
+	ILDB	A,B
+	JUMPE	A,CPOPJ
+	PUSHJ	P,WREXCP
+	JRST	WRSEX0
+
+WREXCP:	ICOUNT
+	TRNE	FL,NOEXCP
+	POPJ	P,
+WEXCP0:	ICOUNT
+	SOSLE	EXCPBF+2
+	JRST	WEXCP1
+	OUTPUT	EXCP,
+	STATZ	EXCP,740000
+	JRST	DDE
+WEXCP1:	ICOUNT
+	IDPB	A,EXCPBF+1
+	BCHECK(EXCPBF+1,@DICTBO)
+	POPJ	P,
+
+WDICT:	ICOUNT
+	SOSLE	DICTBF+2
+	JRST	WDICT1
+	OUTPUT	DICT,
+	STATZ	DICT,740000
+	JRST	DDE
+WDICT1:	ICOUNT
+	IDPB	A,DICTBF+1
+	BCHECK(DICTBF+1,@DICTBO)
+	POPJ	P,
+
+COPYIO:	ICOUNT
+	MOVE	Z,INPTR
+COPYI1:	ICOUNT
+	ILDB	A,Z
+	IDPB	A,OUTPTR
+	BCHECK(OUTPTR,LOBUF+40)
+	CAME	Z,INPTR1
+	JRST	COPYI1
+	MOVEM	Z,INPTR
+	POPJ	P,
+
+CONVRT:	ICOUNT
+	MOVE	Z,[POINT 5,WORDIN]
+	MOVE	Y,[POINT 7,WORDIX]
+CONVR1:	ICOUNT
+	ILDB	A,Z
+	JUMPE	A,CONVR2
+	ADDI	A,"A"-1
+	IDPB	A,Y
+	BCHECK(Y,WORDIX+10)
+	JRST	CONVR1
+CONVR2:	ICOUNT
+	IDPB	A,Y
+	POPJ	P,
+
+
+
+PPAGE:	ICOUNT
+	MOVEI	B,[ASCIZ/Page /]
+IFN STANSW,<TRNN FL,IIISW>
+	OUTSTR	(B)
+	PUSHJ	P,WRSEXC
+	MOVE	A,PAGENO
+	PUSHJ	P,DECPB
+	MOVEI	B,[ASCIZ/
+/]
+	OUTSTR	(B)
+	JRST	WRSEXC			;WRITE IN EXCEPTION FILE AND RETURN
+
+DECPB:	ICOUNT
+	IDIVI	A,12
+	PUSH	P,B
+	SKIPE	A
+	PUSHJ	P,DECPB
+	POP	P,A
+	ADDI	A,"0"
+IFN STANSW,<TRNN FL,IIISW>
+	OUTCHR	A
+	JRST	WREXCP
+
+	SUBTTL	DESCRIPTION OF ENDTST
+COMMENT/
+
+SKIP  RETURN  SIGNIFIES  THAT  THE  WORD  IS ACCEPTED; NON SKIP MEANS
+REJECTION.  IN  EITHER  CASE,  THE  RETURN  WILL  BE MADE SO THAT THE  
+ORIGINAL WORD IS RESTORED (IN FIVEBIT) TO WORDIN.
+
+	ENDTST - The Word Endings Checker.
+
+		      <entry: ENDTST>
+			    I
+		----------------------------
+		I	Save the word	   I
+		----------------------------
+			    I
+			    V
+ENDTG.:	------------------->O
+			    I
+			    V
+		----------------------------
+  		I	acA_last letter	   I
+		I	dispatch on acA	   I
+		----------------------------
+			    I
+			    V
+		----------------------------
+		I if acA = "S" go to EDT.S I
+		----------------------------
+			    I     (not an S)
+			    V
+ENDTGO:  ------------------>O
+			    I
+			    V
+		----------------------------
+		I dispatch on contents of  I
+		I	   acA		   I
+		I  G		EDT.G      I
+		I  D		EDT.D      I
+		I  R		EDT.R	   I
+		I  E		END.E	   I
+		I  T		EDT.T	   I
+		I  H		EDT.H	   I
+		I  N		EDT.N      I
+		I  Y		EDT.Y	   I
+		I   (else failure)	   I
+		----------------------------
+
+EDT.S:   ----------------->O
+			   I
+			   V
+		----------------------------
+		I delete last letter.	   I
+		I lookup result		   I----(if success, return)
+		I  (failure)		   I
+		I acA _ new last letter	   I
+		I if letter is S, EDT.SS   I
+		I if letter is not E,	   I
+		I	then ENDTGO	   I
+		I (word was ...ES)	   I
+		I    delete the E	   I
+		I    lookup result	   I----(if success, return)
+		I    (failure)		   I
+		I acA _ new last letter	   I
+		I if acA  "I" then failureI
+		I set last letter to "Y"   I
+		I    lookup result	   I----(success, return)
+		I   return: failure	   I
+		----------------------------
+
+EDT.G:   ------------------>O
+			    I
+			    V
+		----------------------------
+		I  remove last letter	   I
+		I acA _ new last letter	   I
+		I if acA  "N" then fail   I
+		I  remove last leter	   I
+		I acA _ new last letter	   I
+		I if acA  "I" then fail   I
+		I  remove last letter	   I
+		I   lookup the word	   I----(success, return)
+		I	(failure)	   I
+		----------------------------
+			    I
+			    V
+OHELL.: ------------------->O
+			    I
+			    V
+		----------------------------
+		I remove the last letter   I
+		I  lookup the word	   I----(success, return)
+		I   return: failure	   I
+		----------------------------
+
+EDT.D:  ------------------->O
+			    I
+			    V
+		----------------------------
+		I  remove the last letter  I
+		I acA _ new last letter	   I
+		I if acA  "E" then fail   I
+		I     lookup the word	   I----(success, return)
+		I    (failure)		   I
+		I   remove the last letter I
+		I	lookup the word	   I----(success, return)
+		I    (failure)		   I
+		I acA_ new last letter	   I
+		I if acA  "I" then OHELL. I
+		I set last letter to "Y"   I
+		I	lookup the word	   I----(success, return)
+		I  return: failure	   I
+		----------------------------
+
+EDT.R:  ------------------->O
+			    I
+			    V
+		----------------------------
+		I  remove last letter	   I
+		I acA _ new last letter	   I
+		I if acA  "E" then fail   I
+		I	lookup the word	   I----(success, return)
+		I	(failure)	   I
+		I  remove last letter	   I
+		I	lookup the word	   I----(success, return)
+		I	(failure)	   I
+		I acA _ new last letter	   I
+		I if acA  "I" then OHELL. I
+		I set last letter to "Y"   I
+		I	lookup the word	   I----(success, return)
+		I   return: failure	   I
+		----------------------------
+
+EDT.T:	------------------->O
+			    I
+			    V
+		----------------------------
+		I remove last letter	   I
+		I acA _ new last letter	   I
+		I if acA  "S" then fail   I
+		I remove last letter	   I
+		I acA _ new last letter	   I
+		I if acA  "E" then fail   I
+		I	lookup the word	   I----(success, return)
+		I	(failure)	   I
+		I remove the last letter   I
+		I	lookup the word	   I----(success, return)
+		I	(failure)	   I
+		I    go to OHELL.	   I
+		----------------------------
+
+EDT.H:	------------------>O
+			   I
+			   V
+		----------------------------
+		I  remove the last letter  I
+		I acA _ new last letter	   I
+		I if acA  "T" then fail   I
+		I	lookup the word	   I----(success, return)
+		I	(failure)	   I
+		I   go to OHELL.	   I
+		----------------------------
+
+EDT.N:	------------------>O
+			   I
+		----------------------------
+		I  remove the last letter  I
+		I acA _ new last letter    I
+		I if acA ="E" go to EDT.EN I
+		I if acA  "O" then fail   I
+		I   remove the last letter I
+		I acA _ new last letter	   I
+		I if acA  "I" then fail   I
+		I set last letter to "E"   I
+		I    lookup word	   I----(success, return)
+		I	(failure)	   I
+		I  remove the last letter  I
+		I acA _ new last letter	   I
+		I if aca  "T" then fail   I
+		I  remove the last letter  I
+		I acA _ new last letter	   I
+		I if acA  "A" then fail   I
+		I  remove the last letter  I
+		I acA _ new last letter	   I
+		I if acA  "C" then fail   I
+		I remove the last letter   I
+		I acA _ new last letter	   I
+		I if acA  "I" then fail   I
+		I set last letter to "Y"   I
+		I    lookup the word	   I----(success, return)
+		I    return: failure	   I
+		----------------------------
+
+EDT.EN:	------------------>O
+			   I
+			   V
+		-----------------------------
+		I  remove the last letter   I
+		I     lookup the word	    I----(success, return)
+		I    return: failure	    I
+		-----------------------------
+
+EDT.Y:	------------------>O
+			   I
+			   V
+		-----------------------------
+		I  remove the last letter   I
+		I acA _ new last letter	    I
+		I if acA ="L" go to EDT.LY  I
+		I if acA  "T" then fail    I
+		I  remove the last letter   I
+		I    lookup the word	    I----(success, return)
+		I	(failure)	    I
+		I acA _ new last letter	    I
+		I if acA  "I" then fail    I
+		I set last letter to "E"    I
+		I	lookup the word	    I----(success, return)
+		I	return: failure	    I
+		-----------------------------
+
+EDT.LY:	------------------>O
+			   I
+			   V
+		-----------------------------
+		I  remove the last letter   I
+		I	lookup the word	    I----(success, return)
+		I	(failure)	    I
+		I    go to OHELL.	    I
+		-----------------------------
+
+ENDSS:	------------------>O
+			   I
+			   V
+		-----------------------------
+		I  remove the last letter   I
+		I acA _ new last letter	    I
+		I if acA  "E" then fail    I
+		I  remove the last letter   I
+		I acA _ new last letter	    I
+		I if acA  "N" then fail    I
+		I  remove the last letter   I
+		I	lookup word	    I----(success, return)
+		I	(failure)	    I
+		I append "E" to word	    I
+		I	lookup word	    I-----(success, return)
+		I	(failure)	    I
+		I   remove the last letter  I
+		I acA _ new last letter	    I
+		I if acA  "I" go to ENDTG. I
+		I set last letter to "Y"    I
+		I	lookup word	    I----(success, return)
+		I   return: failure	    I
+		-----------------------------
+
+END.E:	------------------>O
+			   I
+			   V
+		-----------------------------
+		I  remove the last letter   I
+		I acA _ new last letter	    I
+		I if acA  "V" then failure I
+		I     (...VE seen)	    I
+		I remove the last letter    I
+		I acA _ the new last letter I
+		I if acA  "I" then fail    I
+		I remove the last letter    I
+		I	lookup word	    I----(success, return)
+		I append "E" to word	    I
+		I	lookup word	    I----(success, return)
+		I   return: failure	    I
+		-----------------------------
+/
+	SUBTTL	ENDTST	TEST THE SUSPECT WORD BY REMOVING THE ENDINGS
+ENDSRT:	ICOUNT
+	AOS	(P)	;SUCCESS RETURN
+ENDFRT:	ICOUNT
+	PUSHJ	P,UNSVWD	;FAILURE, RESTORE WORD AND SIZE
+	POPJ	P,
+
+COMMENT/	THE ENTRY	/
+
+ENDTST:	ICOUNT
+	SKIPN	NOEND		;SKIP SUFFIX TEST IF REQUESTED.
+	CAIG	W,3		;IF TOO SMALL THEN
+	POPJ	P,		;RETURN QUICK WITH FAILURE
+	PUSHJ	P,SAVWD		;SAVE WORDIN AND W,(IN A PLACE KNOWN
+				;TO BUT A FEW).
+ENDTG.:	PUSHJ	P,GETLST	;GET LAST LETTER INTO A.
+	CAIN	A,"S"		;IS IT S?
+	JRST	EDT.S		;DO THE S THING
+ENDTGO:	ICOUNT
+	CAIN	A,"G"		;MAYBE AN "ING"
+	JRST	EDT.G		;OFF TO DO G THING (NOT STRING)
+	CAIN	A,"D"		;"ED"
+	JRST	EDT.D
+	CAIN	A,"R"		;"ER"
+	JRST	EDT.R
+	CAIN	A,"E"		;EE OR ..IVE
+	JRST	END.E
+	CAIN	A,"T"		;"EST"
+	JRST	EDT.T
+	CAIN	A,"H"		;"TH"
+	JRST	EDT.H
+	CAIN	A,"N"	;"ION" "ATION" "CATION" "ICATION"
+	JRST	EDT.N
+	CAIN	A,"Y"	;"TY" AND "LY"
+	JRST	EDT.Y
+	JRST	ENDFRT		;FAIL RETURN
+EDT.S:	ICOUNT
+	PUSHJ	P,ZLAST		;TRY SINGULAR FORM
+	PUSHJ	P,HASHCP	;COMPUTE THE HASH
+	PUSHJ	P,SEARCH
+	JRST	.+2		;FAILURE
+	JRST	ENDSRT		;SUCCESS
+	PUSHJ	P,GETLST	;DOES IT END IN "IE"
+	CAIE	A,"E"
+	JRST	[CAIE	A,"S"	;MAYBE ...NESS?
+		JRST	ENDTGO	;NO BACK THRU LIST
+		JRST	ENDSS]	;OFF TO TRY IT
+	PUSHJ	P,ZLAST		;WIPE OUT THE E
+	PUSHJ	P,HASHCP	;LOOKUP
+	PUSHJ	P,SEARCH
+	JRST	.+2
+	JRST	ENDSRT		;WIN  (HASHes is the example).
+	PUSHJ	P,GETLST
+	CAIE	A,"I"
+	JRST	ENDFRT		;QUIT
+	MOVEI	A,"Y"
+	PUSHJ	P,SETLST
+	PUSHJ	P,HASHCP
+	PUSHJ	P,SEARCH
+	JRST	ENDFRT
+	JRST	ENDSRT
+EDT.G:	ICOUNT
+	PUSHJ	P,ZLAST
+	PUSHJ	P,GETLST
+	CAIE	A,"N"
+	JRST	ENDFRT	;CAN'T DO ANY THING ELSE
+	PUSHJ	P,ZLAST
+	PUSHJ	P,GETLST
+	CAIE	A,"I"
+	JRST	ENDFRT
+	MOVEI	A,"E"	;SO CREATING WILL HAVE A CHANCE
+	PUSHJ	P,SETLST
+	PUSHJ	P,HASHCP
+	PUSHJ	P,SEARCH
+	JRST	.+2
+	JRST	ENDSRT
+	PUSHJ	P,ZLAST	;take back the irrelevant E
+	PUSHJ	P,HASHCP
+	PUSHJ	P,SEARCH
+	JRST	.+2
+	JRST	ENDSRT	;AN UNADORNED ING, LIKE KNOCKING
+	PUSHJ	P,GETLST
+	PUSH	P,A
+	PUSHJ	P,ZLAST
+	PUSHJ	P,GETLST	;CHECK FOR A DOUBLED LETTER BEFORE ING
+	CAME	A,(P)
+	JRST	[POP	P,(P)
+		JRST	ENDFRT]	;FAILURE
+	POP	P,(P)
+	JRST	OHELL1
+OHELL.:	ICOUNT
+	PUSHJ	P,ZLAST
+OHELL1:	PUSHJ	P,HASHCP
+	PUSHJ	P,SEARCH
+	JRST	ENDFRT
+	JRST	ENDSRT
+EDT.D:	ICOUNT
+	PUSHJ	P,ZLAST
+	PUSHJ	P,GETLST
+	CAIE	A,"E"
+	JRST	ENDFRT
+;FIRST TRY JUST WITHOUT THE D SO CREATED AND DELETED WILL WORK
+	PUSHJ	P,HASHCP
+	PUSHJ	P,SEARCH
+	JRST	.+2
+	JRST	ENDSRT
+	PUSHJ	P,ZLAST
+	PUSHJ	P,HASHCP
+	PUSHJ	P,SEARCH
+	JRST	.+2
+	JRST	ENDSRT
+;NOW CHECK OUT THE LAST, IF WE HAD "IED" THEN CHANGE
+;IT TO Y, ELSE, DELETE THAT LAST LETTER BY OHELL.
+	PUSHJ	P,GETLST
+	CAIE	A,"I"
+	JRST	OHELL.
+	MOVEI	A,"Y"
+	PUSHJ	P,SETLST
+	PUSHJ	P,HASHCP
+	PUSHJ	P,SEARCH
+	JRST	ENDFRT
+	JRST	ENDSRT
+EDT.R:	ICOUNT
+	PUSHJ	P,ZLAST
+	PUSHJ	P,GETLST
+	CAIE	A,"E"
+	JRST	ENDFRT
+	PUSHJ	P,HASHCP	;TRY FOR STUFF LIKE "LARGER"
+	PUSHJ	P,SEARCH
+	JRST	.+2
+	JRST	ENDSRT
+	PUSHJ	P,ZLAST
+	PUSHJ	P,HASHCP
+	PUSHJ	P,SEARCH
+	JRST	.+2
+	JRST	ENDSRT
+	PUSHJ	P,GETLST
+	CAIE	A,"I"	;SO "SPECIFIER" MAY WORK
+	JRST	OHELL.
+	MOVEI	A,"Y"
+	PUSHJ	P,SETLST
+	PUSHJ	P,HASHCP
+	PUSHJ	P,SEARCH
+	JRST	ENDFRT
+	JRST	ENDSRT
+EDT.T:	ICOUNT
+	PUSHJ	P,ZLAST
+	PUSHJ	P,GETLST
+	CAIE	A,"S"
+	JRST	ENDFRT
+	PUSHJ	P,ZLAST
+	PUSHJ	P,GETLST
+	CAIE	A,"E"
+	JRST	ENDFRT
+	PUSHJ	P,HASHCP
+	PUSHJ	P,SEARCH
+	JRST	.+2
+	JRST	ENDSRT
+	PUSHJ	P,ZLAST
+	PUSHJ	P,HASHCP
+	PUSHJ	P,SEARCH
+	JRST	OHELL.
+	JRST	ENDSRT
+EDT.H:	ICOUNT
+	PUSHJ	P,ZLAST
+	PUSHJ	P,GETLST
+	CAIE	A,"T"
+	JRST	ENDFRT
+	PUSHJ	P,ZLAST
+	PUSHJ	P,HASHCP
+	PUSHJ	P,SEARCH
+	JRST	ENDFRT
+	JRST	ENDSRT
+EDT.N:	ICOUNT
+	PUSHJ	P,ZLAST
+	PUSHJ	P,GETLST
+	CAIN	A,"E"
+	JRST	EDT.EN
+	CAIE	A,"O"
+	JRST	ENDFRT
+	PUSHJ	P,ZLAST	;REMOVED "ON" THUS FAR
+	PUSHJ	P,GETLST
+	CAIE	A,"I"
+	JRST	ENDFRT
+	MOVEI	A,"E"	;"ION" REPLACED BY "E"
+	PUSHJ	P,SETLST
+	PUSHJ	P,HASHCP
+	PUSHJ	P,SEARCH
+	JRST	.+2
+	JRST	ENDSRT
+	PUSHJ	P,ZLAST	;"ION" IS GONE
+	PUSHJ	P,GETLST
+	CAIE	A,"T"
+	JRST	ENDFRT
+	PUSHJ	P,ZLAST
+	PUSHJ	P,GETLST
+	CAIE	A,"A"
+	JRST	ENDFRT
+	PUSHJ	P,ZLAST
+	PUSHJ	P,GETLST
+	CAIE	A,"C"
+	JRST	ENDFRT
+	PUSHJ	P,ZLAST
+	PUSHJ	P,GETLST
+	CAIE	A,"I"
+	JRST	ENDFRT
+	MOVEI	A,"Y"
+	PUSHJ	P,SETLST
+	PUSHJ	P,HASHCP
+	PUSHJ	P,SEARCH
+	JRST	ENDFRT
+	JRST	ENDSRT
+EDT.EN:	ICOUNT
+	PUSHJ	P,ZLAST
+	PUSHJ	P,HASHCP
+	PUSHJ	P,SEARCH
+	JRST	OHELL.
+	JRST	ENDSRT
+EDT.Y:	ICOUNT
+	PUSHJ	P,ZLAST
+	PUSHJ	P,GETLST
+	CAIN	A,"L"
+	JRST	EDT.LY
+	CAIN	A,"T"
+	JRST	ENDFRT
+	PUSHJ	P,ZLAST
+	PUSHJ	P,HASHCP
+	PUSHJ	P,SEARCH
+	JRST	.+2
+	JRST	ENDSRT
+	PUSHJ	P,GETLST
+	CAIE	A,"I"
+	JRST	ENDFRT
+	MOVEI	A,"E"
+	PUSHJ	P,SETLST
+	PUSHJ	P,HASHCP
+	PUSHJ	P,SEARCH
+	JRST	ENDFRT
+	JRST	ENDSRT
+EDT.LY:	ICOUNT
+	PUSHJ	P,ZLAST
+	PUSHJ	P,HASHCP
+	PUSHJ	P,SEARCH
+	JRST	OHELL.
+	JRST	ENDSRT
+ENDSS:	PUSHJ	P,ZLAST
+	PUSHJ	P,GETLST	;THIS MUST BE AN "E"
+	CAIE	A,"E"
+	JRST	ENDFRT		;FAILURE
+	PUSHJ	P,ZLAST		;WIPE OUT E
+	PUSHJ	P,GETLST
+	CAIE	A,"N"
+	JRST	ENDFRT		;FAIL
+	PUSHJ	P,ZLAST		;WIPE OUT THE N.
+	PUSHJ	P,HASHCP	;LOOKUP WORD
+	PUSHJ	P,SEARCH
+	JRST	.+2		;NOPE, NOT YET
+	JRST	ENDSRT		;WIN
+	MOVEI	A,"E"		;REPLACE ...NESS BY ...E
+	ADDI	W,1		;INCREMENT WORD SIZE
+	PUSHJ	P,SETLST
+	PUSHJ	P,HASHCP
+	PUSHJ	P,SEARCH
+	JRST	.+2
+	JRST	ENDSRT
+	PUSHJ	P,ZLAST		;TAKE AWAY THE E
+	PUSHJ	P,GETLST
+	CAIE	A,"I"
+	JRST	ENDTG.		;NOTHING OF INTEREST
+	MOVEI	A,"Y"		;CHANGE THE I TO Y
+	PUSHJ	P,SETLST
+	PUSHJ	P,HASHCP
+	PUSHJ	P,SEARCH
+	JRST	ENDFRT		;GIVE UP
+	JRST	ENDSRT		;WIN
+				;SHOWING OUR PERMISSIVENESS
+
+END.E:	PUSHJ	P,ZLAST
+	PUSHJ	P,GETLST
+	CAIE	A,"V"
+	JRST	ENDFRT
+	PUSHJ	P,ZLAST
+	PUSHJ	P,GETLST
+	CAIE	A,"I"
+	JRST	ENDFRT
+	PUSHJ	P,ZLAST		;TAKE OFF THE I FROM IVE
+	PUSHJ	P,HASHCP
+	PUSHJ	P,SEARCH
+	JRST	.+2
+	JRST	ENDSRT		;WIN
+	MOVEI	A,"E"
+	ADDI	W,1
+	PUSHJ	P,SETLST	;TRY CHANGING IVE TO E.
+	PUSHJ	P,HASHCP
+	PUSHJ	P,SEARCH
+	JRST	ENDFRT
+	JRST	ENDSRT
+	SUBTTL	ROUTINES USED BY ENDTST
+
+COMMENT/
+
+SAVWD:	SAVES WORDIN AT A PLACE KNOWN TO BUT A FEW
+UNSVWD:	RESTORE THE WORD FROM THE SAME PLACE
+
+/
+
+SAVWD:	ICOUNT
+	MOVEM	W,SVWDLN	;SAVE WORD LENGTH
+	MOVE	W,[XWD WORDIN,SVWDWX]
+	BLT	W,SVWDWX+5
+	MOVE	W,SVWDLN
+	POPJ	P,
+
+UNSVWD:	ICOUNT
+	MOVE	W,[XWD SVWDWX,WORDIN]
+	BLT	W,WORDIN+5
+	MOVE	W,SVWDLN
+	POPJ	P,
+
+COMMENT/
+
+GETLST:	LOAD A WITH THE ASCII FOR THE LAST LETTER IN THE WORD.
+
+ZLAST:	ZERO THE LAST LETTER OF A WORD AND REDUCE W BY 1.
+SETLST:	SET LAST LETTER TO THE FIVEBIT EQUIVALENT OF A. A CONTAINS ASCII
+	INITIALLY
+GETLBP:	MAKE A BYTE POINTER TO THE LAST LETTER.
+	POINTER IS SUITABLE FOR A LDB OR DPB.
+	POINTER LIVES IN LSTBPY.
+
+/
+
+GETLBP:	ICOUNT
+	JUMPL	W,.+2
+	CAILE	W,62
+	PUSHJ	P,INTCFN
+	PUSH	P,W
+	PUSH	P,X
+	SUBI	W,1
+	IDIVI	W,7
+	MOVE	X,GETLBT(X)
+	ADD	X,W
+	MOVEM	X,LSTBPY
+	POP	P,X
+	POP	P,W
+	POPJ	P,
+GETLBT:	POINT	5,WORDIN,4
+	POINT	5,WORDIN,9
+	POINT	5,WORDIN,14
+	POINT	5,WORDIN,19
+	POINT	5,WORDIN,24
+	POINT	5,WORDIN,29
+	POINT	5,WORDIN,34
+
+GETLST:	ICOUNT
+	PUSHJ	P,GETLBP
+	LDB	A,LSTBPY
+	ADDI	A,"A"-1
+	POPJ	P,
+SETLST:	ICOUNT
+	SUBI	A,"A"-1
+	PUSHJ	P,GETLBP
+	DPB	A,LSTBPY
+	POPJ	P,
+ZLAST:	ICOUNT
+	PUSH	P,A
+	MOVNI	A,"A"-1
+	PUSHJ	P,SETLST
+	POP	P,A
+	SUBI	W,1		;REDUCE THE WORD LENGTH
+	POPJ	P,
+	SUBTTL	LOAD WORD
+LDWORD:	ICOUNT
+	TLZ	FL,UPPER!LOWER!MIXED		;ASSUME NOTHING ABOUT CASE
+	SETZM	WORDIN
+	MOVE	Z,[XWD WORDIN,WORDIN+1]
+	BLT	Z,WORDIN+5
+	MOVE	Z,INPTR
+	MOVE	Y,[POINT 5,WORDIN]
+	ILDB	A,Z		;READ A CHARACTER
+	MOVEI	B,(A)		;MAKE ANOTHER COPY OF THE CHARACTER
+	CAIL	A,"A"
+	CAILE	A,"z"
+	JRST	LDWRD3		;NOT A LETTER
+	CAILE	A,"Z"
+	CAIL	A,"a"
+	TRZA	A,140		;YES, A LETTER. MAKE INTO FIVEBIT AND SKIP
+	JRST	LDWRD3		;NOT A LETTER
+	IDPB	A,Y		;STUFF WORD
+	MOVEI	W,1		;SET COUNT FOR HASH
+	CAIL	B,"a"
+	CAILE	B,"z"
+	TLOA	FL,UPPER	;UPPER CASE CHARACTER
+	TLO	FL,LOWER
+LDWRD1:	ICOUNT
+	MOVEM	Z,INPTR1
+	ILDB	A,Z
+	MOVEI	B,(A)		;COPY THE CHARACTER
+	CAIE	A,"`"
+	CAIN	A,"'"
+	JRST	LDWRD1
+	CAIL	A,"A"
+	CAILE	A,"z"
+	JRST	LDWRD2		;NOT A LETTER
+	CAILE	A,"Z"
+	CAIL	A,"a"
+	TRZA	A,140		;A LETTER.  MAKE IT FIVEBIT AND SKIP
+	JRST	LDWRD2		;NOT A LETTER
+	IDPB	A,Y
+	BCHECK(Y,WORDIN+10)
+	TLNN	FL,UPPER	;IF ALL UPPERCASE SO FAR, CHECK THIS CHARACTER
+	AOJA	W,LDWRD1
+	CAIL	B,"a"
+	CAILE	B,"z"
+	AOJA	W,LDWRD1	;STILL UPPERCASE
+	TLC	FL,UPPER!MIXED	;CLEAR UPPER, SET MIXED CASE.
+	AOJA	W,LDWRD1	;LOOP
+
+LDWRD2:	ICOUNT
+	CAIL	A,"0"
+	CAILE	A,"9"
+	JRST	CPOPJ1		;WE HAVE A DELIM
+LDWRD3:	ICOUNT
+	MOVEM	Z,INPTR1	;WHATEVER WE HAVE, IT'S NOT A WORD
+				;SO PUT THE POINTER PAST IT.
+	CAIL	A,"A"		;TEST FOR A DELIMITER
+	CAILE	A,"z"
+	JRST	MAYD.2	;MAYBE
+	CAILE	A,"Z"
+	CAIL	A,"a"
+	JRST	NDLM.1	;NOT A DELIM
+MAYD.2:	CAIL	A,"0"
+	CAILE	A,"9"
+	POPJ	P,		;THIS IS A DELIM BUT NOT A WORD
+NDLM.1:	ILDB	A,Z		;NOT A DELIM
+	JRST	LDWRD3		;FLUSH TO A DELIMITER
+	SUBTTL	CHANNEL INITIALIZATION
+SDEF(BUFFNO,2)	;NUMBER OF I/O BUFFERS FOR DEVICES
+SDEF(MODE,14)	;BUFFERD BINARY WORD AT A TIME MODE.
+SDEF(AMODE,1)	;BUFFFERED CHARACTER AT A TIME
+
+INDICT:	ICOUNT
+	INIT	DICT,AMODE
+	SIXBIT	/DSK/
+	XWD	0,DICTBF
+	JRST	NODISK
+	PUSH	P,A
+	MOVE	A,DICTFF
+	EXCH	A,JOBFF
+	INBUF	DICT,BUFFNO
+	EXCH	A,JOBFF		;RESTORE OLD
+	MOVEM	A,NEWFF		;BUT SAVE NEW, IF WE ARE AT BEGINNING
+	POP	P,A
+	POPJ	P,
+INDCTO:	ICOUNT
+	INIT	DICT,AMODE
+	SIXBIT	/DSK/
+	XWD	DICTBF,0
+	JRST	NODISK
+	PUSH	P,A
+	MOVE	A,DICTFF
+	EXCH	A,JOBFF
+	OUTBUF	DICT,BUFFNO
+	EXCH	A,JOBFF
+	MOVEM	A,NEWFF
+	POP	P,A
+	POPJ	P,
+INDATA:	ICOUNT
+	INIT	DATA,MODE
+	SIXBIT	/DSK/
+	XWD	0,DATABF
+	JRST	NODISK
+	PUSH	P,A
+	MOVE	A,DATAFF
+	EXCH	A,JOBFF
+	INBUF	DATA,BUFFNO
+	EXCH	A,JOBFF
+	MOVEM	A,NEWFF
+	POP	P,A
+	POPJ	P,
+INEXCP:	ICOUNT
+	INIT	EXCP,AMODE
+	SIXBIT	/DSK/
+	XWD	EXCPBF,0
+	JRST	NODISK
+	PUSH	P,A
+	MOVE	A,EXCPFF
+	EXCH	A,JOBFF
+	OUTBUF	EXCP,BUFFNO
+	EXCH	A,JOBFF
+	MOVEM	A,NEWFF
+	POP	P,A
+	POPJ	P,
+INCORR:	ICOUNT
+	INIT	CORR,MODE
+	SIXBIT	/DSK/
+	XWD	CORRBF,0
+	JRST	NODISK
+	PUSH	P,A
+	MOVE	A,CORRFF
+	EXCH	A,JOBFF
+	OUTBUF	CORR,BUFFNO
+	EXCH	A,JOBFF
+	MOVEM	A,NEWFF
+	POP	P,A
+	POPJ	P,
+	SUBTTL	I/O STUFF:
+COMMENT/
+RDDICT:	READ DICTIONARY FILE.  
+STOPGAP LINE NUMBERS ARE STRIPPED.
+CHARACTER RESULT IN A. SKIP RETURN IS NORMAL, NON SKIP FOR EOF.
+/
+RDDICT:	ICOUNT
+	SOSLE	DICTBF+2
+	JRST	RDICT1
+	INPUT	DICT,
+	STATZ	DICT,740000
+	JRST	DIE
+	STATZ	DICT,20000
+	POPJ	P,			;DIRECT RETURN MEANS EOF
+RDICT1:	ICOUNT
+	ILDB	A,DICTBF+1
+	JUMPE	A,RDDICT
+	PUSH	P,A
+	MOVE	A,@DICTBF+1
+	TRNE	A,1
+	JRST	RDICT2
+	POP	P,A
+CPOPJ1:	ICOUNT
+	AOS	(P)
+CPOPJ:	ICOUNT
+	POPJ	P,			;NORMALLY A SKIP RETURN
+RDICT2:	ICOUNT
+	MOVE	A,DICTBF+2
+	SUBI	A,5
+	MOVEM	A,DICTBF+2		;FIX CHARACTER COUNT.
+	AOS	DICTBF+1		;LIKEWISE FIX BYTE POINTER
+	POP	P,A
+	JRST	RDDICT			;BACK AND READ MORE.
+	SUBTTL	THE DICTIONARY LOADER.
+;	CHECK IF WE ARE ADDING OR ARE VIRGIN
+LOADER:	ICOUNT
+	SKIPN	DICTFL
+	OUTSTR	[ASCIZ/
+You must load a dictionary file. /]
+	PUSHJ	P,INDICT
+LOAD.1:	ICOUNT
+	OUTSTR	[ASCIZ/Dictionary file name: /]
+	PUSHJ	P,GETFIL	;PRESUMED TO RETURN IN K,L,M,N.
+	JRST	[OUTSTR	NULMSG
+		JRST	LOAD.1]
+	LOOKUP	DICT,K
+	JRST	[PUSHJ	P,FNOTFM
+		JRST	LOAD.1]
+	TRZ	FL,IDUMP
+	SKIPE	DICTFL
+	JRST	LOAD.0		;ALREADY HAVE A DICTIONARY
+	SETZM	HASHTB
+	MOVE	A,[XWD HASHTB,HASHTB+1]
+	BLT	A,HASHTB+HASHTL-1		;CLEAR HASH TABLE
+	JRST	LOAD.5
+
+LOAD.0:	ICOUNT
+	OUTSTR	[ASCIZ/Type "I" to mark these as incremental insertions: /]
+	INCHWL	A
+	CAIE	A,"I"
+	CAIN	A,"i"
+	JRST	[TRO	FL,IDUMP
+		PUSHJ	P,SETNUM
+		JRST	.+1]
+	PUSHJ	P,FLUTTY
+LOAD.5:	PUSHJ	P,RDICTW		;READ FIRST WORD
+	JRST	LOAD.3			;DICTIONARY FILE IS EMPTY
+	MOVE	A,WORDIN		;GET THE WORD WE READ
+	CAIN	W,7			;PRECISELY 7 LETTERS IN THE WORD?
+	CAME	A,[BYTE(5)"C","O","M","M","E","N","T"]	;YES. "COMMENT"?
+	JRST	LOD.2A			;NOT "COMMENT"; GO LOAD THIS WORD
+	OUTSTR	[ASCIZ/(TV-E format directory page being skipped)
+/]
+LOAD.4:	PUSHJ	P,RDDICT		;SKIP TO NEXT FORM-FEED.
+	JRST	LOAD.3			;NONE THERE
+	CAIE	A,14
+	JRST	LOAD.4
+
+LOAD.2:	ICOUNT
+	PUSHJ	P,RDICTW		;READ A DICTIONARY WORD
+	JRST	LOAD.3			;END OF FILE
+LOD.2A:	PUSHJ	P,HASHCP		;COMPUTE HASH
+	PUSHJ	P,SEARCH		;LOOKUP WORD
+	JRST	.+2			;FAILED, I.E. NOT THERE
+	JRST	LOAD.2			;WORD WAS THERE, DON'T ADD IT AGAIN
+	PUSHJ	P,INSERY		;ADD IT TO THE LIST
+	AOS	DICTFL			;INCREMENT WORD COUNT
+	JRST	LOAD.2			;BACK FOR MORE
+
+LOAD.3:	ICOUNT
+	CLOSE	DICT,			;DESELECT FILE
+	OUTSTR	[ASCIZ/There are now /]
+	MOVE	A,DICTFL
+	PUSHJ	P,DECPTR
+	OUTSTR	[ASCIZ/ words in the dictionary.  /]
+	MOVE	A,JOBREL
+	LSH	A,-12
+	ADDI	A,1
+	PUSHJ	P,DECPTR
+	OUTSTR	[ASCIZ/ K Core used.
+Do you want to save this core image?  /]
+	INCHWL	A
+	PUSHJ	P,FLUTTY
+	CAIE	A,"Y"
+	CAIN	A,"y"
+	JRST	.+2
+	POPJ	P,
+	PUSHJ	P,SAVEME
+	JRST	BEGIN		;HAVE TO REESTABLISH THE WORLD AFTER THE
+				;BIG RESET.
+	SUBTTL	READ A DICTIONARY WORD.
+COMMENT/
+SKIP RETURN, EXCEPT FOR EOF.
+CHARACTER COUNT IN W. 5 BIT TEXT IN WORDIN. 7 BIT ASCIZ IN WORDIX
+/
+
+RDICTW:	ICOUNT
+	SETZB	W,WORDIN
+	MOVE	A,[XWD WORDIN,WORDIN+1]
+	BLT	A,WORDIX+12
+	MOVE	X,[POINT 5,WORDIN]
+	MOVE	Y,[POINT 7,WORDIX]
+RDCTW1:	ICOUNT
+	PUSHJ	P,RDDICT
+	POPJ	P,		;EOF. QUICK RETURN
+	IDPB	A,Y
+	CAIGE	A,"A"
+	JRST	RDCTW3		;A DELIMITER
+RDCTW2:	ICOUNT
+	TRZ	A,40		;INSURE UPPER CASE
+	SUBI	A,"A"-1		;MAP A TO 1, Z TO 26 ETC.
+	CAILE	A,37
+	JRST	RDCTW3		;I THINK THIS CAN'T HAPPEN
+	IDPB	A,X
+	CAILE	W,50
+	JRST	RDCTW4		;TOO LONG
+	AOJA	W,RDCTW1	;BACK FOR MORE
+RDCTW3:	ICOUNT
+	CAIE	A,12
+	CAIN	A,14	;LF AND FF STOP US.
+	JRST	[JUMPN	W,CPOPJ1
+		JRST	RDICTW]		;DISALLOW ZERO LENGTH WORDS
+	PUSHJ	P,RDDICT
+	POPJ	P,
+	JRST	RDCTW3
+RDCTW4:	ICOUNT
+	OUTSTR	[ASCIZ/Illegal dictionary entry: /]
+	OUTSTR	WORDIX
+RDCTW5:	ICOUNT
+	PUSHJ	P,RDDICT
+	POPJ	P,
+	OUTCHR	A
+	CAIE	A,12
+	CAIN	A,14		;FF OR LF WILL STOP US
+	JRST	RDICTW		;BACK FOR A WHOLE NEW WORD
+	JRST	RDCTW5
+	SUBTTL	THE HASH COMPUTATION.
+COMMENT/
+HASHCP:	COMPUTES THE HASH INDEX TO THE TABLE HASHTB.
+
+ARGUMENTS:	W. WORD LENGTH
+		WORDIX	5 BIT WORD
+
+RESULTS:	Z:	THE INDEX TO THE TABLE, EXCEPT
+		Z=-1 IF W1.
+		FLAG, LEFT (IN FL RIGHT) IS SET IF HASH CODE IS ON
+		LEFT HALF, OTHERWISE, RIGHT HALF
+/
+
+HASHCP:	ICOUNT
+	SETO	Z,
+	JUMPLE	W,[OUTSTR [ASCIZ/0 LENGTH WORD AT HASHCP/]
+		POPJ	P,]
+	CAIG	W,1
+	POPJ	P,		;SIMPLE FOR WORDS OF LENGTH 1.
+	MOVE	X,[POINT 5,WORDIN]
+	ILDB	A,X
+	CAILE	A,32
+	JRST	HASHER		;ERROR
+	JUMPE	A,HASHER
+	SUBI	A,1
+	IMULI	A,32
+	MOVE	Z,A
+	ILDB	A,X
+	CAILE	A,32
+	JRST	HASHER
+	JUMPE	A,HASHER
+	ADDI	Z,-1(A)
+	IMULI	Z,12
+	MOVE	X,W
+	SUBI	X,2
+	CAILE	X,11
+	MOVEI	X,11
+	ADD	Z,X
+	TRNE	Z,1
+	TRZA	FL,LEFT		;ODD. RIGHT HALF
+	TRO	FL,LEFT		;EVEN, SET LEFT FLAG
+	LSH	Z,-1		;HALVE Z.
+	POPJ	P,
+
+HASHER:	ICOUNT
+	OUTSTR	[ASCIZ/HASHING ERROR
+/]
+	HALT
+	SUBTTL	SCAN TTY FOR A FILE NAME
+GNCHTT:	ICOUNT
+	INCHWL	A
+	CAIN	A,33
+	MOVEI	A,12
+	CAIE	A,175
+	CAIN	A,176
+	MOVEI	A,12
+	POPJ	P,
+
+SCAN:	ICOUNT
+	SETZM	SCANT
+	MOVE	B,[XWD SCANT,SCANT+1]
+	BLT	B,SCANX+4
+	SETZ	Y,		;INDEX TO PAGES.
+SCAN1:	ICOUNT
+	MOVE	B,[POINT 6,SCANT]
+	SETZB	C,SCANT	;IMPORTANT TO START RITE
+SCAN2:	ICOUNT
+	PUSHJ	P,GNCHTT	;GET A CHARACTER
+	CAIN	A,15
+	JRST	SCAN2
+	CAIN	A,12
+	JRST	SCAND1
+	CAIN	A,40
+	JRST	SCAN2
+	CAIN	A,"."	;FILENAME SEEN
+	JRST	SCAND2
+	CAIN	A,"/"
+	JRST	SCAND0
+	CAIN	A,"["
+	JRST	SCPPN
+	CAIGE	A,"a"
+	JRST	.+3
+	CAIG	A,"z"
+	SUBI	A,40	;CONVERT TO UPPER CASE
+	SUBI	A," "	;MAKE SIXBIT
+	JUMPL	A,SCANER
+	CAILE	A,77
+	JRST	SCANER
+	AOS	C
+	CAIG	C,6
+	IDPB	A,B
+	JRST	SCAN2
+SCANER:	ICOUNT
+	OUTSTR	[ASCIZ/ILLEGAL CHARACTER IN SCAN./]
+	PUSHJ	P,FLUTTY	;EMPTY TO NEXT CRLF
+	OUTSTR	[ASCIZ/Try again: /]
+	JRST	SCAN
+SCAND1:	ICOUNT
+	MOVEM	A,SAVCHR
+	SKIPN	C
+	JRST	SCNRET
+	MOVE	A,SCANT
+	SETZ	C,
+	SKIPE	SCANX+1
+	AOS	C
+	MOVEM	A,SCANX+1(C)
+	JRST	SCNRET
+SCAND2:	ICOUNT
+	MOVE	A,SCANT
+	MOVEM	A,SCANX+1
+	JRST	SCAN1
+SCAND0:	ICOUNT
+	JUMPE	C,SCANSW
+	MOVE	A,SCANT
+	SETZ	C,
+	SKIPE	SCANX+1
+	ADDI	C,1
+	MOVEM	A,SCANX+1(C)
+SCANSW:	INCHWL	A
+	TRZ	A,40	;ENSURE UPPER CASE
+	MOVSI	B,-SWTBLN
+	CAME	A,SWTAB1(B)
+	AOBJN	B,.-1
+	JUMPGE	B,[OUTSTR [ASCIZ/unrecognized switch  /]
+		JRST	SCANER]
+	XCT	SWTAB2(B)
+	JRST	SCAN1
+
+SWTAB1:	"P"	;PICKUP
+	"T"	;TRAINING
+	"Q"	;QTRAINING
+	"N"	;NO SUFFIX TESTING
+	"U"	;UPPER CASE ACCEPTOR
+SDEF(SWTBLN,.-SWTAB1)
+SWTAB2:	TRO	FL,PICKUP
+	TRO	FL,TRAIN!NOEXCP!NOCORR
+	TRO	FL,QTRAIN!NOCORR
+	SETOM	NOEND
+	SETOM	UCASE
+
+SCPPN:	ICOUNT
+	SKIPN	C
+	JRST	SCPPN0
+	MOVE	A,SCANT
+	SETZ	C,
+	SKIPE	SCANX+1
+	AOS	C
+	MOVEM	A,SCANX+1(C)
+SCPPN0:	ICOUNT
+	SETZB	B,C
+SCPPN1:	ICOUNT
+	PUSHJ	P,GNCHTT
+	CAIN	A,"]"
+	JRST	SCPPN3
+	CAIN	A,","
+	JRST	SCPPN2
+IFN STANSW,<	CAIL	A,100
+	TRZ	A,40		;MAKE LOWER CASE LETTER TO UPPER CASE
+	SUBI	A," "
+	JUMPL	A,SCANER
+	CAILE	A,77
+	JRST	SCANER
+	LSH	B,6     >;stanford
+IFE STANSW,<	SUBI	A,"0"
+	JUMPL	A,SCANER
+	CAIL	A,PPNMUL
+	JRST	SCANER
+	IMULI	B,PPNMUL
+>
+	ADD	B,A
+	JRST	SCPPN1
+SCPPN2:	ICOUNT
+	HRLZ	C,B
+	SETZ	B,
+	JRST	SCPPN1
+SCPPN3:	ICOUNT
+	HRR	C,B
+	MOVEM	C,SCANX+3
+	JRST	SCAN1	;MAYBE MORE?
+SCNRET:	ICOUNT
+	SKIPE	SCANX
+	JRST	CPOPJ1
+	SKIPE	SCANX+1
+	JRST	CPOPJ1
+	POPJ	P,
+
+GETFIL:	ICOUNT
+	PUSHJ	P,SCAN
+	POPJ	P,		;NULL TERM
+	MOVE	K,SCANX+1
+	HLLZ	L,SCANX+2
+	SETZ	M,
+	MOVE	N,SCANX+3
+	JRST	CPOPJ1
+	SUBTTL	ERROR MESSAGES
+DDE:	ICOUNT
+	OUTSTR	[ASCIZ/DEVICE DATA ERROR (OUTPUT)
+/]
+	HALT
+FNOTFM:	ICOUNT
+	OUTSTR	[ASCIZ/FILE NOT FOUND. DSK:/]
+	JRST	TYFILN			;ARGS IN K,L,M,N
+
+NODISK:	ICOUNT
+	OUTSTR	[ASCIZ/INIT FAILED ON DEVICE DSK: /]
+	HALT
+DECPTR:	ICOUNT
+	PUSH	P,B
+	PUSHJ	P,DECPTX	;USES B. A IS ARGUMENT
+	POP	P,B
+	POPJ	P,
+DECPTX:	ICOUNT
+	IDIVI	A,12
+	PUSH	P,B
+	SKIPE	A
+	PUSHJ	P,DECPTX
+	POP	P,A
+	ADDI	A,"0"
+	OUTCHR	A
+	POPJ	P,
+
+FLUTTY:	ICOUNT
+	PUSH	P,A
+FLUTT1:	ICOUNT
+	CAIE	A,12
+	CAIN	A,175
+	JRST	FLUTT2
+	CAIE	A,33
+	CAIN	A,176
+	JRST	FLUTT2
+	INCHRS	A		;INPUT CHARACTER AND SKIP
+	JRST	FLUTT2
+	JRST	FLUTT1
+FLUTT2:	ICOUNT
+	POP	P,A
+	POPJ	P,
+
+NOCORE:	OUTSTR	[ASCIZ/INSUFFICIENT CORE AVAILABLE. I GIVE UP
+/]
+	EXIT
+
+NULMSG:	ASCIZ/Null term illegal
+/
+
+ENTFAI:	OUTSTR	[ASCIZ/Enter failed on: /]
+	PUSHJ	P,TYFILN
+	POPJ	P,
+
+DIE:	OUTSTR	[ASCIZ/DEVICE ERROR (INPUT)
+/]
+	HALT	.
+
+INTCFN:	OUTSTR	[ASCIZ/
+Internal confusion in the spelling checker.  Called from location:  /]
+	PUSH	P,A
+	HRRZ	A,-1(P)
+	PUSH	P,B
+	SUBI	A,1
+	PUSHJ	P,OCTPTR
+IFG COUNTS,<	PUSHJ	P,CRASH>
+	POP	P,B
+	POP	P,A
+	OUTSTR	[ASCIZ/
+You may continue, with doubtful results....
+/]
+	HALT	CPOPJ
+
+OCTPTR:	IDIVI	A,10
+	PUSH	P,B
+	JUMPE	A,.+2
+	PUSHJ	P,OCTPTR
+	POP	P,B
+	ADDI	B,60
+	OUTCHR	B
+	POPJ	P,
+	SUBTTL	SEARCH	LOOK IN DICTIONARY FOR A WORD.
+
+COMMENT/	THE SUBJECT OF THE SEARCH LIVES IN WORDIN.
+	IT HAS W CHARACTERS.
+	IT HAS HASH INDEX Z.
+	IF Z<0 (OR W1) THEN WE WILL ALWAYS FIND IT AS A WORD.
+	SKIP RETURN IF FOUND.
+
+/
+
+SEARCH:	ICOUNT
+	JUMPL	Z,CPOPJ1	;EASY.
+
+	MOVEM	W,1(P)		;SAVE W FOR A WHILE.
+	IDIVI	W,7		;7 CHARS/WORD IN FIVEBIT
+	JUMPE	X,.+2		;SKIP IF REMAINDER ZERO
+	ADDI	W,1		;THIS IS ENGLISH WORD'S LENGTH IN MACHINE WORDS.
+	MOVN	W,W
+	HRLZM	W,WWLEN		;SAVE -WORD LENGTH,,0.  (AOBJN POINTER TO WORDIN)
+	MOVE	W,1(P)		;RESTORE W.
+
+	TRNN	FL,LEFT		;MUST WE USE LEFT SIDE?
+	SKIPA	L,HASHTB(Z)	;NO. (RIGHT SIDE GETS RIGHT SIDE)
+	HLRZ	L,HASHTB(Z)	;USE LEFT SIDE. SIMULATE AN ADVANCE.
+SERCH3:	ICOUNT			;HERE FOR FAILURE
+	MOVEI	X,(L)		;LINK FORWARD.
+	JUMPE	X,CPOPJ		;SEARCH EXHAUSTED, A FAILURE.
+	HRRZ	L,(X)		;THIS LOADS L WITH LINK TO THE NEXT.
+				;X POINTS ONE BEFORE THE PRESENT ENTRY.
+	MOVE	Y,WWLEN		;Y WILL INDEX WORDIN. AOBJN POINTER.
+SERCH2:	ICOUNT
+	MOVE	K,WORDIN(Y)
+	CAME	K,1(X)		;(X IS LAGGING - STARTS AT WORD HEADER)
+	JRST	SERCH3		;FAILED
+	ADDI	X,1
+	AOBJN	Y,SERCH2	;ADVANCE Y (AND X)
+	SUBI	X,-1(Y)		;MAKE DIRECT POINTER IN X
+	JRST	CPOPJ1		;WE ARE ALREADY AT THE LIST HEAD.
+	SUBTTL	INSERT
+COMMENT/
+INSERT THE WORD AT WORDIN. LENGTH IS IN W. HASH INDEX IS IN Z.
+LISTFF CONTAINS THE ADDRESS OF THE FIRST FREE WORD OF CORE.
+/
+
+INSERT:	ICOUNT
+	TRZA	FL,IDUMP
+INSRTX:	ICOUNT
+	TRO	FL,IDUMP
+INSERY:	ICOUNT
+	PUSH	P,W
+	PUSH	P,X
+	JUMPL	Z,.+2
+	CAIL	Z,HASHTL
+	PUSHJ	P,INTCFN
+	JUMPL	W,.+2
+	CAILE	W,62
+	PUSHJ	P,INTCFN
+	IDIVI	W,7		;7 CHARS/WORD IN FIVEBIT
+	JUMPE	X,.+2
+	ADDI	W,1
+	ADDI	W,1		;TOTAL NUMBER OF WORD WE NEED TO USE
+	MOVEM	W,WWLEN
+	POP	P,X
+	POP	P,W
+	PUSHJ	P,CORECK	;SEE IF WE HAVE ENOUGH SPACE /GET MORE
+	TRNE	FL,LEFT		;SKIP IF LEFT CLEAR
+	HLRZ	K,HASHTB(Z)	;USE LEFT
+	TRNN	FL,LEFT		;SKIP IF LEFT SET
+	HRRZ	K,HASHTB(Z)	;USE RIGHT
+	MOVE	L,LISTFF	;ADDRESS OF FREE STORAGE
+	CAMG	L,K		;OUGHT TO BE BEYOND CURRENT POINTER
+	PUSHJ	P,INTCFN
+	TRNE	FL,IDUMP
+	HRL	K,IDNUM		;D CONTAINS THE DICTIONARY NUMBER
+	MOVEM	K,(L)
+	MOVEI	K,(L)
+	TRNE	FL,LEFT		;SKIP IF LEFT CLEAR
+	HRLM	K,HASHTB(Z)	;DEPOSIT NEW LINK ON LEFT
+	TRNN	FL,LEFT
+	HRRM	K,HASHTB(Z)	;DEPOSIT ON RIGHT
+	ADDI	L,1
+	SOS	WWLEN
+	SOS	WWLEN	;HACK,HACK. (STOP SMOKING)
+;NOW THAT THE LIST LINKS ARE HONEST, ADD THE WORD BENEATH (ABOVE)
+;THE NEWEST LINK.  L POINTS TO THE FREE CORE.
+	SETZ	K,
+INSRT1:	ICOUNT
+	MOVE	M,WORDIN(K)
+	MOVEM	M,(L)
+	ADDI	L,1
+	CAMGE	K,WWLEN
+	AOJA	K,INSRT1
+	MOVEM	L,LISTFF	;UPDATE FREE POINTER
+	HRLM	L,JOBSA			;HACK SO SAVE WILL WORK
+	SETZM	(L)		;SUSPENDERS  (THE BELT WAS DELETED)
+	POPJ	P,
+	SUBTTL	CORE ROUTINES
+COMMENT/
+CORECK:	ADD WWLEN TO LISTFF AND IF THE RESULT >JOBREL REQUEST MORE.
+GETCOR:	EXPAND CORE BY 1 K.
+/
+
+CORECK:	ICOUNT
+	PUSH	P,A
+	MOVE	A,LISTFF
+	ADD	A,WWLEN
+	CAML	A,JOBREL
+	PUSHJ	P,GETCOR
+	POP	P,A
+	POPJ	P,
+
+GETCOR:	ICOUNT
+	PUSH	P,A
+	MOVE	A,JOBREL
+	ADDI	A,2000
+	CORE	A,
+	JRST	NOCORE
+	POP	P,A
+	POPJ	P,
+
+	SUBTTL	TYPE FILE NAMES,READ NAMES, PLAY WITH TTY
+TYFILN:	ICOUNT
+	PUSH	P,A
+	PUSH	P,B
+	PUSH	P,C
+	MOVEI	C,6
+	MOVE	B,[POINT 6,K]
+TYFLN1:	ILDB	A,B
+	ADDI	A," "
+	OUTCHR	A
+	SOJG	C,TYFLN1
+	HLLZ	L,L
+	JUMPE	L,TYFILP	;NOW DO PPN
+	OUTCHR	["."]
+	MOVEI	C,3
+TYFLN2:	ILDB	A,B
+	ADDI	A," "
+	OUTCHR	A
+	SOJG	C,TYFLN2
+TYFILP:	JUMPE	N,TYFILR
+	MOVE	B,[POINT 6,N]
+	MOVEI	C,3
+	OUTCHR	["["]
+TYFLP1:	ILDB	A,B
+	ADDI	A," "
+	OUTCHR	A
+	SOJG	C,TYFLP1
+	OUTCHR	[","]
+	MOVEI	C,3
+TYFLP2:	ILDB	A,B
+	ADDI	A," "
+	OUTCHR	A
+	SOJG	C,TYFLP2
+	OUTCHR	["]"]
+TYFILR:	POP	P,C
+	POP	P,B
+	POP	P,A
+	OUTSTR	[ASCIZ/
+/]
+	POPJ	P,
+	SUBTTL	TRYFIX	OUR HUMBLE ATTEMPT TO CORRECT THE WORD.
+COMMENT/
+
+THE SUSPECT WORD IS IN WORDIN AS FIVEBIT TEXT.
+IF WE FIND A BETTER CANDIDATE, WE WILL SLIP IT IN
+AND SKIP RETURN.  IF WE PLAN TO SKIP RETURN, WE HAVE TO COPY
+THE NEW WORD INTO THE OUTPUT BUFFER AND SCREW AROUND WITH
+SOME POINTERS TO CONVINCE PEOPLE THAT 1. WE HAVE READ THE
+INPUT WORD AND 2. THAT WE HAVE USED THE SPACE IN THE OUTPUT BUFFER
+SO NO ONE ELSE WILL STEP THERE.  
+	IT WOULD ALSO BE NICE IF I WERE TO COPY IN LOWER CASE
+OR UPPER CASE, OR MIXED, DEPENDING ON THE ORIGINAL TEXT.
+(CHOICES ARE ALL UPPER, ALL LOWER OR FIRST LETTER IN UPPER,
+REMAINDER IN LOWER. McCarthy HAD BETTER SPELL HIS NAME RIGHT.)
+
+/
+
+TRYFIX:	ICOUNT
+	SETZM	CANDID				;NUMBER OF CANDIDATES FOR THIS WORD
+	PUSH	P,W
+	PUSH	P,X
+	IDIVI	W,7
+	JUMPE	X,.+2
+	ADDI	W,1
+	MOVEM	W,WWLEN
+	POP	P,X
+	PUSH	P,WWLEN
+	MOVE	W,-1(P)
+	PUSHJ	P,X1SRCH			;TRY MAYBE ONE LETTER WRONG
+	PUSHJ	P,XTRNP				;TRY SIMPLE TRANSPOSITION
+	PUSHJ	P,X1EXL				;TRY MAYBE DELETE 1 EXTRA LETTER
+	PUSHJ	P,X1LMS				;ADD ONE LETTER
+	POP	P,WWLEN
+	CAME	W,(P)
+	PUSHJ	P,INTCFN			;OOPS W SHOULDN'T CHANGE 
+	POP	P,W
+	TRNE	FL,QTRAIN			;TRANING MODE?
+	JRST	TRFQDO				;YES.
+	MOVE	A,CANDID			;PICKUP COUNT
+	CAILE	A,1				;THE EASY WAY?
+	PUSHJ	P,REPCK				;MORE THAN ONE. CHECK FOR REPEATS
+	TRNN	FL,HELPSN			;HELP MESSAGE BEEN SEEN?
+TRYFX0:	PUSHJ	P,HELMSZ			;DO THE HELP MESSAGE
+	TRO	FL,HELPSN			;AND REMEMBER WE DID IT
+
+TRYFXA:	ICOUNT
+	SKIPE	CANDID				;ANY CANDIDATES?
+	JRST	TRYFXR				;YES. TELL THE GUY ABOUT THEM
+IFN STANSW,<TRNN FL,IIISW>
+	OUTSTR	[ASCIZ/Type A,I,R,X,W or D/]
+	OUTSTR	[ASCIZ/
+*/]
+	INCHWL	A
+	TRZ	A,40				;MAKE UPPER CASE
+						;ENTER HERE WITH A COMMAND CHARACTER
+TRYFXQ:	CAIN	A,"W"				;SAVE THE WORLD?
+	JRST	[PUSHJ	P,SETNUM
+		PUSHJ	P,IDMPD
+		JRST	TRYFXA]
+	CAIN	A,"I"				;INSERT?
+	JRST	[PUSHJ P,HASHCP
+		PUSHJ	P,SETNUM
+		PUSHJ	P,INSRTX
+		POPJ	P,]
+	CLRBFI					;FLUSH TYPE AHEAD
+	CAIN	A,"X"				;X FOR EXIT?
+	TROA	FL,SHUTUP			;SET THE QUICK FLAG AND SKIP
+	CAIN	A,"A"				;A FOR ACCEPT?
+	POPJ	P,				;YES. RETURN QUICK.
+
+IFG COUNTS,<
+	CAIN	A,"$"				;DUMP STATISTICS COMMAND?
+	JRST	[PUSHJ	P,DTRACY		;DUMP STUFF
+		JRST	TRYFXA]			;AND ASK AGAIN
+>
+
+	CAIN	A,"D"				;DISPLAY AGAIN?
+	JRST	[OUTSTR	LIBUF
+		OUTSTR	WORDIX
+		OUTSTR	CRLF
+		JRST	TRYFXA]
+	CAIE	A,"R"				;REPLACE?
+	JRST	TRYFX0				;NONE OF THESE COMMANDS. DISPLAY HELP
+
+	OUTSTR	[ASCIZ/Replace with: /]
+	MOVE	A,[XWD WORDIN,WORDIN+1]		;PREPARE TO GATHER TEXT
+	SETZM	WORDIN
+	BLT	A,WORDIN+5
+	MOVE	A,[POINT 5,WORDIN]
+	MOVEM	A,TLET.1
+	SETZ	W,
+REPL.1:	INCHWL	A
+	CAIE	A,175			;ALT MODE?
+	CAIN	A,33			;ANOTHER ALT MODE?
+	JRST	[CLRBFI			;FLUSH TYPE AHEAD
+		JRST	TRYFXA]		;AND LET HIM TRY AGAIN.
+	CAIL	A,40
+	CAIL	A,175
+	JRST	REPL.2
+	CAIL	A,"a"			;HAVE WE GOT LOWER CASE INPUT?
+	CAILE	A,"z"			;SKIP IF LOWER CASE
+	JRST	.+2			;NOT LOWER CASE
+	TRZ	A,40			;MAKE IT UPPER CASE
+	CAIGE	A,"A"			;IS THIS A LETTER?
+	JRST	REPL1A			;NOT A LETTER
+	TLNE	FL,LOWER		;IS RESULT SUPPOSED TO BE LOWER?
+	TRO	A,40			;YES TURN ON THE BIT
+	TLZE	FL,MIXED		;MIXED UPPER THEN LOWER?
+	TLO	FL,LOWER		;YES. MUST NOW BE TIME FOR LOWER
+REPL1A:	IDPB	A,OUTPTR		;STUFF CHARACTER INTO OUTPUT
+	BCHECK(OUTPTR,LOBUF+40)
+;	TLZ	A,140	;this instruction should be TRZ and is usless anyway
+	TLNN	A,37			;IF BLANK SCANNED, FLAG CHARACTER COUNT
+	MOVNI	W,1			;TO AVOID HASH COMPUTATION, LATER
+	JUMPL	W,REPL.1
+	IDPB	A,TLET.1
+	BCHECK(TLET.1,WORDIN+10)
+	AOJA	W,REPL.1
+
+REPL.2:	ICOUNT
+	MOVE	A,INPTR1
+	MOVEM	A,INPTR
+	PUSHJ	P,FLUTTY
+	JUMPL	W,CPOPJ1		;IN CASE " " WAS INCLUDED IN INPUT STRING
+	PUSHJ	P,HASHCP
+	PUSHJ	P,SEARCH
+	JRST	.+2
+	JRST	CPOPJ1
+	OUTSTR	[ASCIZ/
+type "I" to insert this replacement in the dictionary: /]
+	INCHWL	A
+	CAIE	A,"I"
+	CAIN	A,"i"
+	JRST	[PUSHJ	P,SETNUM
+		PUSHJ	P,INSRTX
+		JRST	.+1]
+	PUSHJ	P,FLUTTY
+	JRST	CPOPJ1
+
+TRYFXR:	ICOUNT			;HERE WHEN WE HAVE CANDIDATES TO SHOW HIM.
+IFN STANSW,<
+	TRNE	FL,IIISW	;ON A III?
+	JRST	TRYIII		;YES. DO FUNNY DISPLAY STUFF.
+>
+	MOVE	A,CANDID	;CHECK TO SEE HOW MANY CANDIDATES WE HAVE
+	CAIGE	A,2		;DO IT THE HARD WAY
+	JRST	TRYFXO		;EXACTLY ONE CANDIDATE.
+	OUTSTR	[ASCIZ/Type A,I,R,X,D,W or S
+*/]
+	INCHWL	A
+	TRZ	A,40	;MAKE UPPER CASE
+	CAIE	A,"S"
+	JRST	TRYFXQ
+	CLRBFI	0
+	PUSHJ	P,CORRSL	;SELECT FROM CHOICES
+TRFXR1:	ICOUNT
+	MOVE	X,CANDBX
+	MOVE	B,[POINT 7,WORDIX]
+	MOVE	Z,[POINT 5,(X)]
+TRFXR2:	ICOUNT
+	ILDB	Y,Z
+	JUMPE	Y,.+2
+	TRO	Y,100
+	IDPB	Y,B
+	JUMPN	Y,TRFXR2
+	MOVEI	B,[ASCIZ/Corrected to: /]
+	PUSHJ	P,WRSEXC
+	MOVEI	B,WORDIX
+	PUSHJ	P,WRSEXC
+	MOVEI	B,[ASCIZ/
+/]
+	PUSHJ	P,WRSEXC		;WRITE EXCEPTION FILE
+
+	MOVE	D,[POINT 7,WORDIX]	;COPY TEXT FROM WORDIX TO LOBUF
+	ILDB	A,D
+	TLNE	FL,LOWER
+	IORI	A,40			;SET LOWERCASE
+	IDPB	A,OUTPTR
+	BCHECK(OUTPTR,LOBUF+40)
+
+	TLZE	FL,MIXED		;IF THIS WAS MIXED,
+	TLO	FL,LOWER		;ALL THE REST IS IN LOWERCASE
+TRFXR3:	ICOUNT
+	ILDB	A,D
+	JUMPE	A,TRFXR4
+	TLNE	FL,LOWER
+	IORI	A,40
+	IDPB	A,OUTPTR
+	BCHECK(OUTPTR,LOBUF+40)
+	JRST	TRFXR3
+
+TRFXR4:	ICOUNT
+	MOVE	A,INPTR1
+	MOVEM	A,INPTR
+	JRST	CPOPJ1
+
+TRYFXO:	ICOUNT
+	OUTSTR	[ASCIZ/I guess: /]
+	MOVE	X,CANDBF
+	MOVEM	X,CANDBX
+	PUSHJ	P,CNVRTY
+	OUTSTR	[ASCIZ/  Type C to make this correction, or A,I,R,X,D, or W
+*/]
+	INCHWL	A
+	CAIL	A,"a"
+	TRZ	A,40
+	CAIE	A,"C"
+	JRST	TRYFXQ
+	CLRBFI
+	JRST	TRFXR1
+
+TRFQDO:	SETZM	IDNUM
+	AOS	IDNUM
+	PUSHJ	P,HASHCP
+	PUSHJ	P,INSRTX
+	SKIPG	CANDID
+	POPJ	P,
+
+COMMENT/
+	NOW WE GO WRITE THIS WORD IN THE EXCEPTIONS, SINCE WE THINK
+THAT IT LOOKS LIKE SOME OTHER WORDS.
+
+/
+	PUSHJ	P,CONVRT
+	MOVEI	B,WORDIX
+	PUSHJ	P,WRSEXC
+	MOVEI	B,[ASCIZ/
+/]
+	PUSHJ	P,WRSEXC
+	POPJ	P,
+	SUBTTL	TRYIII	FOR III DISPLAY OF GUESSES.
+IFN STANSW,<
+
+TRYIII:						;III & THERE ARE GUESSES TO DISPLAY
+	MOVE	Z,[IOWD DPYLEN,DPYBUF]		;PDL POINTER TO DPYBUF
+	PUSH	Z,[0]				;START THINGS OFF RIGHT
+	MOVE	D,CANDID
+	CAIG	D,1
+	JRST	IIONE				;ONLY ONE WORD TO TRY
+	SETZ	D,				;INDEX TO CANDIDATES
+TRII.1:	PUSH	Z,[LVW(400,000,I,A,7,3)]	;LVW TO POSITION THE TEXT. Y SET BELOW
+	MOVNI	X,40				;LOAD A DIDDLE FACTOR
+	IMULI	X,(D)				;TIMES THE WORD INDEX
+	ADDI	X,700				;PLUS THE OFFSET
+	DPB	X,[POINT 11,(Z),21]		;STORE THE Y POSITION
+	MOVE	Y,[POINT 7,C]			;DEPOSIT POINTER.
+	MOVEI	C,1
+	MOVEI	A,1(D)				;GET THE INDEX+1. 
+	PUSHJ	P,DECDIS			;DECIMAL DISPLAY
+	MOVEI	A,"."				;AND
+	PUSHJ	P,DISDEP
+	MOVEI	A," "
+	PUSHJ	P,DISDEP
+	MOVE	X,CANDBF(D)			;GET ADDRESS OF A CANDIDATE
+	HRLI	X,(<POINT 5,0>)			;MAKE A BYTE POINTER
+TRII.2:	ILDB	A,X				;GET A BYTE
+	JUMPE	A,TRII.3			;JUMP IF DONE.
+	ADDI	A,"A"-1				;MAKE IT 7 BIT ASCII
+	PUSHJ	P,DISDEP			;DISPLAY DEPOSIT.
+	JRST	TRII.2
+
+TRII.3:	PUSH	Z,C				;ADD THIS WORD TO THE OUTPUT
+	ADDI	D,1
+	CAMGE	D,CANDID
+	JRST	TRII.1
+	PUSH	Z,[LVW(-1000,200,I,A,7,4)]	;VECTOR OVER TO THE LEFT CENTER
+	MOVEI	C,1
+	MOVE	Y,[POINT 7,C]
+	MOVE	X,[POINT 7,DIGMES]		;GET MESSAGE POINTER
+	PUSHJ	P,COPX
+	PUSH	Z,C
+	HLRE	A,Z				;GET THE SIZE FIELD
+	ADDI	A,DPYLEN
+	MOVEM	A,DPYSIZ
+	UPGIOT	1,DPYHDR			;TURN ON THE TEXT
+TRII5A:	OUTSTR	[ASCIZ/
+*/]
+	INCHWL	A				;WAIT FOR A CHARACTER
+	CAIL	A,"0"
+	CAILE	A,"9"				;DECIMAL DIGIT?
+	JRST	TRIXIT				;NO. ALL THAT WORK FOR NOTHING.
+	MOVEI	B,-"0"(A)			;OK
+TRII.6:	INCHWL	A
+	CAIL	A,"0"
+	CAILE	A,"9"
+	JRST	TRII.7
+	IMULI	B,12
+	ADDI	B,-"0"(A)
+	JRST	TRII.6
+
+TRII.7:	CLRBFI
+	SUBI	B,1				;DECREASE TO MAKE INDEX
+	CAML	B,CANDID			;LESS THAN CANDID?
+	JRST	[OUTSTR [ASCIZ/NUMBER TOO BIG
+/]
+		JRST	TRII5A]			;LOSER
+	MOVE	A,CANDBF(B)
+	MOVEM	A,CANDBX			;SAVE ADDRESS OF THIS STUFF
+	MOVEI	A,1
+	MOVEM	A,DPYSIZ			;STORE ONE WORD PROGRAM SIZE
+	UPGIOT	1,DPYHDR			;FLUSH DISPLAY
+	JRST	TRFXR1				;AND CORRECT THE WORD, ETC.
+
+TRIXIT:	MOVEI	B,1
+	MOVEM	B,DPYSIZ
+	UPGIOT	1,DPYHDR
+	TRZ	A,40				;AMKE SURE OF UPPER CASE
+	JRST	TRYFXQ
+
+COPX:	ILDB	A,X
+	JUMPE	A,CPOPJ
+	CAIN	A,11
+	MOVEI	A,40			;TABS CAN'T BE DISPLAYED
+	PUSHJ	P,DISDEP
+	JRST	COPX
+
+IIONE:	PUSH	Z,[LVW(-1000,200,I,A,7,4)]
+	MOVEI	C,1
+	MOVEI	Y,[POINT 7,C]
+	MOVE	X,[POINT 7,[ASCIZ/C Correct this to "/]]
+	PUSHJ	P,COPX
+	MOVE	X,CANDBF
+	HRLI	X,(<POINT 5,0>)
+IIONE1:	ILDB	A,X
+	JUMPE	A,IIONE2
+	ADDI	A,"A"-1
+	PUSHJ	P,DISDEP
+	JRST	IIONE1
+IIONE2:	MOVE	X,[POINT 7,[ASCIZ/"
+/]]
+	PUSHJ	P,COPX
+	PUSH	Z,C
+	HLRE	A,Z
+	ADDI	A,DPYLEN
+	MOVEM	A,DPYSIZ
+	UPGIOT	1,DPYHDR
+	OUTSTR	[ASCIZ/
+*/]
+	INCHWL	A
+	MOVEI	B,1			;INDEX FOR TRII.7
+	CAIE	A,"C"
+	CAIN	A,"c"
+	JRST	TRII.7
+	JRST	TRIXIT
+
+DECDIS:	IDIVI	A,12				;DECIMAL PRINTER
+	HRLM	B,(P)
+	JUMPE	A,.+2
+	PUSHJ	P,DECDIS
+	HLRZ	A,(P)
+	ADDI	A,"0"				;TURN DIGIT INTO A CHARACTER
+						;FALL INTO PRINTER.
+DISDEP:	TLNN	Y,740000			;SKIP IF WE ARE WITHIN THE WORD.
+	JRST	DISDP1				;WE ARE ABOUT TO OVERFLOW.
+	IDPB	A,Y
+	POPJ	P,
+DISDP1:	PUSH	Z,C				;ADD THIS WORD TO THE OUTPUT
+	MOVEI	C,1
+	MOVE	Y,[POINT 7,C]
+	IDPB	A,Y
+	POPJ	P,
+
+DIGMES:	ASCIZ/Select a displayed word by number
+/
+
+>				;END OF IFN STANSW, TRYIII
+
+
+	SUBTTL	THE HELP MESSAGE
+
+HELMSG:						;HELP MESSAGE FOR TTY'S
+	ASCIZ/A Accept word
+I Accept word and insert it
+  in the dictionary
+R Replace this word. User will
+  be able to type replacement word
+X accept this word,
+  then finish recopying without
+  any checking.
+W Save my present incremental insertions,
+  then ask again about this word.
+/
+HELMG1:	ASCIZ/D Display the current line again.
+S Select from list of guesses.
+/
+
+
+HELMSZ:						;HERE TO DISPLAY HELP MESSAGE
+IFG STANSW,<
+	TRNN	FL,IIISW
+	JRST	HELMX1		;NOT A III
+	MOVE	Z,[IOWD DPYLEN,DPYBUF]
+	PUSH	Z,[0]
+	PUSH	Z,[LVW(-1000,700,I,A,4,4)]
+	MOVE	X,[POINT 7,HELMSG]
+	MOVE	Y,[POINT 7,C]
+	MOVEI	C,1
+	PUSHJ	P,COPX
+	PUSH	Z,C
+	HLRE	A,Z
+	ADDI	A,DPYLEN
+	MOVEM	A,DPYSIZ
+	UPGIOT	0,DPYHDR	;WRITE USING THE POINTER
+	POPJ	P,
+>
+HELMX1: OUTSTR	[ASCIZ/
+In general, you have the following options:
+/]
+	OUTSTR	HELMSG
+	OUTSTR	HELMG1
+	OUTSTR	[ASCIZ/
+If you want to review this list, then type something not in the list
+/]
+	POPJ	P,
+
+	SUBTTL	CHECK FOR REPEATS OF THE SAME WORD.
+REPCK:	ICOUNT
+	MOVE	X,CANDID
+	CAIG	X,1
+	POPJ	P,
+	MOVEI	X,1
+REPK1:	ICOUNT
+	MOVEI	Y,1(X)
+REPK2:	ICOUNT
+	MOVE	Z,CANDBF-1(X)
+	CAMN	Z,CANDBF-1(Y)
+	JRST	[PUSH	P,Z
+		SOS	Z,CANDID
+		MOVE	Z,CANDBF(Z)
+		MOVEM	Z,CANDBF-1(Y)
+		POP	P,Z
+		JRST	REPCK]
+	CAMGE	Y,CANDID
+	AOJA	Y,REPK2
+	ADDI	X,1
+	CAMGE	X,CANDID
+	JRST	REPK1
+	POPJ	P,
+
+SETNM3:	OUTSTR	[ASCIZ/Dictionary number too large. Maximum is 31. 
+Dictionary number:  /]
+SETNUM:	MOVEI	B,0		;ENTER HERE TO READ DICTIONARY NUMBER
+SETNM1:	INCHWL	A
+SETNM4:	CAIL	A,"0"
+	CAILE	A,"9"
+	JRST	SETNM2		;NOT A DIGIT.
+	IMULI	B,12
+	ADDI	B,-"0"(A)
+	JRST	SETNM1		;READ MORE DIGITS
+
+	INCHWL	A
+SETNM2:	CAIE	A,12		;FLUSH UNTIL LF
+	JRST	.-2
+	CAIL	B,40		;DICT NUMBER IN BOUNDS?
+	JRST	SETNM3		;NO. TRY AGAIN
+	SKIPG	B
+	MOVEI	B,1		;ZERO MEANS 1
+	MOVEM	B,IDNUM
+	POPJ	P,
+
+	SUBTTL	TYPE OUT ALL THE WORDS WE FOUND
+CORRSL:	MOVEI	D,0
+	TRON	FL,HELP2S
+	PUSHJ	P,HELMSY
+	OUTSTR	[ASCIZ/Type Y,^,<altmode> or <cr>
+/]
+CORRS1:	MOVE	X,CANDBF(D)
+	MOVEM	X,CANDBX
+	PUSHJ	P,CNVRTY
+CORRS2:	OUTSTR	[ASCIZ/
+*/]
+	INCHWL	A
+	CLRBFI
+	CAIE	A,"Y"
+	CAIN	A,"y"
+	POPJ	P,
+	CAIGE	A,175
+	CAIN	A,33
+	JRST	[POP	P,(P)
+		JRST TRYFXA]
+	CAIN	A,"^"
+	JRST	[SOJGE  D,CORRS1
+		OUTSTR	[ASCIZ/Can't get there from here.
+/]
+		AOJA	D,CORRS1]
+	CAIE	A,15
+	JRST	[OUTSTR	[ASCIZ/huh? /]
+		OUTSTR	HELMS2
+		JRST	CORRS2]
+	ADDI	D,1
+	CAMGE	D,CANDID
+	JRST	CORRS1
+	OUTSTR	[ASCIZ/Those are all the choices.  /]
+	POP	P,(P)
+	JRST	TRYFXR
+
+; NOTE THAT THIS ROUTINE DEPENDS ON THE FACT THAT 
+; BITS 0-4 INCLUSIVE OF A LINK WORD ARE ZERO.
+CNVRTY:	HRLI	X,(<POINT 5,0>)
+CVTY1:	ILDB	A,X
+	JUMPE	A,CPOPJ
+	ADDI	A,"A"-1
+	OUTCHR	A
+	JRST	CVTY1
+
+HELMS2:	ASCIZ/Type 
+Y<cr> to select a word
+<cr> to see next word
+<altmode> to escape from this mode
+or ^<cr> to back up in this list
+/
+
+HELMSY:	OUTSTR	[ASCIZ/To select a choice: /]
+	OUTSTR	HELMS2
+	OUTSTR	[ASCIZ/To review this list, type anything else
+/]
+	POPJ	P,
+	SUBTTL	X1SRCH	TRY TO CORRECT ONE MISSPELLED LETTER
+
+X1SRCH:	ICOUNT
+	PUSHJ	P,HASHCP
+	JUMPL	Z,CPOPJ	;QUICK FAILURE
+	PUSHJ	P,SR1WL		;SPECIAL SEARCH
+	PUSHJ	P,SAVWD	;SAVE THE LOSING WORD
+	MOVE	A,[POINT 5,WORDIN,9]	;TWEAKING THE SECOND LETTER
+	MOVEM	A,X1BYPT
+X1SRC1:	ICOUNT
+	MOVEI	A,32		;TRY ALL FIRST LETTERS
+	MOVEM	A,TLET.1
+X1SRC2:	ICOUNT
+	DPB	A,X1BYPT
+	PUSHJ	P,HASHCP
+	PUSHJ	P,SEARCH
+	JRST	X1SRC3	;FAILURE
+	AOS	A,CANDID
+	MOVEM	X,CANDBF-1(A)
+X1SRC3:	ICOUNT
+	SOSLE	A,TLET.1
+	JRST	X1SRC2
+	PUSHJ	P,UNSVWD
+	MOVE	A,[POINT 5,WORDIN,4]	;SEE IF WE'VE TRIED FIRST YET
+	CAMN	A,X1BYPT
+	POPJ	P,
+	MOVEM	A,X1BYPT
+	JRST	X1SRC1
+
+
+COMMENT/
+SPECIAL SEARCH FOR ONE LETTER MISPELLINGS
+/
+
+SR1WL:	ICOUNT
+	JUMPLE	Z,CPOPJ		;GIVEUP
+	CAIGE	W,3
+	POPJ	P,
+	PUSH	P,W
+	IDIVI	W,7
+	JUMPE	X,.+2
+	ADDI	W,1
+	MOVEM	W,WWLEN
+	POP	P,W
+	TRNE	FL,LEFT
+	HLRZ	X,HASHTB(Z)
+	TRNN	FL,LEFT
+	HRRZ	X,HASHTB(Z)
+SR1WL1:	ICOUNT
+	JUMPE	X,CPOPJ		;TIME TO QUIT
+	HRRZ	N,(X)		;NEXT IN THE CHAIN
+	CAMG	X,N
+	PUSHJ	P,INTCFN
+	ADDI	X,1
+	MOVE	Y,CANDID
+	MOVEM	X,CANDBF(Y)	;THERE IN CASE OF SUCCESS
+				;(WHAT YOU DO AT FAILURE IS YOUR
+				;PROBLEM)
+	SETZB	Y,TLET.1	;Y INDEX TO WORDIN, TLET.1 IS 
+				;COUNT OF LETTERWISE MISMATCH
+	SETZ	A,
+SRWL1A:	ICOUNT
+	MOVE	K,(X)
+	XOR	K,WORDIN(Y)
+SR1WL2:	ICOUNT
+	JFFO	K,SRWL2A	;DON'T LET YOUR MOTHER SEE YOU DOING THIS.
+;	(WHAT DID HE MEAN BY THAT?)
+SR1WL3:	ICOUNT
+	ADDI	Y,1
+	CAMGE	Y,WWLEN
+	AOJA	X,SRWL1A
+	AOS	CANDID
+SR1WL4:	ICOUNT
+	HRRZ	X,N
+	JRST	SR1WL1
+SRWL2A:	ICOUNT
+	CAIL	L,43
+	JRST	SR1WL3		;(SHOULD NEVER HAPPEN, BUT...)
+	IDIVI	L,5	;SAVE SPACE BY WASTING TIME
+	DPB	A,SR1WLT(L)
+	AOS	A,TLET.1
+	CAIE	A,1
+	JRST	SR1WL4		;TOO MANY MISTAKES
+	SOJA	A,SR1WL2
+
+SR1WLT:	POINT 5,K,4
+	POINT 5,K,9
+	POINT 5,K,14
+	POINT 5,K,19
+	POINT 5,K,24
+	POINT 5,K,29
+	POINT 5,K,34
+	SUBTTL	X1EXL	MAYBE HE TYPED ONE EXTRA LETTER
+COMMENT/
+FOR W TIMES, COPY W-1 LETTERS FROM WDSVWX TO WORDIN
+ON THE I'TH COPY, SKIP LETTER NUMBER W-I+1
+/
+
+X1EXL:	ICOUNT
+	CAIGE	W,3
+	POPJ	P,		;CAN'T CORRECT A SHORT WORD
+	PUSHJ	P,SAVWD
+	MOVEM	W,TLET.1	;TLET.1 WILL SELECT THE LETTER TO
+				;SKIP
+X1EXL1:	ICOUNT
+	SETZM	WORDIN		;READY FOR BLT
+	MOVE	A,[XWD WORDIN,WORDIN+1]
+	BLT	A,WORDIN+5
+	MOVE	B,[POINT 5,WORDIN]
+	MOVE	C,[POINT 5,SVWDWX]
+	SETZ	D,		;COUNT THE CHARACTERS MOVED
+X1EXL2:	ICOUNT
+	ILDB	A,C
+	ADDI	D,1
+	CAME	D,TLET.1
+	IDPB	A,B
+	BCHECK(B,WORDIN+10)
+	CAMGE	D,W
+	JRST	X1EXL2
+	SUBI	W,1
+	PUSHJ	P,HASHCP
+	PUSHJ	P,SEARCH
+	JRST	X1EXL3
+	AOS	A,CANDID
+	MOVEM	X,CANDBF-1(A)
+X1EXL3:	ICOUNT
+	ADDI	W,1
+	SOSLE	TLET.1
+	JRST	X1EXL1
+	PUSHJ	P,UNSVWD
+	POPJ	P,
+	SUBTTL	XTRNP	ONE PAIR TRANSPOSITION
+
+XTRNP:	ICOUNT
+	PUSHJ	P,SAVWD
+	MOVEM	W,TLET.1
+	SOS	TLET.1
+XTRNP1:	ICOUNT
+	SETZM	WORDIN
+	MOVE	A,[XWD WORDIN,WORDIN+1]
+	BLT	A,WORDIN+5
+	MOVE	B,[POINT 5,WORDIN]
+	MOVE	C,[POINT 5,SVWDWX]
+	SETZ	D,
+XTRNP2:	ICOUNT
+	ILDB	A,C
+	ADDI	D,1
+	CAMN	D,TLET.1
+	JRST	[PUSH	P,A
+		ILDB	A,C
+		ADDI	D,1
+		IDPB	A,B
+		POP	P,A
+		JRST  .+1]
+	IDPB	A,B
+	BCHECK(B,WORDIN+10)
+	CAMGE	D,W
+	JRST	XTRNP2
+	PUSHJ	P,HASHCP
+	PUSHJ	P,SEARCH
+	JRST	XTRNP3
+	AOS	A,CANDID
+	MOVEM	X,CANDBF-1(A)
+XTRNP3:	ICOUNT
+	SOSLE	TLET.1
+	JRST	XTRNP1
+	PUSHJ	P,UNSVWD
+	POPJ	P,
+	SUBTTL	ONE LETTER MISSING
+
+X1LMS:	ICOUNT
+	PUSHJ	P,SAVWD
+	MOVEM	W,TLET.2
+	AOS	TLET.2
+X1LMS1:	ICOUNT
+	SETZM	WORDIN
+	MOVE	A,[XWD WORDIN,WORDIN+1]
+	BLT	A,WORDIN+5
+	MOVE	B,[POINT 5,WORDIN]
+	MOVE	C,[POINT 5,SVWDWX]
+	SETZ	D,
+X1LMS2:	ICOUNT
+	ILDB	A,C
+	ADDI	D,1
+	CAMN	D,TLET.2
+	IBP	B	;SLIDE PAST THIS BYTE
+	IDPB	A,B
+	BCHECK(B,WORDIN+10)
+	CAMGE	D,W
+	JRST	X1LMS2
+	ADDI	W,1
+	PUSHJ	P,HASHCP
+	PUSHJ	P,SR1WL
+	SUBI	W,1
+	SOS	A,TLET.2
+	CAILE	A,2
+	JRST	X1LMS1
+COMMENT/  NOW TRY PLACING SLOTS IN THE FIRST TWO POSITIONS/
+	SETZM	WORDIN
+	MOVE	A,[XWD WORDIN,WORDIN+1]
+	BLT	A,WORDIN+5
+	MOVE	B,[POINT 5,WORDIN]
+	MOVE	C,[POINT 5,SVWDWX]
+	ILDB	A,C
+	IDPB	A,B
+	BCHECK(B,WORDIN+10)
+	IBP	B	;SKIP SECOND CHARACTER
+	MOVEI	D,1
+X1LMS3:	ICOUNT
+	ILDB	A,C
+	ADDI	D,1
+	IDPB	A,B
+	BCHECK(B,WORDIN+10)
+	CAMGE	D,W
+	JRST	X1LMS3
+;PLAY WITH CHARACTER 2, THEN WITH POSITION 1.
+;THIS HAS ALL THE UNPLEASANT CONNOTATIONS OF MASTURBATION.
+	MOVE	A,[POINT 5,WORDIN,9]
+	MOVEM	A,X1BYPT
+	ADDI	W,1
+X1LM3A:	ICOUNT
+	MOVEI	A,32
+	MOVEM	A,TLET.2
+X1LMS4:	ICOUNT
+	DPB	A,X1BYPT
+	PUSHJ	P,HASHCP
+	PUSHJ	P,SEARCH
+	JRST	X1LMS5
+	AOS	A,CANDID
+	MOVEM	X,CANDBF-1(A)
+X1LMS5:	ICOUNT
+	SOSLE	A,TLET.2
+	JRST	X1LMS4
+;NOW THINK ABOUT PLAYING WITH FIRST SLOT.
+	MOVE	D,[POINT 5,WORDIN,4]
+	CAMN	D,X1BYPT
+	JRST	[PUSHJ	P,UNSVWD
+		POPJ	P,]
+	LDB	A,D
+	DPB	A,X1BYPT	;COPY FIRST LETTER TO SECOND
+	MOVEM	D,X1BYPT	;NOW A POINTER TO SECOND SLOT
+	JRST	X1LM3A
+	SUBTTL	SAVEME  WRITE OUT CORE IMAGE USING SWAP UUO.
+
+COMMENT/  OTHER SYSTEMS WILL HAVE TO TRY DUMP  MODE I-O /
+
+IFG STANSW,<
+SAVEME:	OUTSTR	[ASCIZ/
+By what name shall I save this? /]
+	PUSHJ	P,GETFIL
+	JRST	[OUTSTR	[ASCIZ/Default name is SPELL.DMP
+/]
+		MOVE	K,[SIXBIT/SPELL/]
+		SETZB	L,N
+		JRST	.+1]
+	MOVSI	K-1,'DSK'	;FILE NAME IS IN K
+	JUMPN	L,.+2
+	MOVSI	L,'DMP'		;DEFAULT EXTENSION
+	SETZ	M,		;USE EXISTING SIZE AND START ADDRESS
+	MOVSI	0,K-1		;ADDRESS OF SWAP BLOCK INTO LEFT SIDE OF 0
+	SWAP	0,
+	POPJ	P,
+>
+
+IFE STANSW,<
+SAVEME:	OUTSTR	[ASCIZ/SAVE THIS CORE IMAGE, THEN RESTART THE PROGRAM
+/]
+	EXIT	1,
+	POPJ	P,	;IF HE CAN CONTINUE.
+>
+
+IFN XCNT,<
+;THIS IS A ROUTINE TO COUNT THE LENGTHS OF THE HASH CHAINS
+LENGTH:	PUSHJ	P,INDCTO	;INIT DICTIONARY CHANNEL IN OUTPUT MODE
+	MOVE	K,['SPELL ']
+	MOVSI	L,'DAT'
+	SETZB	M,N
+	ENTER	DICT,K
+	JRST	[OUTSTR	[ASCIZ/SPELL.DAT ENTER FAILED./]
+		HALT	LENGTH]
+	MOVEI	B,[ASCIZ/2	3	4	5	6	/]
+	PUSHJ	P,WRSDCT
+	MOVEI	B,[ASCIZ/7	8	9	10	11+
+/]
+	PUSHJ	P,WRSDCT
+	MOVSI	Z,-HASHTL	;THE MAIN INDEX - AOBJN
+LEN.1:	MOVEI	Y,0		;FLAG DENOTING SOMETHING TYPED
+	HLRZ	X,HASHTB(Z)
+	PUSHJ	P,LCNT		;DO LEFT SIDE
+	HRRZ	X,HASHTB(Z)
+	PUSHJ	P,LCNT		;DO RIGHT SIDE
+	HLRZ	X,HASHTB+1(Z)
+	PUSHJ	P,LCNT		;DO LEFT SIDE
+	HRRZ	X,HASHTB+1(Z)
+	PUSHJ	P,LCNT		;DO RIGHT SIDE
+	HLRZ	X,HASHTB+2(Z)
+	PUSHJ	P,LCNT		;DO LEFT SIDE
+	HRRZ	X,HASHTB+2(Z)
+	PUSHJ	P,LCNT		;DO RIGHT SIDE
+	HLRZ	X,HASHTB+3(Z)
+	PUSHJ	P,LCNT		;DO LEFT SIDE
+	HRRZ	X,HASHTB+3(Z)
+	PUSHJ	P,LCNT		;DO RIGHT SIDE
+	HLRZ	X,HASHTB+4(Z)
+	PUSHJ	P,LCNT		;DO LEFT SIDE
+	HRRZ	X,HASHTB+4(Z)
+	PUSHJ	P,LCNT		;DO RIGHT SIDE
+	JUMPG	Y,LEN.2
+	MOVEI	A,(Z)
+	IDIVI	A,5			;DIVIDE 0 TO 675
+	IDIVI	A,32			;FIRST LETTER IN A, SECOND IN B
+	ADDI	A,"A"
+	PUSHJ	P,WDICT			;WRITE ONE CHARACTER
+	MOVEI	A,"A"(B)
+	PUSHJ	P,WDICT			;WRITE ANOTHER
+	MOVEI	B,CRLF
+	PUSHJ	P,WRSDCT
+LEN.2:	ADD	Z,[5,,5]
+	JUMPL	Z,LEN.1			;LOOP
+	CLOSE	DICT,0
+	STATZ	DICT,740000
+	JRST	DDE
+	POPJ	P,
+
+LCNT:	MOVEI	B,0			;COUNT THE NUMBER OF WORDS
+LCNT.1:	JUMPE	X,LCNT.2		;JUMP IF DONE
+	HRRZ	X,0(X)			;LINK ON.
+	AOJA	B,LCNT.1		;COUNT 1 AND LOOP
+
+LCNT.2:	JUMPE	B,LCNT.4		;JUMP IF THERE'S NOTHING TO TYPE
+	JUMPL	Y,LCNT.3		;JUMP IF NO LEADING TABS...
+	MOVEI	A,11
+	SOJL	Y,.+3
+	PUSHJ	P,WDICT			;WRITE ONE TAB
+	JRST	.-2			;LOOP WRITING TABS
+LCNT.3:	MOVEI	A,(B)
+	PUSHJ	P,LCNTD			;TYPE THE DIGITS
+	JRST	LCNT.5			;TRAILING TAB
+
+LCNT.4:	JUMPGE	Y,[AOJA Y,CPOPJ]
+LCNT.5:	MOVEI	A,11			;OUTPUT A TAB
+	JRST	WDICT
+
+LCNTD:	IDIVI	A,12
+	HRLM	B,(P)
+	JUMPE	A,.+2
+	PUSHJ	P,LCNTD
+	HLRZ	A,(P)
+	ADDI	A,"0"
+	JRST	WDICT
+>
+	SUBTTL	SOME OF THE STORAGE STUFF
+SDEF(PDLEN,40)
+PDLIST:	BLOCK	PDLEN	;PUSH DOWN LIST STORAGE
+PATCH1:	BLOCK	10
+PATCH2:	BLOCK	10
+PATCH3:	BLOCK	10	;"PATCHES, I'LL ALWAYS BE TRUE..."
+DICTFF:	BLOCK	1
+DATAFF:	BLOCK	1
+EXCPFF:	BLOCK	1
+NOEND:	BLOCK	1	;FLAG TO OMIT SUFFIX HEURISTIC
+UCASE:	BLOCK	1	;DICTIONARY NUMBER TO ADD UPPERCASE INTO.
+CORRFF:	BLOCK	1
+DICTBF:	BLOCK	3
+DATABF:	BLOCK	3
+EXCPBF:	BLOCK	3
+CORRBF:	BLOCK	3
+SDEF(HASHTL,32*32*5)		;26*26*10/2
+HASHTB:	BLOCK	HASHTL		;"Ugh!"
+LISTFF:	BLOCK	1	;FIRST FF FOR LIST STRUCTURES.
+DICTFL:	0		;INSURE A 0 AT LOAD TIME
+WORDIN:	BLOCK	6
+WORDIX:	BLOCK	13
+SCANT:	BLOCK	1
+SCANX:	BLOCK	5
+SAVCHR:	BLOCK	1
+WWLEN:	BLOCK	1
+NEWFF:	BLOCK	1
+LIBUF:	BLOCK	40
+LOBUF:	BLOCK	40
+INPTR:	BLOCK	1
+OUTPTR:	BLOCK	1
+INPTR1:	BLOCK	1
+SVWDWX:	BLOCK	6
+LSTBPY:	BLOCK	1
+SVWDLN:	BLOCK	1
+CANDID:	BLOCK	1
+CANDBF:	BLOCK	50	;HOLDS ADDRESS OF CORRECTED WORD
+
+IFN STANSW,<
+DPYHDR:	DPYBUF		;POINTER TO DISPLAY BUFFER
+DPYSIZ:	0		;LENGTH OF DISPLAY BUFFER IS STORED HERE
+SDEF(DPYLEN,1000)	;MAXIMUM LENGTH OF DISPLAY BUFFER
+DPYBUF:	BLOCK	DPYLEN	;BUFFER FOR DISPLAY PROGRAM
+>
+
+TLET.1:	BLOCK	1
+X1BYPT:	BLOCK	1
+SAVEXS:	BLOCK	1
+TLET.2:	BLOCK	1
+CANDBX:	BLOCK	1
+PAGENO:	BLOCK	1
+LINENO:	BLOCK	1
+DICTBO:	BLOCK	1	;BOTTOM OF DICT
+IDNUM:	BLOCK	1	;NUMBER OF DICTIONARY TO SAVE IN
+PICKLN:	BLOCK	1
+PICKPG:	BLOCK	1
+IFG COUNTS,<
+ICTAB:	BLOCK	%QXX+1
+ICTABX:	BLOCK	1
+SDEF(%DTL,62)
+%DBT:	BLOCK	2*%DTL		;QUEUE FOR TRACE OF EXECUTION
+>
+	END	BEGIN
+

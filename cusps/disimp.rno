@@ -1,0 +1,3706 @@
+
+^^
+.title Omnigraph Display Routines -- Implementation Manual
+.ptab 0
+.number 0
+.justify
+.fill
+.left margin 0
+.paper size 56,65
+.page
+.right margin 65
+.tab STOPS 8 16 24 32 40 48 56 64
+.spacing 1
+.aspacing 1
+.blank 14
+.center
+Omnigraph Display Routines
+.skip 1
+.center
+Implementation Manual
+.blank 14
+.center
+R. Sproull
+.skip 1
+.center
+August 1972
+.page
+.center
+Table of Contents
+.nojustify
+.nofill
+
+1. Introduction
+2. General operation
+	2.1 General layout of routines
+	2.2 Data area
+3. Building and maintaining the Omnigraph routines
+	3.1 Files
+	3.2 How to assemble and load the Omnigraph routines
+	3.3 Debugging Omnigraph routines
+4. Language-dependent code section
+	4.1 Dispatcher
+	4.2 Error message printer
+5. Display-dependent code
+	5.1 Free storage management
+	5.2 Initialization code
+	5.3 Picture structure
+		5.3.1 Storage tubes
+		5.3.2 DEC 340 display
+	5.4 Transformation routines
+	5.5 Two dimensional windowing
+	5.6 Three dimensional windowing
+	5.7 Plotting
+	5.8 Input facilities
+6. Terminal programming notes
+	6.1 DEC340 display
+	6.2 Tektronix 4010-1
+7. Dynamic three-dimensional graphics on the Adage
+	(Gary Knott contributed heavily to this section)
+8. Adage picture transmission language
+9. 16-bit PDP-10/Adage interface
+.justify
+.fill
+.subtitle General Philosophy
+.page
+1. ^&Introduction\&
+	There is a new breed of computer graphics burgeoning,
+but the programming techniques of graphics have not
+really responded to the change.  Those who wheel
+a storage-tube terminal in and get out their copy
+of the SKETCHPAD thesis are probably in trouble.
+The inexpensive storage-tube now permits 'graphics
+for the masses,' but the masses are usually quite
+unprepared to write adequate programs for the
+terminals.
+	The masses tend to use their terminal with
+whatever system, preferrably timesharing,
+can be found.  They tend to use old-guard languages
+like FORTRAN.  They are primarily interested in
+seeing pictures, not in using graphical interaction of
+the high quality first demonstrated in SKETCHPAD.
+	Typically, the terminal manufacturer will provide
+'software' for the terminal which runs on the user's favorite system
+and with his favorite programming language.  In my experience,
+this software is grossly inadequate for the following sorts
+of reasons:
+.skip 1
+.left margin 6
+.indent -3
+1.#Manufacturers have no taste.  Many seem not to be aware
+of the existence of clean, important graphics techniques such
+as windowing.  The software is all too often riddled with
+device-dependent idiosyncrasies: for example, the Computek
+400 is supplied with software that gives the user access to a
+completely useless curve-drawing facility of the terminal.
+.skip 1
+.indent -3
+2.#'Subroutine packages' offer no help with the largest
+problem associated with storage tubes: minimizing
+the number of screen erasures, and, after an erasure,
+regenerating the part of the image which is meant to remain.
+Solutions to this problem all require generation of a display-file,
+something manufacturers seem loath to do.  (Admittedly,
+it takes effort; the return is, however, prodigious.)
+.skip 1
+.indent -3
+3.#A separate subroutine package for each different
+terminal is adequate only if all display terminals using
+the timesharing system are identical.  If not, programs cannot
+be shared among graphics users, and no programs can be
+written which attempt to perform on ^&all\& terminals.
+MLAB, a program in this last category, is the prime
+inspiration for the Omnigraph routines.
+.left margin 0
+	The approach taken in building the Omnigraph routines
+has been to construct a system of only modest graphical
+pretentions.  The routines can serve both refresh displays
+(DEC 340, Adage AGT-30, DEC GT-40) and storage
+tube displays (Computek, Ards, Tektronix).  The Omnigraph subroutines
+may be called from SAIL, LISP, or FORTRAN.
+One manual can thus describe the use of the Omnigraph system,
+with only small sections devoted to details of a terminal-dependent
+or language-dependent nature.
+	The Omnigraph routines delay until execution time the
+decision about which terminal to use.  The Omnigraph initialization
+call specifies the terminal type; appropriate device-dependent
+routines are loaded in response to the call.
+.skip 2
+2. ^&General operation\&
+	The main function of the routines is to build and
+manage a ^&segmented display file\&.  The format of the file
+varies from terminal to terminal, although the framework is
+often the same.  This file is either executed by a display
+processor (refresh displays) or encoded and transmitted to
+the terminal when screen updates are necessary
+(storage tubes).  Individual segments of the display file
+can be deleted, appended to, or replaced (double-buffering
+is provided automatically).  The main graphical elements
+from which the display file is made are:
+.nojustify
+.nofill
+
+	move to x,y
+	draw to x,y
+	dot at x,y
+	character string a,b,c,....
+	set intensity, scale, ...
+
+.justify
+.fill
+plus whatever control codes (jumps, halts, etc.) are necessary
+for the display processor.
+	The routines perform several computations on coordinates
+supplied by users before information of the above type is
+added to the display file.  These computations are:
+.skip 1
+.left margin 6
+.indent -3
+1.#Matrix transformation.  Incoming x, y, and (in three-dimensional
+calls) z coordinates are used to form a vector 
+[#x#y#z#1#] (z=0 in two-dimensional calls) which is
+multiplied by a 4#x#4 transformation matrix, called the
+^&current transformation matrix\&.  This transformation
+allows rotations, scalings, translations, and other linear
+transformations to be performed.  The Omnigraph routines
+contain calls for setting, altering, saving and restoring
+the current transformation matrix.
+.skip 1
+.indent -3
+2.#Windowing.  If two-dimensional points and lines are specified,
+the Omnigraph routines will clip these against a rectangular window,
+and only pass on those portions of lines and points which are visible in the window.
+If three-dimensional points or lines are specified, the routines
+will clip them against the normal viewing pyramid.
+.skip 1
+.indent -3
+3.#Viewport calculation.  The coordinates resulting from the clipping
+step are transformed into the coordinate system of the
+display (a division by Z is performed first if the points
+or lines are given in three dimensions).  This calculation
+permits a portion of the display screen to be selected for
+use.
+.skip 1
+.left margin 0
+	The Omnigraph routines will display text using hardware character
+generators on the terminals.  Unfortunately, all terminals have different
+character-generation schemes (believe me -- characters are a real
+nightmare).  The casual user will find the text facilities
+satisfactory; the careful user can use the inquiry function
+to find out precisely how the character generator on the terminal
+works.
+	The other main features of the Omnigraph routines are:
+.skip 1
+.left margin 6
+.indent -3
+1.#Off-line plots can be made trivially.  An Omnigraph routine will write
+a disk file which is a copy of the display file.  A plotting program
+can be run later which assembles any number of these disk files
+and produces plotter commands.
+.skip 1
+.indent -3
+2.#An 'inquire' function permits the program to find out some of
+the dirty details of the terminal actually being used.  Those
+programs which want to take advantage of terminal features
+can do so.  A program can use different interactive strategies
+for different terminals (e.g. difference between storage and
+refresh).
+.skip 1
+.indent -3
+3.#Error reporting is done in a uniform way, and every effort is
+made to reduce the number of conditions that must be flagged as
+errors.  Exhausting free-storage area during generation of a
+display file is handled particularly carefully: it is not
+fatal -- the user of an interactive program could
+delete unneeded display file segments in order to make more
+room, and then try again.
+.left margin 0
+.skip 2
+2.1 ^&General layout of routines\&
+	The layout of the Omnigraph routines is largely governed by
+two factors: (1) the desire to read in display-dependent
+code at execution time, and (2) the desire to make a given
+display-dependent piece of code run with several different
+programming languages.  These requirements have been met by
+dividing the code into two pieces: a language-dependent portion
+which provides entry points for all of the Omnigraph routines and
+a display-dependent portion which contains code for actually
+processing the calls.  The
+entry points are tailored for the particular programming
+language.  The entry points all invoke a dispatcher which
+sets up accumulators, etc. for a call to the display-dependent
+code for processing of the subroutine call.  Thus, the
+dispatcher is responsible for interfacing the calling
+conventions of the programming language to the calling
+conventions of the display-dependent code.
+	The core layout of the routines is shown below.  In all
+core diagrams, core goes down, i.e. higher addresses are nearer
+the bottom of the page.
+.nojustify
+.nofill
+
+		-----------------
+		|		|
+		|		|   <== language-dependent
+		|		|
+		-----------------
+		|		|
+		|		|
+		|		|
+		|		|   <== display-dependent
+		|		|
+		|		|
+		|		|
+		|		|
+		-----------------
+
+.justify
+.fill
+The ^&language-dependent\& portion contains all the 'internal' definitions
+and entry points for the subroutine calls.  Arguments are type-checked
+according to the conventions of the programming language,
+a push-down stack is set up, and then the call is dispatched
+to an appropriate routine in the ^&display-dependent\& area for
+processing.
+	When the Omnigraph routines are loaded, the language-dependent
+section is fetched from a .REL file; adequate room is left for
+the display-dependent section.  In other words, the initial
+situation is that the language-dependent code is loaded by
+the PDP-10 LOADER, but the display-dependent section
+remains empty.  The initialization call (DINI) reads
+a file of display-dependent code segments, and loads the
+appropriate one into the space left for display-dependent code.
+The display-dependent code must therefore be ^&address-free\&,
+because it will execute in different portions of the address
+space for different programs.  That is, the LOADER
+may put the language-dependent section, and thus the 
+free space for the display-dependent code, in any spot
+in the user's address space.  The display-dependent code
+must be compiled and saved independent of the address of
+the display-dependent area.
+Part of the chore of the dispatcher is to load accumulator
+'S' with the address of the beginning of the display-dependent
+section.  All jumps, dispatches, etc. within the display-dependent
+code must be indexed by accumulator S.
+	The first few locations of the display-dependent section are
+reserved for special uses such as transfer vectors.  There are
+three classes of things which both the language-dependent section
+and the display-dependent section must know:
+.left margin 6
+.skip 1
+.indent -3
+1.#The language-dependent section needs pointers to subroutines
+within the display-dependent section which are used to process Omnigraph calls.
+This dispatch table is generated with the aid of macros, as
+described below.
+.skip 1
+.indent -3
+2.#The display-dependent section needs pointers to several routines
+in the language-dependent segment: the Omnigraph call return point (.RET(S)),
+return points to return TRUE (.TRET(S)), FALSE (.FRET(S)), and
+an integer value (.IRET(S)).  Also, the addresses of fix, float and
+error printing routines are given (.FIX(S), .FLOAT(S), .ERRGO(S)).
+.skip 1
+.indent -3
+3.#Miscellaneous stuff which must be in a fixed spot: the display
+number (.DISN(S)), name (.DISNM(S)); the pointer to the data
+area (.DBASE(S)); the number of the I/O channel to use (.CHL(S)).
+.left margin 0
+.skip 1
+These transfer vectors are all defined in the definitions file
+DISDEF.FAI.
+Part of the transfer vector is assembled with the language-dependent
+section, and part with the display-dependent section:
+.nojustify
+.nofill
+
+		|			|
+		|			|
+		-------------------------
+   S ==>     0	|    pointers to	|
+	     1	|    return points	|
+	     2	|    fix/float		|
+	     3	|    error printer	|
+		|    etc.		|      language-dependent
+		|			|
+		=========================    -----------
+     PCHBRK:	| display number	|
+		| display name		|       display-dependent
+     CLBASE: 	|       ...		|
+		|     dispatch table	|
+		|	...		|
+		|			|
+
+.justify
+.fill
+PCHBBK defines the length of the piece of transfer vector
+located in the language-dependent section.  CLBASE is the
+index of the first entry of the call dispatch table.
+.skip 2
+2.2 ^&Data area\&
+	The other important piece of core is the ^&data area\&.
+.nojustify
+.nofill
+
+	R  ==>	-----------------
+		|		|
+		|		|   variables
+		|		|
+		-----------------
+		|		|
+		|		|
+		|		|   free storage for
+		|		|      display files, etc.
+		|		|
+		|		|
+		|		|
+		-----------------
+
+.justify
+.fill
+This data area is located either in an array supplied by the user
+program or in a second segment.  The reason for keeping ^&all\&
+variables in the data area is so that the entire state will be
+preserved if the data area is in the second segment and the
+lower segment is completely overlaid.
+	The call dispatcher initializes accumulator 'R' to
+point to the bottom of the data area -- the location of the
+data area is saved in .DBASE(S).  All references to variables
+are then indexed by R.  If the data area is located in the second segment,
+it begins at RB=400010. (In fact, the 340 codes takes advantage
+of this fact since all data must be in the second segment, and
+will often refer to a variable as xxx+RB rather than xxx(R)).
+	Variables are allocated with the XR macro.  The symbol
+XRI is a counter of such variables.  Most variable definitions
+occur near the beginning of the display-dependent program.
+The only restriction about
+allocating these variables is that all definitions must occur
+before the initialization code, which counts on XRI
+pointing to the first free cell in the data area.
+.skip 2
+3. ^&Building and maintaining the Omnigraph routines\&
+.skip 1
+3.1 ^&Files\&
+	The text files which make up the Omnigraph routines are
+organized so that adding a new display to the system is easy
+and so that bug-fixing is easy.  The files are as follows:
+.skip 1
+.left margin 6
+.indent -6
+DISDEF.FAI
+.break
+This file contains definitions for all the Omnigraph routines.  This
+includes:
+.skip 1
+1. Accumulator definitions. Accumulator 0 is a flag register, and
+is not named.
+Accumulators 1 to 10 (A-H) may be used by the Omnigraph routines.
+Accumulators 14 to 17 are used for special purposes:
+14 is R, 15 is S, 16 is unused so that the language-dependent
+routines may use it (SAIL string push-down list),
+and 17 is the push-down stack P.
+.skip 1
+2. Flag definitions; flags are kept in accumulator 0.  The dispatcher
+fetches and saves the flags in .0SAV(S) for each Omnigraph call.
+.skip 1
+3. Definitions for all Omnigraph subroutine calls and their arguments.
+The macro CALLS defines these (see dispatcher description,
+below).
+.skip 1
+4. Several variables are defined (intended to be indexed by accumulator R)
+which are used by all displays.  These are described in
+various places in the sections below.
+.skip 1
+Several symbols are also defined in DISDEF:
+.skip 1
+ROUTSIZE is the size of the display-dependent area.
+This is defined to be large enough to fit any of the display-dependent
+segments which might occupy the area.  If, due to changes to the
+code, some segment exceeds that maximum, an error message will
+be issued when writing the file of segments (see DISWRT, below).
+.skip 1
+SEGDEV, SEGNAM, and SEGPPN define the location,
+name, and project-programmer number of the file of display-dependent segments.
+Ordinarily, when fixing a bug, this name will not have to be changed -- you can
+simply update the current file of segments.  The only time
+the name will need to be changed is if (1) the order of things
+in the transfer vector between language-dependent and
+display-dependent code changes or if (2) the value of ROUTSIZE must be changed.
+If these change, programs loaded with the old language-dependent
+code will operate incorrectly with the new display-dependent code.
+Hence, we change the file name of the segment file so that
+only newly-loaded programs will access the new segments.
+The old segment file will need to be retained as long as there are
+ .SAV files which reference it.
+This is  the only regrettable consequence of loading the
+display-dependent segments at execution time.
+.skip 1
+.indent -6
+DISIND.FAI
+.break
+This file contains 'device-independent' code for the display-dependent
+code segment.  For example, transformation, windowing, window and
+viewport setting, core management, and initialization routines
+are all contained in this file.  This file is a part of the assembly
+of any display-dependent segment.  There are two relevant conditional-assembly
+switches: DEC340 and BYPOK.  The symbol DEC340
+is defined if the display is the DEC 340 display -- it
+controls assembly of certain pieces of the initialization and
+core-expansion code.  BYPOK is defined if code for dynamic
+displays (in the sense of the Adage) is to be included.
+.skip 1
+.indent -6
+DISDVS.FAI
+.break
+This file contains common code for all storage tube
+displays.  This includes code for building, posting, unposting,
+and killing display files.  It also has the code for controlling
+screen erasures, updates, etc.  It does not, however, include
+any code for transmitting vector information to the
+display terminal.
+.skip 1
+.indent -6
+DISCOM.FAI
+.indent -6
+DISARD.FAI
+.indent -6
+DISTK1.FAI
+.break
+These are the device-dependent files for the Computek 400/15, the
+Ards, and the Tektronix 4010-1 terminals.  They contain code for
+transmitting displays to the terminal, for processing
+text output (DTEXT), as well as a number of device-dependent
+definitions.
+.skip 1
+.indent -6
+DIS340.FAI
+.break
+This is the device-dependent code for the 340 display.  It contains all
+display-file generation code, etc.
+.skip 1
+.indent -6
+DISWRT.FAI
+.break
+This is a small file which contains code for writing out
+a display-dependent code segment into the segment file
+DIS000.SEG, or whatever the name is.
+.skip 1
+.indent -6
+DISSAI.FAI
+.indent -6
+DISFOR.FAI
+.indent -6
+DISLIS.FAI
+.break
+These are the language-dependent interfaces for SAIL,
+FORTRAN, and LISP.  Ordinarily, these are assembled
+with DISDEF.FAI to produce a .REL file for loading
+into a user's program.  However, if you wish to assemble a
+ .REL file for ^&one\& language and ^&one\& particular display,
+without code for reading in segments from a file of segments,
+that can be done (This is useful for debugging, as described
+below).
+.skip 1
+.indent -6
+DISLIS.LSP
+.break
+This is a file of S-expressions which must be read into LISP to initialize the Omnigraph routines.
+.left margin 0
+.skip 2
+3.2 ^&How to assemble and load the Omnigraph routines\&
+	The following files are used to make the Omnigraph display routines:
+
+.nojustify
+.nofill
+
+		DISDEF.FAI
+		DISSAI.FAI
+		DISFOR.FAI
+		DISLIS.FAI
+
+		DIS340.FAI
+		DISCOM.FAI
+		DISARD.FAI
+		DISTK1.FAI
+
+		DISDVS.FAI
+		DISIND.FAI
+		DISWRT.FAI
+
+		DISLIS.LSP
+
+.justify
+.fill
+
+The operation of generating a new version of the routines is:
+.nojustify
+.nofill
+
+COM DISDEF+DISSAI  ==>  REL FILE FOR SAIL LIBRARY
+COM DISDEF+DISFOR  ==>  REL FILE FOR FORTRAN LIBRARY
+COM DISDEF+DISLIS  ==>  REL FILE TO BE LOADED INTO LISP
+
+
+COM DISDEF+DIS340+       DISIND+X ==> 340 CODE SEGMENT
+COM DISDEF+DISCOM+DISDVS+DISIND+X ==> COMPUTEK CODE SEGMENT
+COM DISDEF+DISARD+DISDVS+DISIND+X ==> ARDS CODE SEGMENT
+COM DISDEF+DISTK1+DISDVS+DISIND+X ==> TEKTRONIX 4010 CODE SEGMENT
+
+.justify
+.fill
+The 'X' in the commands above can be either: DISWRT.FAI
+or one of the language interfaces (DISSAI, DISFOR,
+DISLIS) above.  In the first case, the program
+should be loaded and executed; the result will be to add
+(or replace) the code segment to the file DIS000.SEG 
+(or whatever the definition of SEGNAM makes the file name)
+on your disk area.  In the second case, the result will be
+a .REL file which can be loaded into any program.
+It will offer service for that one display only.
+	The following commands will create an entirely new Omnigraph
+system from the files listed above.
+.nojustify
+.nofill
+
+EX /COM DISDEF+DEC340+DISIND+DISWRT
+EX /COM DISDEF+DISCOM+DISDVS+DISIND+DISWRT
+EX /COM DISDEF+DISARD+DISDVS+DISIND+DISWRT
+EX /COM DISDEF+DISTK1+DISDVS+DISIND+DISWRT
+
+COM DISDEF+DISSAI
+COM DISDEF+DISFOR
+COM DISDEF+DISLIS
+
+.justify
+.fill
+The resulting files DIS000.SEG (or whatever the segment file
+name is defined to be), DISSAI.REL, DISFOR.REL,
+DISLIS.REL, DISLIS.LSP should all be transferred
+to the public file area (e.g. SYS).
+	The following command will produce a file DEC340.REL which
+will be the display routines for the 340 with a SAIL 
+interface:
+.nojustify
+.nofill
+
+COM DEC340=DISDEF+DIS340+DISIND+DISSAI
+
+.justify
+.fill
+	The following files contain documentation for the
+Omnigraph routines:
+.nojustify
+.nofill
+
+	DISTUT.RNO
+	DISREF.RNO
+	DISIMP.RNO
+
+	DISAAA.RNO
+	DISZZZ.RNO
+
+.justify
+.fill
+The first three files contain text, in RUNOFF format, for
+the tutorial manual, the reference manual, and the implementation
+manual respectively.  The last two files are simply preamble
+and postamble files.
+	DISIMP.RNO can be processed by RUNOFF directly.
+For the other two, use PIP to form:
+.nojustify
+.nofill
+
+F.RNO/B__DISAAA.RNO,DISTUT.RNO,DISREF.RNO,DISZZZ.RNO
+
+.justify
+.fill
+and then process F.RNO with RUNOFF.
+	The following files are used to make PLOTX, the
+program for doing off-line plotting:
+.nojustify
+.nofill
+
+	PLOTX.SAI
+	PLOT.NIH   (macro file)
+
+.justify
+.fill
+The command LOA PLOTX,/MAC PLOT.NIH will
+cause the program to be compiled and loaded.
+
+.skip 2
+3.3 ^&Debugging Omnigraph routines\&
+	Since each language-dependent section is designed to work
+with a variety of display-dependent sections, we cannot provide a
+DDT symbol table for the display-dependent section.
+However, if you assemble a .REL file for ^&one\& language
+and ^&one\& particular display, as described above, then all
+symbols are included in the .REL file and will be added to
+the DDT symbol table by the LOADER.  To debug
+the program EX1.SAI with the 340 code, you would say:
+.nojustify
+.nofill
+
+LOA %S%B SYS:SDDT,DSK:EX1,DEC340=DISDEF+DIS340+DISIND+DISSAI
+
+.justify
+.fill
+(The %S%B#SYS:SDDT is the standard nonsense for getting
+the SAIL/FAIL DDT loaded.)
+	Remember that all labels in the display-dependent code
+segment are indexed by accumulator S, to typing
+.nojustify
+.nofill
+
+	QWIND/
+
+.justify
+.fill
+to DDT will give garbage.  Instead, the symbol 'T' is defined to
+be the bottom of the display-dependent area, so type
+.nojustify
+.nofill
+
+	T+QWIND/
+
+.justify
+.fill
+to find the code at label QWIND.
+	There is one subtlety to the ^&one\& language, ^&one\&
+display .REL file.  The layout differs from that given above:
+.nojustify
+.nofill
+
+		-----------------
+		| bottom	|
+		-----------------
+		|		|
+		| display-	|
+		|   dependent	|
+		| section	|
+		|		|
+		|		|
+		|		|
+		|		|
+		|		|
+		|		|
+		-----------------
+		| language-	|
+		|   dependent	|
+		| section	|
+		-----------------
+
+		|		|
+
+		|		|
+
+		|		|
+
+		- - - - - - - - -
+
+.justify
+.fill
+The broken lines are the block where the display-dependent code
+would normally go if being read in from the file of segments;
+it is absent in this assembly.  Instead, the display-dependent
+code precedes the language-dependent code.  As a result, the first
+few locations of the dispatch table (0 to PCHBRK-1) must
+be installed in the section labeled 'bottom'.
+This 'installation' is performed by the DINI
+routine (phase 1, see below).
+	The 'one language, one display' .REL file is an acceptable
+way to export the Omnigraph routines for a specific display terminal.
+.skip 2
+4. ^&Language-dependent Code Section\&
+.skip 1
+4.1 ^&Dispatcher\&
+	The most important piece of language-dependent code
+is the dispatcher.  For each Omnigraph call it must:
+.skip 1
+.left margin 6
+.indent -3
+1.#Save accumulators if the language conventions dictate.
+.skip 1
+.indent -3
+2.#Set up accumulator 0 with flags,
+S with a pointer to the display-dependent code area,
+R with a pointer to the data area, and P with
+a push-down stack pointer.
+.skip 1
+.indent -3
+3.#Check types of all arguments and convert where necessary.
+Push all arguments onto the push-down stack.
+.skip 1
+.indent -3
+4.#Transfer to the appropriate routine in the display-dependent section.
+.left margin 0
+.skip 1
+On return from the display-dependent processing, the dispatcher
+must:
+.skip 1
+.left margin 6
+.indent -3
+A.#Arrange to 'return' a value to the calling program, if necessary.
+.skip 1
+.indent -3
+B.#Save the flag register in .0SAV(S).
+.skip 1
+.indent -3
+C.#Restore accumulators.
+.skip 1
+.indent -3
+D.#Return to the calling program.
+.left margin 0
+.skip 1
+	For SAIL, steps 1 and 3 are unnecessary because
+SAIL subroutines do not save AC's and because SAIL
+compiles code to convert argument types before the call and pushes
+them onto a stack in exactly the fashion expected by the
+Omnigraph routines. (Or, if you are a cynic, you could claim that the Omnigraph
+routines were built to accept arguments in exactly the fashion
+prepared by SAIL!)
+	For FORTRAN, a stack must be set up and the
+arguments fetched, converted, and pushed onto the stack.
+	In any case, the macro CALLS, defined in
+DISDEF.FAI, specifies the names and arguments
+for all Omnigraph subroutines.  The CALLS macro is just a list
+of calls on two other macros: CL and CI.  CL defines an
+Omnigraph subroutine:
+.left margin 6
+.skip 1
+.indent -3
+first argument: name of subroutine, without initial 'D'
+.skip 1
+.indent -3
+second argument: list of argument types:
+.nojustify
+.nofill
+     REL = floating point
+     INT = integer
+     PTR = pointer (address)
+
+.justify
+.fill
+.indent -3
+third argument (optional): If the subroutine to handle the
+call is in the display-dependent section, this argument should
+be omitted.  The routine to handle this call will be
+named Qxxx where xxx is the first argument to CL.
+If the third argument is supplied, it is the name of a routine
+in the language-dependent segment which should be invoked.
+.left margin 0
+.skip 1
+The CI (xxx) macro is used to define an entry .xxx in the
+transfer vector which some language-dependent routine
+may need to call in the display-dependent section.
+For example,
+.nojustify
+.nofill
+
+	CL (TEXT,,STRING)
+
+.justify
+.fill
+says the DTEXT call is to be handled by dispatching
+to the language-dependent routine STRING.  But STRING
+needs to be able to pass individual characters to the display-dependent
+segment.  The macro
+.nojustify
+.nofill
+
+	CI (TEXT)
+
+.justify
+.fill
+defines a transfer vector entry, .TEXT(S), which points to the
+display-dependent routine QTEXT.
+	The CALLS macro thus defines how each Omnigraph subroutine
+call is to be processed. 
+As an example of a normal case, DOPEN will
+be processed by the display-dependent  routine QOPEN,
+because its definition in CALLS is:
+.nojustify
+.nofill
+
+	CL (OPEN,<INT>)
+
+.justify
+.fill
+	The CALLS macro is used in two places: once to
+generate the table of transfer vectors in the display-dependent
+section, and a second time to generate the actual entry points
+in the language-dependent section.
+	A typical transfer vector entry (remember, this is in
+the display-dependent section) might look like:
+.nojustify
+.nofill
+
+	S,,QOPEN
+
+.justify
+.fill
+The dispatcher does a JRST#_@ through this
+entry, and control is thus transfered to the subroutine
+QOPEN.
+	A typical SAIL entry point (language-dependent section)
+looks like:
+.nojustify
+.nofill
+
+	INTERNAL DOPEN
+		SIXBIT /OPEN/
+	DOPEN:	PUSHJ 17,DISP
+		JRST @xxx(S)
+
+.justify
+.fill
+where xxx is the index of an entry in the transfer vector
+for this routine (such as the example above).  The
+SIXBIT routine name is used when printing error messages.
+Note that the entry-point need not contain information about
+argument types because SAIL converts types before the call.
+	A typical FORTRAN entry-point looks like:
+.nojustify
+.nofill
+
+	INTERNAL DOPEN
+		SIXBIT /OPEN/
+	DOPEN:	0			;PLACE FOR JSA
+		JSP 0,DISP		;CALL DISPATCHER
+		JRST @xxx(S)		;TRANSFER VECTOR
+		200000000000		;BYTE-WORD
+
+.justify
+.fill
+The byte-word is a word of 2-bit bytes.  They are examined
+from left-to-right to determine the number and types of
+arguments:
+.nojustify
+.nofill
+
+	1 = integer
+	2 = floating point
+	3 = pointer (address)
+	0 = done (end of arguments)
+
+.justify
+.fill
+This byte-word is composed from information listed in the
+CL macro call.
+.skip 2
+4.2 ^&Error message printer\&
+	The error-message printer is also included in the
+language-dependent section.  An error is invoked by:
+.nojustify
+.nofill
+
+	PUSHJ P,@xxx(S)
+	...
+
+xxx:	XWD fatal*400000+number*40+S,.ERRGO
+
+.justify
+.fill
+The instruction in the transfer table for .ERRGO(S)
+is a JRST to the error-message printer.  The printer
+picks out the error number (12-bit field) and prints a message.
+If the 'fatal' bit is zero, the printer will
+return to the point following the PUSHJ, otherwise
+will call EXIT.
+	Errors are indicated in the code with the ERR macro.
+The first argument is a 'message', included only as a comment.
+The second is the (decimal) error number.  If the third
+argument is omitted, the error is fatal.  Otherwise, the
+third argument is a label in the display-dependent code to transfer
+to after printing the message. (Note: the error printer is
+designed primarily to be called from the display-dependent
+section, not from the language-dependent section.  There are
+only two cases in which the language-dependent code causes
+an error (initialization failure and argument mismatch).
+These calls on the error printer cannot use the ERR macro.)
+.skip 2
+5. ^&Display-Dependent Code\&
+.skip 1
+5.1#^&Free-Storage Managment\&
+	The core routines are fashioned after Knuth
+(Volume 1, p. 435) and SAIL.  A block of core looks like:
+.nojustify
+.nofill
+
+		-------------------------
+		| xwd length,0		|<---------------
+  pointer ==>	|   	...		|		|
+		|	...		|		|
+		|	...		|		|
+		|    x words		|		|
+		|	...		|		|
+		|	...		|		|
+		|	...		|		|
+		| xwd length,pointer-1	|----------------
+		-------------------------
+
+.justify
+.fill
+
+	There are three core-management routines, CORGET,
+CORREL, and CORPUT.  They are not 
+coded with extreme parsimony, but they are known to work well.
+	CORGET will reserve a piece of core of a length
+given in accumulator C (or slightly larger, if the core routines
+decide the difference is negligible, i.e. less than a parameter
+TRIVIAL) and return a pointer to it in accumulator B.
+If B#=#0 on return, the request could not be filled.
+The pointer points to the first word of usable storage, as
+shown above.  The 'length' fields are set to
+-(x+2).  The right half of the word just before the pointer
+is available for use.
+	CORREL returns to free storage the piece of core
+given in accumulator B (i.e. B should be exactly what was
+returned by CORGET when the block was acquired).
+CORREL will merge adjacent free blocks -- this helps
+avoid core fragmentation.
+	CORPUT is a special routine used to return
+to free storage the unused portion of a partially-used block
+of core.  Accumulator B should point to the first usable word,
+as above; accumulator C points to the last word of core used.
+	The core routines can be regarded as 'black boxes' for
+most purposes.  However, the following information may be of
+use:
+	1. If the core routines ever fail to fulfil a core
+request, they turn on two flags in the flag register:
+NOCORE (no more core), and NOMOCO (do not put out
+more display file code for now).
+The flag NOMOCO will inhibit further generation of display
+file until a new segment is DOPENed.  The NOCORE flag
+is not really used; it merely indicates that the core
+routines have given up.  It is reset when some more core is
+made available via CORREL.
+	2. Available free storage is broken into blocks
+just like the one above.  The 'length' entries of free
+blocks are set to (x+2).  The first 'usable' word of each
+free block is a two-way linked list of free blocks.
+The terminators of the list are zeroes.  The variable
+FRELST(R) points to the first free block on the
+list.
+
+
+
+
+.skip 2
+5.2 ^&Initialization code\&
+	The initialization of the Omnigraph routines by DINI is divided
+into three phases.  The first phase is performed in the language-dependent
+section and involves reading the file of display-dependent segments
+until the correct segment is found.  This is accomplished by
+reading the segment file (DIS000.SEG or whatever) in dump mode,
+in chunks ROUTSIZE long, into the area reserved for the
+display-dependent code until either the correct display
+segment is encountered or end-of-file is reached.  This is
+somewhat slow; if the number of displays grows large, perhaps
+the segment file should be indexed in some trivial fashion;
+then USETI's could be used to get the correct display-dependent section.
+	The second phase is accomplished by the display-dependent
+code, and is concerned with initializing the free-storage
+mechanisms. If the user specifies an array to use for
+free storage and data, it is zeroed.  The portion of the
+array for free storage is put on the free storage list as one
+big block.  If the user specifies a second segment, there are
+a few complications: if there is already a second segment in the
+address space and if the segment 'looks like' a display segment
+for the same display, then no further initialization processing.
+(This is the 'overlay' case -- the function of the DINI
+call is merely to read in the display-dependent code; the second
+segment variables and free storage area are not touched.)
+Otherwise, a fresh second segment is created and initialized
+as if it were an array.  The flag USECOR is turned on
+to say that second-segment core is being used for free-storage
+(i.e. core can be expanded).
+	Phase two also initializes the flag register, accumulator
+R, and records the address of the data area in .DBASE(S).
+	Phase three initializes various display-dependent
+items and the defaults of the Omnigraph routines.  At present,
+the defaults are:
+.nojustify
+.nofill
+
+	DTSCAL (0)
+	DCURSOR (0,.95)
+	DPORT (0,1,0,1)
+	DWIND (-1,1,-1,1)
+
+.justify
+.fill
+
+.skip 2
+5.3 ^&Picture Structure\&
+	The details of the structure of the display-file vary from
+display to display.  We shall describe the storage-tube format and
+the DEC340 format.
+.skip 2
+5.3.1 ^&Storage Tubes\&
+	A segment of a storage tube display file looks like:
+.nojustify
+.nofill
+
+					-----------------
+	-----------------		|  -LL  |  0	|
+	| -L  |    -----|-------------->|		|
+B ==>	| pic number	|		|		|
+	| list thread	|		|		|
+	|xwd list,appnd	|		|		|
+	|		|		| codes		|
+	|		|		|		|
+	|		|		|  -LL |    ----|---->
+	|		|		-----------------
+	|		|
+	|		|
+	| codes		|
+	|		|
+	|		|
+	|  -L  |  ------|----> B-1 (free-storage block pointer)
+	-----------------
+
+.justify
+.fill
+
+A segment is a collection of free-storage blocks; they are linked
+together using the right-half of the first word of the block.
+The list is terminated with 0.
+A picture is pointed to by its 'CORGET pointer' for the
+first block of the picture (B in the picture above).  The first
+three words of the first block are segment number, a thread
+for a two-way list which the segment is on, and a word containing
+two half-words: the left-half is the address of the header of
+the list the picture is on; the right half is a pointer to the
+first free-storage block appended to the picture (see  below).
+	The DOPEN call gets a piece of free storage and initializes
+some variables:
+.nojustify
+.nofill
+
+  NXTBYT(R)	Aobjn pointer to store next word of display
+		codes
+  .CURPIC(R)	Current picture number (picture being
+		generated
+  GENTOP(R)	Pointer to picture, i.e. to first block of
+		picture
+  CURCORGET(R)	Pointer to block of free storage
+		currently being filled
+
+.justify
+.fill
+After this initialization, STOBYT is called to add a word
+to the display file.  If it needs to move to a new free storage
+block, it will do so provided CORGET supplies a piece of
+core at least 256 words long.  If not, the flag NOMOCO is set,
+which will inhibit all further STOBYT action until the
+segment currently being generated is closed.  In this
+circumstance, any blocks of free storage already consumed by
+the picture (pointed to by GENTOP(R)) are returned to free
+storage.
+	When the segment is DCLOSEd (or closed because
+DPOST, DOPEN, or DAPPEND are called),
+the lists are searched for a previous version of this picture
+(same segment number).  If this picture was not started with
+DAPPEND, then any previous version is deleted and the
+new version is put on the unposted list.  Otherwise, the new
+blocks are linked into the old, and are pointed to by the
+third word of the picture header:
+.nojustify
+.nofill
+
+                    |-------------|
+	------------|----	  |	-----------------
+	|  -L	|       |         |	|  -LL	|   0	|
+  B:	|      21	|         =====>|		|
+    <---|--  thread   --|-->      =	|		|
+	|	|   ====|==========	|  newly	|
+	|		|     		|  appended	|
+	|		|     		|   piece	|
+	|		|     		|		|
+	| original	|     		|		|
+	|  segment	|     		|  -LL	|     --|--->
+	|   number	|     		-----------------
+	|      21	|
+	|		|
+	|		|
+	|  -L	|   ----|--->  B-1
+	-----------------
+
+.justify
+.fill
+	The words in the display file are arranged as follows: bits
+0-3 are an 'op code'; the remaining bits are decoded according
+to op code:
+.nojustify
+.nofill
+
+   0	Halt - end of block of picture
+   1	Move - bits 4-17 are x coordinate; 18-35 y coordinate
+   2	Dot  - bits 4-17 are x coordinate; 18-35 y coordinate
+   3	Draw - bits 4-17 are x coordinate to draw to; 18-35 are y
+   4	Text - remaining 32 bits are 8-bit character bytes.
+	        Code 377 means a null character.
+   5	Scale- Scale factor for text (terminal-dependent
+	        interpretation
+
+.justify
+.fill
+	The coordinate system used by the Omnigraph routines
+for describing storage-tube pictures is not quite identical
+to the coordinate system used for a particular terminal.
+It should be emphasized that the coordinate system used in the
+display file is only for internal consumption -- the user provides
+arguments in the page coordinate system, and the terminal coordinate
+system may differ from the internal system.  The origin of the
+internal system is at the lower left-hand corner of the
+^&usable\& portion of the screen.  The resolution of the
+internal coordinate system is exactly the same as the resolution
+of the terminal coordinate system.  For example, the ARDS
+internal coordinate system runs from 0 to 1080 in x and
+0 to 1414 in y, although the actual terminal coordinate
+system is centered, i.e. x runs from -540 to +540, y from
+-707 to +707.  The internal and physical coordinate systems
+for the Tektronix 4010 run from 0 to 1023 in x and 0 to 780 in y.
+In other words, the internal and physical coordinate systems
+may differ by at most a translation.
+	A rather special strategy is used to manage storage-tube
+pictures.  Each picture segment may be in one of five states:
+.nojustify
+.nofill
+
+LOGICALLY:  |   POSTED   |   UNPOSTED    |   KILLED
+            |            |               |
+            |            |               |
+PHYSICALLY  |            |               |
+------------|------------|---------------|---------------
+            |            |               |
+PAINTED     |     PP     |     UP        |      KP
+            |            |               |
+------------|------------|---------------|---------------
+            |            |               |
+UNPAINTED   |     PU     |     UU        |    (FREE STORAGE)
+            |            |               |
+------------|------------|---------------|---------------
+
+.justify
+.fill
+This structure allows the logical status of a picture
+(posted, unposted, or killed) to be kept separate from
+the physical status of the picture on the screen
+(painted or unpainted).  The steady-state condition
+is: 'posted' pictures are in state PP, 'unposted'
+pictures are in state UU, and all other lists
+(PU, UP, KP) are empty.
+The operations on this structure are:
+.skip 1
+.left margin 6
+.indent -3
+1.#If a new picture is generated, it is put in the
+UU list when the generation is closed.
+.skip 1
+.indent -3
+2.#When a picture is posted, it is moved from UU to PU
+or from UP to PP.  That is, the logical state of the
+picture changes from 'unposted' to 'posted', but we do not
+yet change the screen (hence the state of paintedness
+does not change).
+.skip 1
+.indent -3
+3.#When a picture is unposted, it is moved from PP to UP
+or from PU to UU.  Again, this does not affect the
+painted/unpainted status.
+.skip 1
+.indent -3
+4.#When a picture is killed (or superseded by a new version), it is
+moved from PP or UP to KP, or from PU or UU
+to free  storage.  The reason for retaining KP is that
+we may need a 'copy' of this deleted picture in order
+to perform selective erasure, should the terminal
+permit it.
+.skip 1
+.indent -3
+5.#When DDONE is called, the following occurs. (To ^&paint\&
+a picture is to interpret each code in the display file for
+the picture and to send to the display terminal appropriate
+codes for generating the items specified in the display file.)
+.left margin 9
+.skip 1
+.indent -3
+1.#If UP and KP are both empty, go to step 4.  This means
+that no painted pictures have been deleted since the last
+call do DDONE, and we need only ^&add\& display information
+to the display screen.
+.skip 1
+.indent -3
+2.#Either ^&erase\& the whole screen and ^&paint\& all pictures
+in PP (this is the normal case for storage tubes) or
+^&selectively erase\& the pictures given in UP and KP
+(if the terminal has selective erase capability and the
+judgement is made that selective erasure is a good idea).
+.skip 1
+.indent -3
+3.#Move all pictures in UP state to UU state (these pictures
+are no longer painted because we erased the screen or because
+we selectively erased these pictures).
+Release to free storage all core occupied by pictures
+in KP state.
+.skip 1
+.indent -3
+4.#If no appends have been done since the last call to
+DDONE, go to step 6.
+.skip 1
+.indent -3
+5.#^&Paint\& the appendages to all pictures in PP.  Clear
+the indication that there exist appendages to these pictures.
+.skip 1
+.indent -3
+6.#^&Paint\& all pictures in PU state.
+Move all pictures in PU state to PP state.
+.skip 1
+.indent -3
+7.#If steps 1-6 have resulted in any changes to the screen,
+reposition the cursor to the spot specified in the
+last DCURSOR call.
+.left margin 0
+.skip 1
+This elaborate scheme should permit the Omnigraph routines
+to minimize screen erasures and to correctly operate displays
+with selective-erase capabilities.  For displays
+without selective erase, KP is not actually a list of
+pictures, but rather a flag which is -1 if a painted picture
+has been killed since the previous call to DDONE
+(***** that sentence is not true as of 9/13/72 *****).
+.skip 2
+5.3.2 ^&DEC 340 Display File\&
+	The display file structure for the DEC 340 is more
+complicated than that for storage tubes because the file is
+interpreted by a rather poorly-designed display processor
+(In all fairness, the 340 was one of the first display
+processors ever buil, and has since become obsolete.
+However, there is very little excuse for DEC's
+not applying improved display-processor technology.
+It is quite obvious that no one from DEC ever had
+to program much on a 340.)
+The display file structure is governed by two considerations:
+(1) it must be structured so the 340 processor can repeatedly
+execute the display file in order to show a display, and
+(2) it must be structured so that modifications can be made
+to the display file while the 340 is executing it.
+	The display file can be divided into two
+logical parts: the ^&dispatch list\& and ^&picture segments\&.
+The description of these two parts assumes the reader is
+familiar with the instruction set of the 340, as described
+in the 'PDP-10 Display Systems' manual.
+	A picture segment in the Omnigraph routines is a
+display subroutine, i.e. it is called by a djs to
+the picture, which returns to its caller with
+a djpi.  A sample picture is:
+.nojustify
+.nofill
+
+		-------------------------
+		|      xwd -L,0		|<---------------
+ pointer:	|    picture number	|		|
+		|  xwd post,djpiaddr	|		|
+ entry:		|      0		|		|
+		|	...		|		|
+		|      ...		|		|
+		|    display		|		|
+		|	instructions	|		|
+		|	...		|		|
+		|	...		|		|
+ djpiaddr:	|    djpi entry		|		|
+		|   xwd -L,pointer-1	|----------------
+		-------------------------
+
+.justify
+.fill
+The picture, when posted, will be called with a
+'djs#entry'.  The display instructions will be executed,
+and the 'djpi#entry' will return to the calling
+spot.  
+	If a picture cannot fit in one free-storage block, then
+it is continued in another.  A djp is planted at
+the end of the first block to jump to the beginning of
+the second block.  The subroutine STOBYT, which
+stores half-words of the display file as it is being
+built, handles continuation of a block if necessary.
+Below is an example of a continued picture:
+.nojustify
+.nofill
+
+					-----------------
+	-----------------		|  -LL  |  0	|
+	| -L  |    -----|-------- BB: ->|		|
+ B:	| pic number	|		|		|
+	| post,djpiaddr	|		| more		|
+ entry:	| 	0	|		| code		|
+	|		|		| 		|
+	|		|     djpiaddr:	| djpi entry	|
+	|		|		|  -LL |    ----|---->
+	|		|		-----------------
+	|		|
+	| display	|
+	| code		|
+	|		|
+	|  djp BB	|
+	|  -L  |  ------|----> B-1 (free-storage block pointer)
+	-----------------
+
+.justify
+.fill
+Note that the right half of the first word of each
+free storage block is used to point to continuation blocks.
+This list terminates in a 0.
+	The generation of a picture is controlled by the
+subroutines for opening and closing (QOPEN,
+QAPPEND, CLOSE) pictures.  The opening of
+a picture sets up the following variables:
+.left margin 11
+.skip 1
+.indent -11
+GENTOP#####Pointer to the first block of free storage consumed by this
+picture (the tag B in the picture above).
+.indent -11
+CURCORGET##Pointer to the piece of free storage currently being
+filled with display codes.
+.indent -11
+NXTBYT#####Byte pointer used to store the next 18-bit byte of display
+code in the display file.
+.indent -11
+BYTCOUNT###Count of bytes that can safely be stored before coming near
+the end of the current piece of free storage.
+.indent -11
+MODE#######This cell contains the mode (in the 340 instruction sense of
+the word 'mode') for the next instruction to be deposited.
+.indent -11
+MODEL######This cell contains the mode for the last (i.e. previous)
+byte of display file deposited.  If MODEL is -1,
+then the previous byte cannot be changed in any way.
+.left margin 0
+	Two subroutines are used for adding instructions to the
+display file: SNM and STOBYT.  SNM is mnemonic for
+'set next mode.'  Accumulator A contains the mode number
+to be established (actually, it is mode#*#20000 octal).
+The SNM routine may fix the previous instruction put in the
+display file by placing new mode bits in it if necessary, etc.
+At any rate, after calling SNM to set the mode, any number
+of instructions in that mode can be added to the display
+file.
+	STOBYT takes an 18-bit byte in accumulator A,
+and adds that byte to the display file.  If no room remains
+in the current block of free storage,  a new block
+is reserved, and linked into the old one in two ways:
+(1) the right half of the first word of the previous block
+is made to point to the new block; (2) a djp is inserted
+at the end of the previous block to jump to the new block.
+The mode (in the 340 sense) of instruction interpretation
+is preserved.
+	When the picture is closed, the djpi is
+inserted at the end of the present block of free storage.
+It address is also recorded in the picture header for
+appending purposes.  Any unused portion of the current
+block of free storage is returned to free storage via
+CORPUT.
+Note that during the generation phase, the 340 display
+processor is ^&not\& executing the code being generated. When
+the picture has been closed, it constitutes a valid
+340 subroutine which can be added to the display list.
+	When a completed picture is posted, a call to
+it is added to the ^&dispatch list\&.  The dispatch
+list is the main (i.e. top-level) display file.
+When the DGET call is executed, the Omnigraph routines
+request the timesharing system to start the display
+executing this list.  In its simplest form, it is as 
+follows:
+
+.nojustify
+.nofill
+
+ DADR:		xwd 0,sbr+sync
+		xwd djp,.+1
+		xwd 0,sbr
+		xwd djp,.+1
+		xwd 0,sbr
+		   . . .
+		   . . .
+		xwd sbr,djp
+		xwd iosubr,0
+
+
+ IOSUBR:	xwd 117,pnt
+		xwd ybp 0 pnt,xbp 0 pnt
+		xwd ybp 777 pnt, xbp 777 sbr
+		xwd djp, .+1
+		xwd sbr, djp
+		xwd dadr,0
+
+.justify
+.fill
+This dispatch list is simply an infinite loop for the 340
+processor.  The 'sync' bit is turned on in one of the
+parameter mode words so that the display does not
+loop too fast.  (If one small picture were posted and
+the display were allowed to loop as fast as possible,
+we might damage the phosphor by the very fast repetition
+of a small picture.)
+The small block at the end called IOSUBR is
+for Graphacon tracking and inking information.
+	When a picture is posted, one of the
+.nojustify
+.nofill
+
+		xwd 0,sbr
+		xwd djp,.+1
+
+.justify
+.fill
+pairs is changed to
+.nojustify
+.nofill
+
+		xwd 0,sbr
+		xwd djs,entry
+
+.justify
+.fill
+(Remember: all addresses for the 340 must have the 400000 bit
+off, even though they are in the second segment.  The 340
+does not know the difference between first and second segments;
+it measures core from the base of the segment it is in.)
+When a picture is unposted, the djs,entry
+is changed back to djp,.+1.
+A block of dispatch list contains DLEN dispatch
+pairs (DLEN is an assembly parameter).
+	This procedure is fine, but what happens when we run
+out of spare entries in the dispatch list?  In this case, we
+get another block of core, and change
+the
+.nojustify
+.nofill
+
+		xwd sbr,djp
+		xwd iosubr,0
+
+.justify
+.fill
+at the end of the first block to
+.nojustify
+.nofill
+
+		xwd sbr,djp
+		xwd newblockadr,0
+
+.justify
+.fill
+This will link the new block of dispatch list into the
+display file immediately.  In addition, the
+right half of the very first word of the dispatch list
+(not shown in the above diagram -- it is the CORGET
+word) is used to link all pieces of dispatch
+list together, just as pieces of a picture are linked together.
+	Pictures are in one of two states: posted or
+unposted.  Posted pictures are found by looking in the
+dispatch list -- each of the djs entries points to a
+posted picture.  Unposted pictures are saved on a 
+two-way linked list started in the cell UNLIST.
+The cell is linked through the 'entry' word of each
+picture, which is of course unused when a picture is
+not on the dispatch list.
+	This brings up a very interesting point, however.
+The 'unpost a picture' subroutine must be very careful
+that it does not clobber the 'entry' word before the display
+processor has exited the display file for the picture
+being unposted.  Actually, the problem is more severe than
+that: the display file of the picture being unposted
+^&cannot be modified at all\& until the display
+processor has exited the picture.  In particular,
+the core for the display file cannot be returned to
+free storage immediately (e.g. DKILLing a
+posted picture).
+There  are roughly three solutions to this
+problem:
+.skip 1
+.left margin 6
+.indent -3
+--#Wait until the display processor is surely out of the
+picture, and then proceed with any processing you have in mind.
+.indent -3
+--#Since the display processor may be inside this picture,
+do not alter any of the display file, but put the picture
+on a 'wait' list.  The wait list is a list of pictures
+whose calls have been removed from the dispatch list but
+which cannot be altered for fear the display processor is still
+in them.
+.indent -3
+--#After the call has been removed from the
+dispatch list, restart the display at the very beginning
+of the dispatch list.  Then do what you like with 
+the unposted picture. This guarantees that the
+display will  not be in the unposted picture when
+modifications are made.
+.left margin 0
+	The last of these is bad practice: on a long display file,
+we could make modifications so often that we never get all
+the way through the file.  Furthermore, this requires
+a system UUO every time we unpost a picture.
+	The second is somewhat impractical since we cannot discover
+when is the correct time to release pictures on the
+wait list. [One possible way is as follows: modifiy the
+timesharing system to index an entry in the X-device
+status table each clock tick (16.7 milliseconds).  This
+number will then provide a 'time'.  When a picture is
+unposted, remove its call from the dispatch list,
+put it on a wait list, and remember the  time at
+which this was done (this may require a few more words in
+the picture header).  Have two kinds of wait lists:
+one full of unposted pictures which should stay around, and
+one full of unposted pictures which are to be killed,
+i.e. returned to free storage.  Whenever CORGET
+is called, it first scans the wait list for killing and
+returns to free storage any pictures which have been there longer than
+30-40 milliseconds.  Similarly, if one of the pictures
+on the wait list is posted again, the 'post' subroutine
+will have to wait until the picture being reposted
+has been on the wait list longer than 30 milliseconds.]
+	In fact, the first choice is used by the Omnigraph routines, although
+if I were doing it again (and indeed, one of the modifications
+I may make), I would prefer the second method as described in the
+parenthesis above.
+At present, in order to be sure that the display processor has successfully
+exited the picture, the unpost routine does the following:
+.skip 1
+.left margin 6
+.indent -3
+1.#Remove the subroutine call from the dispatch list.
+.indent -3
+2.#Patch in a subroutine call to the null subroutine:
+.nojustify
+.nofill
+
+	DISNOP:     0
+	          xwd djpi,disnop
+
+.justify
+.fill
+The DISNOP cell is zeroed before the patch is made.
+.indent -3
+3.#Wait until the DISNOP cell becomes non-zero.
+This means that the display processor has executed the
+call patched into the display list, and means also that
+the display is now surely out of the picture we are
+unposting.
+.indent -3
+4.#Replace the call to DISNOP with the
+regular djp#.+1 in the dispatch list.
+.skip 1
+.left margin 0
+There are two major difficulties with this technique:
+(1) the wait is usually fairly long, on the order of
+10-20 milliseconds.  This means that truly rapid updating
+of pictures is not possible.
+(2) If the display list is invalid in some way
+(e.g. address violation, edge violation) then the
+display processor, although running, may never get
+to execute the part of the dispatch list in which
+the call to the null subroutine resides.  In this
+case, the 'wait' until the DISNOP cell
+becomes non-zero will never terminate.  For this
+reason, there is a limit on the amount
+of time we will wait for the display to get to the
+picture (roughly 1 second).
+
+.skip 2
+5.4 ^&Transformation Routines
+	The matrix-manipulation routines are, with one
+small exception, contained in the display-dependent area.
+Two 16-word areas are reserved for matrices:
+MATRIX(R) and WORKM(R) (a 'working' area).
+The 16 values stored in MATRIX(R) are the
+current transformation matrix.
+	One subroutine lives in the language-dependent area,
+and is called as .GTMAT(s).
+Its function is to fill the work matrix from an ^&array\&
+cited by one of the Omnigraph calls.  The storage convention
+of all matrices inside the Omnigraph routines is
+that the column number is the most rapidly varying
+index (i.e. it is like SAIL storage if you say
+matrix#[#row#,#column#]).
+	The flag USXFRM is set if a non-identity matrix
+is the current transformation matrix.  A small piece of code
+at SET0 decides whether the current matrix is an identity.
+The reason for making this determination is that a
+great deal of time can be saved by omitting the transformation
+step entirely if the current transformation is the identity.
+	The two subroutines XFORM2 and XFORM3 are called
+to compute the transform of some incoming point.
+.skip 2
+5.5 ^&Two-dimensional Windowing\&
+	The two-dimensional clipping algorithm used by the Omnigraph
+routines is the Sutherland-Cohen algorithm.  Each line is defined
+by its two endpoints, which we shall call endpoint 1 and endpoint 2.
+The subroutine CODE2 is used to compute an 'out code'
+for each endpoint: the bits of the code are:
+.nojustify
+.nofill
+
+   0001		x < window left
+   0010		x > window right
+   0100		y < window bottom
+   1000		y > window top
+
+.justify
+.fill
+The algorithm runs as follows:
+.nojustify
+.nofill
+
+  1. cod1 __ outcode (endpoint 1); cod2 __ outcode (endpoint 2)
+  2. if cod1=cod2=0 then exit: the entire line is visible
+  3. if logical 'and' of cod1 and cod2 is non-zero then
+	exit: no part of the line is visible
+  4. if cod1 is non-zero then:
+	a. 'fix' endpoint 1
+	b. cod1 __ outcode (endpoint 1)
+	c. go to step 2
+  5. if cod2 is non-zero then:
+	a. 'fix' endpoint 2
+	b. cod2 __ outcode (endpoint 1)
+	c. go to step 2
+
+.justify
+.fill
+The meaning of the verb 'fix' is: move the endpoint being
+fixed toward the other endpoint until one of the window
+edges is intersected.
+	The actual computation of the 'fix' subroutine is
+as follows: assume that the point (X1,Y1) is to be fixed,
+i.e. moved toward the other endpoint (X2,Y2) until
+an edge is intersected.  First, we decide whether to intersect
+with a horizontal or vertical edge: if Y1 is off the
+screen, then we will intersect with a horizontal edge, say
+Y#=#beta.
+The newly fixed point will therefore be of the form
+(alpha#,#beta).  Our task is to compute alpha.
+Similar triangles give:
+.nojustify
+.nofill
+
+	X2 - X1       X2 - alpha
+	-------       ----------
+	Y2 - Y1       Y2 - beta
+
+.justify
+.fill
+If we solve for alpha,
+.nojustify
+.nofill
+
+	alpha = (beta - Y2)*(X2 - X1)/(Y2 - Y1) + X2
+
+.justify
+.fill
+There is never any problem with the divisor being zero,
+because Y2 and Y1 are on opposite sides of the
+Y#=#beta line.  If they were not, either the line
+would have already been rejected as invisible, or we
+would have chosen the other horizontal edge as
+the critical boundary to intersect.
+	Note that the Sutherland-Cohen algorithm is 
+a loop.  No one has ever investigated the numerical
+stability of the algorithm for floating-point number
+systems.  It is conceivable that there are cases
+in which the loop does not terminate on the PDP-10.
+	After the clipping step, coordinates must be transformed
+into the screen coordinate system.  This computation is:
+.nojustify
+.nofill
+
+	  X - Wleft    Vtop-Vbottom   Vtop+Vbottom
+	------------ * ------------ + ------------
+	Wright-Wleft        2              2
+
+.justify
+.fill
+where the Wxxx and Vxxx are the limits of the window and
+viewport respectively (here the viewport measurements are
+assumed to be made in the coordinate system of the display,
+not in the 'normal viewport coordinate system').
+This can be simplified to an equation of the form:
+.nojustify
+.nofill
+
+	X * multiplier + offset
+
+.justify
+.fill
+This is the form used by the Omnigraph routines:
+the multiplier is .XPM(R), the offset .XPA(R).
+The corresponding variables for Y are
+ .YPM(R) and .YPA(R).
+These four coefficients are recomputed every time the
+viewport or window in changed with a DWIND or DPORT
+call.
+	The subroutine CONV2 is used to compute the screen
+coordinates of a point using this formula.  It rounds the
+floating-point number as it is converted to integer form
+for inclusion in the display file.
+.skip 2
+5.6 ^&Three-dimensional Windowing\&
+	The calculations for three-dimensional clipping are
+very similar to those for two dimensions.
+The out code, formed by the subroutine CODE3, is:
+.nojustify
+.nofill
+
+  0001		X < -Z
+  0010		X >  Z
+  0100		Y < -Z
+  1000		Y >  Z
+
+.justify
+.fill
+The algorithm is precisely the same as given above for
+two dimensions, but the subroutine 'fix' is somewhat
+more complicated.
+To show the computations of the 'fix' routine, let us
+assume that the point (X1,Y1,Z1) is to be fixed by
+moving it toward the point (X2,Y2,Z2) until it
+intersects with a boundary of the viewing pyramid,
+say X#=#a#*#Z (A#=#+1 or A#=#-1).
+We can give the equation of the line in parametric form:
+.nojustify
+.nofill
+
+	X = p X2 + (1-p) X1
+	Y = p Y2 + (1-p) Y1
+	Z = p Z2 + (1-p) Z1
+
+.justify
+.fill
+Then, insisting that X=#A#*#Z,
+.nojustify
+.nofill
+
+	p = (-X1 + AZ1) / (X2 - X1 + A (Z1-Z2))
+
+.justify
+.fill
+Then we compute the coordinates of the intersection point
+by plugging this value for p into the three parametric equations.
+	One subtlety is used in the calculation to avoid numerical
+problems: since we are intersecting the line with a plane
+boundary of the viewing pyrmamid, the intersection should
+always yield X#=#AZ (assuming we were intersecting with
+the boundary X#=#AZ).  It is important that the 
+floating-point number for Z and the floating point number
+for X be identical (or twos complements of each other)
+so that the next call to CODE3 will conclude that
+the X coordinate is within the window.
+	Again, the numerical stability of these
+computations has not been ascertained.  It is quite possible
+that the algorithm will loop when using floating-point
+arithmetic to compute the new coordinates.
+	The subroutine CONV3 is used to convert three-dimensional
+points to the correct screen coordinate value.  The computation
+is as follows:
+.nojustify
+.nofill
+
+		X     Vtop-Vbottom   Vtop+Vbottom
+		-  *  ------------ + ------------
+		Z          2              2
+
+.justify
+.fill
+.skip 2
+5.7 ^&Plotting\&
+	The Omnigraph routine DPLOT writes files
+from which off-line plots of pictures can be made.
+The file is divided into two parts: a display-independent
+part, and a display-dependent part.
+	The first part is simply the 128 words that are
+in the user's array when he calls DPLOT.  This
+allows, in principle, a great deal of information to be
+transmitted from the display program to PLOTX,
+the plotting program.  At present, only a few of the
+128 locations are used (see Omnigraph Reference
+Manual).  The use of these locations is a PLOTX
+convention: the Omnigraph routines themselves never
+examine the initial contents of the array.
+	The remainder of the file contains some encoded
+form of the display file for all pictures currently
+posted.  The first word of this part of the file (i.e.
+the 129th word from the beginning) is the display
+number.  This allows PLOTX to determine the format of
+the ensuing words.
+	The display-file written in the PLX file is an
+exact copy of the format as it exists in core.
+For the storage-tube terminals, the format is as follows:
+.nojustify
+.nofill
+
+  1. A picture begins with xwd -1,address of first block
+	of picture as in core.  
+  2. Next, each block of the picture is transmitted,
+	including the two words of the block which are
+	used for free-storage purposes.  The PLOTX
+	program knows it is at the end of a picture (if
+	it must know that) because the right half of the
+	first word of the last block is 0.
+
+.justify
+.fill
+The file is terminated with at least one 0.  Notice that
+the transmission of the free-storage overhead words has
+the side benefit of announcing to PLOTX how long
+this particular picture block is.
+	The format for the 340 is exactly the same as that
+for storage tubes.  However, the task of PLOTX is
+complicated by the fact that the codes
+themselves are 340 instructions which must be interpreted
+in the correct 340 mode, etc.
+.skip 2
+5.8 ^&Input Facilities\&
+	(*** Later ***)
+
+.subtitle Terminal Programming Notes
+.page
+6. ^&Terminal Programming Notes\&
+.skip 1
+6.1 ^&DEC 340 Display\&
+	The DEC 340 display is fully documented in a section of the
+'PDP-10 Display Systems' Manual.  This documentation includes
+instruction formats, I/O control from the PDP-10, and
+a description of the display service in the timesharing system.
+If you have any desire to trace a display file, or to try
+to trace some hardware failure of the 340 display processor,
+you should become familiar with the material in that manual.
+	There is often great confusion about whether the
+display is 'running' or not.  Although the PDP-10 system
+starts the display, the display may 'stop' or 'become hung' or
+'run wild' without giving the timesharing system any information
+about this behaviour.  In this situation, there is usually great
+discussion about whether the display ^&should\& in fact be
+running.  The answer is very simple: if the
+'lockout' light on the 340 light panel is off, then the
+system thinks the display is 'running'.  Note, however,
+that if there is a 'stop and interrupt' code in the
+display file, the system restart the display after a
+maximum of 30 milliseconds; thus you may see the
+PI channel number lights on the 340 flicker on and off
+in this case.  The Omnigraph routines should ^&never\&
+put stop codes in the display file -- the Omnigraph
+display file is an endless loop.
+	Although it is not documented in the reference manual,
+the comparator can be used with the Omnigraph routines.  It
+is device number 8 (in the sense of DEVENT).
+When a comparator hit occurs, it puts two event codes in the
+buffer: the first (X-device code 2) specifies the address
+of the display-file instruction when the hit occurred;
+the second (X-device code 3) specifies the X and Y coordinates
+of the beam at the time of the hit.  Both of these events
+are reported by DEVENT as events of code 8.  (In most
+cases, the first one will be ignored).  The entry in
+Answer[2] is simply the event as given up by the X-device
+service:
+.nojustify
+.nofill
+
+	bits 0-5 are event code (2 or 3)
+
+	code 2: bits 18-35 are display address register
+	code 3: bits 8-17 are Y; 26-35 are X
+
+.justify
+.fill
+
+DCODE Operation
+	The DCODE function allows the user to do several things
+which the Omnigraph routines do not cater for: composing
+display file instructions by yourself (and thus being able
+to use raster, vector-continue, and increment modes), and
+allowing the program to set various of the parameters in the
+X-device status area.
+	The DCODE argument is organized as follows:
+.nojustify
+.nofill
+
+	bits 0-5	operation code
+	bits 6-17	suboperation code
+	bits 18-35	operand
+
+.justify
+.fill
+At present, only 5 op codes are defined:
+.nojustify
+.nofill
+
+	0		call STOBYT
+	1		call SNM
+	2		deposit left
+	3		deposit right
+	4		examine
+
+.justify
+.fill
+The first two pass the 'operand' to two subroutines in the
+Omnigraph stuff which are responsible for putting together
+display file: STOBYT (store 'operand' as a byte of the
+display file), and SNM (set next mode to 'operand').
+	The second two operations are used to change the
+X-device status area entries.  The 'operand' is deposited
+in the left or right half of the status entry numbered
+by the 'suboperation code'.  The suboperation codes
+are as follows:
+.nojustify
+.nofill
+
+	XSTAT				(1)
+
+	DISTARTADR			(2)    Display
+	LPFLAG				(3)
+	LPHIT -- adr			(4)
+	LPHIT -- y,x			(5)
+	ERRFLAG				(6)
+	ERRADR				(7)
+	ERRYX				(8)
+
+	FBXFLAG				(9)    Function Box
+	FBXDAT (lights,keys)		(10)
+	Mask1				(11)
+	Mask2				(12)
+	Mask3				(13)
+	Mask4				(14)
+	Mask5				(15)
+.justify
+.fill
+.nojustify
+.nofill
+
+	GFNMODE				(16)   Graphacon
+	GFNFLAG				(17)
+	GFNDATA				(18)
+	Ptr to TRACLOC			(19)
+	Xwd count,loc of INK BUFFER	(20)
+	COMPARATOR-SETTING		(21)
+	DELTA (spacing or time)		(22)
+	UPTIME count			(23)
+
+	BUFFER-BEGIN			(24)   Buffer
+	BUFFER-END			(25)
+	BUFTIMEOUT			(26)
+	BUFFER STATUS (set by sys)	(27)
+	TAKE POINTER  (set by sys)	(28)
+	_# VALID ENTRIES(set by sys)	(29)
+	_# FREE ENTRIES(set by sys)	(30)
+
+	5 spares			(31-35)
+
+.justify
+.fill
+	The 'examine' operation is used to peer around in the
+X-device status table or other portions of the high segment.
+If 'operand' is non-zero, then it is the address of the place
+to examine; otherwise, 'suboperation code' gives the number
+of a status entry to examine.  In any case, the 36-bit
+word is returned as the value of the DCODE routine.
+	We shall now give several examples:
+First, to find out how many events are waiting to be read
+from the X-device buffer:
+.nojustify
+.nofill
+
+	INTEGER I;
+	EXTERNAL INTEGER PROCEDURE DCODE (INTEGER I);
+
+	I __ DCODE ('040035000000); "EXAMINE 29TH ENTRY"
+
+.justify
+.fill
+Second, we wish to set the Graphacon delta to 6:
+.nojustify
+.nofill
+
+	DCODE ('030026000006);  "OP CODE 3, SUB-OP 22 DECIMAL,
+			         ARGUMENT 6"
+
+.justify
+.fill
+The following subroutine will simulate the PARMSET
+subroutine in the old SAIL display routines.
+.nojustify
+.nofill
+
+	PROCEDURE PARMSET (INTEGER COD);
+	BEGIN
+	   DCODE ('010000000000); "SET NEXT MODE TO PARAM"
+	   DCODE (COD);	       "CALL STOBYT WITH THE CODE"
+	END;
+
+.justify
+.fill
+The following subroutine will simulate the RAST subroutine
+in the old SAIL display routines:
+.nojustify
+.nofill
+
+PROCEDURE RAST (REFERENCE INTEGER ARRY;
+		INTEGER SIZE,SHIFT,NUMBER,LENGTH);
+BEGIN INTEGER I,J,K,L,WORD,COUNT;
+	I_POINT (SIZE,ARRY,-1); "INITIALIZE BYTE POINTER"
+	DCODE ('010000040000); "SET RASTER MODE"
+	K__WORD__COUNT__0; J__POINT(3,WORD,20);
+	WHILE TRUE DO BEGIN
+		NUMBER__NUMBER-1;
+		IDPB (ILDB(I) LSH SHIFT,J);
+		COUNT__COUNT+1; K__K+1;
+		IF K=LENGTH OR COUNT=5 OR NUMBER=0 THEN BEGIN
+			IF K=LENGTH THEN BEGIN
+				WORD__WORD LOR '200000;
+				K__0; END;
+			DCODE (WORD); "CALL STOBYT"
+			J__POINT (3,WORD,20);
+			WORD__COUNT__0;
+			IF NUMBER=0 THEN DONE; "ALL DONE"
+		END;
+	END;
+END;
+
+.justify
+.fill
+
+When a raster mode picture crosses a core block boundary,
+the DEC340 may forget the left margin (X-coordinate).
+Therefore the DRAST routine was implemented to put
+the 340 in raster mode and to preallocate enough display space
+for the entire picture.
+
+The following subroutine will take a display-file address such
+
+
+as might be returned by DEVENT on a comparator hit, and
+find the picture number in which the hit occurred:
+.nojustify
+.nofill
+
+INTEGER PROCEDURE DFIND (INTEGER I);
+BEGIN INTEGER J,NOFND,PICNUM;
+	LABEL FIND0,FIND1,FIND2,LOKPIC,LOKPI0,EXIT,LOKPI1;
+	EXTERNAL INTEGER PROCEDURE DCODE (INTEGER I);
+	DEFINE DLEN="'20";
+
+	J__DCODE ('040002000000);  "GET DISPLAY START ADDRESS"
+	START!CODE
+	SETZM NOFND;
+	HRRZ 1,I;
+	TRO 1,'400000;
+	MOVE 5,J;
+	TRO 5,'400000;
+FIND0:	MOVE 3,5;  COMMENT 3=5=POINTER TO DISPATCH BLOCK;
+	MOVEI 4,DLEN;  COMMENT NUMBER OF DISPATCHES PER BLOCK;
+FIND1:	MOVE 2,1(3);  COMMENT GET INSTRUCTION;
+	TLZE 2,'400000;  COMMENT DJMS?;
+	 JRST LOKPIC;  COMMENT YES -- LOOK AT PIC;
+FIND2:	ADDI 3,2;
+	SOJG 4,FIND1;
+	HRRZ 5,'777777(5);  COMMENT GET NEXT DISPATCH BLOCK;
+	JUMPN 5,FIND0;
+	SETOM NOFND;  COMMENT NO MORE DISPATCHES;
+	JRST EXIT;
+LOKPIC:	ADDI 2,'377776;  COMMENT MAKE CORGET POINTER;
+	MOVE 6,(2);  COMMENT SAVE PICTURE NUMBER;
+	MOVEM 6,PICNUM;
+LOKPI0:	CAMG 1,2;
+	 JRST LOKPI1;  COMMENT NOT IN THIS FS BLOCK;
+	HLRZ 6,'777777(2);
+	MOVMS 6; COMMENT LENGTH OF THIS FS BLOCK;
+	ADDI 6,'777776(2);
+	CAMG 1,6;
+	 JRST EXIT;  COMMENT FOUND PICTURE;
+LOKPI1:	HRRZ 2,'777777(2);  COMMENT GET NEXT FS FOR THIS PIC;
+	JUMPN 2,LOKPI0;  COMMENT ANY LEFT?;
+	JRST FIND2;
+EXIT:	JFCL;
+	END;
+	IF NOFND THEN OUTSTR("PICTURE NOT FOUND!
+");
+	RETURN (PICNUM);
+END;
+
+.justify
+.fill
+
+.test page 20
+6.2 ^&Tektronix 4010-1\&
+	To my mind, this is the best storage-tube
+terminal currently made.  I heartily recommend it
+for the casual MLAB user who wants to see his
+graphs.
+The terminal is on the GSA schedule: sells for about
+$4000 and rents for about $200 per month.
+	Among the nice features of the terminal
+are: (1) high contrast ratio (6:1 as compared to 4:1
+for most other storage tube terminals), (2)
+lighter and more portable than any other storage tube,
+(2) designed very carefully (no fans needed, very little
+circuitry, logic cards plug in and out conveniently),
+(3) very easily re-configured for operation at
+different speeds, on different systems, etc.
+
+.subtitle Dynamic Three-Dimensional Graphics on the Adage
+.page
+7. ^&Dynamic Three-Dimensional Graphics on the Adage\&
+	Three-dimensional graphics falls into two classes: dynamic and
+static.  Static 3D graphics is achieved with software which transforms
+a specified 3D structure into a 2D picture which can then be
+displayed just as any 2D picture.
+Dynamic 3D graphics, on the other hand, is accomplished
+by using hardware which at least partially accomodates
+the direct display of 3D structures.  Such a device must
+accept points in 3-space for control of a beam moving in
+3-space.  Moreover such devices generally provide for fast
+dynamic transformation of a 3D structure to achieve real-time
+scaling and/or rotation.  The use of such displays may
+entail a number of irksome contraints.
+	The Omnigraph routines attempt to provide a way to drive 3D
+displays.  However, the user must have considerable knowledge
+about the display being used in order to use it effectively,
+since these devices are so dissimilar to the static 3D protocol
+provided by the Omnigraph routines.  Currently the only 3D display
+which the Omnigraph routines handle is the Adage AGT-30 which is connected
+to the PDP-10 via a 2400 baud asynchronous link for sending
+and receiving data from the Adage and a direct hardwired
+16-bit parallel link which can only be used for sending data
+to the Adage.
+	The static 3D process of generating a perspective image
+can be characterized by the following diagram:
+.nojustify
+.nofill
+
+v -->	[matrix transformation]
+	[box clip]
+	[pyramid clip] [perspective divide]
+	[2D viewport placement]
+
+  -->   2D displayable point
+
+.justify
+.fill
+	As a picture is being "compiled" with a given window box
+and viewport rectangle, each 3D point which is specified
+via point- or line-drawing commands is passed through the operations
+listed above.  All but the viewport computation can be bypassed at
+the request of the user.
+	The window box is a right parallelepiped oriented in space
+parallel to the x, y, and z coordinate axes.  The size and location
+of the window box is given by calling DWIND3.  The viewport
+region is an oriented quadrilateral in the positive unit square
+specified by calling DPORT.
+The box clip operation will clip all 3D points outside the
+window box.
+	The pyramid clip is rather special and is used in
+conjunction with perspective drawing.  It insures that the following
+perspective division yields values in a finite 2D region
+about the origin which can be mapped easily to the 2D viewport.
+The perspective divide "foreshortens" objects and maps all
+points into the 2 by 2 x-y plane region centered at the origin.
+	If the pyramid clip and perspective divide are specified,
+the 2D viewport projection maps the 2 by 2 x-y plane into the
+2D viewport.  If the pyramid clip and perspective divide
+are bypassed, the 2D viewport projection will map the 3D points
+of the window-box to the 2D viewport by orthogonally projecting
+all 3D points onto the x-y plane (taking z to be 0),
+and then mapping the resulting face of the window box in the
+x-y plane to the 2D viewport in the unit square representing the screen.
+  Thus the 2D viewport projection depends on
+whether perspective projection or orthogonal projection is involved.
+	The dynamic 3D process is conceptually characterized by the
+following diagram:
+.nojustify
+.nofill
+
+v -->	[matrix transformation]
+	[box clip]
+	[dynamic matrix transformation]
+	[viewport calculation]
+	
+  -->   2D displayable point
+
+.justify
+.fill
+	The dynamic 3D process is designed to allow the use of the
+Adage 3D real-time transformation hardware.  In simplest terms,
+the Adage allows a 3D structure to be drawn in the 2 by 2 by 2 box
+centered about the origin, transformed with a 3 by 3 matrix intended
+to be a composition of pure rotation matrices, scaled in x, y and z  by given
+scale constants and translated to a new location.  The intermediate
+and final results must themselves be in the 2 by 2 by 2 box!
+The final result is orthogonally projected onto the display
+screen which serves as the z#=#-1 plane (the "bottom" of the box).
+These transformations can be changed dynamically so that, for example,
+an object can be rotated by a changing amount in near real-time
+and displayed as a spinning object.
+	The necessity of keeping all coordinate values and matrix
+elements in the range (-1:1) is a great restriction.
+The Omnigraph routines manage to stay in the 2 by 2 by 2 Adage cube
+in the following manner.  Given a point &v in user coordinates
+(i.e. arbitrary floating-point components), we may cause &v
+to be transformed by:
+.nojustify
+.nofill
+
+      &v Sn ... S2 S1    W      Dn ... D2 D1     P    --> &u
+
+          matrix       box       dynamic      viewport
+       transforms     clip        matrix     calculation
+                               transforms
+
+.justify
+.fill
+(We would prefer the process to be
+&v#Sn#...#S2#S1#Dm#...D2#D1#WP#-->#&u,
+but there is no convenient way to delay the box clipping until
+the end.)  
+The static matrix transformations and box clip are performed
+by the Omnigraph routines; the results are used to build display-files
+in the Adage.  The dynamic matrix transformations and
+viewport projection are accomplished with the special
+Adage hardware.  The static transformations are not generally
+useful and hence will usually be missing, however they can be
+used when desired, and they do allow initial adjustments
+to be made when this is necessary to keep the display file
+and/or dynamic transformations inside the legal range (-1:1).
+	Actually, the true transformation sequence as seen
+by the Adage is based on the transformation T which carries
+the window box into the the Adage 2 by 2 by 2 cube.
+What is actually computed and displayed is (T' denotes T inverse):
+.nojustify
+.nofill
+
+    &v Sn ... S2 S1 W T T'Dm T ... T'D2 T T'D1 T T'P
+
+ =  &v Sn ... S2 S1 W     Dm   ...   D2     D1     P
+
+.justify
+.fill
+Thus, what really occurs is that after the static transformations
+and initial box clipping, the points to be displayed are mapped
+into the Adage cube, a sequence of dynamically-specified
+transformations (T'Di#T) is applied, and then the
+resulting "object" is transformed back to the original window
+region; finally the window box is mapped to the 2D viewport
+region in the z#=#-1 plane and displayed.  (Actually P
+can be written as TQ, where Q maps the Adage cube to the
+viewport and hence &u becomes 
+&v#Sn#...#S2#S1#W#T#T'DmT#...#T'D1#T#Q.)
+	This process is equivalent to the desired process.
+This scheme solves the problem of keeping coordinates in  (-1:1)
+in the Adage and hence is used by the Omnigraph routines.  One major
+difficulty is that the burden must rest on the user
+to insure that each Di is always such that the dynamic
+transformation sequence has components in (-1:1).
+	When using the dynamic 3D process, the user opens
+a picture and establishes the appropriate window box and viewport
+rectangle.
+	Now DMOVE3, etc. are used to "sketch" a 3D picture,
+and the static matrix transformations,  window-box clip, and transformation T
+are applied to yield a 3D object description to be transmitted
+to the Adage as a display file.  This display file is
+executed, the dynamic transformations are applied, and the
+viewport calculation is performed by the hardware to yield
+the desired picture.
+	One important feature of the Adage, which is used
+when the viewport projection occurs, is its automatic scissoring
+hardware.  The Adage can insure that all but a fixed interior
+rectangle of its screen remains blank.  Any lines or points
+outside such a viewport are not displayed.  This facility
+is used in the Adage Omnigraph routine service when performing
+a viewport projection.  Unfortunately, this facility is not
+true window clipping, since the image on which it operates
+must already be a "legal" picture in the range (-1:1).
+Nevertheless, by using a small viewport, certain clip and
+zoom features can be achieved.
+	Dynamic transformations are controlled as follows.
+The user may from time to time during the picture generation
+process issue DAPPLY, DCOMPOSE, DPUSH, and
+DPOP calls with arguments which indicate that rather
+than specifying current static transformations to be used,
+various commands are to be inserted into the display file
+(namely 'apply matrix', 'compose matrix', 'push' and 'pop')
+and values are established for named matrices which are
+immediately sent to the Adage and which are referred to by
+name in the display file commands which are used to control the application
+of dynamic transformations.
+	These named "remote" transformations are used in the
+real-time regeneration of a display at the Adage.  They can
+be dynamically changed using the procedure
+DSETR.  Whenever a named matrix, D, is sent to the
+Adage either initially or as a result of using DSETR, the
+actual matrix which is sent is T'DT.  As discussed above,
+this artifice seems to be the best solution to mask a generally
+unsatisfactory state of affairs.  (What is really needed is a
+"floating-point" 3D display computer with a method of dynamically
+specifying a range of real numbers as corresponding to the
+fixed output voltage range of DAC's.)
+	If the static 3D protocol is in force, the display
+file commands and associated remote matrices are not generated.
+Rather the specified transformation operations are merely added
+to the stack of static transformations.  (Warning:
+this means that push-static push-dynamic pop-static pop-dynamic
+may have funny effects when in static mode. Generally, however, only
+one kind of matrix transformation will be used.)
+Any use of DSETR is ignored since no remote named matrices
+have been established.
+	The display language described below is used to achieve
+the effects described above.  The Q transformation is computed
+and sent to the Adage as an initial dynamic transformation together with
+appropriate scissoring parameters.  This provides the viewport
+projection.  The T'DiT matrices are established and
+changed using the transformation control commands.  The number
+of T'DiT transformations in force can vary from segment to
+segment of a picture (i.e. m can change), and their values
+may also vary.
+.page
+	Here are specific routines:
+.left margin 12
+.skip 1
+.indent -12
+DBYP (k): controls static/dynamic process and bypassing
+.indent -6
+k#=-1 if static 3D processing is to be performed.
+This causes the default processing to include static
+matrix transformations, the pyramid clip, the perspective
+divide, and the viewport projection.  This default
+can be overridden with other DBYP calls as
+described below.
+.indent -6
+k#=#1 if dynamic 3D processing is to be performed, provided
+that the terminal supports it.
+This causes the default processing to include
+static transformations, the box clip, the T transformation,
+and remote dynamic and viewport transformations.
+These defaults can be overriden with explicit calls
+to DBYP as described below.
+.indent -6
+k#=-2 disables box clipping
+.indent -6
+k#=#2 enables box clipping
+.indent -6
+k#=-3 disables pyramid clipping and perspective divide
+.indent -6
+k#=#3 enables pyramid clipping and perspective divide
+.indent -6
+k#=-4 disables the use of T following the box clip, i.e. T is assumed
+to be the identity matrix
+.indent -6
+k#=#4 enables use of T
+.left margin 0
+.skip 1
+	Matrix transformations are maintained in a nameless
+push-down stack.  When the dynamic 3D process is in force
+there is the usual local stack for the static transformations
+and also a separate later stack maintained (in the Adage)
+for the dynamic transformations.
+	If the static 3D process is in force, all transformations
+specified are considered to involve transactions with the local stack.
+If the dynamic 3D process is in force, all transformations
+specified are considered to be dynamic transformations
+unless explicitly specified otherwise, in which
+case they go on the local stack.
+.skip 1
+.left margin 6
+.indent -6
+DAPPLY (M,n)
+.break
+Static: The matrix M replaces the current transformation at the
+top of the local stack and is used for all subsequent points until
+superseded.
+.break
+Dynamic: If n#=#-1, M replaces the current transformation at the top of
+the local stack.  Otherwise a dynamic 'apply matrix' command
+which references a copy of M is added to the display file.
+Moreover if n is positive, it is taken as the "name" of
+M and M can be dynamically changed by later reference.
+.skip 1
+.indent -6
+DCOMPOSE (M,n)
+.break
+Static: The matrix M is composed with (multiplied by) the
+current top of stack transformation and the result replaces the
+current top of stack.
+.break
+Dynamic: If n#=#-1, M is composed with the current top of the
+local stack and the result replaces the current top.  Otherwise
+a dynamic 'compose matrix' command is added to the display
+file.  M can be dynamically changed by name if n is positive.
+.skip 1
+.indent -6
+DPUSH (n) ,    DPOP (n)
+.break
+Static: The local stack is manipulated as required: DPUSH pushes
+a copy of the current top transformation back onto the local stack.
+DPOP pops the local stack.
+.break
+Dynamic: If n#=#-1, DPUSH and DPOP apply to the local stack.
+Otherwise an appropriate 'push' or 'pop' command is added to the
+display file.
+	The Adage maintains a transformation stack which is manipulated by
+the display-file commands 
+'push' and 'pop', just as the local stack is maintained in
+the static protocol.  The current top of stack is the
+transformation in force at any time.
+	The stacks are both initialized with the identity
+transformation: this initialization is performed in the Omnigraph
+routines when they are loaded, and by the Adage each time
+a new picture segment is refreshed.
+If ever DPOP is applied to an empty stack, an error message
+is issued and the request is ignored.
+.skip 1
+.indent -6
+DSETR (M,n)
+.break
+Static: this is a no-op.
+.break
+Dynamic: If n is positive, the matrix M replaces the previous
+remote matrix with name n.
+If no such matrix exists, an error message is issued and the
+DSETR request is ignored.
+.left margin 0
+
+
+
+
+
+
+.subtitle Adage Picture Transmission Language
+.page
+
+8. ^&Adage Picture Transmission Language\&
+	This document describes a proposed language for sending
+picture information to the Adage AGT-30 display from the
+PDP-10 and other computers (via the Lavender Box?).
+The description is intended to be sufficient to support
+the Omnigraph  display routines on the PDP-10 and to allow
+360 datasets to be used as picture input to the AGT-30.
+The general framework of the language is borrowed from C. Bacon's
+original language for 360 datasets.
+	All information is given to the Adage in 16-bit chunks.
+Commands are indicated by the high-order bit being on; all
+data chunks have this bit turned off.
+In the case of a command, the low-order 8 bits of the chunk
+contain a command number, ranging from 0 to 255 (decimal).
+These command codes and the associated interpretations are
+listed below.
+	Data is sent to the Adage as 15-bit numbers
+(the high-order bit of the 16-bit chunk is always zero for
+data).  These are 15-bit ^&signed\& twos-complement integers, thus ranging
+from -16384 to +16383.
+To interpret a data value as a real value in (-1:1), the
+Adage divides the signed integer by 16384.
+	The Adage has special hardware aids to permit certain
+transformations to be made on display information before being
+actually shown on the display screen.
+The coordinate system of the Adage is three-dimensional:
+X points to the right, Y points up (hence the screen is in
+an x-y plane), and Z points out from the 'scope.
+For the purposes of this paper, the transformation equipment is
+viewed as follows:
+.nojustify
+.nofill
+
+	[ x'  y'  z' ] = [ x  y  z  1 ]    a  a  a
+	                                   a  a  a
+	                                   a  a  a
+	                                   b  b  b
+
+.justify
+.fill
+The 4 by 3 matrix is used to transform display-file coordinates
+(x,y,z) into screen coordinates (x',y',z').
+The display-file coordinates are all restricted to lie in the
+range -1 to +1, in a fashion to be described below.
+The &a and &b elements of the matrix are restricted in a variety
+of complicated ways. (In fact, the Adage software is responsible
+for creating the illusion of this matrix.  There are, in reality,
+a number of funny scale factors and constants which must be
+manipulated by that software to achieve the effect of this
+matrix.)
+The screen coordinates calculated by the transformation
+are restricted by the Adage hardware as well.  We shall,
+however, adopt the convention that the
+screen is bounded by -1#&<#x#<#+1 and -1#&<#y#<#+1.
+If screen coordinates of a point lie outside this range, the
+point will certainly not be visible on the screen; if the
+coordinates lie outside the range of -2 to +2, the hardware
+may produce funny results.
+(This may occur at the final display stage due to "bad" transformations
+being used.)
+	The Adage also permits ^&scissoring\& of a display
+image.  Once screen coordinates are calculated, the hardware
+vector generator draws lines between pairs of endpoints.
+However, a rectangular region of the screen may be
+selected within which lines appear visible and outside of
+which they do not appear at all.  This rectangular
+region must be defined in the screen coordinate system,
+i.e. considering the screen as a 2 by 2 square with coordinates
+ranging from -1 to +1 in x and y.
+.skip 2
+	In the discussion below, several notations
+are used to describe data sequences, formats, etc.
+	1. Every symbol followed by a "." is a fraction, lying
+in the range -1#&<#fraction#<#+1.  This fractional
+data is actually transmitted to the Adage as a 15-bit
+number: multiply the fraction by 16384, and you will
+get a signed integer within the ranges described above.
+	2. Parentheses are used to group pieces of data
+together.  If the parentheses are followed by a *, then
+the data items within the parentheses may be repeated
+an indefinite number of times, up until the next command
+chunk (high-order bit on) is received.  If the
+parentheses are followed by a bracketed number or symbol,
+e.g. [3], then that is the exact number of times the
+data within the parentheses is to be repeated.
+.test page 15
+.skip 2
+.center
+^&Picture Control\&
+.skip 1
+.left margin 6
+.indent -6
+Clear screen (command code xx)
+.break
+(No data follows this command)
+.break
+This command causes a general initialization of all
+picture-generation software.  All pictures are
+deleted from Adage memory, and the screen is
+left blank.
+.skip 1
+.indent -6
+Open a picture (command code xx)
+.break
+Data: pic-name 
+.break
+This command prefaces the sending of picture data for a particular
+picture.  The picture is 'named' by the data chunk
+pic-name which follows the command.
+The chunk is a 15-bit number which is used to identify the
+picture about to be created.
+	Normally, this command is followed by a series of
+display-file generation commands, as described below.
+The Adage software assembles a display file from these
+commands.  During this generation, the display on the
+screen does ^&not\& show the effect of the new commands.
+	The picture 'name' need not be unique: there may
+be another picture currently resident in the Adage with
+the same name.
+.skip 1
+.indent -6
+Close a picture (command code xx)
+.break
+(No data follows this command)
+.break
+This command signals the end of generation of a picture.
+It is thus the logical mate to the 'open a picture' command.
+After this command is executed, the picture-generation
+process is finished; no more display-file generation commands
+can be issued until a new picture is 'opened.'
+	This command may have the side effect of deleting
+a previous version of the picture which was being generated.
+Suppose picture 8552 exists in Adage memory.  The user
+then 'opens' picture 8552, and starts sending display-file
+generation commands.  The display file which is generated is
+kept separate from the current picture 8552.  When the
+picture is 'closed', however, the old version of
+picture 8552 is deleted.  This is called 'double buffering.'
+.skip 1
+.indent -6
+Append to a picture (command code xx)
+.break
+Data: pic-name
+.break
+This command prefaces display-file generation commands which are
+to be added to the (already existent) picture named by
+pic-name.
+The 'close' command given above is used to terminate the
+sequence of display-file generation commands.
+Up until that point, any effects of the appended
+display code are invisible.  However, when the 'append'
+is 'closed', then the new code becomes logically part
+of the picture to which it was appended (i.e. if the
+original picture was 'posted' (see below), then
+the newly appended display information should be visible;
+if not, not).
+.skip 1
+.indent -6
+Post a picture (command code xx)
+.break
+Data: pic-name
+.break
+This command causes a picture whose generation is complete
+(i.e. it has been opened, generated, and closed) to be
+added to a list of pictures to be actually refreshed by
+the display hardware.  The data chunk pic-name
+gives the 'name' of the picture to be added to the refresh list.
+.skip 1
+.indent -6
+Unpost a picture (command code xx)
+.break
+Data: pic-name
+.break
+This command causes a picture to be removed from the
+list of pictures currently being refreshed.  The picture
+to be removed is named by pic-name.  No error
+results if the picture is not in the refresh list.
+.skip 1
+.indent -6
+Kill a picture (command code xx)
+.break
+Data: pic-name
+.break
+This command completely destroys the picture named by
+pic-name.  The picture is removed from the
+refresh list if it is on it, and all storage required
+for its display file is released.
+.left margin 0
+.test page 15
+.skip 2
+.center
+^&Display-file Generation Commands\&
+.skip 1
+These commands are legal only if a picture has been opened via
+the 'open a picture' or 'append to a picture' commands.
+They all add instructions to the display file for the
+currently-open picture.
+.left margin 6
+.skip 1
+.indent -6
+Three-dimensional vector list (command code xx)
+.break
+Data: (x.,y.,z.)*
+.break
+This command prefaces a list of three-dimensional points to
+be added to the display file for the currently open picture.
+The first point in the list is the starting point
+(i.e. the beam is 'moved' to this point without intensification).
+A vector is drawn from the first point to the second, the
+second to the third, etc.  
+The sequence is thus 'move', 'draw'*.
+.skip 1
+.indent -6
+Resume three-dimensional list (command code xx)
+.break
+Data: (x.,y.,z.)*
+.break
+This command is similar to the three-dimensional vector list
+command, but the sequence is interpreted as 'draw'*, i.e.
+the beam is intensified as it is moved to the first point in the list.
+This form of command is useful following character-drawing
+commands, to permit characters to be placed periodically
+along contiguous curves.
+.skip 1
+.indent -6
+Two-dimensional vector list with Z (command code xx)
+.break
+Data: z. (x.,y.)*
+.break
+This command is used to draw lines whose z value does not change,
+i.e. they lie in an x-y plane.  The only purpose for this
+separate command is to save transmission time and core space
+in the Adage -- the display hardware still thinks that
+'three-dimensional' lines are being drawn.  For this reason,
+a z value is specified.  The z is essentially appended to
+each x,y pair to give an x,y,z triple for display.
+The sequence of points is interpreted as 'move', 'draw'*.
+.skip 1
+.indent -6
+Two-dimensional vector list (command code xx)
+.break
+Data: (x.,y.)*
+.break
+This command is identical to the one above, but z is omitted.
+The value of z set by any previous two-dimensional vector list
+is used (if none has been previously given, 0 is used).  The sequence of points is interpreted as
+'move', 'draw'*.
+.skip 1
+.indent -6
+Resume two-dimensional list (command code xx)
+.break
+Data: (x.,y.)*
+.break
+This command is similar to the two above, but the sequence is
+interpreted as 'move'*.  This is useful for drawing a
+contiguous curve when the two-dimensional vector lists
+are interrupted by character commands.
+.skip 1
+.indent -6
+Call picture (command code xx)
+.break
+Data: call-name, called-pic
+.break
+This command is used to add to the display file a 'subroutine call'
+to another picture, named by called-pic. 
+ This call has no other effect than to
+switch the display-file execution to the other picture
+temporarily.  If the current transformation matrix is to
+be saved, or if it is to be altered, then explicit commands
+must be included for performing those operations.
+The call-name chunk specifies a
+ number which uniquely identifies the  call on
+the picture subroutine.  This name can be used for
+changing the call (see below).
+.skip 1
+.indent -6
+Positioned text (command code xx), and
+.indent -6
+Absolute text (command code xx)
+.break
+Data: n, (character)[n]   (warning: see below)
+.break
+This command is used to pass ASCII text characters for
+display by the Adage character generator.
+Each chunk which follows the command specifies two ASCII
+characters: bits 1-7 and 9-15 are the two characters.
+The very first character of this sequence is, however, a count
+of the total number of text characters in the sequence.
+(This is a result of a quirk in the Adage hardware).
+	The AGT-30 has a character coordinate system entirely
+separate from the coordinate system used for vectors.
+A two-dimensional system 128 units square, covering a
+square about 20% larger than the screen size, is used to
+define character positions.  Moreover, in this system,
+y-values increase as lines are placed lower.
+The origin of this system is the upper left-hand corner,
+but the starting limits for the nominally usable area
+are x#=#16, y#=#24 (in fact, the 'carriage return' code
+loads the value 16 into the x-register).
+There are three brightness levels: 1, 2 and 3.
+There are also three character sizes: 1, 2 and 3.
+.nojustify
+.nofill
+
+Size		Chars per line		Lines
+
+  1		      96		  40
+  2		      48		  20
+  3		      32		  13
+
+.justify
+.fill
+The values given for numbers of characters and lines are
+for the nominally visible area of the character-generator
+coordinate system.
+	When characters are to be positioned by the vector
+generator, it is possible to add the character position to
+the vector beam position.  When this feature is used, the
+character coordinates are set to (64,64).  The result
+is that characters are displayed slightly below and to
+the right of the beam position (the exact distances
+are xxxx in x, and xxxx in y).  
+	The character generator uses several of the ASCII
+control characters to modify the display format.  Among the
+most obvious are 'carriage return' and 'line feed'.
+Tab stops are not built into the display, and the horizontal
+and vertical tab characters must be followed by a byte
+whose binary value gives the x- or y-coordinate, in
+character units, where the next graphic is to be displayed.
+	The control codes and their effect are as follows:
+.nojustify
+.nofill
+
+Character                        Effect
+
+ 8      Switches italic mode on and off
+ 9      Horizontal tab.  The byte following this
+        character is loaded into the x-register
+10      Line feed.  This drops the following text
+        to the next line.  It adds 2, 4 or 6 to the y-
+        register, depending whether the scale is 1, 2 or 3.
+11      Vertical tab.  The byte following this
+        character is loaded into the y-register
+13      Carriage return.  Loads 16 into the x-register.
+17      Causes subsequent non-blank text to be spaced
+        vertically ('space' is unfortunately still
+        horizontal).
+18      Decrease size by 1. (If it was 2, make it 1, etc.)
+19      Increase size by 1. (If it was 2, make it 3, etc.)
+28      Goes from superscript to normal, or from normal to
+        superscript mode.
+29      Goes from subscript to normal, or from normal to
+        subscript mode.
+30      Decreases brightness by 1.
+31      Increases brightness by 1.
+
+.justify
+.fill
+The only difference between the 'positioned' and 'absolute'
+text commands is the way in which the character generator
+is intialized.
+For positioned text, the generator is initialized
+to size 1, brightness 2, x#=#64, y#=#64, and in such a
+way that the vector generator and character generator
+beam positions add.
+For absolute text, the generator is initialized
+to size 3, brightness 3, x#=#16, y#=#24, and such that
+text position is independent of vector generator position.
+It should be emphasized that ^&character generation
+in no way alters the 'current beam position' of the
+vector generator.\&
+.skip 1
+.indent -6
+Set intensity function (command code xx)
+.break
+Data: alpha., beta.
+.break
+This command includes in the display file a specification of
+the mapping of Z values to screen intensities.  The
+numbers alpha. and beta. control the intensity function:
+intensity#=#alpha.#+#beta.#*#Z.
+.left margin 0
+.test page 15
+.skip 2
+.center
+^&Transformation Control\&
+.skip 1
+This section includes commands for adding transformation
+information ^&to the display file\&.  The Adage display
+interpreter is capable of performing quite complicated
+manipulations on transformation information in the display
+file.  
+	In particular, the Adage software keeps a 'stack' of
+transformations; the 'top of the stack' is the transformation
+which is currently in effect at any given moment.
+Various operations exist for operating on this stack, e.g.
+'pushing' the top of the stack onto the top of the stack
+(i.e. copying the current top of stack), replacing the
+top of stack with  an entirely
+new transformation, 'popping' a transformation
+off the stack and thus restoring some previous transformation
+to the 'top of stack' and hence to be the current transformation.
+	There are two ways a new transformation can be
+computed and become current: by 'applying' or 'composing'
+a new matrix.
+In the first case, an entirely new matrix is specified and
+is used to replace the current top-of-stack matrix.
+In the second, the new matrix is multiplied by the
+current top-of-stack matrix, and the result becomes
+the new top-of-stack matrix. (In fact, the multiplication
+is of two 4 by 4 matrices, obtained by adding a fourth column
+to the 4 by 3 matrices which  reads 0, 0, 0, 1.  The
+multiplication order is <new-matrix> * <top-of-stack-matrix>.)
+	When the Adage display interpreter begins to
+process each picture in the refresh list, the top-of-stack is set
+to the identity matrix:
+.nojustify
+.nofill
+
+		1  0  0
+		0  1  0
+		0  0  1
+		0  0  0
+
+.justify
+.fill
+The scissoring parameters are also initialized to permit all lines to be visible.
+Thereafter, all alterations to the transformation and to
+the transformation stack must come from commands stored as
+part of the display file for that picture. 
+The commands listed below are used to add such
+transformation commands to the display file.
+Again, these commands are only legal when a picture is 'open'
+and can be taken as part of its display file.
+	The matrix elements transmitted to the Adage are
+all in the range (-1:1).  They are transmitted in row-order
+(i.e. row 1 first (column 1,2,3), row 2 next, etc.).
+A matrix transmitted to the Adage is usually given
+a 15-bit 'name'.  Each matrix in the Adage is uniquely named;
+if two different commands refer to the same matrix name, the
+same copy of the matrix will be used.
+If the name &n is zero, then the matrix is unnamed.
+.skip 2
+.left margin 6
+.indent -6
+Set scissoring parameters (command code xx)
+.break
+Data: xleft.,xright.,ybottom.,ytop.
+.break
+This command establishes the scissoring limits.
+Any lines which would lie outside the range of screen
+coordinates given by the four parameters will not be
+displayed.  
+Note that the values for the parameters are given
+in the screen coordinate system which ranges from
+-1 to +1.
+This is an 'apply'-type command.
+.skip 1
+.indent -6
+Push top-of-stack (command code xx)
+.break
+(No data is required for this command)
+.break
+This adds a command to the display file which will cause
+a copy of the current top-of-stack to be 'pushed' onto the stack.
+The 12 parameters of the current matrix are saved on the
+stack; the 4 parameters
+ of the current scissoring setting are not saved.
+.skip 1
+.indent -6
+Pop (command code xx)
+.break
+(No data for this command)
+.break
+This adds a command to the display file which will cause
+the current top-of-stack transformation to be 'popped'.
+The new top-of-stack becomes what used to be the next-to
+top-of-stack transformation.  If the stack had only
+1 transformation in it, namely the current top-of-stack,
+the 'pop' command is ignored.
+.skip 1
+.indent -6
+Apply matrix (command code xx)
+.break
+Data: matrix-name, matrix-element [12]
+.break
+This adds a command to the display file which will load
+the 12-element matrix specified into the top-of-stack
+matrix (the current transformation).
+The matrix-name value is used to label this
+12-element matrix in case it ever needs to be changed
+(see below).  The 12 matrix values are given
+in row order (i.e. row 1 first (column 1,2,3), then
+row 2 (column 1,2,3), etc.).
+.skip 1
+.indent -6
+Compose matrix (command code xx)
+.break
+Data: matrix-name, matrix-element [12]
+.break
+This adds a command to the display file which will
+cause the top-of-stack matrix to be replaced with the
+product of the 12-element matrix specified in the command
+and the current top-of-stack matrix.
+The matrix-name value is used to label the
+12-element matrix specified in the command in case it
+needs altering later on (see below).
+.skip 1
+.indent -6
+Apply parameters (command code xx)
+.break
+Data: matrix-name, xrot., yrot., zrot., xtran., ytran., ztran., 
+xscale., yscale., zscale.
+.break
+This command is a somewhat more convenient form of the
+'apply matrix' command given above.
+The 7 parameters to
+the command are used to make up one matrix, which is
+then treated precisely as in 'apply matrix', i.e. it
+is used to replace the current top-of-stack matrix.
+The matrix-name value is used to label the matrix
+which results.
+The matrix is created from the parameters by multiplying
+together the following four matrices, in the order given
+here:
+	1. Rotation about X axis.
+.nojustify
+.nofill
+
+	0	0		0		0
+	0	cos xrot.	-sin xrot.	0
+	0	sin xrot.	cos xrot.	0
+	0	0		0		1
+
+.justify
+.fill
+The fraction xrot. is a measure of the rotation angle, measured
+in units of pi (180 degrees).  If the rotation angle is
+positive, the rotation is clockwise about the origin as viewed
+from the +x axis.
+	2. Rotation about Y axis.
+.nojustify
+.nofill
+
+	cos yrot.	0	sin yrot.	0
+	0		1	0		0
+	-sin yrot.	0	cos yrot.	0
+	0		0	0		1
+
+.justify
+.fill
+The conventions for this rotation are similar to those above.
+	3. Rotation about Z axis:
+.nojustify
+.nofill
+
+	cos zrot.	-sin zrot.	0	0
+	sin zrot.	cos zrot.	0	0
+	0		0		1	0
+	0		0		0	1
+
+.justify
+.fill
+The conventions for this rotation are analogous to that above.
+	4. Translation and scaling matrix.
+.nojustify
+.nofill
+
+	xscale.	0	0	0
+	0	yscale.	0	0
+	0	0	zscale.	0
+	xtran.  ytran.  ztran.  1
+
+.justify
+.fill
+This has the effect of first scaling a point by the
+x, y, and z scale factors and 
+then translating it by adding
+the vector (xtran.,ytran.,ztran.) to it.
+.skip 1
+.indent -6
+Compose parameters (command code xx)
+.break
+Data: matrix-name, xrot., yrot., zrot., xtran., ytran., ztran., 
+xscale., yscale., zscale.
+.break
+This command computes a matrix as does the above command,
+but places it in the display file as a 'compose matrix'
+command rather than as an 'apply matrix' command.
+.left margin 0
+.test page 15
+.skip 2
+.center
+^&Imperatives\&
+.skip 1
+The imperative commands are used to make alterations to
+the display file. These commands are legal at any time.
+ In several of the display-file generation
+and transformation-specification commands listed above, we
+required ^&labels\& for items being inserted in the display
+file.  These labels will now be used to refer to items to
+be changed.
+.left margin 6
+.skip 1
+.indent -6
+Change matrix (command code xx)
+.break
+Data: matrix-name, matrix-element [12]
+.break
+This command causes the 12 matrix-elements to replace the matrix
+named by the value of matrix-name.  Note that
+the 'apply matrix', 'compose matrix', 'apply parameters' and
+'compose parameters' commands above all placed a reference to a 12-element
+matrix in the display file itself.  The 'change matrix'
+command is used to replace that matrix.
+.skip 1
+.indent -6
+Change parameters (command code xx)
+.break
+Data: matrix-name, xrot., yrot., zrot., xtran., ytran., ztran., 
+xscale., yscale., zscale.
+.break
+This command functions similarly to the 'change matrix' command,
+but the new matrix is computed from parameters, as described above.
+.skip 1
+.indent -6
+Attach dial (command code xx)
+.break
+Data: matrix-name, dial-number, directive, mode, source-number
+.break
+This command is used to 'connect' one of 100 'dials' to
+matrices in the display file.
+The 'dials' can be visualized as individual numbers, which
+may change with time as the user causes them to change, which
+are used to alter matrix transformations.
+The source-number field may optionally specify the name of
+an input device on the Adage which shall provide values for
+this 'dial.'  If the source-number field is zero, then no
+device is changing the value of the dial, its
+value is ^&undefined\&; the user may later
+ask that a specific device be connected to this dial.
+Thus all dial values are initialized to 'undefined', and have
+no initial effect.
+When a source is connected to an internal dial, either by an
+attach-dial command or an explicit user command,
+however, the dial value ceases to be
+undefined and begins to modify values of the matrix.
+	The actual matrix itself is never modified, but rather
+the 'compose matrix' or 'apply matrix' display-file
+command dynamically computes a correct matrix by plugging
+dial values into the matrix as specified.  The reason for not
+actually modifying the matrix is that the user can, by
+reseting a dial value to 'undefined', cause the picture
+to revert to its original state before he started fiddling
+with matrix values.
+	If matrix-name is  0, then the dial value is  applied to
+the nominal identity matrix which initializes the stack before displaying
+each picture (i.e. it will cause ^&all\& pictures
+to be transformed).
+	The 'directive' is used to specify how the dial values 
+are to be used to make the new matrix at each
+'apply matrix' or 'compose matrix' instruction referring
+to that matrix.
+The 'mode' is used to specify how the dial value controls
+the variables in the new matrix:
+.nojustify
+.nofill
+
+	Directive:
+	   1			dial controls x rotation
+	   2			dial controls y rotation
+	   3			dial controls z rotation
+
+	   4			dial controls x translation
+	   5			dial controls y translation
+	   6			dial controls z translation
+
+	   7			dial controls x scale factor
+	   8			dial controls y scale factor
+	   9			dial controls z scale factor
+
+	  10			dial controls x,y,z scale factors
+					together
+
+.justify
+.fill
+.nojustify
+.nofill
+
+	Mode:
+	   1			linear -- values of dial are
+				converted to numbers in range
+				-1 to +1.
+	   2			rate -- values of dial are used
+				as derivative of value being
+				changed
+
+.justify
+.fill
+The connection between an internal dial and a matrix is broken
+by specifying either a directive or a mode of zero.
+	Source-numbers are assigned as follows:
+1-6 are the physical dials on the Adage, 7-9 are the
+x, y and z values read by the joystick, 10-11 are the x and y
+values read from the tablet, and 12-100 are 
+ fixed constants of various values, which, when
+connected in 'rate' mode cause tumbling and so forth to happen.
+Any source may be attached to more than one dial.
+.skip 1
+.indent -6
+Set dial (command code xx)
+.break
+Data: dial-number value
+.break
+The named dial is set to the given value.  If the dial-number
+is negative, then the dial value is set to 'undefined'.
+.skip 1
+.indent -6
+Replace call (command code xx)
+.break
+Data: call-name, new-pic-name
+.break
+This command is used to change a subroutine call.
+The command changes the call specified by call-name
+to call the picture named by new-pic-name.
+.skip 1
+.indent -6
+Set animation list (command code xx)
+.break
+Data: n, (pic-name)[n]
+.break
+This command gives the Adage a list of pictures which are
+to be displayed in order as part of a sequence.  The
+rate at which the sequence is executed is controlled locally
+in the Adage.  The pictures named should not already
+be 'posted.'
+If they are, however, they will be unposted by the Adage software.
+A new animation list supersedes any previous list.
+An empty animation list (n#=#0) serves to cease all
+animation activities.
+.skip 1
+.indent -6
+Execute user command (command code xx)
+.break
+Data: n, character[n]  (as in text calls above)
+.break
+This command allows the PDP-10 program to send a text
+string to be interpreted by the Adage command interpreter
+just as if it had been typed on the Adage console.
+A special case of these commands is that the PDP-10
+program can simulate the effect of a user pushing
+a button in 'system mode', as described below.
+This is an open-ended facility: as new commands are added
+to the Adage repertoire, PDP-10 programs will be
+able to use them.
+.left margin 0
+.test page 15
+.skip 2
+.center
+^&Inquiry Functions\&
+.skip 1
+These commands cause various information resident in the Adage
+to be shipped back to the PDP-10, via whatever means
+are available. (At present, this is only a 2400 baud
+teletype connection.  A protocol for making sure that
+no information gets lost going from the Adage to the PDP-10
+will have to be worked out).
+.left margin 6
+.skip 1
+.indent -6
+Read matrix (command code xx)
+.break
+Data: matrix-name
+.break
+This command causes the 12 elements of the named matrix to
+be transmitted back to the PDP-10.  This command
+can be used to discover how the dials of the AGT-30
+were used to modify the appearance of the picture.
+.skip 1
+.indent -6
+Read picture (command code xx)
+.break
+Data: pic-name
+.break
+This command causes the display-file generated for the named
+picture to be transmitted to the PDP-10 in some format
+agreeable to both parties.
+The data transmitted back must include the initial matrix,
+established at the beginning of each picture display.
+.skip 1
+.indent -6
+Read refresh list (command code xx)
+.break
+(No data for this command)
+.break
+This command causes the Adage to send to the PDP-10 a list
+of the names of all pictures currently 'posted' in the Adage.
+.skip 1
+.indent -6
+Read dial (command code xx)
+.break
+Data: dial-number
+.break
+This command causes the current value of one of the dials
+to be sent back to the PDP-10 (see dial number definitions
+above).
+This command applies to the extended 'invisible' dials
+from 1 to 100.
+.test page 15
+.skip 2
+.left margin 0
+.center
+^&Input/Output Facilities\&
+.skip 1
+This set of commands is used for turning on and off Adage
+lights, reading button-pushes, reading tablet points,
+turning tracking and inking on and off, etc.
+The philosophy proposed here is very similar to the interactive
+facilities implemented in the PDP-10 timesharing system.
+.left margin 6
+.skip 1
+.indent -6
+Allocate interactive buffers (command code xx)
+.break
+Data: event-buffer, ink-buffer, delta-space., delta-time
+.break
+This command is used to initialize the interactive processing
+in the Adage.  Two buffers are allocated according to the
+sizes specified in this call: the event buffer, and an
+inking buffer. 
+If either or both of the buffer lengths are zero, then any
+previous buffer allocated to that function can be released.
+ The delta-space and delta-time parameters
+are saved for use during tablet operations, as described below.
+.skip 1
+.indent -6
+I/O go (command code xx)
+.break
+Data: enable-bits
+.break
+This command performs a variety of functions such as turning
+tracking on and off, etc.  The bits of the data chunk are
+decoded as follows:
+.nojustify
+.nofill
+
+40000   Clear event buffer
+20000   Clear ink buffer
+10000   Turn tracking on if 1, off if 0
+ 4000   Turn inking on if 1, off if 0
+ 2000   Use equal time filter when collecting points
+ 1000   Use equal space filter when collecting points
+
+.justify
+.fill
+The functions of these bits are self-explanatory.
+If the equal time filter is specified, then tablet
+points are read every 'delta-time' milliseconds.
+If the equal space filter is specified, then tablet
+points are only read when the pen has moved more
+than 'delta-space.' units.
+Note that the tracking dot and ink buffer are displayed
+with the identity transformation, i.e. the dot on
+the screen should correspond to where the pen is on the
+tablet (it would be nice to do more sophisiticated things,
+but they are hard).
+.skip 1
+.indent -6
+Enable events (command code xx)
+.break
+Data: enable-bits
+.break
+This command is used to enable events into the event
+buffer.  The bits of the data word are:
+.nojustify
+.nofill
+
+40000   Clear event buffer first
+20000   Enable tablet points into buffer
+10000   Enable button pushes into buffer
+
+.justify
+.fill
+The event buffer is maintained by the Adage, and is tagged
+in a fashion similar to that on the PDP-10: it
+contains entries for (1) button pushes, (2)
+pen-down events, (3) new-point events, as specified by
+the current tablet filter, and (4) pen-up events.
+Tablet points are added to the buffer in the fraction
+format described above.
+.skip 1
+.indent -6
+Transmit event (command code xx)
+.break
+(No data for this command)
+.break
+This command requests that the next event in the event
+buffer be transmitted to the PDP-10.  Furthermore,
+if the event buffer is empty, an indication of this
+fact is transmitted to the PDP-10.
+.skip 1
+.indent -6
+Wait and transmit event (command code xx)
+.break
+(No data for this command)
+.break
+This command also requests transmission of the next event
+code to the PDP-10, but if the event buffer
+is currently empty, the Adage should wait for an event before
+transmitting anything to the PDP-10.
+.skip 1
+.indent -6
+Button mask (command code xx)
+.break
+Data: mask
+.break
+This command is used to identify those buttons which can
+cause events to be added to the event buffer.
+All other buttons can be used by the Adage in whatever
+way it chooses.
+The bits of the mask are:
+.nojustify
+.nofill
+
+40000   Button 1
+20000   Button 2, etc.
+
+.justify
+.fill
+.skip 1
+.indent -6
+Set lights (command code xx)
+.break
+Data: light-mask
+.break
+This command causes the lights under the push buttons to be
+turned on and off according to the bits specified in the
+light-mask data.  The bits correspond to lights in the
+same way the bits of the 'button mask' command
+correspond to buttons.
+.left margin 0
+
+
+.test page 15
+.skip 2
+.center
+^&Miscellaneous\&
+.skip 1
+	The following are a series of miscellaneous commands,
+which are legal at any time.
+.skip 1
+.left margin 6
+.indent -6
+Save on disk (command code xx)
+.break
+Data: file-name
+.break
+This command causes a copy of the current display to be saved
+on the Adage disk.  The data words specify a file-name
+to use on the Adage (**** Chuck -- what should this look like? ****).
+.skip 1
+.indent -6
+Use from disk (command code xx)
+.break
+Data: file-name
+.break
+This command is used to bring in a display from the disk.  Any
+display present at the time of the command is destroyed.
+.skip 1
+.indent -6
+Set Datapoint simulator (command code xx)
+.break
+Data: lines, vertical-position
+.break
+This command causes the Datapoint simulator to scroll
+so that only 'lines' lines are on the screen at any time.
+The 'vertical position' parameter specifies where the
+top of Datapoint display is to lie: 1 is the bottom line of the
+screen, 28 is the top.  
+If 'lines' or 'vertical-position' is out of range,
+then maximum values are assumed.  If they are both
+zero, then the Datapoint simulator is turned off
+altogether.
+
+.left margin 0
+.test page 15
+.skip 2
+.center
+^&Local Command Processor\&
+.skip 1
+The Adage should be outfitted with a 'command processor' which
+can process certain user-typed commands locally within the Adage.
+These commands are primarily for altering pictures once they
+have been transmitted from the PDP-10.
+	The command processor itself should be controlled by
+the keyboard under the display or by the teletype; the commands should be echoed
+either on the display itself or on the Adage teletype.
+The command processor can be entered either by
+pushing a button reserved for that meaning or by typing some
+special 'escape' character on the keyboard.
+	Another set of local commands uses the buttons
+and dials in special ways to control the picture.
+These are system functions which will take effect regardless
+of whether the user has made provisions in his display file.
+For example, the entire display can be tumbled,
+scaled, rotated, shown in stereo, etc.
+The buttons are in one of two modes: 'system' and 'user'.
+The dials are in one of three modes: 'system-1', 'system-2', and
+'user'.
+The system buttons are as follows:
+.nojustify
+.nofill
+	
+	1	Turn Datapoint simulator on/off
+	2	Turn stereo on/off
+	3	Turn global tumble on/off
+	4	Set dial interpretation to 'system-1'
+	5	Set dial interpretation to 'system-2'
+	6-16	Invoke other Adage programs
+	
+	<pulse-1>  Return function keys to 'user' state.
+
+.justify
+.fill
+
+The dials are used as follows:
+.nojustify
+.nofill
+
+	'system-1':
+	  1	Rotation x (101)
+	  2	Rotation y (102)
+	  3	Rotation z (103)
+	  4	Translation x (104)
+	  5	Translation y (105)
+	  6	Translation z (106)
+	
+	'system-2':
+	  1	Scale all (107)
+	  2	Intensity cue control (108)
+	  3	Stereo separation (109)
+	  4	Stereo angle difference (110)
+	
+.justify
+.fill
+The numbers in parentheses are internal dial numbers which these
+system dials are  attached to whenever the state of the dials
+is not 'user'.  When the state is 'user', the internal dials
+101-110 become 'undefined'.
+Thus, internal dials 101-110 can be thought of as always
+'attached' to the initial matrix (nominally the identity)
+used to initialize all picture display.
+	By and large, the typed commands merely mimic
+several of the transmitted commands given above.
+The most important of these are the commands which attach
+dials to matrices.
+A list of commands might be:
+.left margin 6
+.skip 1
+.indent -6
+Save <file-name>
+.break
+This command saves the current display on the Adage disk.
+.skip 1
+.indent -6
+Use <file-name>
+.break
+This command destroys any pictures currently being displayed
+and retrieves a display from the Adage disk.
+.skip 1
+.indent -6
+Attach <dial> <source-number>
+.break
+This attaches an Adage source of analog information to
+a dial specified by the user, and hence to a particular 
+matrix in the display file.
+A source may be attached to more than one dial.
+.skip 1
+.indent -6
+Attach <source-number> <dial> <matrix-name> <directive> <mode>
+.break
+This command attaches a real dial to a matrix, as described above.
+If <matrix-name> is zero, then the dial is attached to the
+initial matrix
+used to display all pictures.  If 'mode' is omitted,
+linear is assumed.
+.skip 1
+.indent -6
+Detach <dial>
+.break
+This is a convenient form for disconnecting dials and matrices.
+(Detach does not set the value of the internal dial to
+'undefined', however; in this way the user can attach
+a dial, juggle a parameter, and then detach it so the
+dial can be used for other things.)
+.skip 1
+.indent -6
+Set dial <dial-number> <value>
+.break
+This command causes one of the 100 dials to be set to some value
+(fractional).  If value is 'undefined', then the dial is
+set to undefined, and ceases to have any effect on the
+matrix it modifies.
+.skip 1
+.indent -6
+Blank <name>
+.break
+This is equivalent to unposting a picture.
+If the name is 'Datapoint', the Datapoint simulator is blanked.
+If the name is omitted, all pictures are blanked.
+.skip 1
+.indent -6
+Unblank <name>
+.break
+This is equivalent to posting a picture.
+If the name is 'Datapoint', the Datapoint simulator is unblanked.
+If the name is omitted, all pictures are posted.
+.skip 1
+.indent -6
+Type matrix <matrix-name>
+.indent -6
+Type dial <dial>
+.indent -6
+Type source <source-number>
+.break
+These commands are used to type out the values of a particular
+object in the Adage.  This command may be helpful for
+debugging a display file which is producing funny effects
+because its matrices exceed the allowed limits of the
+Adage analog equipment.
+.skip 1
+.indent -6
+Datapoint set <lines> <vertical-position>
+.break
+This command has the same effect as the imperative, above.
+.skip 1
+.indent -6
+Equate <button> with '<command>' and '<command>'
+.break
+This command causes a function button to invoke the command
+processor to process one of two commands.
+The first command is executed the first time the button
+is hit; the second (if it exists, otherwise the first) the
+second time the button is hit, the first the third time, etc.
+Thus the button acts as a toggle between the two commands.
+.left margin 0
+
+
+
+.subtitle 16-bit PDP-10/Adage Interface
+.page
+9. ^&16-bit PDP-10/Adage Interface\&
+	This section describes the 16-bit parallel interface which
+can transmit information from the PDP-10 to the Adage.
+This interface operates on a demand-response basis, similar
+to the PDP-10 device called a DA-10.
+.skip 2
+PDP-10 Hardware
+	The hardware for interfacing to the PDP-10 is located
+in the DEC340 logic bay, to the left of the screen.
+A drawing of the circuitry is attached to this document.
+The operation of the interface is very simple:
+when a DATAO#420 is issued, bits 2-17 of the I/O
+bus are loaded into a 16-bit buffer.  The outputs from
+the buffer flip-flops drive level converters which produce
+levels of -5 and +5 volts.  These sixteen data lines, together
+with a signal called AINT (Adage interrupt) are
+bundled in a cable and shipped to the Adage.
+	The synchronization of the transmission is
+accomplished with three flip-flops, called
+ENB (enable), INT (interrupt), AINT (Adage interrupt).
+When ENB is off, the interface can not cause PDP-10
+interrupts.  Its only function is to inhibit interrupts
+when the interface is disabled.
+The INT flip-flop is set to cause a PDP-10 interrupt;
+an interrupt is actually requested if ENB and INT
+are both true.  The AINT flip-flop is set whenever
+new data has been loaded into the 16-bit buffer for the
+Adage to see.
+	The exact operation of the PDP-10 I/O
+instructions relating to the interface is as follows:
+.left margin 6
+.skip 1
+.indent -6
+CONO 420
+.break
+This command is used to enable/disable the interface and to
+set the PI channel number.  Bits 33-35 are always loaded into
+the PI channel register.
+If bit 32 is zero, the interface is disabled.  If bit 33
+is on, the ENB flip-flop is set.  The INT flip-flop
+is always set by CONO#420; the AINT flip-flop
+is always reset.  The normal forms of this command
+are CONO#420,0 which completely disables the interface,
+and CONO#420,16 which enables the interface, assigns 
+PI channel 6, and causes an immediate interrupt
+(because ENB is true, and CONO#420 always sets INT).
+.skip 1
+.indent -6
+CONI 420
+.break
+This command reads one status bit from the device: bit
+32 is a one if ENB is true and INT is true, i.e. if
+the interface is causing an interrupt.  This condition
+indicates that the 16-bit buffer is empty and in need of
+data.  The normal response is:
+.skip 1
+.indent -6
+DATAO 420
+.break
+This command loads the 16-bit buffer from bits 2-17 of
+the I/O bus, and also causes several
+other interesting things to happen.  It immediately
+turns INT off, saying that the interrupt has been serviced.
+It also starts a delay, after which AINT is set.
+This delay allows the levels on the cable to the Adage to
+settle and also keeps the maximum transfer rate within
+reason (delay is currently set to 250 microseconds).
+	Normally, the Adage senses that AINT is set,
+and reads the 16 data lines.  It also sends back to
+the PDP-10 interface a signal called 'Adage done';
+this signal turns AINT off (the Adage has read the
+buffer) and turns INT on (the buffer is now empty and
+in need of being refilled).
+
+.left margin 0
+

@@ -1,0 +1,1018 @@
+
+
+
+FORTRA.DOC, VERSION 4(210)
+SEPTEMBER, 1974
+
+***Copyright   1973,1974,   Digital    Equipment    Corp.,    Maynard,
+Massachusetts***
+
+
+
+1.0    SUMMARY
+
+       The major goal of FORTRAN-10  version  1  was  to  improve  the
+       execution  time  performance  of  production FORTRAN programs -
+       accomplished  through  a  wide  range  of  local   and   global
+       optimizations.  In  addition  FORTRAN-10  version  1 provided a
+       range of language features  exceeding  the  ANSI  standard  and
+       compatible with most industry implementations.
+
+       Version 4 now  adds  several  new  optimizations  and  language
+       features,  and  extensions to some old ones.  New optimizations
+       include the areas of I/O  calls  and  intra-statement  register
+       usage  -  new  features  include  the  PARAMETER,  INCLUDE, and
+       PROGRAM  statements.    There   has   also   been   substantial
+       improvement in the overall reliability and human engineering of
+       the compiler.
+
+       Section 3 of this  document  details  the  differences  between
+       version  1 and version 4 of FORTRAN-10.  The version number has
+       been promoted to 4 in order to maintain consistancy across  all
+       FORTRAN-10 related software.
+
+1.1    Bibliography
+
+       DEC-10-LFORA-B-D Second Edition FORTRAN-10 Language Manual
+       (with the October  1974 updates )
+
+1.2    Monitors
+
+       The FORTRAN-10 compiler will run with any monitor supported  by
+       DEC for the DECsystem-10.
+
+       FORTRAN-10 compiled programs  will  execute  only  on  monitors
+       which support FOROTS.
+
+1.3    Related System Programs
+
+       The following programs are required to run Fortran-10 version 4
+       and Fortran-10 compiled programs:
+
+       LOADER 57(151) or LINK-10 1A
+       COMPIL 22B(236)
+       FOROTS 4(402)
+       FORLIB 4(402)
+       CREF 51(20)
+       FORDDT 4(46)
+                                                                Page 2
+
+
+2.0    Performance characteristics
+
+       1.   Extensive   local   optimization   and   optional   global
+            optimization of generated code.
+
+       2.   Fast compilation in terms of CPU usage.
+
+       3.   Multi-phase organization means that real-time  compilation
+            throughput  can be low.  The real-time speed is a function
+            of core size, number of users, amount of sharing, swapping
+            device, etc.
+
+       4.   There are seven sharable high segments  in  the  compiler.
+            Each  compilation  invokes  five of the high segments with
+            the choice depending on the /OPTIMIZE switch. The  largest
+            high  segment size is 20k non-optimized and 27k optimized.
+            The low segment size is 4k but expands as  a  function  of
+            source program size.  Typical compilations will require 30
+            to 40k of user core.
+
+            System performance will suffer if total user core is  less
+            than  two  or  three times that required by the Fortran-10
+            user.  The large total size will also affect  systems  not
+            having sufficient space on a fast swapping device.
+                                                                Page 3
+
+
+3.0  FORTRAN-10 VERSION 4
+
+
+
+3.1  INTRODUCTION
+
+This section describes the differences between the FORTRAN-10  Version
+4   compiler   and   Version  1A.   Version  4  provides  several  new
+optimizations and language features, and many extensions to old  ones.
+There  are  also  a few minor incompatabilities between versions which
+are discussed in Section 4.  It  may  be  assumed  that  any  language
+features  not mentioned in this section still function as described in
+the  version   1A   FORTRAN-10   language   manual   (second   edition
+DEC-10-LFORA-B-D).
+
+
+
+3.2  LINE INPUT AND STATEMENT FORMATS
+
+Version 1 was somewhat deficient in  its  handling  of  lines,  nulls,
+carriage  returns,  lower case alphabetic, etc.  All of these problems
+have been resolved in Version 4.
+
+
+
+3.2.1  Character Set
+
+     Null                           always ignored.
+
+     Line terminators               line feed, form feed and  vertical
+                                    tab   are   the   recognized  line
+                                    termination    characters.     Any
+                                    instance,  regardless  of context,
+                                    will terminate a line.
+
+     Carriage return                ignored with  the  exception  that
+                                    one  not  associated  with  a line
+                                    termination character will  elicit
+                                    a warning message.
+
+     Lower case alphabetic          interpreted as upper case  outside
+                                    the  context of literal or comment
+                                    text.
+
+     Non-FORTRAN ASCII characters   any ASCII character is  acceptable
+                                    within  literal  or  comment  text
+                                    with   the   exception   of   line
+                                    terminators,  carriage returns and
+                                    nulls.
+
+
+
+3.2.2  Line formats
+                                                                Page 4
+
+
+     Initial lines                  an initial line is defined  to  be
+                                    any     line    other    than    a
+                                    continuation,      comment      or
+                                    un-INCLUDEd debug line.  Note that
+                                    this  includes  blank  lines   and
+                                    implies  that  blank  lines  could
+                                    have continuation lines.
+
+     Continuation sequence          such sequences are now  terminated
+                                    by  an instance of a comment line,
+                                    or un-INCLUDEd debug line, as well
+                                    as  another  initial  line.   Note
+                                    that a blank line  will  now  also
+                                    terminate a continuation sequence.
+
+     DEBUG lines                    lines with a D(or d) in  character
+                                    position 1 are treated as comments
+                                    unless  the  /INCLUDE  compilation
+                                    switch  is  specified.   All lines
+                                    (including any  continuations)  of
+                                    "DEBUG"  statements  must have a D
+                                    (or d) in character position 1.
+
+     Comment lines                  any   line   with   one   of   the
+                                    characters C (or c), $, /, *, or !
+                                    in character  position  1  of  the
+                                    line  is  defined  to be a comment
+                                    line.   Comment  lines   terminate
+                                    continuation sequences and may not
+                                    themselves be continued.
+
+
+
+3.2.3  Statements
+
+     Statement labels               FORMAT statement  labels  may  now
+                                    only  be  referenced as FORMATs in
+                                    I/O statements.  Reference in  any
+                                    other   context   is   no   longer
+                                    acceptable.  However,  all  labels
+                                    in  a  program  unit must still be
+                                    unique.
+
+     Null statements                If the statement  fields  of  some
+                                    initial  line and any continuation
+                                    lines contain only blanks/tabs  it
+                                    is   defined  to  contain  a  null
+                                    statement.   Null  statements  are
+                                    accepted   and   ignored   by  the
+                                    compiler.    They   may   not   be
+                                    labeled.
+                                                                Page 5
+
+
+3.2.4  Ordering of FORTRAN-10 Statements
+
+FORTRAN-10 expects that input statements will be ordered according  to
+the following diagram.
+
+
+
+!--------------------------------------------------------------------!
+!           !                                                        !
+!           !      PROGRAM, FUNCTION, SUBPROGRAM, or                 !
+!           !             BLOCK DATA Statement                       !
+!           !                                                        !
+!           !--------------------------------------------------------!
+!           !                 !                                      !
+!           !                 !      IMPLICIT Statements             !
+!           !                 !                                      !
+!           !                 !--------------------------------------!
+!           !                 !                                      !
+!           !                 !      PARAMETER Statements            !
+!           !                 !                                      !
+!           !                 !--------------------------------------!
+!           !                 !                                      !
+!  Comment  !    FORMAT       !      Other Specification             !
+!    Lines  !  Statements     !           Statements                 !
+!           !                 !                                      !
+!           !                 !--------------------------------------!
+!           !                 !              !                       !
+!           !                 !              !   Statement           !
+!           !                 !              !   Function            !
+!           !                 !              !   Definitions         !
+!           !                 !              !                       !
+!           !                 !    DATA      !-----------------------!
+!           !                 !  Statements  !                       !
+!           !                 !              !   Executable          !
+!           !                 !              !   Statements          !
+!           !                 !              !                       !
+!--------------------------------------------------------------------!
+!                                                                    !
+!                        END Statement                               !
+!                                                                    !
+!--------------------------------------------------------------------!
+
+
+
+
+Vertical  lines  delineate  varieties  of  statements  which  may   be
+interspersed.   Thus,  FORMAT  statements  may  be  interspersed,  for
+example, with  specification  statements  and  executable  statements.
+Horizontal  lines  delineate  varieties of statements which may not be
+interspersed.  Thus, specification statements may not be  interspersed
+with   statement   function   definitions,   and   statement  function
+definitions may not be interspersed with executable statements.
+
+F10  will  expect  this  ordering  and  issue  warning  messages  when
+statements  are  out of place.  F10 will process the statements in any
+                                                                Page 6
+
+
+case and in most instances, if the user has followed the general  rule
+of  definition before reference, the program will compile as expected.
+This structuring is mainly included to aid users in structuring  their
+programs to assure the desired effects. There is however, no guarantee
+as to what the compiler will do if this ordering is not adhered to.
+
+Other specification statements consist of:
+
+          type
+          DIMENSION
+          COMMON
+          EQUIVALENCE
+          EXTERNAL
+          NAMELIST
+
+The INCLUDE statement is acceptable anywhere.  It  is  the  statements
+INCLUDEd  which dictate the acceptable positions for any given INCLUDE
+statement.
+
+The ENTRY statement is another special case.  It is  allowed  only  in
+Functions and Subroutines and in addition all executable references to
+any of its dummy parameters which do not appear in the  subroutine  or
+function  definition  statement  or  a preceding ENTRY statement, must
+follow the ENTRY statement.  The latter is the responsibility  of  the
+user  - the compiler will not check for nor guarantee the results of a
+violation of this rule.
+
+BLOCKDATA subprograms do  not  allow  occurrences  of  any  executable
+statement,  statement  function, FORMAT statement, EXTERNAL statement,
+or NAMELIST statement.
+
+
+
+3.3  END Statement
+
+END statements may now be labeled if desired.  However, "END" may  not
+function as the terminal statement of a DO loop.
+
+
+
+3.4  PROGRAM Statement
+
+The PROGRAM statement is available for the user who wishes to give the
+main program unit a name other than "MAIN.". The general form is:
+
+          PROGRAM name
+
+where name is a standard user defined identifier.  If used, a  PROGRAM
+statement must be the first statement in the program unit.
+
+For  compatability  purposes,  if  the  remainder  of  the   statement
+following  the  program name is non-null it will be ignored and a user
+warning message issued.
+                                                                Page 7
+
+
+3.5  INCLUDE Statement
+
+This statement allows the user  to  compile  sets  of  FORTRAN  source
+statements  within  a  program  unit without having them reside in the
+same physical file as the primary program  unit  source.  The  general
+form of the statement is:
+
+          INCLUDE 'dev:file.ext[ppn]/NOLIST'
+
+where
+
+          dev:           is  an  optional  disk  device  name,   which
+                         defaults to "DSK:" if not specified.
+
+          file           is the name of the disk file.  The file  name
+                         must be specified and it must reside on disk.
+                         Wild  carding  is  not  allowed  in  file  or
+                         extension names.
+
+          ext            is the  optional  file  name  extension.   If
+                         ".ext"  is  not  specified an attempt will be
+                         made to access "file.FOR".  If  this  is  not
+                         successful "file." will be assumed.
+
+          [ppn]          is the optional project-programmer number  of
+                         the  form  [  project, programmer ], which if
+                         not specified will default to the user's ppn.
+                         Sub directory information is not accepted.
+
+          /NOLIST        is an optional  switch  specifying  that  the
+                         statements in the file are not to be included
+                         in the  listing.   When  the  switch  is  not
+                         specified  the  file  will be included in the
+                         listing with an "*" next to the  line  number
+                         of each included line.
+
+Included files may contain any sequence of legal FORTRAN-10 statements
+with  the  exception of another INCLUDE statement or a statement which
+terminates the current program unit  (i.e.,  END,  PROGRAM,  FUNCTION,
+SUBROUTINE or BLOCKDATA).
+
+
+
+3.6  DIMENSION STATEMENT
+
+     Lower dimension bound          a ":" (colon) may be used in place
+                                    of the "/" (slash) when specifying
+                                    a lower array dimension bound.
+
+                                    (NOTE:  This form is preferred for
+                                    reasons    of    possible   future
+                                    development.)
+                                                                Page 8
+
+
+     Variable dimension             the  variable  dimensions  of   an
+                                    array  may now be passed in COMMON
+                                    in   addition   to   as    routine
+                                    parameters.
+
+
+
+3.7  DATA TYPE STATEMENTS
+
+The "*n" data  type  size  modifier  is  now  accepted  following  the
+individual  variable,  array,  or  function  names.   Its effect is to
+override, for the particular element, the size modifier  (explicit  or
+implicit) of the primary type.  For example:
+
+          REAL*4   R1,  R2*8,  R3*8 (-1:8),  R4(3)
+
+R1 and R4 are single precision real but  R2  and  R3  are  now  double
+precision.
+
+The following additional size modifiers are now accepted:
+
+          INTEGER*2      treated as INTEGER,
+          LOGICAL*1      treated as LOGICAL, and
+          COMPLEX*16     treated as COMPLEX.
+
+These are accepted only for compatability  purposes  and  will  elicit
+warning  messages.   These  modifiers  are  acceptable in IMPLICIT and
+FUNCTION statements as well as type statements.
+
+
+
+3.8  EXTERNAL STATEMENT
+
+The form  of  the  external  statement  has  been  expanded  to  allow
+differentiation between:
+
+     1.  The user wishing to pass the name of some FORTRAN  defined(1)
+         function as an actual routine parameter and,
+
+     2.  The case where the user wishes to define a routine  with  the
+         same name as some FORTRAN defined function.
+
+If the user wishes to reference a routine whose name is  the  same  as
+some  FORTRAN defined function, the name must be prefixed by an "*" or
+"&" within the external statement.  For example:
+
+          EXTERNAL    *SIN, &COS
+
+If a FORTRAN defined function name appears in  an  EXTERNAL  statement
+without a preceding "*" or "&", it is assumed to reference the FORTRAN
+defined function (for the purpose of passing it as an  actual  routine
+
+---------------
+(1)The categories of INTRINSIC and BASIC EXTERNAL functions have  been
+combined  and  are now refered to as FORTRAN defined functions.  Refer
+to section 3.12.2 for a complete description of  FORTRAN  defined  and
+generic functions.
+                                                                Page 9
+
+
+parameter).
+
+Prefixing non-FORTRAN-defined function names has no effect.
+
+
+
+3.9  PARAMETER STATEMENT
+
+This allows the user to symbolically define  compile  time  constants.
+The general form of the statement is:
+
+          PARAMETER    P1=C1, P2=C2,...
+
+where
+
+          each Pi        is a standard user defined identifier, and
+
+          each Ci        may  be  any  type  of  constant   (including
+                         literal) other than complex or label.
+
+Valid occurrences of parameter names will be replaced at compile  time
+by their associated constant.  A parameter name:
+
+     1.  is recognized only within statement  fields  of  initial  and
+         continuation lines,
+
+     2.  is not recognized within comment or literal text,
+
+     3.  may appear only where a constant may validly appear,
+
+     4.  cannot be used as part of some larger  syntactical  construct
+         (such as a hollerith constant count, data type size modifier,
+         etc.),
+
+     5.  reference must follow its PARAMETER statement definition,
+
+     6.  must be unique with respect to all other names in the program
+         unit, and
+
+     7.  may not be redefined in a subsequent PARAMETER statement.
+
+
+
+3.10  DATA STATEMENT
+
+Signed complex constants are now accepted, e.g., -(3.1, 4.2).
+
+The fatal error message issued when the list of variables  was  longer
+than  the  list  of  constants  has been replaced by a warning message
+which will be issued whenever the lengths of the variable and constant
+lists differ.
+                                                               Page 10
+
+
+3.11  FORMAT STATEMENT
+
+
+
+3.11.1  R Format Field Descriptor
+
+The R field descriptor has been added allowing the user to  input  and
+output  right  justified, zero filled ASCII data.  The general form of
+the descriptor is:
+
+          Rw
+
+where w is the width of the input/output data field.
+
+The actions performed are defined as follows:
+
+          given:     w   field width, and
+                     n   number  of  characters   possible   for   the
+                         variable (i.e., 10 for double precision and 5
+                         otherwise)
+
+          INPUT w>=n     the rightmost n characters of the  field  are
+                         read  in  and  stored  right  justified, zero
+                         filled in the associated variable.
+
+          OUTPUT w>=n    n characters are output and  right  justified
+                         in  the field.  The remainder of the field is
+                         blank filled.
+
+          INPUT w<n      w characters are read  in  and  stored  right
+                         justified,  zero  filled  in  the  associated
+                         variable.
+
+          OUTPUT w<n     the right most w characters of the associated
+                         variable are output.
+
+
+
+3.11.2  Delineation of Field Descriptors
+
+Commas  are  now  optional  whenever   no   ambiguity   exists.    The
+interpretation of field descriptors is left associative.  For example:
+
+          (3X, A2)
+
+can be written as
+
+          (3XA2)
+
+with no ambiguity.  However
+
+          (I1,5A2)
+
+must include the comma, since
+                                                               Page 11
+
+
+          (I15A2)
+
+would be interpreted as
+
+          (I15,A2)
+
+
+
+3.12  SUBPROGRAMS
+
+
+
+3.12.1  FUNCTION Statement
+
+
+
+3.12.1.1  Function Type Size Modifiers
+
+Any of the defined data type size modifiers are now accepted  folowing
+the function name as well as the function data type.  For example:
+
+          REAL*4  FUNCT*8 (J)
+
+If a size  modifier  is  specified  following  the  function  name,  a
+FUNCTION  data  type  must  be  explicitly  specified.  The given size
+modifier overrides any explicit or implict  size  modifier  associated
+with  the FUNCTION type declarator.  In the example this type of FUNCT
+would be double precision.
+
+
+
+3.12.1.2  Equivalence of FUNCTION and ENTRY names
+
+The local storage for the variables associated with  the  names  of  a
+FUNCTION and its ENTRY points is now equivalenced.  In other words the
+return value of a FUNCTION can be  defined  by  defining  any  of  the
+aforementioned  variables,  regardless  of the point of entry into the
+FUNCTION.
+
+
+
+3.12.2  FORTRAN Defined Functions
+
+The categories of INTRINSIC and BASIC  EXTERNAL  functions  have  been
+combined.   This set of functions is now simply referred to as FORTRAN
+defined functions.
+
+A function reference refers to FORTRAN defined function if and only if
+it conforms to the following:
+
+     1.  The function name must appear in the list of FORTRAN  defined
+         function  names  (FORTRAN  LANGUAGE  Manual DEC-10-LFORD-B-D,
+         INTRINSIC and BASIC EXTERNAL functions).
+                                                               Page 12
+
+
+     2.  If the function name appears in a  data  type  statement  the
+         resulting  definition  must  not  conflict  with  the FORTRAN
+         defined data type of the function.
+
+                                 NOTE
+
+               If there is a  conflict  it  is  assumed
+               that  the  user  wishes  to  reference a
+               function with  the  same  name  as  some
+               FORTRAN defined function.
+
+     3.  If the function name appears in  an  EXTERNAL  statement,  it
+         must not be prefixed by an "&", or "*", and
+
+     4.  The function name may not be specified  as  a  dummy  routine
+         parameter.
+
+
+
+3.12.3  GENERIC Functions
+
+The generic functions, as listed in the  FORTRAN-10  language  manual,
+result  in  code  compiled  according  to  the data type of the actual
+parameters.
+
+For a function reference to  possess  this  generic  quality  it  must
+conform to the following:
+
+     1.  If the function name appears in an EXTERNAL statement it must
+         not be prefixed by "*", or "&",
+
+     2.  The  function  name  may  not  appear  in  an  explicit  type
+         statement, and
+
+     3.  The function name may not be specified  as  a  dummy  routine
+         parameter.
+
+Such function names, when used as actual routine  parameters,  do  not
+possess any generic properties.  In other words the name is assumed to
+reference the FORTRAN defined function of the same  name  or  if  none
+exists, a user defined function.
+
+The IMPLICT statement has no effect upon  the  data  type  of  FORTRAN
+defined  or  generic  function  names unless the name has been removed
+from its class via the EXTERNAL statement.
+
+
+
+3.13  Error Messages
+
+The display format and summary of error messages have been improved in
+Version 4.
+
+     1.  The statement in error will now be displayed on the user  TTY
+         along with the associated error message, (providing the error
+                                                               Page 13
+
+
+         is detected during the  syntactical  analysis  phase  of  the
+         compiler).
+
+     2.  The form of the  individual  message  has  been  modified  to
+         conform  to the standard for DECsystem-10 error messages. The
+         new form is as follows:
+
+              ?FTNxxx LINE: nnnnn fatal error message text
+                   or
+              %FTNxxx LINE: nnnnn Warning message text
+
+         Where "?"/"%" indicates a fatal/warning message, xxx is  a  3
+         letter  code  for the message, and nnnnn is the number of the
+         line within which the error was detected.
+
+     3.  If there were messages output for a program unit they will be
+         summarized on the listing and user TTY as follows:
+
+              name  number  FATAL ERRORS AND number WARNINGS
+
+         where name is the name of the  program  unit.   This  message
+         will be preceded by
+
+              ?FTNFTL - for fatal errors
+                   or
+              %FTNWRN - when only warnings were issued
+
+         If no errors were detected or warnings  given  the  following
+         message will be output to the listing file:
+
+              name  [NO ERRORS DETECTED]
+
+         Only the name will be output to the controlling tty:.
+
+
+
+3.14  Source Input Files
+
+If more than one source file is specified in a .R  FORTRA  command  or
+via  the  compile  class  command  "+"  construct,  the  files will be
+logically concatinated.  For example:
+
+          .R FORTRA
+          *T.REL,T.LST_IN1.FOR,IN2.FOR,IN3.FOR
+
+               or
+
+          .COMPILE IN1.FOR+IN2.FOR+IN3.FOR/F10
+
+There are no restrictions on the content of the files - program  units
+may be comprised of 2 or more files as desired.
+                                                               Page 14
+
+
+3.15  CREF
+
+F10 version 4, along with version 51 of CREF,  now  produces  a  cross
+reference  listing  which  specifies  definition and reference, of all
+identifiers and statement labels.  A separate table  is  produced  for
+each  individual  program unit.  The line numbers in the table are the
+FORTRAN generated (or if specified, user) line  sequence  numbers  and
+indicate  the  initial line number of the statement in which the given
+identifier or label appeared.
+
+
+
+3.16  COMPILATION SWITCHES
+
+Version 4 has a new compilation switch which provides several run time
+debugging  features.   There are 5 requestable features , two of which
+are specifically designed for  use  with  the  FORTRAN-10  debugger  -
+FORDDT.  The  name  of  the  switch  is DEBUG and it has the following
+modifiers:
+
+    DIMENSIONS - generate, for FORDDT, dimension information  for  all
+         arrays defined in the program
+
+    TRACE - generate the references to FORDDT required for  its  TRACE
+         features.   References  are  generated before each executable
+         source line and at the beginning of each subprogram.
+
+    LABELS - generate a label for each  executable  statement  of  the
+         form "line-numberL".  Note that if more than one statement is
+         included on a  given  line  only  the  first  statement  will
+         receive a label.
+
+    INDEX - force DO loop indices to be  stored  in  their  respective
+         variables  at  the beginning of each loop iteration. Normally
+         loop indices are held in registers for the duration of  loops
+         and are thus inaccessable to FORDDT during debugging.
+
+    BOUNDS - generate bounds checking code for all  array  references.
+         Bounds violations will produce run time error messages at the
+         user  terminal.   Note  that  the  technique  of   specifying
+         dimensions of 1 for subroutine arrays will cause bounds check
+         errors.
+
+
+When specifying modifiers, all that is required is enough  letters  to
+make  the  name  unique.  The  format  of  the  /DEBUG  switch and its
+modifiers is as follows:
+
+
+     No debug features - either do not specify  the  DEBUG  switch  or
+          specify it as /DEBUG:NONE
+
+     All DEBUG features - either /DEBUG or /DEBUG:ALL
+                                                               Page 15
+
+
+     Selected features - either a  series  of  modified  switches  (ie
+          .../DEBUG:B/DEBUG:L...)   or   a   list   of  modifiers  (ie
+          .../DEBUG:(B,L)...)
+
+     Exclusion of features - prefix the modifer to be excluded  by  NO
+          (ie .../DEBUG:NOLABELS...).  There may be more than one such
+          switch, however the NO modifier cannot be used in  the  list
+          form.     If  only  DEBUG exclusions are specified the other
+          features are implicitly included.
+
+
+
+3.17  IMPROVED OPTIMIZATIONS IN VERSION 4
+
+One of the main goals of version 4 was to improve the quality  of  the
+code  generated  by  the compiler.  New and improved optimizations are
+available, both with and without the /OPTIMIZE switch.
+
+Local Optimizations include:
+
+     1.  Better register utilization between statements  and  for  the
+         save/restore sequence in subprograms.
+
+     2.  More library functions generate in line code.  Included are:
+
+         a.  DABS
+
+         b.  COMPLEX
+
+         c.  exponentiations to an integer power requiring less than 8
+             multiplications
+
+     3.  REL file size was decreased.
+
+Global Optimizations enhanced:
+
+     1.  Optimizations available in version 1 were extended to  handle
+         more  and  more  general cases.  This includes the removal of
+         restrictions on size of programs that could be  optimized  in
+         version 1.
+
+     2.  New optimizations were added.  One of  the  most  visible  of
+         these  is  2  new  forms  of  I/O  list calls to FOROTS. This
+         permits many typical I/O lists with implied DO  loops  to  be
+         processed by a single call to FOROTS. Other new optimizations
+         are less simply explained but include  test  replacement  and
+         subsumption.
+
+
+
+3.18  CLOSE STATEMENT
+
+The  CLOSE  statement  now  releases  the  unit.    In   other   words
+CLOSE(UNIT=1) is equivalent to CALL RELEASE(1).
+                                                               Page 16
+
+
+3.19  SCALARS AND ARRAYS listing
+
+The listing of scalars  and  arrays  following  the  source  statement
+portion of the listing has been enhanced. An "*" prefix indicates that
+the given symbol  was  never  explicitly  defined  and  a  "%"  prefix
+indicates  that the symbol was defined but never referenced. Note that
+unreferenced symbols are not allocated.
+
+
+
+3.20  DO LOOP TERMINAL STATEMENTS
+
+The terminal statement of a DO loop may be a logical IF as long as its
+object statement is not another logical IF or a DO statement. In other
+words, the object statement of a loop terminating logical IF can be  a
+RETURN,  GOTO,  STOP,  PAUSE,  or  an  arithmetic IF even though these
+statements themselves cannot be the terminal statement of a DO loop.
+                                                               Page 17
+
+
+4.0  FORTRAN-10 VERSION 1 - VERSION 4 INCOMPATIBILITIES
+
+
+
+4.1  INTRODUCTION
+
+Every effort was made to keep version  4  completely  compatible  with
+version  1  however, a few minor incompatibilities were introduced for
+reasons of compliance with the ANSI standard, compatibility with other
+implementations,  and  overall  consistancy of the FORTRAN-10 language
+implementation.
+
+
+
+4.2  BLANK LINES
+
+In version 1 blank lines were simply ignored by  the  compiler  and  a
+continuation  line following a blank line would be associated with the
+last non-blank line preceding the given blank line. In version 4 blank
+lines  are  defined  to  be  initial  lines  and as such terminate any
+preceding continuation sequence.   A  continuation  line  following  a
+blank line will now be associated with the blank line.
+
+
+
+4.3  COMMENT LINES
+
+In version 1, comment lines were simply ignored  and  did  not  affect
+continuation   sequences.    In  version  4  comment  lines  terminate
+continuation sequences and cannot be followed by a continuation line.
+
+
+
+4.4  EXTERNAL STATEMENT - FORTRAN DEFINED FUNCTIONS
+
+In version 4 the un-prefixed occurrence of a FORTRAN defined  function
+name  in an EXTERNAL statement allows the user to specify that FORTRAN
+defined  function  name  as  an  actual  routine  parameter.  However,
+contrary  to version 1, the function name still references the FORTRAN
+defined function. In order to obtain the effect produced in version  1
+- that of allowing the user to reference a function with the same name
+as that of a FORTRAN defined function - the name must be prefixed with
+"*" or "&" in the EXTERNAL statement.
+
+
+
+4.5  FUNCTION RETURN VALUES
+
+In version 4 the variables associated with the name of a FUNCTION  and
+its  ENTRY  points  are  allocated  to  the same storage location. The
+return value of a FUNCTION may be specified by  defining  any  of  the
+aforementioned  variables  regardless  of  the point of entry into the
+FUNCTION.
+                                                               Page 18
+
+
+4.6  SUBPROGRAM PARAMETERS
+
+The local values of  the  routine  parameters  become  undefined  upon
+return to the calling program unit.
+
+
+
+4.7  STATEMENT LABELS
+
+FORMAT statement labels may no  longer  be  referenced  in  executable
+statements,  they may only be referenced as FORMATs in I/O statements.
+However, all labels in a program unit must still be unique.
+
+
+
+4.8  STATEMENT LABEL CONSTANTS
+
+Though undocumented, version 1 accepted label constants  of  the  form
+"*label" in actual argument lists.  Version 4 no longer accepts these,
+only "$" and "&" may be used as prefixes.
+
+
+
+4.9  CLOSE STATEMENT
+
+The CLOSE statement now releases the unit.  An  OPEN  is  required  in
+order to reference the unit again.
+
+                                                               Page 19
+
+
+5.0    KNOWN DEFICIENCIES
+
+5.1    Implementation restrictions
+
+       1.   The core requirements to compile large source programs may
+            exceed  available  core.  There is no explicit restriction
+            on number of  statements  or  symbols.  The  actual  limit
+            depends  upon  the  amount  of core available at the given
+            installation.
+
+       2.   Large expressions or deeply nested subscripts  may  exceed
+            the  internal compiler stack space.  This will produce one
+            of the following errors depending upon the  circumstances:
+            1.   EDN  -  Expression  too  deeply nested to compile, 2.
+            Internal compiler error, or 3.  Stack exhausted.
+
+       3.   /OPT can cause the ones complement of a real  number  (ie.
+            .NOT.   A) to be folded at compilation time in a different
+            way than it would have been evaluated at run-time.  
+
+       4.   A transfer of control into the scope of a DO loop which is
+            not  a  return to a loop, entered at its initial point and
+            then prematurely exited ( extended DO  ),  is  an  illegal
+            program   construction.  Such  a  construction  cannot  be
+            detected  by  the  compiler  and  thus  will  not  prevent
+            compilation.   However   the   results  of  execution  are
+            unpredictable and  may  cause  the  program  to  terminate
+            prematurely with an illegal UUO at 0.
+
+       5.   NOTE- The  global  optimizer  uses  absolute  low  segment
+            addresses in certian of its hash algorithms.   Due to this
+            a variation in the number  or  size  of  the  input/output
+            buffers   may  produce  different,  but  equally  correct,
+            segments  of  code  for  the  same  source  program  (e.g.
+            requesting  or not requesting a listing file could produce
+            the effect).
+
+5.2    Deficiencies
+
+            No known deficiencies
+
+5.3    Possible  incompatibilities  with  other   implementations   of
+            FORTRAN
+
+       1.   The non-standard RETURN goes to the  ith  asterisk  rather
+            than the ith dummy argument.
+
+       2.   Exponentiation grouping is from right to left rather  than
+            left to right.  (e.g.  A**B**C is evaluated as A**(B**C))
+
+       3.   The  DO  loop  index  is  undefined   upon   normal   loop
+            termination.
+
+       4.   The CHAIN overlay facility is not supported by Fortran-10.
+            An  overlay facility is provided as a separately available
+                                                               Page 20
+
+
+            feature of LINK-10 version 2.
+
+       5.   Initialization of double precision and  complex  variables
+            with  octal or literal data is done incompatibly with F40.
+            (Refer to the Fortran-10 Language Manual, DEC-FORLA-B-D)
+
+       6.   Comment lines and debug  lines  may  not  be  followed  by
+            continuation lines (see section 3.2.2).
+
+       7.   Octal constants in data statements cannot be preceded by O
+            as in F40.  They must be preceeded by a double quote (").
+
+       8.   Names reserved for the Fortran defined functions cannot be
+            used  to  reference user functions unless specified with a
+            preceeding "*" or "&" in an EXTERNAL statement.
+
+       9.   The data type SUBSCRIPT INTEGER is not supported.
+
+                                                               Page 21
+
+
+     6.0 INSTALLATION
+
+            See document FORTRA.FIG.
+
+     7.0 SUPPORT PLAN
+
+            Fortran-10 is written in BLISS-10, version 5(124), and can
+            be  created directly from the REL-file output of BLISS-10.
+            Edits issued to fix problems  in  Fortran-10  will  be  in
+            terms of BLISS-10.
+
+
+
+[END FORTRA.DOC]

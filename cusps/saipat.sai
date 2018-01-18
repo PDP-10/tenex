@@ -1,0 +1,105 @@
+ENTRY DUMMY;
+BEGIN
+REQUIRE "<><>" DELIMITERS;
+DEFINE  !=<COMMENT>;
+!
+	This program, when loaded into a TENEX SAIL core image,
+sets up a control-O interrupt very much like the DEC system.
+The interrupt is on PSI channel 30, using level 1.  It also steals
+the illegal memory reference psi channel from the pa1050.
+  
+;
+
+EXTERNAL INTEGER CTLOSW,PS1ACS;
+
+SIMPLE PROCEDURE CTLO;
+BEGIN
+
+SIMPLE INTEGER PROCEDURE DEV(INTEGER JFN);
+START!CODE
+	HRRZ	2,JFN;		! THE JFN;
+	SETZ	4,;
+	HRROI	1,4;		! PUT STRING IN 4;
+	MOVSI	3,'200000;	! ONLY THE DEVICE;
+	JFNS;			! GET THE STRING;
+	MOVEM	4,1;		! AND RETURN IT AS CVASC("DEV");
+END;
+
+INTEGER USERPC,PSL1,USERINST,AC1,SAVEADDR;
+DEFINE 	PSOUT!JSYS=<'104000000076>,
+	SOUT!JSYS=<'104000000053>;
+
+LABEL LEAVE;
+
+! this is SAIL immediate interrupt level.  No dynamic
+	strings are accessed.;
+
+IF CTLOSW THEN
+    BEGIN
+	CTLOSW _ FALSE;		! TOGGLE IT;
+	RETURN;			! AND RETURN;
+    END;
+
+START!CODE
+	MOVEI	1,'101;
+	CFOBF;
+END;
+
+! print out a little message;
+OUTSTR("^O
+");
+
+CTLOSW _ TRUE;			! NO MORE OUTPUT;
+
+! get the user PC in USERPC, the address into the LEVTAB table in PSL1;
+START!CODE
+	MOVEI	1,'400000;	! THIS FORK;
+	RIR;
+	HLRZ	2,2;		! LEVTAB ADDRESS;
+	MOVE	2,(2);		! PC FOR LEVEL 1;
+	MOVEM	2,PSL1;	
+	MOVE	2,(2);		! USER PC;
+	MOVEM	2,USERPC;
+END;
+
+! are we in the monitor?;
+IF (USERPC LAND '010000000000) THEN RETURN;
+! yes, not in user mode. If either doing a PSOUT or SOUT to '101, then
+	smash call.;
+
+IF NOT ((USERINST _ MEMORY[(USERPC LAND '777777) -1])=PSOUT!JSYS  OR
+	(USERINST=SOUT!JSYS AND 
+	((AC1 _ MEMORY[LOCATION(PS1ACS) + 1]) = '101 OR 
+	  DEV(AC1)=CVASC("TTY"))))
+    THEN RETURN;
+! now modify return so that we dont continue the output;
+
+SAVEADDR _ (MEMORY[PSL1] LAND '777777000000) + LOCATION(LEAVE);
+MEMORY[PSL1] SWAP SAVEADDR;
+RETURN;		! return to SAIL interrupt handler;
+
+START!CODE LEAVE:  JRST @SAVEADDR; END;		! some peculiar code here;
+END;
+
+SIMPLE PROCEDURE ILLMEMREF; START!CODE DEBRK; END;
+
+INTERNAL PROCEDURE INITIALIZE;
+BEGIN
+START!CODE
+	'047000000000;		! CALLI RESET, GET EMULATOR;
+	MOVEI	1,'400000;	! THIS FORK;
+	RIR;
+	MOVEI	3,ILLMEMREF;	! ADRESS OF NEW ROUTINE
+					TO HANDLE ILL MEM REFS;
+	HRLI	3,1;			! LEVEL 1;
+	MOVEM	3,22(2);	! PUT IN CHANNEL TABLE;
+END;
+PSIMAP(30,CTLO,0,1);		! LEVEL 3;
+ENABLE(30);
+ATI(30,"O"-'100);
+END;
+
+REQUIRE INITIALIZE INITIALIZATION;
+
+END;
+

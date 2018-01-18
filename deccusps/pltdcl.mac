@@ -1,0 +1,1437 @@
+;BLISS-10 5(110) 	7/11/74  	10:34:38 		PLTDCL.BLI		Page 1
+
+;     	   1    MODULE PLTOVL(DREGS=6,SREG=#17,VREG=#15,FREG=#13,RESERVE(#16),START)=
+;     	   2    BEGIN
+;     	   3    
+;     	   4    !***	DECLARATIONS	***
+;     	   5    
+;     	   6    !***	IMPLEMENTATION DEPENDENT BINDS	***
+;     	   7    
+
+TITLE	PLTO..
+TWOSEG
+RELOC 400000
+
+;     	   8    	BIND	NOCHECK = 0.60,	%SEE PHASE 2 OF BRKAPART%
+;     	   9    		TRPCHECK = 0.30,	%SEE PHASE 3%
+;     	  10    		ITOP = 0.75,	%AMT OF X-AX IN  LEAF POLYGON%
+;     	  11    		ISIDE = 0.70,	%DITTO FOR Y-AX%
+;     	  12    		IXINCR = 1.50,	%VERT DIST BETWEEN NODES%
+;     	  13    
+;     	  14    %	SET PLTDIAG TO SHAPE YOU WANT PLOTTED TREES TO BE    %
+;     	  15    
+;     	  16    		DIAG=0, SQAR=-1,
+;     	  17    		PLTDIAG=DIAG
+;     	  18    		;
+;     	  19    
+;     	  20    	BIND 	AMTNODE=7,
+;     	  21    		MAXST=32,	%NUMBER OF SUBTREES ACCEPTED%
+;     	  22    		DIAMOND=100000,
+;     	  23    		TRAPZOID=100001;
+;     	  24    
+;     	  25    !***	MODULE WIDE REGISTERS	***
+;     	  26    
+;     	  27    	REGISTER TMP1,TMP2;
+;     	  28    
+;     	  29    	MACHOP	ILDB=#134,
+;     	  30    		IDPB=#136,
+;     	  31    		MOVEI=#201,
+;     	  32    		MOVEM=#202,
+;     	  33    		BLT=#251,
+;     	  34    		JRST=#254,
+;     	  35    		PUSH=#261,
+;     	  36    		POP=#262,
+;     	  37    		POPJ=#263,
+;     	  38    		HRLM=#506;
+;     	  39    
+;     	  40    	MACRO	HALT=JRST(4)$;
+;     	  41    
+;     	  42    !***	PLOTTER PACKAGE ENTRY POINTS	***
+;     	  43    
+;     	  44    	EXTERNAL ?.BREG;
+;     	  45    
+;     	  46    	EXTERNAL	LINE, %GIVEN X,Y ARRAYS, IT PLOTS (N) STRAIGHT LINES%
+;     	  47    			WHERE,	%THE CO-ORDS OF THE PEN%
+;     	  48    			PLOT,	%MOVE PEN FROM CUR.LOC. TO (X,Y)%
+;     	  49    			PLOTS,	%INIT THE PACKAGE%
+;     	  50    			SYMBOL,	%PLOTS AN ASCII STRING FROM AN ARRAY%
+;     	  51    			NUMBER,	%DITTO FOR FL.PT. NUM%
+;     	  52    			LPTOUT;	%SPECIALLY FOR LINK--SIMS PLT ON LPT%
+;BLISS-10 5(110) 	7/11/74  	10:34:41 		PLTDCL.BLI		Page 1-1
+
+;     	  53    
+;     	  54    	%THE FORTRAN INTERFACE%
+;     	  55    
+;     	  56    	EXTERNAL	PLTORIG,
+;     	  57    			PLTINIT,
+;     	  58    			PLTPOLY,
+;     	  59    			PLTLINE;
+;     	  60    
+;     	  61    	%THE LINK-10 CORE ALLOCATION INTERFACE%
+;     	  62    
+;     	  63    	EXTERNAL	?DY.GET,
+;     	  64    			?DY.RET,
+;     	  65    			GETSON,
+;     	  66    %	 <FILE>/PLOT:(LEAVES:VAL,INCHES:VAL,STPSIZ:VAL) -- RESPECTIVELY
+;     	  67    	1) MAX LEAVES ALLOWED IN SUBTREE
+;     	  68    	2) WIDTH OF PLOTTER IN INCHES
+;     	  69    	3) PHYS. PLT CHARACTERISTIC IN TERMS OF STEPS/INCH
+;     	  70    	COMBINED THEY ACT AS A SCALING MECHANISM
+;     	  71    %
+;     	  72    			LEAVES,
+;     	  73    			STEPS,
+;     	  74    			LPBUF,	%IF <FILE> IS LPT: THIS WILL PT. AT 2K BUFFER%
+;     	  75    			ERRFND,
+;     	  76    			INCHES;
+;     	  77    
+;     	  78    	BIND 	MAXWT=LEAVES;	%THE FORMER WILL BE THE FL. REPR. OF THE LATTER%
+;     	  79    
+;     	  80    !***	ROUTINE DECLARATIONS	***
+;     	  81    
+;     	  82    	FORWARD	OVLPLT,
+;     	  83    		SUBTREE,
+;     	  84    		BRKAPART,
+;     	  85    		PLTTREE,
+;     	  86    		TRAPBRK,
+;     	  87    		MAKTREE,
+;     	  88    		SELTREE2P,
+;     	  89    		FNDLEAVES,
+;     	  90    		CLEANUP,
+;     	  91    		TASCII;
+;     	  92    
+;     	  93    !***	PRIMITIVE MACROS	***
+;     	  94    
+;     	  95    
+;     	  96    	MACRO 	PLUS=FADR$,
+;     	  97    		SUB=FSBR$,
+;     	  98    		MUL=FMPR$,
+;     	  99    		DVIDE=FDVR$;
+;     	 100    
+;     	 101    
+;     	 102    !***	MACROS FOR ACCESS MNEMONICS	***
+;     	 103    
+;     	 104    	MACRO WHOLE=0,36$,
+;     	 105    		LEFT=18,18$,
+;     	 106    		RIGHT=0,18$,
+;     	 107    		ZZ=0,0$;
+;     	 108    
+;     	 109    !***	BLT MACROS	***
+;BLISS-10 5(110) 	7/11/74  	10:34:44 		PLTDCL.BLI		Page 1-2
+
+;     	 110    
+;     	 111        MACRO ZERO(FIRST,LAST)
+;     	 112    =    BEGIN
+;     	 113    	REGISTER AC;
+;     	 114    	AC<LEFT>_FIRST<ZZ>;
+;     	 115    	AC<RIGHT>_(FIRST+1)<ZZ>;
+;     	 116    	FIRST_0;
+;     	 117    	BLT(AC,LAST);
+;     	 118        END;$;
+;     	 119    
+;     	 120    	MACRO SAVREGS 
+;     	 121    =	BEGIN
+;     	 122    		REGSAV[15]_.(#17)<WHOLE>;
+;     	 123    		#17<WHOLE>_REGSAV<0,0>;
+;     	 124    		BLT(#17,REGSAV[14]);
+;     	 125    		#17<WHOLE>_.REGSAV[15];
+;     	 126    	END;$;
+;     	 127    
+;     	 128    	MACRO RESREGS
+;     	 129    =	BEGIN
+;     	 130    		HRLZI(SREG,REGSAV<0,0>);
+;     	 131    		BLT(#17,#17)
+;     	 132    	END;$;
+;     	 133    
+;     	 134    !***	STRUCTURE DECLARATIONS	***
+;     	 135    
+;     	 136    	MACRO	SIZE=0,LEFT$,	%SIZE OF STRUCT IN WORDS%
+;     	 137    		RSERV1=0,RIGHT$,
+;     	 138    		UNUSED=1,LEFT$,
+;     	 139    		ASON=1,RIGHT$,
+;     	 140    		LNKNODE=2,LEFT$,	%PTS. AT NODE IN LINK'S INTERNAL TREE%
+;     	 141    		BROTHER=2,RIGHT$,
+;     	 142    		NAMLEN=3,LEFT$,
+;     	 143    		LNUM=3,RIGHT$,	%LINK NUMBER--FOR PSEUDO-NODES IS NODE TYPE, 100000 FOR DIAMOND,100001 FOR TRAPZOID%
+;     	 144    		LNAME=4,WHOLE$,	%LINK NAME--IN ASCII AND AT MOST 10 CHAR%
+;     	 145    		MYWT=6,WHOLE$,	% # (FLOATING) OF LEAVES BENEATH NODE%
+;     	 146    		REST=7,WHOLE$;
+;     	 147    
+;     	 148    	MACRO	NEXT=0,RIGHT$;	%FOR PATCHING--USES NXOFPRV%
+;     	 149    
+;     	 150    !***	PSEUDO-ROUTINES	***
+;     	 151    
+;     	 152    	%AMOUNT MUST BE A CONSTANT%
+;     	 153    
+;     	 154    	MACRO ALLOC(WHERE,AMOUNT)=
+;     	 155    	BEGIN
+;     	 156    	    PUSH(SREG,1);
+;     	 157    	    PUSH(SREG,2);
+;     	 158    	    MOVEI(2,AMOUNT);
+;     	 159    	    ?DY.GET();
+;     	 160    	    MOVEM(1,WHERE);
+;     	 161    	    HRLM(2,0,1);
+;     	 162    	    POP(SREG,2);
+;     	 163    	    POP(SREG,1);
+;     	 164    	END;
+;     	 165    $;
+;     	 166    
+;BLISS-10 5(110) 	7/11/74  	10:34:47 		PLTDCL.BLI		Page 1-3
+
+;     	 167    	MACRO DEALLOC(WHERE,AMOUNT)=
+;     	 168    	BEGIN
+;     	 169    	    PUSH(SREG,1);
+;     	 170    	    PUSH(SREG,2);
+;     	 171    	    MOVEI(2,AMOUNT);
+;     	 172    	    MOVE(1,WHERE);
+;     	 173    	    ?DY.RET();
+;     	 174    	    POP(SREG,2);
+;     	 175    	    POP(SREG,1);
+;     	 176    	END;
+;     	 177    $;
+;     	 178    
+;     	 179    	MACRO DOABORT=HALT$;
+;     	 180    
+;     	 181    	MACRO SELFDATA(WHO)=
+;     	 182    	TASCII(WHO[LNAME]<ZZ>,.WHO[NAMLEN]);
+;     	 183    $;
+;     	 184    
+;     	 185    
+;     	 186    
+;     	 187    !***	SCALAR DECLARATIONS	***
+;     	 188    
+;     	 189    	%THESE ARE LOCAL RATHER THAN OWNED BECAUSE OF THE
+;     	 190    	REQUIREMENT IMPOSED BY LINK-10 OF MINIMIZING STATIC LOW SEG SP%
+;     	 191    
+;     	 192    	LOCAL	BRKQAD,	%SEE PHASE 2 OF BRKAPART%
+;     	 193    		LETR,	%2ND PART OF TRAP. NODE'S NAME%
+;     	 194    ! MADE A REG	MAXSON,	%SON WITH LARGEST WT. IN PH3 OF BRKAPART%
+;     	 195    		NAME[2],%INDEX PART OF SUBTREE NAMES%
+;     	 196    		ROOT[AMTNODE],	%NODE FOR ROOT OF TREE%
+;     	 197    		SIDE,	%IN INCHES, HEIGHT OF NODE%
+;     	 198    		TOP,	%WIDTH OF SAME%
+;     	 199    		TRAPSON[AMTNODE],	%DUMMY NODE%
+;     	 200    		XINCR,	%VERT DIST BETWEEN NODES%
+;     	 201    		XMAX;	%FURTHEST Y PT. PLOTTED%
+;     	 202    
+;     	 203    !***	STRUCTURES	***
+;     	 204    
+;     	 205    	STRUCTURE BASE[J,K,L]=
+;     	 206    	(@.BASE+.J)<.K,.L>;	%STANDARD BASED STRUCUTURE%
+;     	 207    
+;     	 208    	STRUCTURE FIXED[J,K,L]=
+;     	 209    	(.FIXED+.J)<.K,.L>;
+;     	 210    
+;     	 211    	STRUCTURE ARRN2[I]=
+;     	 212    	(.ARRN2+.I-DIAMOND)<WHOLE>;
+;     	 213    
+;     	 214    !***	MODULE-WIDE STRUCTURE MAPPINGS	***
+;     	 215    
+;     	 216    	MAP ARRN2 NAME;
+;     	 217    	MAP FIXED ROOT:TRAPSON;
+;     	 218    !	FORWARD GETSON;
+;     	 219    !	REQUIRE PLTDEB.BLI;
+;     	 220    	REQUIRE PLTOVL.BLI;
+;     	 221    
+;     	 222    
+;     	 223    %ACTUAL TOP LEVEL FUNCTION...THE MODULE CODE WHICH CALLS IT IS AT 
+;BLISS-10 5(110) 	7/11/74  	10:34:52 		PLTDCL.BLI		Page 1-4
+
+;     	 224     THE END OF THE FILE%
+;     	 225    
+;     	 226    FUNCTION OVLPLT=
+;     	 227    BEGIN
+;     	 228    	TMP1_GETSON(ROOT<ZZ>,0,0);
+;     	 229    	IF .TMP1 EQL 0 THEN (DOABORT);
+;     	 230    	SELFDATA(ROOT)
+;     	 231    	SUBTREE(ROOT<ZZ>);
+;     	 232    	BRKAPART(ROOT<ZZ>);
+;     	 233    	SELTREE2P(ROOT<ZZ>);
+;     	 234    	RETURN;
+;     	 235    END;
+;     	 236    
+
+OVLPLT:
+
+	PUSH	$S,13				;00000	
+	PUSH	$S,1($F)			;00001		Formal
+	HRRZ	$F,17				;00002	
+	SUBI	$F,1				;00003	
+	PUSH	$S,13				;00004	
+	ADD	$S,PLTO.L+0			;00005	
+	MOVE	01,1($F)			;00006	 228	Formal
+	HRRZI	01,14(01)			;00007		Local
+	PUSH	$S,1				;00010	
+	PUSH	$S,PLTO.L+1			;00011	
+	PUSH	$S,PLTO.L+1			;00012	
+	PUSHJ	$S,GETSON			;00013		External
+	SUB	$S,PLTO.L+2			;00014	
+	MOVE	14,15				;00015	 229
+	JUMPN	14,L.1				;00016	
+	JRST	04,0				;00017	
+L.1:	MOVE	03,1($F)			;00020	 230	Formal
+	HRRZI	03,20(03)			;00021		Local
+	PUSH	$S,3				;00022	
+	MOVE	04,1($F)			;00023		Formal
+	HLRZ	05,17(04)			;00024		Local
+	PUSH	$S,5				;00025	
+	PUSHJ	$S,TASCII			;00026	
+	SUB	$S,PLTO.L+3			;00027	
+	MOVE	01,1($F)			;00030	 231	Formal
+	HRRZI	01,14(01)			;00031		Local
+	PUSH	$S,1				;00032	
+	PUSHJ	$S,SUBTREE			;00033	
+	SUB	$S,PLTO.L+4			;00034	
+	MOVE	02,1($F)			;00035	 232	Formal
+	HRRZI	02,14(02)			;00036		Local
+	PUSH	$S,2				;00037	
+	PUSHJ	$S,BRKAPART			;00040	
+	SUB	$S,PLTO.L+4			;00041	
+	MOVE	03,1($F)			;00042	 233	Formal
+	HRRZI	03,14(03)			;00043		Local
+	PUSH	$S,3				;00044	
+	PUSHJ	$S,SELTREE2P			;00045	
+	SUB	$S,PLTO.L+4			;00046	
+	SETZ	$V,0				;00047	 234
+	SUB	$S,PLTO.L+5			;00050	 236
+;BLISS-10 5(110) 	7/11/74  	10:34:55 		PLTDCL.BLI		Page 1-5
+
+	POP	$S,13				;00051	
+	POPJ	$S,0				;00052	
+
+
+;     	 237    FUNCTION SUBTREE(SELF)=
+;     	 238    BEGIN
+;     	 239        MACRO NEWSON=TMP2$;
+;     	 240        REGISTER SON;
+;     	 241        MAP BASE SELF:SON:NEWSON;
+;     	 242        LOCAL IDX;
+;     	 243    
+;     	 244    	IDX_0;
+;     	 245    	WHILE 1 DO
+;     	 246    	BEGIN
+;     	 247    	    ALLOC(TMP1,AMTNODE)
+;     	 248    	    NEWSON_GETSON(.TMP1,.SELF[LNKNODE],.IDX);
+;     	 249    	    IF .NEWSON NEQ 0
+;     	 250    	    THEN BEGIN
+;     	 251    		IF .IDX EQL 0
+;     	 252    		THEN SELF[ASON]_.TMP1
+;     	 253    		ELSE SON[BROTHER]_.TMP1;
+;     	 254    		SON_.TMP1;
+;     	 255    		SELFDATA(SON)
+;     	 256    		SUBTREE(.SON);
+;     	 257    	    END
+;     	 258    	    ELSE BEGIN
+;     	 259    		IF .IDX EQL 0
+;     	 260    		THEN SELF[MYWT]_1.0;
+;     	 261    		RETURN;
+;     	 262    	    END;
+;     	 263    
+;     	 264    	    SELF[MYWT]_.SON[MYWT] PLUS .SELF[MYWT];
+;     	 265    	    IDX_.IDX+1;
+;     	 266    	END;
+;     	 267        RETURN;	%CANNOT BE REACHED%
+;     	 268    END;
+;     	 269    
+
+SUBTREE:
+
+	PUSH	$S,13				;00000	
+	PUSH	$S,1($F)			;00001		Formal
+	HRRZ	$F,17				;00002	
+	SUBI	$F,1				;00003	
+	PUSH	$S,13				;00004	
+	MOVEM	07,3($F)			;00005		Formal
+	MOVEM	11,4($F)			;00006		Formal
+	ADD	$S,PLTO.L+6			;00007	
+	SETZM	00,11($F)			;00010	 239	Local
+L.2:	PUSH	$S,1				;00011	 247
+	PUSH	$S,2				;00012	
+	MOVEI	02,7				;00013	
+	PUSHJ	$S,DY.GET			;00014		External
+	MOVEM	01,14				;00015	
+	HRLM	02,0(01)			;00016	
+	POP	$S,2				;00017	
+	POP	$S,1				;00020	
+;BLISS-10 5(110) 	7/11/74  	10:35:01 		PLTDCL.BLI		Page 1-6
+
+	PUSH	$S,14				;00021	 248
+	MOVE	$V,-2($F)			;00022		Formal
+	HLRZ	03,2($V)			;00023	
+	PUSH	$S,3				;00024	
+	PUSH	$S,11($F)			;00025		Local
+	PUSHJ	$S,GETSON			;00026		External
+	SUB	$S,PLTO.L+2			;00027	
+	MOVE	12,15				;00030	 249
+	JUMPE	12,L.3				;00031	
+	SKIPE	05,11($F)			;00032	 251	Local
+	JRST	00,L.4				;00033	
+	MOVE	$V,-2($F)			;00034	 253	Formal
+	HRRM	14,1($V)			;00035	
+	JRST	00,L.5				;00036	
+L.4:	HRRM	14,2(11)			;00037	 254
+L.5:	MOVE	11,14				;00040	 255
+	HRRZI	$V,4(11)			;00041	
+	PUSH	$S,15				;00042	
+	HLRZ	01,3(11)			;00043	
+	PUSH	$S,1				;00044	
+	PUSHJ	$S,TASCII			;00045	
+	SUB	$S,PLTO.L+3			;00046	
+	PUSH	$S,11				;00047	 256
+	PUSHJ	$S,SUBTREE			;00050	
+	SUB	$S,PLTO.L+4			;00051	
+	JRST	00,L.6				;00052	 257
+L.3:	SKIPE	05,11($F)			;00053	 259	Local
+	JRST	00,L.7				;00054	
+	MOVE	01,-2($F)			;00055	 261	Formal
+	HRLZI	03,201400			;00056	
+	MOVEM	03,6(01)			;00057	
+	JRST	00,L.7				;00060	
+L.6:	MOVE	05,-2($F)			;00061	 263	Formal
+	MOVE	02,6(11)			;00062	
+	FADR	02,6(05)			;00063	
+	MOVEM	02,6(05)			;00064	
+	AOS	01,11($F)			;00065	 266	Local
+	JRST	00,L.2				;00066	 267	^^^
+L.7:	SETZ	$V,0				;00067	
+	SUB	$S,PLTO.L+4			;00070	
+	MOVE	07,3($F)			;00071	 269	Formal
+	MOVE	11,4($F)			;00072		Formal
+	SUB	$S,PLTO.L+5			;00073	
+	POP	$S,13				;00074	
+	POPJ	$S,0				;00075	
+
+
+;BLISS-10 5(110) 	7/11/74  	10:35:03 		PLTDCL.BLI		Page 2
+
+;     	 270    FUNCTION BRKAPART(MEMSELF)=
+;     	 271    BEGIN
+;     	 272    
+;     	 273    % FUNCTION CONSISTS OF 3 PHASES:
+;     	 274    1) RECURSIVELY BRKAPART ANY SON WHOSE WEIGHT IS GTR THAN MAX
+;     	 275    2) CREATE SUB-TREES FOR ALL SONS SUCH THAT BRKQAD>SONWT>MAXWT
+;     	 276    3) IF PREV. 2 STEPS NOT SUFFICIENT, TAKE LARGEST & SUCCESSIVELY SMALLER
+;     	 277       SONS LEFT AND MAKE SUB-TREES OUT OF THEM.
+;     	 278       IF SELF WEIGHT STILL TOO LARGE, BREAK UP TRAPEZOIDALLY
+;     	 279    %
+;     	 280    
+;     	 281    	REGISTER SON,SELF,SELFWT,NXOFPRV;
+;     	 282    	MAP 	BASE SELF:SON;
+;     	 283    	MACRO RESTRETWT=(SELF[MYWT]_.SELFWT; RETURN(.SELFWT))$;
+;     	 284    
+;     	 285    	SELF_.MEMSELF;
+;     	 286    	SELFWT_.SELF[MYWT];
+;     	 287    
+;     	 288    %PHASE 1%
+;     	 289    	SON_.SELF[ASON];
+;     	 290    	WHILE .SON NEQ 0 DO
+;     	 291    	BEGIN
+;     	 292    	    IF .SON[MYWT] GTR .MAXWT
+;     	 293    	    THEN BEGIN
+;     	 294    		SELFWT_.SELFWT SUB .SON[MYWT];
+;     	 295    		SELFWT_.SELFWT PLUS BRKAPART(.SON);
+;     	 296    	    END;
+;     	 297    	    SON_.SON[BROTHER];
+;     	 298    	END;
+;     	 299    
+;     	 300    	IF .SELFWT LEQ .MAXWT
+;     	 301    	THEN RESTRETWT;
+;     	 302    
+;     	 303    %PHASE 2%
+;     	 304    	NXOFPRV_SELF[ASON]<ZZ>;
+;     	 305    	SON_.SELF[ASON];
+;     	 306    
+;     	 307    	WHILE .SON NEQ 0 DO
+;     	 308    	BEGIN
+;     	 309    		IF .SON[MYWT] GTR .BRKQAD
+;     	 310    		THEN BEGIN
+;     	 311    		    SELFWT_.SELFWT SUB .SON[MYWT] PLUS 1.0;
+;     	 312    		    SON_MAKTREE(DIAMOND,.SON,.NXOFPRV,.SON[MYWT]);
+;     	 313    		    IF .SELFWT LEQ .MAXWT
+;     	 314    		    THEN RESTRETWT;
+;     	 315    		END;
+;     	 316    		NXOFPRV_SON[BROTHER]<ZZ>;
+;     	 317    		SON_.SON[BROTHER];	%NOTE THAT THIS WORKS WHEN IF SATISFIED BECAUSE MAKTREE
+;     	 318    					RESETS ALL POINTERS%
+;     	 319    	END;
+;     	 320    
+;     	 321    %PHASE 3%
+;     	 322    	WHILE 1 DO
+;     	 323    	BEGIN
+;     	 324    	    MACRO MAXNOP=TMP1$,MAXSON=TMP2$;	%NOTE THAT THESE TWO ARE
+;     	 325    						GARBAGE AFTER THE 2 FUNCTION REFS%
+;     	 326    	    MAP BASE MAXSON;
+;BLISS-10 5(110) 	7/11/74  	10:35:09 		PLTDCL.BLI		Page 2-1
+
+;     	 327    	    MAXSON_TRAPSON<ZZ>;
+;     	 328    	    NXOFPRV_SELF[ASON]<ZZ>;
+;     	 329    	    SON_.SELF[ASON];
+;     	 330    	    WHILE .SON NEQ 0 DO
+;     	 331    	    BEGIN
+;     	 332    		IF .SON[MYWT] GTR .MAXSON[MYWT]
+;     	 333    		THEN (MAXSON_.SON; MAXNOP_.NXOFPRV);
+;     	 334    		NXOFPRV_SON[BROTHER]<ZZ>;
+;     	 335    		SON_.SON[BROTHER];
+;     	 336    	    END;
+;     	 337    
+;     	 338    	    IF .MAXSON EQL TRAPSON<ZZ>
+;     	 339    	    THEN BEGIN
+;     	 340    		SELF[MYWT]_.SELFWT;	%TRAPBRK WILL ADJUST SELF[MYWT]--GET IT UP TO DATE%
+;     	 341    		DO TRAPBRK(.SELF)  UNTIL .SELF[MYWT] LEQ .MAXWT;
+;     	 342    		RETURN(.SELF[MYWT]);
+;     	 343    	    END;
+;     	 344    
+;     	 345    	    SELFWT_.SELFWT SUB .MAXSON[MYWT] PLUS 1.0;
+;     	 346    %TAKES ADVAN OF VAL PASSING--MAXSON AND MAXNOP%
+;     	 347    	    SON_MAKTREE(DIAMOND,.MAXSON,.MAXNOP,.MAXSON[MYWT]);
+;     	 348    	    IF .SELFWT LEQ .MAXWT 
+;     	 349    	    THEN RESTRETWT;
+;     	 350    	END;
+;     	 351        RETURN;
+;     	 352    END;
+;     	 353    
+
+BRKAPART:
+
+	PUSH	$S,13				;00000	
+	PUSH	$S,1($F)			;00001		Formal
+	HRRZ	$F,17				;00002	
+	SUBI	$F,1				;00003	
+	PUSH	$S,13				;00004	
+	MOVEM	06,3($F)			;00005		Formal
+	MOVEM	07,4($F)			;00006		Formal
+	MOVEM	10,5($F)			;00007		Formal
+	MOVEM	11,6($F)			;00010		Formal
+	ADD	$S,PLTO.L+0			;00011	
+	MOVE	10,-2($F)			;00012	 272	Formal
+	MOVE	07,6(10)			;00013	 287
+	HRRZ	11,1(10)			;00014	 290
+L.10:	JUMPE	11,L.11				;00015	
+	MOVE	02,LEAVES			;00016	 292	External
+	CAML	02,6(11)			;00017	
+	JRST	00,L.12				;00020	
+	FSBR	07,6(11)			;00021	 295
+	PUSH	$S,11				;00022	
+	PUSHJ	$S,BRKAPART			;00023	
+	SUB	$S,PLTO.L+4			;00024	
+	FADR	07,15				;00025	 296
+L.12:	HRRZ	11,2(11)			;00026	 297
+	JRST	00,L.10				;00027	 299	^^^
+L.11:	CAMG	07,LEAVES			;00030		External
+	JRST	00,L.13				;00031	
+	HRRZI	05,1(10)			;00032	 305
+;BLISS-10 5(110) 	7/11/74  	10:35:16 		PLTDCL.BLI		Page 2-2
+
+	MOVE	06,5				;00033	
+	HRRZ	11,1(10)			;00034	 306
+L.14:	JUMPE	11,L.15				;00035	
+	MOVE	02,1($F)			;00036	 309	Formal
+	MOVE	03,10(02)			;00037		Local
+	CAML	03,6(11)			;00040	
+	JRST	00,L.16				;00041	
+	MOVE	05,7				;00042	 312
+	FSBR	05,6(11)			;00043	
+	FADRI	05,201400			;00044	
+	MOVE	07,5				;00045	
+	PUSH	$S,PLTO.L+7			;00046	
+	PUSH	$S,11				;00047	
+	PUSH	$S,6				;00050	
+	PUSH	$S,6(11)			;00051	
+	PUSHJ	$S,MAKTREE			;00052	
+	SUB	$S,PLTO.L+10			;00053	
+	MOVE	11,15				;00054	 313
+	CAMLE	07,LEAVES			;00055		External
+	JRST	00,L.16				;00056	
+L.13:	MOVEM	07,6(10)			;00057	
+	MOVE	$V,7				;00060	
+	JRST	00,L.17				;00061	
+L.16:	HRRZI	05,2(11)			;00062	 315
+	MOVE	06,5				;00063	
+	HRRZ	11,2(11)			;00064	 318
+	JRST	00,L.14				;00065	 320	^^^
+L.15:	MOVE	12,1($F)			;00066	 324	Formal
+	MOVEI	12,25(12)			;00067		Local
+	HRRZI	01,1(10)			;00070	 329
+	MOVE	06,1				;00071	
+	HRRZ	11,1(10)			;00072	 330
+L.20:	JUMPE	11,L.21				;00073	
+	MOVE	03,6(12)			;00074	 332
+	CAML	03,6(11)			;00075	
+	JRST	00,L.22				;00076	
+	MOVE	12,11				;00077	
+	MOVE	14,6				;00100	
+L.22:	HRRZI	05,2(11)			;00101	 334
+	MOVE	06,5				;00102	
+	HRRZ	11,2(11)			;00103	 336
+	JRST	00,L.20				;00104	 337	^^^
+L.21:	MOVE	01,1($F)			;00105	 339	Formal
+	CAIE	12,25(01)			;00106		Local
+	JRST	00,L.23				;00107	
+	MOVEM	07,6(10)			;00110	 341
+L.24:	PUSH	$S,10				;00111	
+	PUSHJ	$S,TRAPBRK			;00112	
+	SUB	$S,PLTO.L+4			;00113	
+	MOVE	03,LEAVES			;00114	 342	External
+	CAMGE	03,6(10)			;00115	
+	JRST	00,L.24				;00116		^^^
+	MOVE	$V,6(10)			;00117	
+	JRST	00,L.17				;00120	
+L.23:	MOVE	03,7				;00121	 344
+	FSBR	03,6(12)			;00122	
+	FADRI	03,201400			;00123	
+;BLISS-10 5(110) 	7/11/74  	10:35:16 		PLTDCL.BLI		Page 2-3
+
+	MOVE	07,3				;00124	
+	PUSH	$S,PLTO.L+7			;00125	
+	PUSH	$S,12				;00126	
+	PUSH	$S,14				;00127	
+	PUSH	$S,6(12)			;00130	
+	PUSHJ	$S,MAKTREE			;00131	
+	SUB	$S,PLTO.L+10			;00132	
+	MOVE	11,15				;00133	 348
+	CAMLE	07,LEAVES			;00134		External
+	JRST	00,L.15				;00135		^^^
+	MOVEM	07,6(10)			;00136	
+	SKIPA	$V,7				;00137	
+	SETZ	$V,0				;00140	 351
+L.17:	MOVE	06,3($F)			;00141	 353	Formal
+	MOVE	07,4($F)			;00142		Formal
+	MOVE	10,5($F)			;00143		Formal
+	MOVE	11,6($F)			;00144		Formal
+	SUB	$S,PLTO.L+5			;00145	
+	POP	$S,13				;00146	
+	POPJ	$S,0				;00147	
+
+
+;BLISS-10 5(110) 	7/11/74  	10:35:19 		PLTDCL.BLI		Page 3
+
+;     	 354    FUNCTION PLTTREE(SELF,WIDTH,OFFST,XSON,YSELF)=
+;     	 355    BEGIN
+;     	 356    	REGISTER SON;
+;     	 357    	LOCAL SONWIDTH,XCOM,YSON;
+;     	 358    	MAP 	BASE SELF:SON;
+;     	 359    
+;     	 360    	IF .XSON GTR .XMAX THEN XMAX_.XSON;
+;     	 361    	SON_.SELF[ASON];
+;     	 362    	XCOM_.XSON SUB ((.XINCR SUB .SIDE) MUL 0.667);
+;     	 363    	SONWIDTH_(.SON[MYWT] DVIDE .SELF[MYWT]) MUL .WIDTH;
+;     	 364    	YSON_.OFFST PLUS .SONWIDTH DVIDE 2.0;
+;     	 365    	IF .LPBUF NEQ PLTDIAG
+;     	 366    	THEN PLTLINE(.XSON SUB .XINCR PLUS .SIDE, .YSELF, .XCOM, .YSELF);
+;     	 367    
+;     	 368    	WHILE .SON NEQ 0 DO
+;     	 369    	BEGIN
+;     	 370    	    SONWIDTH_(.SON[MYWT] DVIDE .SELF[MYWT]) MUL .WIDTH;
+;     	 371    	    TMP2_.OFFST PLUS .SONWIDTH DVIDE 2.0;
+;     	 372    	    IF .LPBUF EQL PLTDIAG
+;     	 373    	    THEN PLTLINE(.XSON SUB .XINCR PLUS .SIDE, .YSELF, .XSON, .TMP2)
+;     	 374    	    ELSE BEGIN
+;     	 375    		PLTLINE(.XCOM, .YSON, .XCOM, .TMP2);
+;     	 376    		PLTLINE(.XCOM, .TMP2, .XSON, .TMP2);
+;     	 377    	    END;
+;     	 378    	    YSON_.TMP2;
+;     	 379    	    PLTPOLY(.XSON, .YSON, .SON[NAMLEN], .SON[LNUM], .SON[LNAME], .SON[1+LNAME]);
+;     	 380    
+;     	 381    	    IF .SON[ASON] NEQ 0
+;     	 382    	    THEN PLTTREE(.SON,.SONWIDTH,.OFFST,.XSON PLUS .XINCR,.YSON);
+;     	 383    	    OFFST_.OFFST PLUS .SONWIDTH;
+;     	 384    	    SON_.SON[BROTHER];
+;     	 385    	END;
+;     	 386    	RETURN; %THE FORM OF THE WHILE AND THIS, ENDS THE RECURSION%
+;     	 387    END;
+;     	 388    
+
+PLTTREE:
+
+	PUSH	$S,13				;00000	
+	PUSH	$S,1($F)			;00001		Formal
+	HRRZ	$F,17				;00002	
+	SUBI	$F,1				;00003	
+	PUSH	$S,13				;00004	
+	MOVEM	11,3($F)			;00005		Formal
+	ADD	$S,PLTO.L+11			;00006	
+	MOVE	01,1($F)			;00007	 356	Formal
+	MOVE	02,35(01)			;00010		Local
+	CAML	02,-3($F)			;00011		Formal
+	JRST	00,L.25				;00012	
+	MOVE	04,1($F)			;00013	 361	Formal
+	MOVE	05,-3($F)			;00014		Formal
+	MOVEM	05,35(04)			;00015		Local
+L.25:	MOVE	04,-6($F)			;00016	 362	Formal
+	HRRZ	11,1(04)			;00017	
+	MOVE	05,1($F)			;00020	 363	Formal
+	MOVE	01,34(05)			;00021		Local
+	MOVE	02,1($F)			;00022		Formal
+;BLISS-10 5(110) 	7/11/74  	10:35:34 		PLTDCL.BLI		Page 3-1
+
+	FSBR	01,23(02)			;00023		Local
+	FMPR	01,PLTO.L+12			;00024	
+	MOVE	03,-3($F)			;00025		Formal
+	FSBR	03,1				;00026	
+	MOVEM	03,12($F)			;00027		Local
+	MOVE	05,6(11)			;00030	 364
+	FDVR	05,6(04)			;00031	
+	FMPR	05,-5($F)			;00032		Formal
+	MOVEM	05,11($F)			;00033		Local
+	FDVRI	05,202400			;00034	 365
+	FADR	05,-4($F)			;00035		Formal
+	MOVEM	05,13($F)			;00036		Local
+	SKIPN	02,LPBUF			;00037		External
+	JRST	00,L.26				;00040	
+	MOVE	$V,-3($F)			;00041		Formal
+	MOVE	03,1($F)			;00042		Formal
+	FSBR	$V,34(03)			;00043		Local
+	MOVE	04,1($F)			;00044		Formal
+	FADR	$V,23(04)			;00045		Local
+	PUSH	$S,15				;00046	
+	PUSH	$S,-2($F)			;00047		Formal
+	PUSH	$S,12($F)			;00050		Local
+	PUSH	$S,-2($F)			;00051		Formal
+	PUSHJ	$S,PLTLINE			;00052		External
+	SUB	$S,PLTO.L+10			;00053	
+L.26:	JUMPE	11,L.27				;00054	 367
+	MOVE	04,-6($F)			;00055	 370	Formal
+	MOVE	05,6(11)			;00056	
+	FDVR	05,6(04)			;00057	
+	FMPR	05,-5($F)			;00060		Formal
+	MOVEM	05,11($F)			;00061		Local
+	FDVRI	05,202400			;00062	 372
+	FADR	05,-4($F)			;00063		Formal
+	MOVE	12,5				;00064	
+	SKIPE	02,LPBUF			;00065		External
+	JRST	00,L.30				;00066	
+	MOVE	$V,-3($F)			;00067		Formal
+	MOVE	03,1($F)			;00070		Formal
+	FSBR	$V,34(03)			;00071		Local
+	MOVE	04,1($F)			;00072		Formal
+	FADR	$V,23(04)			;00073		Local
+	PUSH	$S,15				;00074	
+	PUSH	$S,-2($F)			;00075		Formal
+	JRST	00,L.31				;00076	
+L.30:	PUSH	$S,12($F)			;00077	 374	Local
+	PUSH	$S,13($F)			;00100		Local
+	PUSH	$S,12($F)			;00101		Local
+	PUSH	$S,12				;00102	
+	PUSHJ	$S,PLTLINE			;00103		External
+	SUB	$S,PLTO.L+10			;00104	
+	PUSH	$S,12($F)			;00105	 376	Local
+	PUSH	$S,12				;00106	
+L.31:	PUSH	$S,-3($F)			;00107		Formal
+	PUSH	$S,12				;00110	
+	PUSHJ	$S,PLTLINE			;00111		External
+	SUB	$S,PLTO.L+10			;00112	
+	MOVEM	12,13($F)			;00113	 377	Local
+;BLISS-10 5(110) 	7/11/74  	10:35:34 		PLTDCL.BLI		Page 3-2
+
+	PUSH	$S,-3($F)			;00114		Formal
+	PUSH	$S,13($F)			;00115		Local
+	HLRZ	03,3(11)			;00116	
+	PUSH	$S,3				;00117	
+	HRRZ	04,3(11)			;00120	
+	PUSH	$S,4				;00121	
+	PUSH	$S,4(11)			;00122	
+	PUSH	$S,5(11)			;00123	
+	PUSHJ	$S,PLTPOLY			;00124		External
+	SUB	$S,PLTO.L+0			;00125	
+	HRRZ	05,1(11)			;00126	 380
+	JUMPE	05,L.32				;00127	
+	PUSH	$S,11				;00130	
+	PUSH	$S,11($F)			;00131		Local
+	PUSH	$S,-4($F)			;00132		Formal
+	MOVE	$V,-3($F)			;00133		Formal
+	MOVE	01,1($F)			;00134		Formal
+	FADR	$V,34(01)			;00135		Local
+	PUSH	$S,15				;00136	
+	PUSH	$S,13($F)			;00137		Local
+	PUSHJ	$S,PLTTREE			;00140	
+	SUB	$S,PLTO.L+13			;00141	
+L.32:	MOVE	01,11($F)			;00142	 383	Local
+	FADRB	01,-4($F)			;00143		Formal
+	HRRZ	11,2(11)			;00144	 385
+	JRST	00,L.26				;00145	 386	^^^
+L.27:	SETZ	$V,0				;00146	
+	SUB	$S,PLTO.L+2			;00147	
+	MOVE	11,3($F)			;00150	 388	Formal
+	SUB	$S,PLTO.L+5			;00151	
+	POP	$S,13				;00152	
+	POPJ	$S,0				;00153	
+
+
+;BLISS-10 5(110) 	7/11/74  	10:35:35 		PLTDCL.BLI		Page 4
+
+;     	 389    FUNCTION TRAPBRK(SELF)=
+;     	 390    BEGIN
+;     	 391    	MACRO TRAPWT=TMP2$;
+;     	 392    	REGISTER SON,NXOFPRV;
+;     	 393    	LOCAL MAXTRP,RMSON;
+;     	 394    	MAP BASE SELF:SON:NXOFPRV;
+;     	 395    
+;     	 396    	TMP1_2.0;
+;     	 397    	DO BEGIN
+;     	 398    	    MAXTRP_.SELF[MYWT] DVIDE .TMP1;
+;     	 399    	    TMP1_.TMP1 PLUS 1.0;
+;     	 400    	END WHILE .MAXTRP GTR .MAXWT;
+;     	 401    
+;     	 402    %	THIS IF-STAT CONSTITUTES A SIMPLE HEURISTIC FOR HELPING TREES LOOK PRETTY%
+;     	 403    
+;     	 404    	IF .MAXTRP PLUS 2.0 GTR .MAXWT 
+;     	 405    	THEN MAXTRP_.MAXWT
+;     	 406    	ELSE MAXTRP_.MAXTRP PLUS 1.0;
+;     	 407    
+;     	 408    	SON_.SELF[ASON];
+;     	 409    	NXOFPRV_SELF[ASON]<ZZ>;
+;     	 410    	TRAPWT_0;
+;     	 411    	% RMSON NO INIT SINCE AT LEAST 1 SON%
+;     	 412    
+;     	 413    	LETR_'A';	%TRAP NODES ARE PUT OUT AS 1A,1B,1C,...%
+;     	 414    	WHILE .SON NEQ 0 DO
+;     	 415    	BEGIN
+;     	 416    	    IF .TRAPWT PLUS .SON[MYWT] GTR .MAXTRP
+;     	 417    	    THEN BEGIN
+;     	 418    		SELF[MYWT]_.SELF[MYWT] SUB .TRAPWT PLUS 1.0;
+;     	 419    		NXOFPRV_MAKTREE(TRAPZOID,.RMSON,.NXOFPRV,.TRAPWT);	%MAKTR RETURNS THE NEW LEAF%
+;     	 420    
+;     	 421    		NXOFPRV_NXOFPRV[BROTHER]<ZZ>;
+;     	 422    		TRAPWT_.SON[MYWT];
+;     	 423    	    END
+;     	 424    	    ELSE TRAPWT_.TRAPWT PLUS .SON[MYWT];
+;     	 425    	    RMSON_.SON;
+;     	 426    	    SON_.SON[BROTHER];
+;     	 427    	END;
+;     	 428    	IF .TRAPWT GTR .TRAPSON[MYWT]
+;     	 429    	THEN BEGIN
+;     	 430    		SELF[MYWT]_.SELF[MYWT] SUB .TRAPWT PLUS 1.0;
+;     	 431    		NXOFPRV_MAKTREE(TRAPZOID,.RMSON,.NXOFPRV,.TRAPWT);
+;     	 432    	END;
+;     	 433    	NAME[TRAPZOID]_.NAME[TRAPZOID] PLUS 1.0;
+;     	 434    
+;     	 435    	RETURN;
+;     	 436    END;
+;     	 437    
+
+TRAPBRK:
+
+	PUSH	$S,13				;00000	
+	PUSH	$S,1($F)			;00001		Formal
+	HRRZ	$F,17				;00002	
+	SUBI	$F,1				;00003	
+	PUSH	$S,13				;00004	
+;BLISS-10 5(110) 	7/11/74  	10:35:46 		PLTDCL.BLI		Page 4-1
+
+	MOVEM	10,3($F)			;00005		Formal
+	MOVEM	11,4($F)			;00006		Formal
+	ADD	$S,PLTO.L+5			;00007	
+	HRLZI	14,202400			;00010	 391
+L.33:	MOVE	01,-2($F)			;00011	 398	Formal
+	MOVE	02,6(01)			;00012	
+	FDVR	02,14				;00013	
+	MOVEM	02,11($F)			;00014		Local
+	FADRI	14,201400			;00015	 400
+	CAMLE	02,LEAVES			;00016		External
+	JRST	00,L.33				;00017		^^^
+	MOVE	04,11($F)			;00020	 405	Local
+	FADRI	04,202400			;00021	
+	CAMG	04,LEAVES			;00022		External
+	JRST	00,L.34				;00023	
+	MOVE	$V,LEAVES			;00024	 406	External
+	MOVEM	$V,11($F)			;00025		Local
+	JRST	00,L.35				;00026	
+L.34:	HRLZI	01,201400			;00027	 407
+	FADRB	01,11($F)			;00030		Local
+L.35:	MOVE	01,-2($F)			;00031	 409	Formal
+	HRRZ	11,1(01)			;00032	
+	HRRZI	02,1(01)			;00033	 410
+	MOVE	10,2				;00034	
+	SETZ	12,0				;00035	 411
+	MOVE	03,1($F)			;00036	 414	Formal
+	HRLZI	04,404000			;00037	
+	MOVEM	04,11(03)			;00040		Local
+L.36:	JUMPE	11,L.37				;00041	
+	MOVE	01,12				;00042	 416
+	FADR	01,6(11)			;00043	
+	CAMG	01,11($F)			;00044		Local
+	JRST	00,L.40				;00045	
+	MOVE	03,-2($F)			;00046	 419	Formal
+	MOVE	04,6(03)			;00047	
+	FSBR	04,12				;00050	
+	FADRI	04,201400			;00051	
+	MOVEM	04,6(03)			;00052	
+	PUSH	$S,PLTO.L+14			;00053	
+	PUSH	$S,12($F)			;00054		Local
+	PUSH	$S,10				;00055	
+	PUSH	$S,12				;00056	
+	PUSHJ	$S,MAKTREE			;00057	
+	SUB	$S,PLTO.L+10			;00060	
+	MOVE	10,15				;00061	 420
+	HRRZI	05,2(10)			;00062	 422
+	MOVE	10,5				;00063	
+	SKIPA	12,6(11)			;00064	 423
+L.40:	MOVE	12,1				;00065	 425
+	MOVEM	11,12($F)			;00066	 426	Local
+	HRRZ	11,2(11)			;00067	 427
+	JRST	00,L.36				;00070	 428	^^^
+L.37:	MOVE	03,1($F)			;00071	 429	Formal
+	CAMG	12,33(03)			;00072		Local
+	JRST	00,L.41				;00073	
+	MOVE	05,-2($F)			;00074	 431	Formal
+	MOVE	01,6(05)			;00075	
+;BLISS-10 5(110) 	7/11/74  	10:35:46 		PLTDCL.BLI		Page 4-2
+
+	FSBR	01,12				;00076	
+	FADRI	01,201400			;00077	
+	MOVEM	01,6(05)			;00100	
+	PUSH	$S,PLTO.L+14			;00101	
+	PUSH	$S,12($F)			;00102		Local
+	PUSH	$S,10				;00103	
+	PUSH	$S,12				;00104	
+	PUSHJ	$S,MAKTREE			;00105	
+	SUB	$S,PLTO.L+10			;00106	
+	MOVE	10,15				;00107	 432
+L.41:	HRLZI	05,201400			;00110	 433
+	MOVE	01,1($F)			;00111		Formal
+	FADRB	05,13(01)			;00112		Local
+	SETZ	$V,0				;00113	
+	SUB	$S,PLTO.L+3			;00114	
+	MOVE	10,3($F)			;00115	 437	Formal
+	MOVE	11,4($F)			;00116		Formal
+	SUB	$S,PLTO.L+5			;00117	
+	POP	$S,13				;00120	
+	POPJ	$S,0				;00121	
+
+
+;     	 438    FUNCTION MAKTREE(TYPE,FWDSELF,PREV,WEIT)=
+;     	 439    BEGIN
+;     	 440        MAP BASE FWDSELF:PREV:TMP1:TMP2;
+;     	 441    
+;     	 442    %NEW "ROOT"%
+;     	 443    	ALLOC(TMP1,AMTNODE)
+;     	 444    	TMP1[MYWT]_.WEIT;
+;     	 445    	TMP1[LNUM]_.TYPE;
+;     	 446    	TMP1[ASON]_@.PREV;
+;     	 447    	TMP2_.TMP1;	%WILL BE NEEDED FOR LNKNODE%
+;     	 448    
+;     	 449    %NEW LEAF%
+;     	 450    	ALLOC(TMP1,AMTNODE)
+;     	 451    	TMP1[LNUM]_.TYPE;
+;     	 452    	TMP1[MYWT]_1.0;
+;     	 453    	TMP1[BROTHER]_.FWDSELF[BROTHER];
+;     	 454    	TMP1[LNKNODE]_.TMP2;	%THE TREE SPAWNED BY PSEUDO LEAF IS
+;     	 455    				CHAINED THRU THIS MECH RATHER THAN SON MECH%
+;     	 456    	PREV[NEXT]_.TMP1;
+;     	 457    
+;     	 458    %SUPPLANTED SON%
+;     	 459    	FWDSELF[BROTHER]_0;
+;     	 460    
+;     	 461    %NAME PROCESSING--COMMON TO BOTH%
+;     	 462    
+;     	 463    	TMP2[LNAME]_TMP1[LNAME]_.NAME[.TYPE];
+;     	 464    	IF .TYPE EQL DIAMOND
+;     	 465    	THEN BEGIN
+;     	 466    	    NAME[DIAMOND]_.NAME[DIAMOND] PLUS 1.0;
+;     	 467    	END
+;     	 468    	ELSE BEGIN
+;     	 469    		TMP2[1+LNAME]_TMP1[1+LNAME]_.LETR;
+;     	 470    		LETR_.LETR + 1^29;
+;     	 471    	END;
+;     	 472    
+;BLISS-10 5(110) 	7/11/74  	10:35:54 		PLTDCL.BLI		Page 4-3
+
+;     	 473    	RETURN(.TMP1);
+;     	 474    END;
+;     	 475    
+
+MAKTREE:
+
+	PUSH	$S,13				;00000	
+	PUSH	$S,1($F)			;00001		Formal
+	HRRZ	$F,17				;00002	
+	SUBI	$F,1				;00003	
+	PUSH	$S,13				;00004	
+	MOVEM	07,3($F)			;00005		Formal
+	ADD	$S,PLTO.L+0			;00006	
+	PUSH	$S,1				;00007	 440
+	PUSH	$S,2				;00010	
+	MOVEI	02,7				;00011	
+	PUSHJ	$S,DY.GET			;00012		External
+	MOVEM	01,14				;00013	
+	HRLM	02,0(01)			;00014	
+	POP	$S,2				;00015	
+	POP	$S,1				;00016	
+	MOVE	03,-2($F)			;00017	 445	Formal
+	MOVEM	03,6(14)			;00020	
+	MOVE	04,-5($F)			;00021	 446	Formal
+	HRRM	04,3(14)			;00022	
+	MOVE	05,-3($F)			;00023	 447	Formal
+	MOVE	02,0(05)			;00024	
+	HRRM	02,1(14)			;00025	
+	MOVE	12,14				;00026	 448
+	PUSH	$S,1				;00027	
+	PUSH	$S,2				;00030	
+	MOVEI	02,7				;00031	
+	PUSHJ	$S,DY.GET			;00032		External
+	MOVEM	01,14				;00033	
+	HRLM	02,0(01)			;00034	
+	POP	$S,2				;00035	
+	POP	$S,1				;00036	
+	MOVE	03,-5($F)			;00037	 452	Formal
+	HRRM	03,3(14)			;00040	
+	HRLZI	04,201400			;00041	 453
+	MOVEM	04,6(14)			;00042	
+	MOVE	05,-4($F)			;00043	 454	Formal
+	HRRZ	02,2(05)			;00044	
+	HRRM	02,2(14)			;00045	
+	HRLM	12,2(14)			;00046	 455
+	MOVE	01,-3($F)			;00047	 457	Formal
+	HRRM	14,0(01)			;00050	
+	HLLZS	00,2(05)			;00051	 460
+	SUBI	03,303240			;00052	 464
+	ADD	03,1($F)			;00053		Formal
+	MOVE	04,12(03)			;00054		Local
+	MOVEM	04,4(14)			;00055	
+	MOVEM	04,4(12)			;00056	
+	MOVE	02,-5($F)			;00057	 465	Formal
+	CAIE	02,303240			;00060	
+	JRST	00,L.42				;00061	
+	HRLZI	05,201400			;00062	 467
+;BLISS-10 5(110) 	7/11/74  	10:35:56 		PLTDCL.BLI		Page 4-4
+
+	MOVE	03,1($F)			;00063		Formal
+	FADRB	05,12(03)			;00064		Local
+	JRST	00,L.43				;00065	
+L.42:	MOVE	05,1($F)			;00066	 469	Formal
+	MOVE	03,11(05)			;00067		Local
+	MOVEM	03,5(14)			;00070	
+	MOVEM	03,5(12)			;00071	
+	HRLZI	04,4000				;00072	 471
+	MOVE	02,1($F)			;00073		Formal
+	ADDB	04,11(02)			;00074		Local
+L.43:	MOVE	$V,14				;00075	 472
+	MOVE	07,3($F)			;00076	 475	Formal
+	SUB	$S,PLTO.L+5			;00077	
+	POP	$S,13				;00100	
+	POPJ	$S,0				;00101	
+
+
+;BLISS-10 5(110) 	7/11/74  	10:35:56 		PLTDCL.BLI		Page 5
+
+;     	 476    FUNCTION SELTREE2P(CUROOT)=
+;     	 477    BEGIN
+;     	 478    
+;     	 479    %THIS FUNCTION AND FNDLEAVES HAVE A FUNNY RECURSIVE INTERACTION--
+;     	 480    THE RECURSION IS CAUSED BY THE LOWER LEVEL FUNCTION FNDLEAVES.
+;     	 481    THIS 2-LEVEL APPROACH IS NECESSARY BECAUSE (SUBTREE) ROOTS MUST BE
+;     	 482    DISTINGUISHED FROM ALL OTHER NODES SO THAT THE SUBTREES CAN BE
+;     	 483    PLOTTED IN THE MOST INTUITIVE ORDER%
+;     	 484    %AFTER PLOTTING A TREE-- THIS PROG CALLS FNDLEAVES TO SEE IF THE CURRENT
+;     	 485    TREE IS CHAINED TO ANY OTHER TREES%
+;     	 486    
+;     	 487    	REGISTER BASE TRI;
+;     	 488    
+;     	 489    	MACRO INCHO2=TMP2$;
+;     	 490    
+;     	 491    	INCHO2_.INCHES DVIDE 2.0;
+;     	 492    	XMAX_.XMAX PLUS 3.0;
+;     	 493    	IF .LPBUF NEQ 0 THEN PLTINIT(.XMAX, 0);
+;     	 494    	TRI_.CUROOT;
+;     	 495    	PLTPOLY(.XMAX, .INCHO2, .TRI[NAMLEN], .TRI[LNUM], .TRI[LNAME], .TRI[1+LNAME]);
+;     	 496    	PLTTREE(.TRI,.INCHES,0,.XMAX PLUS .XINCR, .INCHO2);
+;     	 497    	CLEANUP(.TRI);
+;     	 498    	IF .LPBUF NEQ 0 THEN LPTOUT();	%WITHIN PLOTTER PACK%
+;     	 499    
+;     	 500    	FNDLEAVES(.CUROOT);
+;     	 501    	RETURN;
+;     	 502    END;
+;     	 503    
+
+SELTREE2P:
+
+	PUSH	$S,13				;00000	
+	PUSH	$S,1($F)			;00001		Formal
+	HRRZ	$F,17				;00002	
+	SUBI	$F,1				;00003	
+	PUSH	$S,13				;00004	
+	MOVEM	11,3($F)			;00005		Formal
+	ADD	$S,PLTO.L+0			;00006	
+	MOVE	01,INCHES			;00007	 478	External
+	FDVRI	01,202400			;00010	
+	MOVE	12,1				;00011	
+	HRLZI	02,202600			;00012	 493
+	MOVE	03,1($F)			;00013		Formal
+	FADRB	02,35(03)			;00014		Local
+	SKIPN	04,LPBUF			;00015		External
+	JRST	00,L.44				;00016	
+	PUSH	$S,2				;00017	
+	PUSH	$S,PLTO.L+1			;00020	
+	PUSHJ	$S,PLTINIT			;00021		External
+	SUB	$S,PLTO.L+3			;00022	
+L.44:	MOVE	11,-2($F)			;00023	 494	Formal
+	MOVE	01,1($F)			;00024		Formal
+	PUSH	$S,35(01)			;00025		Local
+	PUSH	$S,12				;00026	
+	HLRZ	03,3(11)			;00027	
+	PUSH	$S,3				;00030	
+	HRRZ	02,3(11)			;00031	
+;BLISS-10 5(110) 	7/11/74  	10:35:59 		PLTDCL.BLI		Page 5-1
+
+	PUSH	$S,2				;00032	
+	PUSH	$S,4(11)			;00033	
+	PUSH	$S,5(11)			;00034	
+	PUSHJ	$S,PLTPOLY			;00035		External
+	SUB	$S,PLTO.L+0			;00036	
+	PUSH	$S,11				;00037	 496
+	PUSH	$S,INCHES			;00040		External
+	PUSH	$S,PLTO.L+1			;00041	
+	MOVE	$V,1($F)			;00042		Formal
+	MOVE	04,35($V)			;00043		Local
+	MOVE	$V,1($F)			;00044		Formal
+	FADR	04,34($V)			;00045		Local
+	PUSH	$S,4				;00046	
+	PUSH	$S,12				;00047	
+	PUSHJ	$S,PLTTREE			;00050	
+	SUB	$S,PLTO.L+13			;00051	
+	PUSH	$S,11				;00052	 497
+	PUSHJ	$S,CLEANUP			;00053	
+	SUB	$S,PLTO.L+4			;00054	
+	SKIPE	05,LPBUF			;00055	 498	External
+	PUSHJ	$S,LPTOUT			;00056		External
+	PUSH	$S,-2($F)			;00057	 499	Formal
+	PUSHJ	$S,FNDLEAVES			;00060	
+	SUB	$S,PLTO.L+4			;00061	
+	SETZ	$V,0				;00062	 501
+	MOVE	11,3($F)			;00063	 503	Formal
+	SUB	$S,PLTO.L+5			;00064	
+	POP	$S,13				;00065	
+	POPJ	$S,0				;00066	
+
+
+;     	 504    FUNCTION FNDLEAVES(SELF)=
+;     	 505    BEGIN
+;     	 506    	REGISTER SON;
+;     	 507    	MAP BASE SELF:SON;
+;     	 508    
+;     	 509    	SON_.SELF[ASON];
+;     	 510    	WHILE .SON NEQ 0 DO
+;     	 511    	BEGIN
+;     	 512    	    IF .SON[ASON] EQL 0
+;     	 513    	    THEN IF .SON[LNUM] GEQ DIAMOND
+;     	 514    		 THEN SELTREE2P(.SON[LNKNODE])
+;     	 515    		 ELSE
+;     	 516    	    ELSE FNDLEAVES(.SON);
+;     	 517    	    SON_.SON[BROTHER];
+;     	 518    	END;
+;     	 519    	RETURN;
+;     	 520    END;
+;     	 521    
+;     	 522    
+
+FNDLEAVES:
+
+	PUSH	$S,13				;00000	
+	PUSH	$S,1($F)			;00001		Formal
+	HRRZ	$F,17				;00002	
+	SUBI	$F,1				;00003	
+;BLISS-10 5(110) 	7/11/74  	10:36:04 		PLTDCL.BLI		Page 5-2
+
+	PUSH	$S,13				;00004	
+	MOVEM	11,3($F)			;00005		Formal
+	ADD	$S,PLTO.L+0			;00006	
+	MOVE	01,-2($F)			;00007	 506	Formal
+	HRRZ	11,1(01)			;00010	
+L.45:	JUMPE	11,L.46				;00011	
+	HRRZ	03,1(11)			;00012	 512
+	JUMPN	03,L.47				;00013	
+	HRRZ	05,3(11)			;00014	 514
+	CAIGE	05,303240			;00015	
+	JRST	00,L.50				;00016	
+	HLRZ	02,2(11)			;00017	 515
+	PUSH	$S,2				;00020	
+	PUSHJ	$S,SELTREE2P			;00021	
+	JRST	00,L.51				;00022	
+L.47:	PUSH	$S,11				;00023	 516
+	PUSHJ	$S,FNDLEAVES			;00024	
+L.51:	SUB	$S,PLTO.L+4			;00025	
+L.50:	HRRZ	11,2(11)			;00026	 517
+	JRST	00,L.45				;00027	 519	^^^
+L.46:	SETZ	$V,0				;00030	
+	MOVE	11,3($F)			;00031	 521	Formal
+	SUB	$S,PLTO.L+5			;00032	
+	POP	$S,13				;00033	
+	POPJ	$S,0				;00034	
+
+
+;     	 523    FUNCTION CLEANUP(SELF)=
+;     	 524    BEGIN
+;     	 525    	REGISTER SON;
+;     	 526    	MAP BASE SELF:SON;
+;     	 527    
+;     	 528    	SON_.SELF[ASON];
+;     	 529    	WHILE .SON NEQ 0 DO 
+;     	 530    	BEGIN
+;     	 531    	CLEANUP(.SON);
+;     	 532    	SON_.SON[BROTHER];
+;     	 533    	END;
+;     	 534    
+;     	 535    	DEALLOC(SELF,AMTNODE)
+;     	 536    	RETURN;
+;     	 537    END;
+;     	 538    
+
+CLEANUP:
+
+	PUSH	$S,13				;00000	
+	PUSH	$S,1($F)			;00001		Formal
+	HRRZ	$F,17				;00002	
+	SUBI	$F,1				;00003	
+	PUSH	$S,13				;00004	
+	MOVEM	07,3($F)			;00005		Formal
+	MOVEM	11,4($F)			;00006		Formal
+	ADD	$S,PLTO.L+0			;00007	
+	MOVE	01,-2($F)			;00010	 525	Formal
+	HRRZ	11,1(01)			;00011	
+L.52:	JUMPE	11,L.53				;00012	
+;BLISS-10 5(110) 	7/11/74  	10:36:08 		PLTDCL.BLI		Page 5-3
+
+	PUSH	$S,11				;00013	 531
+	PUSHJ	$S,CLEANUP			;00014	
+	SUB	$S,PLTO.L+4			;00015	
+	HRRZ	11,2(11)			;00016	 532
+	JRST	00,L.52				;00017	 534	^^^
+L.53:	PUSH	$S,1				;00020	
+	PUSH	$S,2				;00021	
+	MOVEI	02,7				;00022	
+	MOVE	01,-2($F)			;00023		Formal
+	PUSHJ	$S,DY.RET			;00024		External
+	POP	$S,2				;00025	
+	POP	$S,1				;00026	
+	SETZ	$V,0				;00027	 536
+	MOVE	07,3($F)			;00030	 538	Formal
+	MOVE	11,4($F)			;00031		Formal
+	SUB	$S,PLTO.L+5			;00032	
+	POP	$S,13				;00033	
+	POPJ	$S,0				;00034	
+
+
+;     	 539    FUNCTION TASCII(WHERE,BYTES)=
+;     	 540    BEGIN
+;     	 541    	REGISTER C,WORDS[2];
+;     	 542    	LOCAL INBYTES,OUTBYTES;
+;     	 543    	MAP BASE WHERE;
+;     	 544    
+;     	 545    	INBYTES_WORDS<36,6>;
+;     	 546    	WORDS[0]_.WHERE[0,WHOLE];
+;     	 547    	WORDS[1]_.WHERE[1,WHOLE];
+;     	 548    	OUTBYTES_(.WHERE)<36,7>;
+;     	 549    	DECR LEN FROM .BYTES-1 TO 0 DO
+;     	 550    	BEGIN
+;     	 551    		ILDB(C,INBYTES);
+;     	 552    		C_.C+#40;
+;     	 553    		IDPB(C,OUTBYTES);
+;     	 554    	END;
+;     	 555    	RETURN;
+;     	 556    END;
+;     	 557    
+;     	 558    !***********************************************************
+;     	 559    
+;     	 560    %	THE TOP-LEVEL CODE	%
+;     	 561    
+
+TASCII:
+
+	PUSH	$S,13				;00000	
+	PUSH	$S,1($F)			;00001		Formal
+	HRRZ	$F,17				;00002	
+	SUBI	$F,1				;00003	
+	PUSH	$S,13				;00004	
+	MOVEM	06,3($F)			;00005		Formal
+	MOVEM	07,4($F)			;00006		Formal
+	MOVEM	10,5($F)			;00007		Formal
+	MOVEM	11,6($F)			;00010		Formal
+	ADD	$S,PLTO.L+5			;00011	
+	MOVE	01,PLTO.L+15			;00012	 541
+;BLISS-10 5(110) 	7/11/74  	10:36:11 		PLTDCL.BLI		Page 5-4
+
+	MOVEM	01,11($F)			;00013		Local
+	MOVE	02,-3($F)			;00014	 547	Formal
+	MOVE	07,0(02)			;00015	
+	MOVE	10,1(02)			;00016	 548
+	HRLI	02,440700			;00017	 549
+	MOVEM	02,12($F)			;00020		Local
+	MOVE	03,-2($F)			;00021		Formal
+	SOJ	03,0				;00022	
+	MOVE	06,3				;00023	
+	JUMPL	06,L.54				;00024	 550
+L.55:	ILDB	11,11($F)			;00025	 551	Local
+	ADDI	11,40				;00026	 553
+	IDPB	11,12($F)			;00027		Local
+	SOJGE	06,L.55				;00030	 554	^^^
+L.54:	SETZ	$V,0				;00031	
+	SUB	$S,PLTO.L+3			;00032	
+	MOVE	06,3($F)			;00033	 557	Formal
+	MOVE	07,4($F)			;00034		Formal
+	MOVE	10,5($F)			;00035		Formal
+	MOVE	11,6($F)			;00036		Formal
+	SUB	$S,PLTO.L+5			;00037	
+	POP	$S,13				;00040	
+	POPJ	$S,0				;00041	
+
+
+;     	 562    	MACRO RATIO=TMP2$;
+;     	 563    
+;     	 564    	INCHES_FLOAT(.INCHES);
+;     	 565    	MAXWT_FLOAT(.LEAVES);
+;     	 566    	BRKQAD_.MAXWT MUL NOCHECK;
+;     	 567    	TRAPSON[MYWT]_.MAXWT MUL TRPCHECK;
+;     	 568    	IF .TRAPSON[MYWT] LSS 2.0 THEN TRAPSON[MYWT]_2.0;
+;     	 569    	RATIO _ .INCHES DVIDE .MAXWT;
+;     	 570    	TOP_ITOP MUL .RATIO;
+;     	 571    	SIDE_ISIDE MUL .RATIO;
+;     	 572    	XINCR_IXINCR MUL .RATIO;
+;     	 573    	STEPS _ FLOAT(.STEPS);
+;     	 574    	PLTORIG(.TOP, .SIDE, .INCHES);
+;     	 575    	IF .ERRFND EQL -1 THEN (DOABORT);
+;     	 576    
+;     	 577    	NAME[DIAMOND]_NAME[TRAPZOID]_1.0;
+;     	 578    	XMAX_0;
+;     	 579    	OVLPLT();
+;     	 580    	SREG<RIGHT>_.FREG<RIGHT>;	%A KLUDGE TO GET STACK RIGHT%
+;     	 581    	POPJ(#17,0)	!RETURN TO LINK
+
+PLTO.F::
+
+	PUSH	$S,13				;00000	   1
+	ADD	$S,PLTO.L+16			;00001	
+	MOVE	01,INCHES			;00002	   9	External
+	IDIVI	01,400000			;00003	
+	SKIPE	00,1				;00004	
+	TLC	01,254000			;00005	
+	TLC	02,233000			;00006	
+	FAD	01,2				;00007	
+	MOVEM	01,INCHES			;00010		External
+;BLISS-10 5(110) 	7/11/74  	10:36:16 		PLTDCL.BLI		Page 5-5
+
+	MOVE	03,LEAVES			;00011	 566	External
+	IDIVI	03,400000			;00012	
+	SKIPE	00,3				;00013	
+	TLC	03,254000			;00014	
+	TLC	04,233000			;00015	
+	FAD	03,4				;00016	
+	MOVEM	03,LEAVES			;00017		External
+	FMPR	03,PLTO.L+17			;00020	 567
+	MOVEM	03,10($F)			;00021		Local
+	MOVE	05,LEAVES			;00022	 568	External
+	FMPR	05,PLTO.L+20			;00023	
+	MOVEM	05,33($F)			;00024		Local
+	MOVE	02,33($F)			;00025		Local
+	CAML	02,PLTO.L+21			;00026	
+	JRST	00,L.56				;00027	
+	HRLZI	04,202400			;00030	 569
+	MOVEM	04,33($F)			;00031		Local
+L.56:	MOVE	04,INCHES			;00032	 570	External
+	FDVR	04,LEAVES			;00033		External
+	MOVE	12,4				;00034	
+	MOVE	03,12				;00035	 571
+	FMPR	03,PLTO.L+22			;00036	
+	MOVEM	03,24($F)			;00037		Local
+	MOVE	05,12				;00040	 572
+	FMPR	05,PLTO.L+23			;00041	
+	MOVEM	05,23($F)			;00042		Local
+	MOVE	02,12				;00043	 573
+	FMPRI	02,201600			;00044	
+	MOVEM	02,34($F)			;00045		Local
+	MOVE	01,STEPS			;00046	 574	External
+	IDIVI	01,400000			;00047	
+	SKIPE	00,1				;00050	
+	TLC	01,254000			;00051	
+	TLC	02,233000			;00052	
+	FAD	01,2				;00053	
+	MOVEM	01,STEPS			;00054		External
+	PUSH	$S,3				;00055	
+	PUSH	$S,5				;00056	
+	PUSH	$S,INCHES			;00057		External
+	PUSHJ	$S,PLTORIG			;00060		External
+	SUB	$S,PLTO.L+2			;00061	
+	MOVE	04,ERRFND			;00062	 575	External
+	CAMN	04,PLTO.L+24			;00063	
+	JRST	04,0				;00064	
+	HRLZI	01,201400			;00065	 578
+	MOVEM	01,13($F)			;00066		Local
+	MOVEM	01,12($F)			;00067		Local
+	SETZM	00,35($F)			;00070	 579	Local
+	PUSHJ	$S,OVLPLT			;00071	
+	HRR	$S,13				;00072	 581
+	POPJ	$S,0				;00073	 582
+	MOVE	$V,17				;00074	
+	SUB	$S,PLTO.L+25			;00075	
+	CALLI 	00,12				;00076	
+
+
+
+;BLISS-10 5(110) 	7/11/74  	10:36:19 		PLTDCL.BLI		Page 5-6
+
+
+;Special register declarations
+
+$S=:	17
+$F=:	13
+$V=:	15
+
+
+;PLIT area
+
+PLTO.P::
+
+
+;Constant pointers
+
+PLTO.C::
+
+;Literals
+
+PLTO.L::
+
+XWD	000006,000006	;00000
+XWD	000000,000000	;00001
+XWD	000003,000003	;00002
+XWD	000002,000002	;00003
+XWD	000001,000001	;00004
+XWD	000010,000010	;00005
+XWD	000007,000007	;00006
+XWD	000000,303240	;00007
+XWD	000004,000004	;00010
+XWD	000011,000011	;00011
+XWD	200525,402031	;00012
+XWD	000005,000005	;00013
+XWD	000000,303241	;00014
+XWD	440600,000007	;00015
+XWD	000035,000035	;00016
+XWD	200463,146315	;00017
+XWD	177463,146315	;00020
+XWD	202400,000000	;00021
+XWD	200577,777777	;00022
+XWD	200546,314631	;00023
+XWD	777777,777777	;00024
+XWD	000026,000026	;00025
+
+RELOC		;To low segment
+
+;GLOBAL area
+PLTO.G::
+
+;OWN area
+PLTO.O::
+
+
+
+;EXTERNAL requests
+
+EXTERN	ERRFND,PLTORIG,STEPS,DY.RET,LPTOUT,PLTINIT
+;BLISS-10 5(110) 	7/11/74  	10:36:19 		PLTDCL.BLI		Page 5-7
+
+EXTERN	INCHES,PLTPOLY,PLTLINE,LPBUF,LEAVES,DY.GET
+EXTERN	GETSON
+	END	PLTO.F	;Pseudo-op for MACRO-10
+
+
+Module length: 675+22
+
+[BLSNED No errors detected]
+

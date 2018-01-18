@@ -1,0 +1,2123 @@
+   	TITLE	PIP11 does PDP-11 DOS DT file handling
+	SUBTTL	DEFINITIONS
+	MLON
+	SEARCH 	STENEX
+	EXTERN	KEYWRD,SETSTR,KEYIN,NOISE,INEDIT,INBUFF,INSTR
+
+;
+;	PDP-11/DOS Dectape file handler, commands are
+;	MOUNT, COPY, DIR, DEL
+;	
+
+Z=0
+A=1
+B=2
+C=3
+D=4
+E=5
+F=6
+G=7
+AA=13
+BB=14
+CC=15
+DD=16
+P=17
+
+UNIT=5			;device parameter address base
+FILE=6			;file parameter address base
+FIN=7			;input file f.p.a.b
+FOUT=10			;output file f.p.a.b
+BP=11			;byte pointer
+S=12			;small temp string buffer
+
+	OPDEF	CALL	[PUSHJ	P,]	;subr linkage with reg 17
+	OPDEF	RET	[POPJ	P,]
+
+CR=15
+EOL=37
+
+	DEFINE	EDIT (FLAG,NOISE,TERMLT,SUBHLP)  =
+<
+	MOVE	A,FLAG			;GET KEYWRD FLAGS FOR INEDIT
+	HRROI 	B,NOISE			;POINTER TO HELP STRING
+	MOVE	C,[POINT  7,TERMLT] 	;POINTER TO TER CHAR LIST
+	CALL	INSTR			;GO GET THE STRING
+	JRST	[MOVE	P,MARKP		;RETURN TO TO LEVEL ON ERROR
+		RET]
+	CAI 				;NOP
+	CAIE	C,"?"			;did he type a "?"
+	JRST	.+4			;no
+	HRROI	A,SUBHLP		
+	PSOUT				;type out help string
+	JRST	.-12			;get another line of input
+	MOVEM	A,CHARCN		;SAVE CHARTER COUNT
+	MOVEM	B,LINBUF  		;SAVE POINTER TO STRING
+	MOVEM	C,TRMCH			;SAVE THE LAST CHAR TYPED
+>
+	DEFINE	ZBIN	=
+<
+	ILDB	B,LINBUF
+>
+
+	DEFINE	ZBKJFN	=
+<
+	PUSH	P,A
+	MOVS	A,LINBUF	;DEC STRING POINTER
+	ADDI	A,070000	;BACK UP ONE
+	TRNE	A,400000	;CHECK FOR WORD BOUNDRAY
+	SUB	A,[XWD 1,440000]	;GET IN PREVIOUS WORD
+	MOVSM	A,LINBUF
+	POP	P,A
+	CAIA			;SKIP ERROR CALL
+>
+	DEFINE	PERROR (ER) =
+<
+	CALL	[MOVEI  A,ER
+		JRST $YSR1]
+>
+
+	DEFINE	PSTR (M) =
+<	HRROI	A,[ASCIZ "M"]
+	PSOUT>
+
+	DEFINE	PHLF (D) =
+<	MOVEI	A,101
+	MOVE	C,[XWD 140006,10]
+	NOUT
+	 CALL $YSERR>
+
+	DEFINE	LINE =
+<	PSTR	<
+>>
+
+STKSIZ=200
+ 	SUBTTL	DATA storage space
+
+asDATE:	0		;holds date of the assemble of this version
+TABSRT:			;start of table data storage area
+STACK:	BLOCK	STKSIZ		;pdl
+SBUF:	BLOCK	20		;string buffer
+
+FNAM1:	0			;RAD50 equiv of file name
+FNAM2:	0
+FEXT:	0
+FSBP:	0		;WILL CONTAIN SIZE OF BYTE POINTER
+EXTP:	0
+EXDP:	0
+MARKP:	0		;SAVE MARKE TO PDL ON SUB ENTRY
+CHARCN:	0			;CHARACTER COUNT ON RETURN FROM INEDIT
+LINBUF:	0			;STRING POINTER TO STRING FROM INEDIT
+TRMCH:	0			;TERMINATIONATION CHAR FROM INEDIT
+ 
+MNTED:	REPEAT	10,<0>		;mounted device table, saves having
+				;to look in upper core device area
+				;necessitating touching more pages
+
+DTPRMS=600000			;device parameter area
+FPRMS=577000			;file parameter area
+NFILS=<DTPRMS-FPRMS>/NFPRMS	;for number of open files at one time
+
+EJFN:	REPEAT	11,<0>		;long GTJFN data area
+
+TABEND:			;END of table data storage area
+	SUBTTL	TABLE FOR KEYWRD COMMAND SEARCH
+
+NCMANS=COMMAN-STRING
+
+STRING:	POINT 	7,[ASCIZ	/COPY/]		;list of strings
+      	POINT	7,[ASCIZ	/DIRECTORY/]	;for KEYWRD program
+	POINT	7,[ASCIZ	/DELETE/]	
+	POINT	7,[ASCIZ	/EXIT/]
+	POINT	7,[ASCIZ	/MOUNT/]
+	POINT	7,[ASCIZ	/UNMOUNT/]
+	POINT	7,[ASCIZ	/ZERO/]
+
+COMMAN:	.COPY				    	;address of commands
+	.DIR
+	.DELETE
+	.EXIT
+	.MOUNT
+	.UNMOUNT
+	.ZERO
+
+NOISW: [ASCIZ 	/the commands are:
+	COPY
+	DIRECTORY
+	DELETE
+	MOUNT
+	UNMOUNT
+	ZERO
+
+*/] 
+
+.ZER0:	PSTR	<  -- Sorry!   ZERO  has not been implemented yet.
+>
+		RET
+
+
+INIT:	reset			;initalize routine for first start-up
+	gtad
+	movem	a,asdate	;save assembly date
+	hrrz 	a,400000	;corrent fork handle
+	move	b,[xwd 2,evec]	;set up entry vectors
+	sevec
+	
+	pstr	<
+PIP11 ready to be saved. Entry vectors and Assembly date are set.
+>
+
+	haltf			;done ready to make a save file
+	jrst	.-1		;dont allow continue
+
+evec:	jrst 	start		;start entry
+	jrst	reent		;reentry entry
+
+START:	RESET			;J2-27 
+
+	MOVE	A,['PIP11 ']	;setup SYSSAT information
+	SETNM
+
+	MOVEI	A,TABSRT	;get starting addr of table data area
+	HRL	A,A
+	AOJ	A,		;set up BLT
+	SETZM	TABSRT		;zero out table data area
+	BLT	A,TABEND-1
+
+	MOVE	P,[IOWD STKSIZ,STACK]  ;M-239 -stksiz , stack-1 to p
+	PSTR	<
+ PIP11  ***  PDP11-DOS-DECTAPEs to TENEX  ***  Vs.= >	   
+	movei	a,101
+	move	b,asDATE	;get assemble date and time
+	hrlzi	c,004401
+	ODTIM
+
+	CALL	PSISET		;setup PSI system
+reent:
+CONTI:	MOVE	P,[IOWD STKSIZ,STACK]	;enter here to restart
+	
+	HRROI	A,[ASCIZ /
+*(Command or ? for Help)/]
+  
+	PSOUT
+GET:	HRROI	A,[ASCIZ /
+*/]
+	PSOUT
+	HRROI	A,[ASCIZ /
+*/]			;get pointer to list of commands
+	MOVEI	B,STRING
+	HRLI	B,-NCMANS	;make AOBJN pointer
+	HRROI	C,[ASCIZ /( Command or ? ) /]
+	CALL	NOISE
+	JRST	[PSTR  < what!!! >
+	   	JRST  GET]
+	CALL	@NCMANS(A)	;Dispatch to command
+	JRST	GET
+	JRST	CONTI		;should never get here
+
+SKPRET:	AOS	(P)
+	RET
+
+ERESET:	PSTR	< ?
+	Restarting -- PIP11
+>
+	JRST	CONTI
+.EXIT:	PSTR	<
+	Leaving -- PIP11
+>
+	HALTF			;
+	SUBTTL	PSISET sets up PSI system
+
+
+PSISET:	MOVEI	A,400000	;this fork
+	MOVE	B,[XWD LEVTAB,CHNTAB]	 ;M-239
+	SIR			;J5-11 ACC2 to PSB
+
+	MOVE	B,ACTCHN
+	AIC			;J5-15 activate chan 10 of psi
+
+	EIR
+ 	RET
+
+LEVTAB:	PC1#
+	PC2#
+	PC3#
+
+ACTCHN:	1B^D10
+
+CHNTAB:	REPEAT ^D10,<0>		;0-9
+	XWD	3,PSIEOF
+	REPEAT ^D25,<0>		;11-35
+
+PSIEOF:	PUSH	P,A
+	PUSH	P,B
+
+	MOVE	A,FJFN(FIN)
+	CAIL	A,1000
+	 JRST	PSIE1
+
+	GTSTS			;J2-28 read status of file b10 of 2 aff
+	TLNE	B,(1B10)	;status ok?
+	TLNN	B,(1B8)		;yes, eof?
+	 JRST	PSIE1		;status bad, or not eof
+
+	MOVE	A,EOF(FIN)
+	MOVEM	A,PC3
+
+PSIE1:	POP	P,B		;chan  8 is for end of file
+	POP	P,A		;chan 10 is file status cond 4 unass
+	DEBRK			;J5-19 dimiss psi return 
+	SUBTTL	DTMNT 
+;
+;	mount dec tape routine. does TENEX mount w/o dir.
+;	sets up device params, reads in directory.
+;	
+;	enter with:
+;	 1/ tenex device designator
+;
+
+
+NPGDV=5				;pages per parameter block
+
+;****************************************************************
+;device parameters
+DTJFN=0				;jfn for dt device
+DEV=1				;device handle
+DIRW=2				;directory dirty switch
+BK=3				;block in buffer
+WF=4				;write buffer flag
+LASTBP=5			;BP to last found dir
+END=6				;end of buffer address, pointer style
+;********************************************************************
+
+DTDBK1=70			;first dir block on PDP-11 dec tape
+DTDBKL=104			;last dir block on PDP-11 dec tape
+NDRBKS=DTDBKL-DTDBK1+1		;number of dectape dir blocks
+NBKDT=577			;number of blocks per DT
+NBKIF=4				;interleave factor
+FBM=200				;file maps offset
+MFD=10*200+FBM			;MFD offset
+UFD=2*200+MFD			;UFD offset
+MBM=2*200+UFD			;master bit maps offset
+DTBUFF=200+MBM			;read/write buffer space
+DTSWBF=200+DTBUFF		;swap buffer for backward read/writes
+
+	DEFINE	DTZERO =
+<
+	SETZM	DTBUFF(UNIT)
+	MOVEI	Z,DTBUFF(UNIT)
+	HRL	Z,Z
+	AOJ	Z,		;zero out DTBUFF and DTSWBF
+	BLT	Z,DTBUFF+377(UNIT)	 
+>
+	DEFINE	DEVUNT =
+<
+	HRRZ	UNIT,A		;convert dev unit number to param adr
+	IMULI	UNIT,NPGDV*1000
+	ADDI	UNIT,DTPRMS
+>
+
+DTMNT:	DEVUNT
+
+	SKIPE	MNTED(A)	;if already mounted,
+	 CALL	DTUNMT		;dismount
+
+	MOVEM	A,DEV(UNIT)
+
+	TLO	A,(1B3)		;mount w/o directory
+	MOUNT
+	 CALL $YSERR
+
+	MOVE	B,DEV(UNIT)	;make name for GTJFN
+	MOVEM	B,MNTED(A)	;set mounted table
+	HRROI	A,S
+	DEVST
+	 CALL $YSERR
+	MOVEI	B,":"
+	IDPB	B,A
+	SETZ	B,
+	IDPB	B,A
+
+	MOVSI	A,1		;GTJFN for DTAn
+	HRROI	B,S
+	GTJFN
+	 CALL $YSERR
+	MOVEM	A,DTJFN(UNIT)
+	
+	MOVE	B,[XWD 007400,300000] ;OPEN with all accesses
+	OPENF
+	 CALL $YSERR
+
+	MOVEI	B,FBM-1(UNIT)
+	MOVEI	A,DTDBK1		;read in directory
+	HRLI	B,-NDRBKS*200		;sets up IOWD length,core adr
+	CALL	DTREAD
+
+	SETZM	BK(UNIT)		;init parameters
+	MOVEI	Z,DTBUFF+177(UNIT)
+	HRLI	Z,-1
+	MOVEM	Z,END(UNIT)
+
+	MOVEI	Z,UFD(UNIT)		;fake last found dir BP to strt
+	HRLI	Z,-2
+	MOVEM	Z,LASTBP(UNIT)
+
+	RET
+   	SUBTTL	DTUNMT dismount PDP-11 dectape
+;
+;	writes out directory, if needed; closes jfn
+;	enter with:
+;	 UNIT/ device param adr
+;
+
+DTUNMT:	PUSH	P,A
+	SKIPE	DIRW(UNIT)
+	 CALL 	DIRWRT		;write directory if dirty
+
+	MOVE	A,DTJFN(UNIT)	;close and release JFN
+	CLOSF
+	 CALL $YSERR
+
+	MOVE	A,DEV(UNIT)	;do a dismount of device
+	DSMNT
+	 CALL	$YSERR
+	POP	P,A
+	SETZM	MNTED(A)
+	RET
+
+DIRWRT:	MOVEI	B,FBM-1(UNIT) ;first dir block in core
+	HRLI	B,-NDRBKS*200	;sets up IOWD length, core adr
+	MOVEI	A,DTDBK1	;first dir block on dectape
+	CALL	DTWRIT		;write out block
+
+	SETZ	DIRW(UNIT)	;reset dirty switch
+	RET
+ 	SUBTTL	DTIO dectape io routines
+;
+;	xfrs on/off dectape
+;	  1/ block number on dectape to start with
+;	  2/ IOWD xfr length,buffer address
+;	returns +1
+;	  regs unchanged
+;
+	DEFINE	DTBKR =
+<
+	TRNN	A,(1B2)		;check for negative blk number
+	JRST	.+11
+	IOR	A,[XWD -1,700000]
+	MOVEI	B,DTSWBF-1(UNIT) ;Simulate IOWD
+	HRLI	B,-200
+ 	CALL	DTREAD
+	MOVEI	A,DTBUFF-1(UNIT)
+	MOVEI	B,DTSWBF+177(UNIT)
+	CALL	SWAPBK
+	JRST	.+4
+	MOVEI	B,DTBUFF-1(UNIT) ;Simulate IOWD
+	HRLI	B,-200
+	CALL	DTREAD
+>
+	DEFINE	DTBKW =
+<
+	JUMPL	A,.+5		;check for negative block number
+
+	MOVEI	B,DTBUFF-1(UNIT) ;simulate IOWD
+	HRLI	B,-200
+	CALL	DTWRIT
+	JRST	.+13
+
+	MOVN	A,A		;negate the block number
+	PUSH	P,A
+	PUSH	P,B
+	MOVEI	A,DTSWBF-1(UNIT)	;addr of swap buffer
+	MOVEI	B,DTBUFF+177(UNIT)	;addr of transfer buffer
+	CALL	SWAPBK		;swap the HWD's around so they will come
+	MOVEI	B,DTSWBF-1(UNIT)	;set IOWD
+	HRLI	B,-200
+	POP	P,B	
+	POP	P,A		;restore regs
+>
+
+DTSET:	PUSH	P,A
+	PUSH	P,B
+	PUSH	P,C
+	SKIPGE	  A
+	MOVNS	A,A
+	MOVE	C,A    		;set up block no. for MTOPR
+	MOVE	A,DTJFN(UNIT)
+	MOVEI	B,30		;"set up block" code
+	MTOPR
+
+	MOVE	B,-1(P)
+	MOVEM	B,DTCMND
+	MOVEI	B,DTCMND
+	POP	P,C
+	JRST	(16)
+
+DTWRIT:	JSP	16,DTSET
+
+	DUMPO
+	 CALL	$YSERR
+
+	SETZM	WF(UNIT)
+	JRST	DTR1
+
+DTREAD:	JSP	16,DTSET
+
+	DUMPI
+	 CALL $YSERR
+
+	MOVE	Z,-1(P)		;block number
+	MOVEM	Z,BK(UNIT)
+
+DTR1:	POP	P,B
+	POP	P,A
+
+	RET			;done
+
+DTCMND:	XWD	0,0
+	0
+
+
+;	SUBOUTINE TO REWIND A DOS DECTAPE
+;	ENTER
+;	UNIT/ DEVICE PARAM ADR
+
+REWIND:	PUSH	P,A		;SAVE A
+	PUSH	P,B		;SAVE B
+	MOVE	A,DTJFN(UNIT)
+	MOVEI	B,1		;REWIND DECTAPE
+	MTOPR
+	POP	P,B
+	POP	P,A
+	RET
+
+; SWAPBK soubroutine to reverse the words written in a backward written
+;DOS DECTPAE block
+;
+;      	1/Pointer to destination buffer
+;	2/Pointer to source buffer
+
+SWAPBK:	HRLI	C,-200 		;set up source pointer
+	HRLI	A,-202	;dont want push down stack underflow
+	HRLI	B,202	;dont want push down stack ofverflow
+SWAP1:	POP	B,Z	;GET TWO HALF WORDS FROM BOTTOM OF SOURCE
+	MOVSS	Z,Z  	;SWAP HALF WORDS AROUND
+	PUSH	A,Z  	;STORE BOTH HALF WORDS IN TOP OF DES.
+	AOBJN	C,SWAP1	;KEEP COUNT
+	RET
+
+
+
+  
+	SUBTTL	BYTE11 PDP-11 byte and halfword get and put routines
+;
+;	FORMATS:
+;	 halfword data
+;	  PDP-11 word=>  0      1
+;	  bits       => 2-17  20-35
+;	  pointer    => -2     -1
+;	 halfword pointer
+;	  XWD PDP-11 word,PDP-10 word
+;
+;	 byte data
+;	  PDP-11 byte =>  0     1     2     3
+;	  PDP-10 byte =>  1     0     3     2
+;	  bits        =>10-17  2-9  28-35 20-27
+;	  pointer     => -4    -3    -2    -1
+;	 byte pointer
+;	  XWD byte,word
+;
+;	ROUTINES:
+;	 halfword routines ILDH11,LDH11,IDPH11,DPH11
+;	 byte routins      ILDA11,LDA11,IDPA11,DPA11
+;	 equivalent to     ILDB   LDB   IDPB   DPB
+;
+;	enter with:
+;	 2/ byte or half word to put
+;	 bp/ pointer
+;
+;	return +1 with:
+;	 2/ byte or half word got
+;	 bp/ updated pointer
+;
+
+ILDH11:	AOBJP	BP,.+2		;inc pointer (byte,and word)
+	SOSA	BP		;if no byte overflow, reset word
+	HRLI	BP,-2		;if overflow, reset byte
+
+LDH11:	TLNE	BP,(1B17)	;first (-2) or second (-1) half wrd
+	JRST	[HRRZ	B,(BP)	;second (-1) RH
+		RET]
+	HLRZ	B,(BP)		;first (-1) LH
+	RET
+
+IDPH11:	AOBJP	BP,.+2		;same as above
+	SOSA	BP
+	HRLI	BP,-2
+
+DPH11:	TLNE	BP,(1B17)
+	JRST	[HRRM 	B,(BP)
+		RET]
+	HRLM	B,(BP)
+	RET
+
+DLDH11:	POP	BP,Z		;Dec and load byte
+	HLRZ	Z,BP
+	CAIL	Z,-2
+	 JRST	[AOJ	BP,
+		JRST	LDH11]
+	HRLI	BP,-1
+	JRST	LDH11
+
+IBP11:	AOBJP	BP,.+2		;Inc Byte Pointer  Inc both halfs
+	SOSA	BP		;if no byte overflow, reset word
+	HRLI	BP,-2		;reset postion pointer
+	RET
+
+DBP11:	PUSH	P,Z		;Dec Byte Pointer
+	POP	BP,Z		;dec both halfs of BP
+	HLRZ	Z,BP		;get postion pointer Z= 0,,-2 or 0,,-3
+	CAIL	Z,-2		;new position pointer to be -1 or -2
+	 JRST	[AOJ	BP,	;-2
+		 POP	P,Z
+	     	 RET]
+	HRLI	BP,-1		;-1
+	POP	P,Z
+	RET
+
+ADDBPH:	PUSH	P,Z		;Alter BP only
+	SETZ	Z,
+	ROTC	Z,-1		;add postive halfwrd cnt in A to BP
+	ADD	BP,A
+	JUMPGE	Z,ADH1
+	AOBJP	BP,.+2
+	SOSA	BP
+	HRLI	BP,-2
+ADH1:	ROTC	Z,1
+	POP	P,Z
+	RET
+
+ILDA11:	AOBJP	BP,.+2
+	SOSA	BP
+	HRLI	BP,-4		;bytes now
+
+LDA11:	PUSH	P,C
+	HLRE	C,BP
+	LDB	B,BP11+4(C)	;get from right PDP-10 byte
+	POP	P,C
+	RET
+
+IDPA11:	AOBJP	BP,.+2
+	SOSA	BP
+	HRLI	BP,-4
+
+DPA11:	PUSH	P,C
+	HLRE	C,BP
+	DPB	B,BP11+4(C)
+	POP	P,C
+	RET
+
+BP11:	POINT	8,(BP),17	;-4
+	POINT	8,(BP),9	;-3
+	POINT	8,(BP),35	;-2
+	POINT	8,(BP),27	;-1
+
+	SUBTTL	RAD50 conversion routines
+;
+;	enter with:
+;	 2/ 3 char RAD50 halfword
+;	 3/ IBP pointer for ascii 
+;	return +1 with:
+;	 2/ 3 char RAD50 halfword
+;	 3/ updated IBP pointer
+;
+
+RADACI:	PUSH	P,B		;RAD50 to ASCII
+	PUSH	P,C
+	IDIVI	B,50		;last char in B
+	LDB 	Z,[POINT 7,CHRTBL(C),13]
+	PUSH	P,Z
+	IDIVI	B,50		;second char in B
+	LDB	Z,[POINT 7,CHRTBL(C),13]
+	PUSH	P,Z
+	LDB	B,[POINT 7,CHRTBL(B),13] ;lxate first char
+	IDPB	B,-2(P)		;store first char
+	POP	P,B		;restore second char
+	IDPB	B,-1(P)
+	POP	P,B
+	IDPB	B,(P)		;restore last char
+	SETZ	B,B		;insert a null char
+	IDPB	B,(P)
+	POP	P,C		;updated pointer
+	POP	P,B		;RAD50 half word
+	RET
+
+ACIRAD:	PUSH	P,A		;ASCII to RAD50
+	ILDB	A,C	
+	LDB	B,[POINT 6,CHRTBL(A),6]
+	IMULI	B,50
+	ILDB	A,C
+	LDB	Z,[POINT 6,CHRTBL(A),6]
+	ADD	B,Z
+	IMULI	B,50
+	ILDB	A,C
+	LDB	Z,[POINT 6,CHRTBL(A),6]
+	ADD	B,Z
+	POP	P,A
+	RET
+
+	DEFINE	RADCHK =
+<
+	LDB	Z,[POINT 6,CHRTBL(B),6]
+	CAIN	Z,77
+>
+	SUBTTL	CHRTBL character xlation, and flags
+;
+;	Character table and related macros
+;	xlation table to/from RAD50, legal term, RAD50 char bits,etc.
+;
+	DEFINE	CTAB (M,N,O) =
+<
+	BYTE	(1)M(6)N(7)O
+>
+	DEFINE	INCRPT (M,N,O) =
+<
+.I=N	
+	REPEAT	M,<O
+.I=.I+1>
+>
+	DEFINE	TRMCHK =
+<
+	SKIPGE	CHRTBL(B)
+>
+
+CHRTBL:	CTAB	1,-1," "		;0
+	INCRPT	^D26,"A",<CTAB 1,-1,.I>	;1-32
+	CTAB	1,-1,"$"		;33
+	CTAB	1,-1,"."		;34
+	CTAB	1,-1,"@"		;35
+	INCRPT	2,"0",<CTAB 1,-1,.I>    ;36-37
+	CTAB	1,0,"2"			;40 " "
+	INCRPT	3,"3",<CTAB 1,-1,.I>	;41-43
+	CTAB	1,33,"6"		;44 "$"
+	INCRPT	3,"7",<CTAB 1,-1,.I>	;45-47
+	REPEAT	2,<CTAB 1,-1,0>		;50-51
+	CTAB	0,35,0			;52 "*" IS A SPECIAL CASE
+	REPEAT  3,<CTAB 1,-1,0>		;53-55
+	CTAB	0,34,0			;56 "."
+	CTAB	1,-1,0			;57
+	INCRPT	^D10,36,<CTAB 0,.I,0>	;60-71 "0"-"9"
+	REPEAT	7,<CTAB 1,-1,0>		;72-100
+	INCRPT	^D26,1,<CTAB 0,.I,0>	;101-132 "A"-"Z"
+	REPEAT	6,<CTAB 1,-1,0>		;133-140
+	INCRPT	^D26,1,<CTAB 0,.I,0>	;141-172 "a"-"z"
+	REPEAT	5,<CTAB 1,-1,0>		;173-177
+
+	SUBTTL	FDB print file directory info
+;
+;	prints line of directory listing with all
+;	file info for one file
+;
+;	enter with:
+;	 BP/ IBP type pointer to UFD
+;
+
+PFDB:	CALL	ILDH11		;get first RAD50 halfword
+	SKIPN	B		;if zero, no entry
+	 RET			;return
+
+	MOVE	C,[POINT 7,S]
+	CALL	RADACI		;xlate it
+	HRROI	A,S		;print it
+	PSOUT
+
+	CALL	ILDH11		;second half of name
+	MOVE	C,[POINT 7,S]
+	CALL	RADACI		;xlate it
+	HRROI	A,S
+	PSOUT
+
+	MOVEI	A,"."		;separator
+	PBOUT
+
+	CALL	ILDH11		;get ext
+	MOVE	C,[POINT 7,S]
+	CALL	RADACI
+	HRROI	A,S
+	PSOUT
+
+	MOVE	Z,[ASCIZ " "]	;setup for printout of type
+	CALL	ILDH11		;get date
+	TRNE	B,100000	;is this a CONTIUOUS or LINKED file
+	MOVE	Z,[ASCIZ /C/]	;C for contiougous
+	TRZ	B,770000	;remove type bit
+	ADDI	B,^D70000	;add in date offset to produce 
+	PUSH	P,B		;julian date, and store it
+
+	CALL	ILDH11		;skip over lock and usage
+	CALL	ILDH11		;start block
+	MOVEI	A,101		;print it
+	MOVE	C,[XWD 100007,10] ;in 7col leading blanks octal
+	NOUT
+	 CALL $YSERR
+
+	CALL	ILDH11		;get length
+	MOVEI	A,101		;print  length
+	MOVE	C,[XWD 100007,12] ;in 7 col leading blanks decimal
+	NOUT
+	 CALL $YSERR
+	HRROI	A,Z		;print type C or " "
+	PSOUT
+
+	PSTR	<   >		;separator
+
+	POP	P,B		;get date
+	MOVEI	A,101		;print date
+	MOVE	C,[XWD 0,12]	;julian-in decimal
+	NOUT
+	 CALL $YSERR
+
+	HRROI	A,[ASCIZ /  </]
+	PSOUT
+
+	CALL	ILDH11		;skip end block
+	CALL	ILDH11		;get protection
+	TRZ	B,777400	;rip off spare bits
+	MOVEI	A,101		;print protection
+	MOVE	C,[XWD 140003,10] ;in 3 col leading zeros octal
+	NOUT
+	 CALL $YSERR
+	HRROI	A,[ASCIZ />
+/]
+	PSOUT
+
+	RET
+	SUBTTL	FILNAM reads in PDP-11 format file name
+;
+;	reads file name of format NAME.EXT where NAME is <7 chars
+;	and EXT is <4 chars. * may be substituted for NAME or EXT.
+;	recognition is not supported.
+;
+;	enter with:
+;	 1/ JFN of input file (100=>tty)
+;	return +1 illegal return
+
+;	return +2 with:
+;	 2/ last char read
+;	 RAD50 file and ext name in FNAM1,FNAM2,FEXT respectively
+;	 -1 implies *
+;	 0 implies name not completed
+;
+
+FILNAM:	SETZM	FNAM1		;set name, ext to unread
+	SETZM	FNAM2
+	SETZM	FEXT
+	SETZM	FSBP
+	MOVE C,[POINT 7,S]	;SET UP STRING POINTER
+
+	ZBIN			;skip leading spaces
+	CAIN	B," "
+	 JRST	.-2
+
+	TRMCHK			;if EOL here, fade away with no 
+	 RET			;name, ext
+
+	CAIN	B,"*"		;any name will do
+	 JRST	[SETOM	FNAM1	;FNAM1=-1 => any name flag for later
+		SETOM	FEXT	;FEXT=-1 JUST IN CASE EOL
+		ZBIN		;GET NEXT CHAR IT MUST BE "." OR EOL
+		TRMCHK		;if EOL here, then
+		 RET		;fade away with flags properly set
+		CAIE	B,"."	
+		 JRST	FLN8	;* must be followed by .
+		SETZM	 FEXT	;no EOL so reset FEXT
+		JRST	FLN3+2]	;go check for ext
+
+	MOVEI	D,5		;6 chars in name, and already have one
+
+FLN1:	RADCHK			;is char legal RAD50 char?
+	 JRST	FLN8		;no, illegal name
+	IDPB	B,C		;yes, save char
+	ZBIN			;get another char
+	TRMCHK			;EOL ?
+	 JRST	[SETOM	FNAM2	;yes, set flag to finish and convert
+		JRST	FLN2]	;name, but skip ext.
+	CAIN	B,"."		;if period ,
+	 JRST	FLN2		;name through
+	SOJL	D,FLN8		;illegal name if greater than 6 chars
+	JRST	FLN1
+
+FLN2:	SOJL	D,FLN3		;finish name with spaces if neccessary
+	MOVEI	Z," "
+	IDPB	Z,C
+	SOJGE	D,.-1
+
+FLN3:	SKIPGE	FNAM2		;if name terminated, skip ext
+	 JRST	FLN7		;go convert name
+
+	ZBIN			;else get first ext char
+	TRMCHK			;if EOL then
+	 JRST  [SETOM	FNAM2	;set flag, and just
+		JRST	FLN7]	;go convert name
+	CAIN	B,"*"		;if *
+	 JRST	[SETOM	FEXT	;set flag and
+		JRST	FLN7]	;go convert name, if it was there
+	MOVEI	D,2		;else, collect just 2 more chars
+
+FLN4:	RADCHK			;legal char?
+	 JRST	FLN8		;nope
+	IDPB	B,C		;yep
+	ZBIN			;get another char
+	TRMCHK			;EOL ?
+	 JRST	FLN5		;yep, complete ext if necessary
+	SOJL	D,FLN8		;only 3 char ext
+	JRST	FLN4
+
+FLN5:	SOJL	D,FLN7		;complete ext with spaces
+	MOVEI	Z," "
+	IDPB	Z,C
+	SOJGE	D,.-1
+
+FLN7:	PUSH	P,B		;save last char for switch
+	MOVE	C,[POINT 7,S]	;convert name, ext to RAD50 words
+	SETO	B,
+	SKIPE	FNAM1		;if name is *
+	 JRST	FLN6		;don't convert
+	CALL	ACIRAD
+	MOVEM	B,FNAM1		;convert first half name
+	CALL	ACIRAD
+	EXCH	B,FNAM2		;second half, and check for ext
+	SKIPGE	B		;if name was ended with terminator,
+	 JRST	FLN9		;simply stop here
+FLN6:	SKIPGE	FEXT		;if ext is *
+	 JRST	FLN9		;then stop here also
+	CALL	ACIRAD		;else, convert ext
+	MOVEM	B,FEXT
+FLN9:	POP	P,B		;return last char
+	CALL	RDSWCH		;READ SWICTH IF ANY
+	JRST	SKPRET		;return return+2
+
+FLN8:	RET				;illegal name return
+
+
+	SUBTTL	Read Byte Size Swicth
+
+RDSWCH:	MOVE	B,TRMCH		;get terminating charter
+	CAIE	B,"/"
+	 RET
+
+	EDIT	[0],[ASCIZ #(Swicth or ?)#],[0],SHELP
+
+	ZBIN			;get switch
+	CAIN	B,"A"		;ascii
+	 JRST	[MOVEI	Z,^D8
+		JRST RDSW1]
+
+	CAIN	B,"B"		;binary
+	JRST	[MOVEI	Z,^D16
+		JRST	RDSW1]
+
+	CAIE	B,"C"		;compressed binary
+	 RET
+	MOVEI	Z,^D16
+RDSW1:	MOVEM	Z,FSBP
+	RET
+
+
+RTSWCH:	MOVE	B,TRMCH		;get terminating character
+	
+	CAIN	B,"/"
+	 JRST	RTSW2		;let him know that he must use a data
+				;switch for copy tenex files
+	PSTR	<	  
+ -- sorry you must use a 'BYTE Size' Switch when COPYing to or from a
+TENEX file. >
+
+	MOVE	P,MARKP
+	PSTR	<
+*COPY >
+	JRST	.COPY
+
+
+RTSW2:	EDIT	[0],[ASCIZ # (Swicth or ?) #],[0],SHELP
+	ZBIN			;get switch
+	CAIN	B,"A"		;ascii
+	 JRST	[MOVEI	Z,^D7
+		JRST	RTSW1]
+
+	CAIN	B,"B"		;binary
+	JRST	[MOVEI	Z,^D18
+		JRST	RTSW1]
+
+	CAIN	B,"D"		;DATA mode one 11 word to one 10 word
+	JRST	[MOVEI  Z,^D36
+		 JRST	RTSW1]
+
+	CAIN	B,"P"		;PACKED binary	two 11 wds to one 10 wds
+	 JRST	[MOVEI	Z,^D16
+		 JRST	RTSW1]
+	CAIE	B,"N"		;numeric byte size 1-16
+	 JRST	RTSW1-1		;no
+	MOVE	A,LINBUF	;get string pointer to number
+	MOVEI	C,^D10		;get byte size in base 10
+	NIN			;get number
+	CALL	$YSERR
+	MOVE	Z,B
+	SKIPLE	B
+	CAILE	B,^D36		;BYTE SIZE TO LARGE
+	CALL	$YSERR
+	SKIPA 
+
+	SETZ 	Z,    
+RTSW1:	MOVEM	Z,SBP(FILE)	;insert byte size in table
+	RET
+
+SHELP:	ASCIZ	#
+"Swicth" is use to set the byte size for DOS and TENEX files.
+"A"		=ASCII 7 bit chars are transfered
+"B"		=BINARY one PDP-11 word to one PDP-10 Half-Word
+"D"  TENEX only	=DATA Mode one 11 word to one 10 word 16 bit tranfer
+"P"  TENEX only	=PACKED Mode two 11 words to one 10 word 32 bit tranfer
+"N"  TENEX only	=NUMERIC Byte Size 1-36 "N1" to "N36"
+"?"		=Type this list.
+    /#
+  	SUBTTL	FNDNAM searches DT dir for file by name
+;
+;	searches dir in DT UNIT for name in FNAM1,FNAM2,FEXT
+;
+;	enter with:
+;	 UNIT/ pointer to DT dev params
+;	 FNAM1,FNAM2,FEXT/ RAD50 file name (with * conventions)
+;
+;	return +1 no name found
+;	 BP/ points to first free file dir space in UFD
+;		or
+;	     is zero, no more dir space
+;	return +2 name found
+;	 BP/ points to file entry in dir UNIT
+;
+;	entry point FNDNXT starts dir search from last found file
+;
+FNDNAM:	MOVEI	BP,UFD(UNIT)		;start of dir pointer
+	HRLI	BP,-2
+	CAIA
+
+FNDNXT:	MOVE	BP,LASTBP(UNIT)		;from last found file
+	
+	SETZ	C,
+	MOVE	A,[CALL FFNM1]		;scan dir for each file
+	CALL	DIRSC0
+
+        MOVE  	BP,C		;SET BP TO FREE ENTRY
+	RET
+
+FFNM1:	CALL	ILDH11			;get first half name
+	JUMPN	B,FFNM4			;empty file field?
+	SKIPE	C			;yes, first one?
+	 RET
+	CALL	DBP11			;Dec BP & Make right for ILDH11
+	MOVE	C,BP			;yes, save pointer
+	RET
+
+FFNM4:	SKIPGE	FNAM1			;file name is * ?
+	 JRST	[CALL	ILDH11		;yes, skip over name field
+		JRST	FFNM2]		;and check out ext
+	CAME	B,FNAM1			;first half ok?
+	 RET				;no, continue searching
+	CALL	ILDH11			;get second half name
+	CAME	B,FNAM2			;second half ok?
+	 RET				;no
+FFNM2:	SKIPGE	FEXT			;ext is * ?
+	 JRST	FFNM3			;yes
+	CALL	ILDH11			;no, get ext
+	CAME	B,FEXT			;ext matches?
+	 RET				;no, continue searching
+
+FFNM3:	MOVE	BP,-1(P)		;yes, found file
+	ADDI	BP,4		;SET POINTER FOR NEXT SCAN
+	CALL	ILDH11
+	MOVEM	BP,LASTBP(UNIT)
+	MOVE	BP,-1(P)		;RESET BP TO FOUND FILE
+	SUB	P,[XWD 4,4]		;pop stack
+	JRST	SKPRET
+	SUBTTL	GTFFN gets file handle like GTJFN
+;
+;	gets FFN local version of JFN. reads in file name
+;	from input device, like GTJFN. if device specified is
+;	one that was previously mounted with DT11 mount command
+;	looks for , or opens, file on that device. else passes
+;	through to TENEX GTJFN.  in any case, sets up local file
+;	information
+;
+;	enter with:
+;	 1/XWD flags,,default version no
+;	 2/ XWD INJFN,OUTJFN
+;
+;	return +1  if old file specified, and not found
+;	return +2 
+;	 FILE/ FFN number (which is adr to file info)
+;                                           
+;*****************************************************************
+;file parameter area definitions
+DBP=0				;BP pointer to directory  (DOS)
+FJFN=0				;files TENEX JFN  (TENEX)
+XIN=1				;input routine
+XOUT=2				;output routine
+EOF=3				;address to go on EOF
+				;or pointer to len and last blk for
+				;DOS output file
+DTE=4				;address to go on data error
+SBP=5				;BP storage when not in use (DOS)
+RBP=6				;byte dependent initial BP (DOS)
+IN=7				;byte dependent input routine  (DOS)
+OUT=10	 			;byte dependent output routine (DOS)
+EFC=11				;routine checks for ascii end of file,
+				;only used when open for ascii	(DOS)
+UNT=12				;files unit params address  (DOS)
+FM=13				;file bit map pointer  (DOS) 
+INBLK=14			;input routine for finding the next BLK (DOS)
+LEN=15				;Length of file in bloocks (DOS)
+NFPRMS=16			;size of each files parameter block
+
+;****************************************************************
+
+GTFFN:	PUSH	P,B		;save INJFN,,OUTJFN
+	PUSH	P,A		;save XWD FLAGS,,0
+	HLRZ	A,B		;read from INJFN
+
+	MOVE	C,[POINT 7,S]   ;set up input buffer
+	MOVEI	D,^D39		;read in only 39 chars
+
+	ZBIN			;skip leading spaces
+	CAIN	B," "
+	JRST	.-2
+
+GTF1:	IDPB	B,C		;save input characters
+	TRMCHK			;check if terminating char
+	 JRST	GTF2		;yes, it is
+	ZBIN			;no, get more bytes
+	SOJG	D,GTF1
+	JRST	GTF8
+
+GTF2:	CAIE	B,":"		;was first word device desig.?
+	 JRST	GTF8		;no., must be tenex file
+
+	HRROI	A,S		;yes, get device type
+	SETZ	Z,		;add termination byte
+	DPB	Z,C		;wiping-out the ":"
+	STDEV			
+	 CALL	$YSERR
+	MOVEI	A,7		;check to see if device mounted for
+
+	CAMN	B,MNTED(A)	;this program (if is, must be DT)
+	 JRST	GTF3		;mounted.
+	SOJGE	A,.-2
+	JRST	[MOVEI Z,":" 	;not mounted, treat as TENEX device
+		 DPB  Z,C	;so reinsert the ":"
+		 JRST GTF8]
+ 
+GTF3:	MOVE	A,B		;xlate dev desig into UNIT adr
+	DEVUNT
+
+	HLRZ	A,-1(P)		;name input JFN
+	CALL	FILNAM		;get name, and xlate to RAD50
+	 PERROR	GJFX31		;illegal name return
+	CALL	FNDNAM		;get dir pointer
+	 CAIA			;nam;name not found in dir for dev
+	JRST	GTF4
+
+	POP	P,A		;open new file and FFN for PDP-11 DT
+	TLNE	A,(1B2)		;if no new files spec'd
+	 JRST	[POP P,Z	;error return, pop stack and
+		RET]		;return directly
+
+	SKIPN	BP		;any dev dir room?
+	 PERROR	GJFX23		;nope
+
+	MOVEI	A,-1		;do FNDFFN on nonsense JFN or BP
+	CALL	FNDFFN		;to find free ffn
+	 SKIPA			;should never find FFN
+	0
+	SKIPN	FILE		;check to see if FFN space first
+	 PERROR	GJFX2		;none
+
+	PUSH	P,BP		;save pointer to first free dir block
+
+	MOVE	B,FNAM1		;get RAD50 name
+	CALL	IDPH11		;dump it into directory name area
+	MOVE	B,FNAM2
+	CALL	IDPH11
+	MOVE	B,FEXT
+	CALL	IDPH11
+
+	SETZ	B,		
+	CALL	IDPH11		;type and date
+	CALL	IDPH11		;lock and usage count
+	CALL	IDPH11		;start block
+	CALL	IDPH11		;length
+	CALL	IDPH11		;end block
+	MOVEI	B,233
+	CALL	IDPH11		;protection
+
+	POP	P,BP		;reset pointer to directory
+	JRST	GTF5		;go set up FFN
+
+;**********************************************************************
+;	Re-enter here if using * conventions to find all files of a 
+;	certain type.
+;
+;	enter with:
+;	1/XWD flags ,, default version no.
+;	BP/pointer to the last found file
+;
+;	return +1: no file found
+;	return +2: if another file was found
+;		bp points to the file in the dir
+
+GTFNXT:	ADDI	BP,4		;increment BP to DIR
+	CALL	ILDH11		;odd byte
+	CALL	FNDNXT		;find another file of same type
+	RET			;no file found so return +1
+	PUSH	P,A
+	PUSH	P,A
+
+GTF4:	POP	P,A
+	MOVE	A,BP		;name found,
+	CALL	FNDFFN		;see if already open
+	 CAIA	        	;not not already open, go open one
+	JRST	GTF6
+
+	SKIPN	FILE		;any FFN's left?
+	 PERROR	GJFX2		;nope
+
+GTF5:	MOVEM	BP,DBP(FILE)	;open FFN for PDP-11 DT
+	MOVEM	UNIT,UNT(FILE)
+
+	SETZ	Z,		;compute FBM  address
+	HRRZI	B,UFD(UNIT)	;given dir BP
+	HRLI	BP,0		;CLEAR LEFT HALF WORD 
+	SUBM	BP,B	;figure dir number
+	MOVE	BP,DBP(FILE)
+	CAILE	B,177		;remembering that
+	 JRST	[MOVEI	Z,^D28	;there are 28 dirs per UFD block
+		SUBI	B,200	;and 2 UFD blocks 
+		JRST	.+1]
+	IDIVI	B,^D9		;and 9 words per 
+	LSH	B,1		;2 directories
+	SKIPE	C
+	 AOJ	B,		;dir num (0-55) in B
+
+	IDIVI	B,7		;7 file bit maps per block
+	IMULI	B,200		;finds right block
+	IMULI	C,^D18		;18 words per bit map
+	ADD	B,C
+	ADDI	B,FBM-1(UNIT)	;MAKE POINTER TO FBM
+	HRLI	B,-1
+	MOVEM	B,FM(FILE)	;pointer to FBM
+
+GTF6:	MOVE	A,FSBP		;GET SIZE OF BYTE POINTER IF ANY
+	MOVEM	A,SBP(FILE)	;INSERT SBP INTO TABLE
+	POP	P,A		;look for possible switches,
+	HLRZ	A,A		;INJFN for switches
+	JRST	SKPRET		;FFN in FILE (from FNDFFN)
+
+GTF8:	SETZ	Z,		;add term to string in buff
+	IDPB	Z,LINBUF
+	HRROI	B,INBUFF		;input string to GTJFN
+	MOVEI	A,EJFN
+
+	POP	P,Z		;flags and default version
+	MOVEM	Z,EJFN
+	POP	P,Z		;XWD IN,,OUT
+	HRLI	Z,377777	;NO INPUT JFN
+	MOVEM	Z,EJFN+1
+
+	GTJFN
+	 JRST	[CAIN	A,GJFX27	;new file error?
+		 RET		;yes, reflect to GTFFN error return
+		CALL	$YSERR
+		JRST	.+1]
+
+	MOVE	C,A		;save JFN
+	CALL	FNDFFN		;see if already open
+	 JRST	GTF11		;no, open one
+
+	JRST	GTF11+1		;yes, return
+
+GTF11:	MOVEM	C,FJFN(FILE)
+	CALL RTSWCH		;GET BYTE SIZE
+	JRST	SKPRET
+
+FNDFFN:	SETZ	Z,			;find file parameter area
+	MOVEI	FILE,FPRMS		;with FJFN specified in A
+
+FF1:	CAMN	A,FJFN(FILE)		;found requested file?
+	 JRST   SKPRET			;yes
+	CAMN	Z,FJFN(FILE)	;no is this FFN free?
+	 MOVE	Z,FILE			;yes record it
+	ADDI	FILE,NFPRMS		;go to next file area
+	CAIGE	FILE,NFPRMS*<NFILS>+FPRMS ;end of file areas
+	 JRST	FF1			;no
+
+	MOVE	FILE,Z			;did find file, return firs
+	RET				;free FFN
+
+	SUBTTL	FBLK find a free PDP-11 DT block
+;
+;	given a block number, finds nearest free block that is
+;	at least an I.F. (interleave factor) number of blocks
+;	away.  first looks up tape, then down.
+;
+;	enter with:
+;	 1/ block number
+;	 2/ pointer to start of FBM (file bit map)
+;
+;	return +1  if no space left
+;	return +2
+;	 1/ new free block
+;
+
+
+FBLK:	PUSH	P,B		;save FBM pointer
+	SKIPGE	D,A		;BLK NUMBER MAY BE 0,+,OR -
+	MOVN	A		;NEGATE NEGTIVE BLOCK NUMBER
+
+	MOVEI	BP,MBM+2(UNIT)	;set up pointer into MBM
+	HRLI	BP,-2		;by adding blocks word offset into
+	IDIVI	A,20		;MBM to starting MBM addr
+	CALL	ADDBPH
+	SKIPN	C,D		;CALULATE I.F. IF NEEDED
+	JRST	.+5		;NO INTERLEAVE FOR ZERO BLK NUMBER
+	MOVEI	C,-1B<70-NBKIF+1> ;set up interleave factor mask
+	SOJLE	B,.+3		;set up bit mask
+	LSH	C,1
+	JRST	.-2
+
+	IMULI	A,20		;get block no of offset word
+
+	CALL	LDH11		;get first word of bit table
+	TRO	B,(C)		;force used I.F. no. of blocks upward
+
+	PUSH	P,A		;save block number mod 20
+	PUSH	P,C		;I.F. mask
+	PUSH	P,BP		;and BP into MBM for later scan down
+	
+FBSF:	SETZ    S,S        	;pop stack in case we dont return
+	CALL	FBS1		;SEARCH FOR A FOWARD BLOCK FIRST
+	SETO	S,S	       	;restore stack
+	POP	P,BP		;NO FOWARD BLOCK FOUND
+	POP	P,C		;SO LOOK BACKWARDS
+	POP	P,A		;WITH POINTERS RESET
+	CALL	FBS3		;SEARCH FOR A BLOCK BACKWARDS
+	JRST	FBS7		;NO BLOCK FOUND
+
+FBSB:	SETZ	S,S     	;                             urn
+	CALL	FBS3		;LOOK FOR A BLOCK BACKWARDS FIRST
+	SETO	S,S	                             
+	POP	P,BP		;NO BLOCK FOUND
+	POP	P,C		;SO LOOK FORWARDS
+	POP	P,A
+	CALL	FBS1		;RETURN MEANS NO BLOCK FOUND
+	JRST	FBS7		;NO BLOCK FOUND
+
+FBS1:	IOR	B,[XWD -1,600000]		;SET UPPER BITS
+	SETCA	B,		;scan up MBM from entry block word
+	JUMPN	B,FBS2		;complement of B has bits on for free
+	ADDI	A,20		;blocks, if zero, no free blocks this
+	CAIL	A,NBKDT		;word, scan up blocks to end of tape
+	RET			;NO FREE BLOCK FOUND
+	CALL	ILDH11		;get next BM word
+	JRST	FBS1
+
+FBS2:	SKIPN	S,S
+	SUB	P,[XWD 3,3]
+	PUSH	P,B		;no later down scan. save free blk bits
+
+	SETZ	C,		;find first bit from right side
+	ROT	B,-1		
+	JUMPL	B,.+2
+	AOJA	C,.-2
+
+	POP	P,B		;get free blk bits
+	MOVEI	S,1		;set up mask for first free block
+	LSH	S,(C)
+
+	JRST	FBS6		;go set up for new block
+
+FBS3:	CALL	LDH11		;get used bits
+	LSH	C,-3		;force I.F.'s worth of lower blks busy
+	TRO	B,C		
+
+FBS4:	IOR	B,[XWD -1,600000]	;SET UPPER BIT FIRST
+	SETCA	B,		;scan down
+	JUMPN	B,FBS5		;free block
+	SUBI	A,20		;no free blocks
+	SKIPGE	A		;NO MORE BLOCK TO CHECK
+	RET			;NO FREE BLOCK FOUND
+	CALL	DLDH11		;scan down
+	JRST	FBS4
+
+FBS5:	SKIPN	S,S
+	SUB	P,[XWD 3,3]
+	JFFO	B,.+1		;find first one from left side
+	MOVEI	S,400000	;set up mask for found block
+	MOVNI	C,-^D18(C)
+	LSH	Z,(C)
+	MOVN	C,C		;NEGATIVE BLOCK NUMBER
+
+FBS6:	SUB	P,[XWD 1,1]	;POP STACK ONCE
+	SETCA	B,		;reset to busy bits on
+	TRO	B,(S)		;set bit
+	CALL	DPH11		;set it into MBM
+
+	POP	P,BP		;reclaim pointer into FBM
+	PUSH	P,A		;save block number
+	IDIVI	A,20		;calulate bm word
+ 	CALL	ADDBPH		;add word offset
+	POP	P,A		;get block number back
+
+	CALL	ILDH11		;get FBM word
+	TRO	B,(S)		;set bit on
+	CALL	DPH11		;save FBM word
+
+	SKIPGE	D		;WAS BLOCK NUMBER NEGATIVE
+	MOVN	D,D		;YES
+	
+	ADD	A,C		;compute free block number
+	CAMGE	A,D		;SHOULD NEW BLOCK BE + OR -
+	MOVN	A,A		;NEGATIVE BLOCK NUMBER
+
+	JRST	SKPRET		;found new block exit
+ 
+FBS7:	POP	P,B		;clear stack
+	RET			;no space return
+	SUBTTL	DIRSCN	scans PDP-11 DT dir
+;
+;	executes a function for each entry in PDP-11 DT UFD
+;
+;	enter with:
+;	 1/ instruction to execute
+;
+;	at moment of XCT 1, stack is two deep, and BP points to dir
+;
+;	entry point DIRSC0 starts search at pointer in BP
+;
+
+DIRSCN:	MOVEI	BP,UFD(UNIT)	;set up for unit
+	HRLI	BP,-2
+DIRSC0:	PUSH	P,A		;word to execute for each file
+
+DIRS1:	PUSH	P,BP		;save dir pointer
+	XCT	-1(P)		;execute command
+	POP	P,BP		;restore BP
+	ADDI	BP,4		;inc to next file
+	CALL	ILDH11
+	HRRZ	A,BP		;see if end of dir block
+	CAIN	A,UFD+176(UNIT)	;end of block 1?
+	 JRST	[ADDI	BP,2	;yes
+		JRST	DIRS1]	;skip to next block
+	CAIGE	A,UFD+200+175(UNIT) ;end of block 2?
+	 JRST	DIRS1		;no
+
+	POP	P,A
+	RET
+	SUBTTL	IO routines 
+;
+;	these routines do byte IO to PDP-11 DT
+;	enter with:
+;	 2/ byte to be xfrd
+;	 FIN/ file param block base addr (FFN) for input
+;	 FOUT/ file param block base addr (FFN) for output
+;
+;	return +1 with:
+;	 2/ byte xfered
+;
+
+BIN11P:	MOVE	BP,SBP(FIN)	;save/restore BP entry
+	CALL	BIN11
+	MOVEM	BP,SBP(FIN)
+	RET
+
+BIN11:	MOVE	UNIT,UNT(FIN)	;read byte, set up unit
+	CAMN	BP,END(UNIT)	;end of block?
+	 JRST	BN1		;yes
+	XCT	IN(FIN)		;no, execute byte size depended routn.
+	XCT	EFC(FIN)	;SKIP NULLS DURING ASCII INPUT
+	JRST	BIN11		;SKIP NULL GET ANOTHER BYTE
+	RET
+
+BN1:	XCT	INBLK(FIN)	;get next input block
+	JUMPE	Z,BN2		;yes, EOF
+
+	PUSH	P,A		;save for getting block
+	PUSH	P,B
+
+	MOVE	A,Z		;next block
+	DTBKR			;set up for read in
+
+	MOVE	BP,RBP(FIN)	;reset byte pointer
+
+	POP	P,A		;restore stack
+	POP	P,B
+	JRST	BIN11		;and get next byte
+
+BN2:	POP	P,Z		;BURN ONE WORD OFF STACK
+	JRST	@EOF(FIN)	;EOF simulate interrupt
+
+BN3:	MOVE	Z,BK(UNIT)		;get current blk num
+	AOJ	Z,		;inc to next block
+	AOSL	LEN(FIN)		;check for EOF
+	SETZ	Z,		;end of file
+	RET
+
+BOT11P:	MOVE	BP,SBP(FOUT)	;save/restore BP entry
+	CALL	BOT11
+	MOVEM	BP,SBP(FOUT)
+	RET
+
+BOT11:	MOVE	UNIT,UNT(FOUT)		;set up unit
+	CAMN	BP,END(UNIT)		;full block?
+	 JRST	BO1			;yess, write out block
+	XCT	OUT(FOUT)		;xfr byte
+	SETOM	WF(UNIT)		;set writeout buffer flag
+	RET
+
+BO1:	PUSH	P,B		
+	PUSH	P,A
+
+	MOVE	A,BK(UNIT)	;get block number of present block
+	MOVE	B,FM(FOUT)	;file bit map pointer
+	CALL	FBLK		;find a free block
+	 PERROR	IOX5		;no free blocks
+
+	HRLM	A,DTBUFF(UNIT)	;setup link to next block + or -
+	EXCH	A,BK(UNIT)	;save new active block
+	DTBKW			;and write out old
+
+	CALL	BO2		;update len and end blk #
+
+	DTZERO			;null out new block
+
+	MOVE	BP,RBP(FOUT)
+	POP	P,A		;restore regs, and
+	POP	P,B
+	JRST	BOT11		;try for byte again
+
+BO2:	PUSH	P,A		;update len and end block number
+	PUSH	P,B		;enter with A/blk # 
+	PUSH	P,BP		;EOF(FILE)/BP pointer to len and end blk
+	MOVE	BP,EOF(FILE)	;get pointer to len and end blk #
+	CALL	ILDH11		;get len
+	AOJ	B,		;inc len
+	CALL	DPH11		;save updated len
+	SKIPGE	B,A		;is BLK # - if so make postive
+	MOVN	B,A
+	CALL	IDPH11		;save new end block
+	POP	P,BP		;restore regs
+	POP	P,B
+	POP	P,A
+	RET
+
+  	SUBTTL	OPEN opens file
+;
+;	enter with:
+;	 2/ byte size, flags
+;	 FILE/ FFN
+;	 FIN / Input File Parameter
+
+.OPEN:	HRRZ	A,FJFN(FILE) 	;TENEX or DOS file?
+	CAIG	A,1000
+	 JRST	OP9		;TENEX file
+
+	CALL	REWIND		;REWIND THE DECTAPE
+
+	MOVE	A,FJFN(FILE)	;DOS file
+	MOVE	Z,[CALL BIN11]	;set up DOS xfr routines
+	MOVEM	Z,XIN(FILE)
+	MOVE	Z,[CALL BOT11]
+	MOVEM	Z,XOUT(FILE)
+
+	PUSH	P,B
+	MOVE	BP,A		;set up BP to ext field
+	AOJ	BP,0
+
+	LDB	B,[POINT 6,(P),5]	;get byte size
+	SKIPE	B		;if zero byte size, then switch or
+	 JRST	[CALL IBP11
+		JRST OP2]		;default, 
+
+	SKIPE	B,SBP(FILE)	;switch specified?
+	 JRST	[CALL IBP11
+		 JRST OP2]		;yes
+
+	CALL	ILDH11		;no, default specified by extent
+	MOVEI	C,NBEXT		;search binary extent list
+	CAMN	B,BEXT(C)	;on list?
+	 JRST	OP1		;yes,
+	SOJGE	C,.-2
+	SKIPA	B,[^D8]		;no, must be ascii
+OP1:	MOVEI	B,^D16		;binary
+	MOVEM	B,SBP(FILE)	;SAVE THE BYTE SIZE
+OP2:	CAIN	B,^D16		;binary?
+	 JRST	OP3		;yes
+	CAIE	B,^D8		;no, ascii
+	 PERROR	SFBSX2		;no, then error
+
+	MOVE	AA,[CALL ILDA11] ;set ascii params
+	MOVE	BB,[CALL IDPA11]
+	MOVEI	CC,DTBUFF(UNIT)
+	HRLI	CC,-3
+	MOVE	DD,[SKIPN B]
+	JRST	OP4
+OP3:	MOVE	AA,[CALL ILDH11] ;set binary params
+	MOVE	BB,[CALL IDPH11]
+	MOVEI	CC,DTBUFF(UNIT)
+	HRLI	CC,-2
+	MOVE	DD,[SKIPA]	
+OP4:	MOVEM	AA,IN(FILE)	;set params
+	MOVEM	BB,OUT(FILE)
+	MOVEM	CC,RBP(FILE)
+	MOVEM	DD,EFC(FILE)
+
+	MOVE	B,[HLR	Z,DTBUFF(UNIT)]	;next block for linked files
+	MOVEM	B,INBLK(FILE)	;save this as defalut
+	CALL	ILDH11		;GET TYPE WORD
+	TRNN	B,100000	;check to see if this is a cont file
+	JRST	.+6
+	HRLI	CC,-1		;set bp for conti file
+	SOJ	CC,
+	MOVEM	CC,RBP(FILE)	;reset byte reset pointer
+	MOVE	B,[CALL	BN3]	;next blk routine for conti files
+	MOVEM	B,INBLK(FILE)	;save it prm area
+	CALL	ILDH11		;skip pass lock and useage
+
+	POP	P,B		;GET FLAGS
+	TRCE	B,3B20		;neither read nor write?
+	 TRCN	B,3B20		;no, both read and write?
+	PERROR	OPNX13		;yes
+
+	TRNN	B,1B19		;write
+	 JRST	OP5		;yes
+
+	CALL	ILDH11		;read, get start block
+	SKIPN	B		;if zero for some reason
+	 PERROR	OPNX2		;should never happen
+
+	MOVE	A,B
+	DTBKR			;get block into buffer
+
+	CALL	ILDH11		;get length
+	MOVNM	B,LEN(FILE)	;save negative of length
+	RET			;ready to read
+
+OP5:	CALL	ILDH11		;write, get first file block number
+	JUMPE	B,OP6		;new file?
+
+	MOVE	A,FILE		;no, old file, delete first
+	CALL	DELFL
+
+OP6:	MOVEI	A,0  		;get nearest free block to start of tape
+	MOVE	B,FM(FILE)	;file bit map
+	PUSH	P,BP		;save for later use
+	CALL	FBLK		;get free block
+	 JUMPA	[POP P,BP	;get word off stack
+	 PERROR	OPNX10 ]		;no space]
+
+	POP	P,BP
+	MOVE	B,A		;set start block in dir
+	MOVEM	BP,EOF(FILE)	;save pointer to len and end block #
+	CALL	DPH11
+	SETZ	B,B		;SET len to ZERO
+	CALL	IDPH11
+	MOVE	B,A		;get blk #
+	CALL	IDPH11	 	;store 	block number to
+	MOVEM	B,BK(UNIT)	;and in device params
+	DTZERO			;null out new block
+
+	RET
+
+OP9:	MOVE	A,FJFN(FILE)	;get TENEX string pointer
+	LDB	Z,[POINT 6,B,5]	;tenex open, check for default 
+	JUMPN	Z,OP11
+
+        PUSH	P,B		;byte size
+     	MOVE  	B,[XWD 	1,11] 	;if so, get bytes size of file
+     	MOVEI 	C,Z		;via GTFDB
+     	GTFDB
+     	LDB   	B,[POINT 6,Z,11]
+     	JUMPN	OP10
+
+	MOVE	B,SBP(FIN)	;Take byte size form the input file
+	HRR	Z,FJFN(FIN)	;is input file DOS or TENEX
+	CAIGE	Z,1000
+	JRST	OP10		;TENEX so don't change byte size in "B"
+	CAIN	B,^D8 		;DOS ASCII
+     	MOVEI 	B,7		;so TENEX ASCII
+	CAIN	B,^D16		;DOS BINARY
+	MOVEI	B,^D18		;so TENEX Half-Words
+
+OP10:	MOVEM 	B,SBP(FILE)	;SAVE BYTE SIZE
+     	LSH  	B,43-5
+     	IOR  	B,(P)
+     	POP  	P,Z
+
+OP11:	OPENF
+	 CALL	$YSERR
+
+	MOVE	Z,[BIN]		;set up TENEX xfr routines
+	MOVEM	Z,XIN(FILE)
+	MOVE	Z,[BOUT]
+	MOVEM	Z,XOUT(FILE)
+
+	RET
+
+BEXT:	<<"B"*50>+"I">*50+"N"	;table of default binary DOS extents
+	<<"O"*50>+"B">50*+"J"
+	<<"R"*50>+"E">*50+"L"
+	<<"L"*50>+"D">*50+"A"
+	<<"S"*50>+"A">*50+"V"
+	<<"A"*50>+"B">*50+"S"
+	<<"D"*50>+"A">*50+"T"
+NBEXT=.-BEXT
+	SUBTTL	CLOSE
+;
+;	closes TENEX or DOS file
+;
+;	enter with:
+;	 1/ lh contains flags
+;	 FILE/ FFN
+;
+.CLOSE:	HRRZ	A,FJFN(FILE)	;TENEX or DOS file
+	PUSH	P,A
+	CAIGE	A,1000
+	 JRST	CL9		;TENEX
+
+	SKIPN	IN(FILE)	;file already closed?
+	 JRST	CL1		;yes
+	SETZM	IN(FILE)
+
+	MOVE	UNIT,UNT(FILE)
+	SKIPN	WF(UNIT)	;need to write out buffer?
+	 JRST	CL1		;no
+
+	SETZ	A,A		;set ZERO link to next block
+	HLLM	A,DTBUFF(UNIT)	;END of file for linked files
+	MOVE	A,BK(UNIT)	;Get block number
+
+	DTBKW			;yes
+	CALL	BO2    		;update len and end block number
+
+CL1:	SKIPE	DIRW(UNIT)
+	CALL	DIRWRT	;write out dir if necessary
+
+	JRST	RLFFN		;RELEASE THE JFN
+
+CL9:	CLOSF			;TENEX close
+	 CALL $YSERR
+
+RLFFN:	MOVE	A,FILE		;zero out file param area
+	HRL	A,A
+	AOJ	A,
+	SETZM	(FILE)
+	BLT	A,NFPRMS-1(FILE)
+
+	POP	P,A		;GET FJFN TENEX OR DOS
+	CAIL	A,1000		;TENEX       
+	RET			;DOS
+
+RL1:	RLJFN			;TENEX
+	 CALL	$YSERR
+	RET
+	SUBTTL	DELFL deletes a DOS file
+;
+;	deletes blocks from master bit map, file bit map
+;	and zeros start,length, and end fields of dir
+;
+;	enter with:
+;	 FILE/ file parameter area
+;	 UNIT/ unit parameter area
+;
+;	return +1
+;
+DELFL:	PUSH	P,BP		;SAVE BP
+	MOVE	D,FM(FILE)	;pointer to file bit map
+	MOVEI	BP,MBM+1(UNIT)	;pointer to master bit map
+	HRLI	BP,-1		;ILDH11 needs HWD just before one wanted
+	MOVSI	A,-44		;counter in A
+
+DLF1:	EXCH	BP,D		;reset to FBM pointer
+	CALL	ILDH11		;get use blocks word
+	MOVE	C,B		;reset zero for used bits
+	SETZ	B,
+	CALL	DPH11		;reset FBM
+
+	EXCH	BP,D		;exchange pointers
+	CALL	ILDH11		;get MBM bits
+	TRZ	B,(C)		;turn off files bits
+	CALL	DPH11		;reset MBM bits
+	
+	AOBJN	A,DLF1
+
+	MOVE	BP,DBP(FILE)	;get dir pointer
+	MOVEI	A,5		;inc to start block
+	CALL	ADDBPH
+	SETZ	B,		;zero out stuff
+	CALL	IDPH11		;start block
+	CALL	IDPH11		;length
+	CALL	IDPH11		;end
+
+	POP	P,BP
+	RET
+
+
+.DELETE:	MOVEM	P,MARKP			;save entry stack pointer
+	EDIT [0],[ASCIZ # (File) #],[ASCIZ #/#],<[ASCIZ #
+(Dev:Name.Ext)
+"File" maybe DOS or TENEX
+*DELETE #]>
+
+	MOVSI	A,20001		;get a write file
+	MOVE	B,[XWD 100,101]	;input output from tty:
+	CALL	GTFFN		;GET name of file
+	CAI			;should never happen
+	
+	HRRZ	A,FJFN(FILE)	;TENEX or DOS
+	CAIGE	A,1000		;can only delete dos files now
+	JRST	[DELF		;delete a TENEX file
+		CALL	$YSERR
+ 		RET]
+	CALL	DELFL		;delete bit map
+	
+	MOVE	BP,DBP(FILE)	;get pointer to file name
+	SETZ	B,B		;ZERO out name and ext
+	CALL	IDPH11
+	CALL	IDPH11
+	CALL	IDPH11
+
+	SETOM	DIRW(UNIT)	;write DIR in .CLOSE
+	CALL	.CLOSE		;THE FILE is NO MORE
+
+	RET
+
+.MOUNT:	MOVEM	P,MARKP		;SAVE PDL TO TOP LEVEL
+	EDIT	[0],[ASCIZ /(DTAN:)/],[ASCIZ #:#],<[ASCIZ #
+(DTAN:) ((N= 0 to 7))
+MOUNT "DTAN" must be DOS. 
+*MOUNT #]>
+	EXCH	A,B		;PUT STRING POINTER INTO A
+	STDEV
+	0
+	EXCH	A,B
+	CALL	DTMNT
+	MOVEI	A,100		;get one char before continueing
+	BIN
+	RET
+.UNMOUNT:	MOVEM	P,MARKP		;SAVE PDL TO TOP LEVEL
+	EDIT	[0],[ASCIZ /(DTAN:)/],[ASCIZ #:#],<[ASCIZ #
+(DTAN:) ((N= 0 to 7))
+UNMOUNT "DTAN" must be DOS. 
+*UNMOUNT #]>
+	EXCH	A,B		;PUT STRING POINTER INTO A
+	STDEV
+	0
+	EXCH	A,B
+	DEVUNT			;calulate Device number
+	SKIPN	MNTED(A)
+	JRST	[PSTR	<  -- DTAN: is not MOUNTED or is not a DOS DTAN:>
+		RET]
+	CALL	DTUNMT
+	MOVEI	A,100		;get one char before continueing
+	BIN
+	RET
+
+	SUBTTL	.DIR	list directory (DOS) command
+;
+;	looks for file name, accepts none, lists all files,
+;	or only specified one
+;
+.DIR:	MOVEM	P,MARKP		;SAVE POINTER TO TOP LEVEL OF STACK
+	MOVEI	A,100		;read from tty
+	CALL	SCNTRM		;search for char
+	 JRST	.DIR4		;found terminator
+	PUSH	P,[0]		;found possible file name
+
+.DIR1:	MOVSI	A,164001	;get file name with GTFFN
+	MOVE	B,[XWD 100,101]	;only old file, to/from tty
+	CALL	GTFFN
+	 JRST	ERESET		;"?" error
+
+	HRRZ	Z,FJFN(FILE)	;was specific file TENEX
+	CAIG	Z,1000 		;yes, we don't handle those yet
+	 JRST	ERESET
+
+.DSTAR:	PUSH	P,FJFN(FILE)	;save pointer to fil
+	CALL	GTFNXT		;find all star files
+	SKIPA			;no file found
+	JRST	.DSTAR		;get next file
+
+
+	MOVEI	A,100		;get next terminator
+	CALL	SCNTRM
+	 JRST	.DIR2		;end of line
+
+	CAIN	B,","		;if last char is ,
+	 PBIN			;skip, we've already read it
+	JRST	.DIR1
+
+.DIR2:	CALL	DIRTTL		;print title
+	
+	POP	P,BP		;get specific files
+	JUMPE	BP,.DIR3	;no more files
+	CALL	PFDB		;type FDB
+	JRST	.-3
+
+.DIR3:	LINE
+	RET
+
+.DIR4:	CALL	DIRTTL		;list all files
+
+	MOVE	A,[CALL	PFDB]	;set up to scan dir
+	CALL	DIRSCN
+	JRST	.DIR3
+
+DIRTTL:	LINE			;print dir header
+	PSTR	<             >
+	
+	MOVE	B,DEV(UNIT)	;type DTA0: headin
+	MOVEI	A,101
+	DEVST
+	 CALL $YSERR
+
+	LINE
+	LINE
+	RET
+
+SCNTRM:	EDIT	[0],[ASCIZ # (FileList) #],[0],<[ASCIZ #
+(DOS FileList)
+(File,File,...) Terminated with two "CR"s
+(DTAN:Name.Ext)  Name and or Ext maybe "*"
+*DIRECTORY #]>
+
+	ZBIN			;scan to first char
+	CAIN	B," "
+	 JRST	SCNTRM
+
+	SOJGE	A,.+2		;IF CHAR COUNT = 0 THEN TRMCHAR
+	 RET
+	
+	ZBKJFN
+	 CALL	$YSERR
+	JRST	SKPRET
+	SUBTTL	.COPY routine
+;
+;	copies one file to another.  reads file names from
+;	tty
+;
+.COPY:	MOVEM	P,MARKP			;SAVE ENTRY STACK POINTER
+	EDIT	[0],[ASCIZ #  (from) #],[ASCIZ #/#],<[ASCIZ #
+(Dev:Name.Ext/Swicth (Swicth maybe "?" for more Help))
+"File" maybe DOS or TENEX
+(from) #]>
+
+
+ 	MOVSI	A,100001	;get read file, must be old
+	MOVE	B,[XWD 100,101]
+	CALL	GTFFN
+	 JRST	ERESET
+	MOVE	FIN,FILE
+
+EDIT	[0],[ASCIZ #  (to) #],[ASCIZ #/#],<[ASCIZ #
+ (Dev:Name.Ext/Swicth (S maybe ? for help)
+"File" maybe DOS or TENEX
+(to) #]>
+
+
+	MOVSI	A,600001		;get write file, must be new
+	MOVE	B,[XWD 100,101]		;in out  from tty
+	CALL	GTFFN
+	 CAIA			;should never happen
+	MOVE	FOUT,FILE
+
+	MOVE	FILE,FIN	;open input file
+	MOVEI	B,200000	;for read only
+	MOVE	Z,SBP(FIN)	;get byte size if specified
+	DPB	Z,[POINT 6,B,5]	;set the byte size in B
+	CALL	.OPEN
+
+	MOVE	FILE,FOUT	;open output file
+	MOVEI	B,100000	;open for read only
+	MOVE	Z,SBP(FOUT)
+	DPB  	Z,[POINT 6,B,5]		;get byte size
+	CALL	.OPEN
+
+	MOVEI	Z,.COP9		;set up for EOF PSI
+	MOVEM	EOF(FIN)
+
+
+	MOVE	A,FJFN(FIN)	;GET SOURCE DESIGNATOR
+	MOVEM	A,EXTP		;save in source designator exch word
+	MOVE	BP,RBP(FIN)	;save in byte pointer exch word
+	MOVEM	BP,EXDP
+	MOVE	A,FJFN(FOUT)
+	MOVE	BP,RBP(FOUT)
+
+;       *******   start the transfer   *******
+
+.COP8:	EXCH	A,EXTP		;exch designator
+    	EXCH	BP,EXDP
+	XCT	XIN(FIN)	;transfer file, byte by byte
+	EXCH	A,EXTP
+	EXCH	BP,EXDP
+	XCT	XOUT(FOUT)
+	JRST	.COP8
+
+.COP9:	MOVE	FILE,FIN	;file copied, close files
+	CALL	.CLOSE
+
+	MOVE	FILE,FOUT
+	HRRZ	A,FJFN(FILE)	;TENEX OR DOS
+	CAIL 	A,1000
+	MOVEM	A,DIRW(UNIT)	;Set flag to write out DIR
+	CALL	.CLOSE
+
+	RET
+.ZERO:	MOVEM	P,MARKP
+	EDIT	[0],[ASCIZ /(DTAN:)/],[ASCIZ #:#],<[ASCIZ #
+((DTAN:) (N= 0 to 7))
+ZERO "DTAN" must be DOS.
+*ZERO #]>
+	EXCH	A,B			;get "DTAN"
+	STDEV
+	JRST	DTERR1
+	EXCH	B,A
+	SKIPN	MNTED(A)
+	JRST	DTERR2
+	DEVUNT
+
+	EDIT	[0],[ASCIZ #(PROGRAMMER NUMBER)	#],[0],<[ASCIZ #
+DEC style Directory Name
+programmer,project --  both must be less than 377
+**PROGRAMMER= #]>
+	EXCH	A,B
+	MOVEI	C,8		;input an octal number
+	NIN			;inputthe number
+	CALL	$YSERR
+	PUSH	P,B
+
+	EDIT	[0],[ASCIZ #(PROJECT NUMBER) #],[0],<[ASCIZ #
+DEC style Directory Name
+Programmer,project -- both must be less than 377
+**PROJECT= #]>
+
+	EXCH	A,B
+	MOVEI	C,8
+	NIN			;get project
+	CALL	$YSERR
+	POP	P,A		;sift programmer num over
+	LSH	A,^D8
+	ADD	A,B		;add in project number
+	PUSH	P,A
+	
+	PSTR	< [Confirm] >
+	MOVEI	A,100
+	BIN
+	CAIN	B,12			;must type CR or EOL to confirm
+	JRST	.+ 5
+	CAIN	B,40			;or space
+	JRST	.+3
+	CAIE	B,37			;EOL
+	JRST	ERESET			;bad confirmation
+
+ 
+	MOVEI	A,FBM(UNIT)		;zero out dir 
+	HRL	A,A
+	AOJ	A,
+	SETZM	FBM(UNIT)
+	BLT	A,MBM+177(UNIT)
+
+	POP	P,MFD+200(UNIT)		;Set [programmer,project] number
+
+	MOVEI	A,ZEROTE		;PUTIN other init values
+	HRLI	A,100
+
+	POP	A,MBM+24(UNIT)
+	POP	A,MBM+4 (UNIT)
+	POP	A,MBM+3 (UNIT)
+	POP 	A,MBM+2 (UNIT)
+	POP 	A,MBM+1 (UNIT)
+	POP	A,MBM   (UNIT)
+	POP	A,UFD   (UNIT)
+	POP	A,MFD+201(UNIT)
+	POP	A,MFD+1 (UNIT)
+	POP	A,MFD   (UNIT)
+
+	MOVEI	A,MBM+24(UNIT)		;set to one the rest of the
+	HRL	A,A			;BIT MAP
+	AOJ	A,
+	BLT	A,MBM+177(UNIT)
+
+	CALL	DIRWRT			;write out zeroed dir
+
+	RET
+
+
+ZEROTB:	XWD	101,4
+	XWD 	104,104
+	XWD 	102,11
+	XWD	103,0
+     	XWD   	0,1
+	XWD	44,104
+	XWD   	1,0
+	XWD    	0,177400
+	XWD	37,0
+ZEROTE:	XWD  	177777,177777
+	SUBTTL	ERROR handler
+;	
+;	prints system error message and halts
+;
+
+$YSR1:	PUSH	P,B
+	CAIA
+
+$YSERR:	PUSH	P,[-1]		;save regs
+	PUSH	P,A
+	PUSH	P,B
+	PUSH	P,C
+
+	PSTR	<
+ERROR AT >
+	HRRZ	B,-4(P)
+	PHLF
+
+	PSTR	<
+>
+	MOVEI	A,101		;print this forks most error
+	MOVE	B,-3(P)
+	HRLI	B,400000
+	SETZ	C,
+$YSR2:	ERSTR
+	 0
+	 0
+
+	POP	P,C		;restore regs
+	POP	P,B
+	POP	P,A
+	SUB	P,[XWD 1,1]
+	JRST	ERESET		;continue
+	HALTF			;halt
+	RET			;if continue, return to prog
+
+DTERR1:	PSTR	<  -- DOS DEC-Tapes only >
+	JRST	ERESET
+DTERR2:	PSTR	<  -- DTAN: is not MOUNTED or is not a DOS DTAN:>
+	JRST	ERESET
+
+
+
+
+
+
+
+	LIT
+
+	END	init 
+

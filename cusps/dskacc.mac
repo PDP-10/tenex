@@ -1,0 +1,314 @@
+	TITLE	DSKACC - totals storage by default account
+	SEARCH	STENEX
+
+;	Michael A. Heathman @ SUMEX 5/75
+
+NPDL=20
+P=17
+	OPDEF CALL [PUSHJ P,]
+	OPDEF RET [POPJ P,]
+
+START:	RESET
+	MOVE P,[IOWD NPDL,PDL]
+
+	MOVEI 1,100			;get terminating character
+	BKJFN
+	 0
+	PBIN
+
+GACC:	MOVEI 2,[ASCIZ /account name: /]
+
+	MOVEI 4,[ASCIZ / (account name) /]
+	CALL PROMPT			;prompt according to term char
+
+	MOVEI 1,100			;set input to raise
+	RFMOD
+	PUSH P,2
+	TRO 2,1B31
+	STPAR
+
+	HRROI 1,ACCT
+	MOVEI 2,^D39
+	MOVEI 3," "			;term on space as well
+	PSTIN
+
+	LDB 2,1				;get term char
+	SETZ 3,
+	DPB 3,1				;asciz string
+	
+	EXCH 2,(P)			;save term, and get old modes
+	MOVEI 1,100			;reset tty modes
+	STPAR
+
+	POP P,1				;get term char
+GJFN:	MOVEI 2,[ASCIZ /output to file: /]
+	SETZ 3,
+	MOVEI 4,[ASCIZ / (to file) /]
+	CALL PROMPT			;prompt according to term char
+
+	MOVSI 1,3
+	MOVE 2,[100,,101]
+	GTJFN
+	 JRST  [CALL HUH		;if error, re prompt as eol
+		JRST GJFN]
+	MOVEM 1,OUT#
+	MOVE 2,[070000,,100000]
+	OPENF
+	 JRST  [CALL HUH		;if error, reprompt as eol
+		JRST GJFN]
+
+	MOVEI 1,37			;signify process begun
+	PBOUT
+
+	MOVE 1,OUT
+	HRROI 2,[ASCIZ /Disk file usage for account group: /]
+	SETZ 3,
+	SOUT
+
+	HRROI 2,ACCT
+	SETZ 3,
+	SOUT
+
+	MOVEI 2,37
+	BOUT
+
+	HRROI 2,[ASCIZ /
+directory		alloc	files	pages		
+		
+/]
+	MOVEI 3,0
+	SOUT
+
+	CALL INUACK			;init UACHK fork
+	SETZM CURDIR#			;init starting directory
+	SETZM TDIRS#
+	SETZM TFILES#			;zero counters
+	SETZM TPAGES#
+	SETZM TALLOC#
+	
+GDIR:	CALL NXTDIR			;get a new directory
+	 JRST NODIR			;no more directories
+
+	MOVEI 1,DEFACC			;get default account
+	CALL GDACC
+	 JRST GDIR			;default account is not string
+
+	MOVE 1,[POINT 7,DEFACC]		;compare account strings
+	MOVE 2,[POINT 7,ACCT]
+	CALL STRCMP
+	 JRST GDIR			;strings differ, skip this account 
+
+	AOS TDIRS			;count dirs
+
+	MOVE 1,OUT			;output dir name
+	MOVE 2,DIRNAM
+	MOVEI 3,^D23			;up to 22 chars
+	SETZ 4,
+	SOUT
+	MOVEI 2," "
+	JUMPLE 3,.+3			;fill out to 22 chars with " "
+	BOUT
+	SOJA 3,.-2
+	BOUT				;and always leave 2 spaces separation
+	BOUT
+
+	MOVE 1,CURDIR			;get allocation
+	GTDAL
+	ADDM 1,TALLOC
+
+	MOVE 2,1			;output allocation
+	MOVE 1,OUT
+	MOVEI 3,^D10			;in decimal
+	NOUT
+	 0
+	MOVEI 2,11			;followed by a tab
+	BOUT
+	
+	SETZM DFILES#			;init directory counters
+	SETZM DPAGES#
+
+	MOVEI 1,EJFN			;set up for long form GTJFN call
+	HRROI 2,[ASCIZ /*.*;*/]		;to scan through all files this dir
+	GTJFN
+	 JRST NOFIL			;for zero file directories
+	MOVEM 1,FIL#
+
+GFIL:	HRRZ 1,FIL			;get page count from FDB
+	MOVE 2,[1,,11]	
+	MOVEI 3,4			;into AC 4
+	GTFDB
+	HRRZS 4				;page count in RH
+
+	ADDM 4,TPAGES			;update counters
+	ADDM 4,DPAGES
+	AOS TFILES
+	AOS DFILES
+
+	MOVE 1,FIL			;get next file
+	GNJFN
+	 JRST .+2
+	JRST GFIL
+
+NOFIL:	MOVE 1,OUT			;output files and pages
+	MOVE 2,DFILES
+	MOVEI 3,^D10			;both in decimal
+	NOUT
+	 0
+	MOVEI 2,11			;seperated by tab
+	BOUT
+	MOVE 2,DPAGES
+	NOUT
+	 0
+	MOVEI 2,37			;ended by eol
+	BOUT
+	
+	JRST GDIR
+
+NODIR:	MOVE 1,OUT
+	HRROI 2,[ASCIZ /			------- ------- -------
+/]
+	SETZ 3,
+	SOUT
+
+	MOVE 2,TDIRS
+	MOVEI 3,^D10
+	NOUT
+	 0
+
+	HRROI 2,[ASCIZ / dirs		 	/]
+	SETZ 3,
+	SOUT
+
+	MOVEI 3,^D10
+	MOVE 2,TALLOC
+	NOUT
+	 0
+	MOVEI 2,11
+	BOUT
+	MOVE 2,TFILES
+	NOUT
+	 0
+	MOVEI 2,11
+	BOUT
+	MOVE 2,TPAGES
+	NOUT
+	 0
+	MOVEI 2,37
+	BOUT
+
+	CLOSF
+	 0
+
+	CALL CLUACK			;close out UACHK fork
+
+	RESET
+	HALTF
+	JRST START
+; subroutine to handle user errors
+
+HUH:	RESET
+	HRROI 1,[ASCIZ / ??/]
+	PSOUT
+	MOVEI 1,37			;fake eol input to prompt
+	RET
+
+; subroutine to compare strings
+
+STRCMP:	ILDB 3,1			;get chars
+	ILDB 4,2
+	CAIE 3,(4)			;chars equal?
+	 RET				;no, error return
+	JUMPN 3,STRCMP			;yes, and not terminated, go more
+	AOS (P)
+	RET				;else, string equal
+
+; subroutine to give prompt, determined by last input term char
+; 1/ term char; 2/ eol prompt; 3/ space prompt; 4/ altmode prompt
+
+PROMPT:	CAIN 1,37			;eol?
+	 HRRO 1,2
+	CAIN 1,15
+	 HRRO 1,2			;cr
+	CAIN 1," "
+	 HRRO 1,3			;space
+	CAIN 1,33
+	 HRRO 1,4			;altmode
+	TRNE 1,-1			;no prompt if nul str pointer
+	 PSOUT
+	RET
+
+; subroutine to get next dir from CURDIR
+
+NXTDIR:	AOS 2,CURDIR			;go onto next dir
+	MOVE 1,DIRNAM			;do DIRST to see if valid
+	DIRST	
+	 JRST  [AOSN NULDIR#		;after a few no dir nums, quit
+		 RET
+		JRST NXTDIR]		
+	HRROI 1,-^D10			;10 invalid dirs to end
+	MOVEM 1,NULDIR
+	AOS (P)
+	RET
+; UACHK handling routines
+
+INUACK:	MOVSI 1,100001			;get <SYSTEM>UACHK.SAV jfn
+	HRROI 2,[ASCIZ /<SYSTEM>UACHK.SAV/]
+	GTJFN
+	 0
+	PUSH P,1
+	MOVSI 1,(1B1)			;create fork
+	SETZ 2,
+	CFORK
+	 0
+	MOVEM 1,UACHK#			;save fork handle
+	POP P,1
+	HRL 1,UACHK
+	GET				;get UACHK
+	RET
+	
+CLUACK:	MOVE 1,UACHK			;kill off UACHK fork
+	KFORK
+	RET
+
+GDACC:	HRROI 1,UACACS			;put dirname in UACHKs ACs
+	MOVE 2,CURDIR
+	DIRST
+	 0
+	
+	MOVE 1,UACHK			;freeze fork
+	FFORK
+	MOVEI 2,UACACS			;to set up initial AC's
+	SFACS
+	SETZ 2,				;start at entvec 0 for default
+	SFRKV				;and start
+	RFORK				;and let it go
+
+	WFORK				;and wait for finish
+
+	FFORK				;freeze it again
+	MOVEI 2,UACACS			;to read ac'S
+	RFACS
+	RFSTS				;and check status
+	TLZ 1,400000			;ignore frozen bit
+	HLRZS 1				;get term status
+	CAIN 1,2			;term ok?
+	 AOS (P)			;yes, ok return
+	RET				;no, error return
+; storage
+
+PDL:	BLOCK NPDL			;stack
+ACCT:	BLOCK 10			;desired account string
+DIRECT:	BLOCK 10			;current directory name
+EJFN:	1B2+1B11			;long form GTJFN for GNJFN call block
+	377777,,377777			;in/out jfn
+	0				;DSP device
+DIRNAM:	POINT 7,DIRECT			;DSP directory
+	0				;DSP file name
+	0				;DSP extent
+	0				;DSP protection
+	0				;DSP account
+	0				;desired jfn
+UACACS:	BLOCK 10			;UACHK AC BLOCK,
+DEFACC:	BLOCK 10			;part of UACHK AC's
+	
+	END START

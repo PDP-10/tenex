@@ -1,0 +1,828 @@
+00020	^^
+00040	.spacing 1
+00060	.title Omnigraph Implementation Notes
+00080	.skip 3
+00100	This collection of notes on Omnigraph is intended for systems
+00120	programmers that may perform operations on the various routines
+00140	or perhaps add a new device to the collection.  It is perhaps
+00160	a random collection, but due to some indexing, hopefully it
+00180	will be useful.  In details it may duplicate the implementation
+00200	manual, in purpose however, it is intended to solve some
+00220	mysteries that arise in studying other documentation.  Finally,
+00240	it offers some procedures for debugging, etc.
+00260	Included are:
+00280	.asis
+00300	
+00320		General Architecture
+00340		Generating a New Segment File
+00360		Debugging Omnigraph
+00380		Adding a New Routine to Omni
+00400		Details of Coding a New Routine
+00420		Choosing an Internal Representation
+00440		The GT40 Implementation
+00460		The Adage Implementation
+00470		XDVSER
+00480	
+00500	.-asis
+00520	.skip 3
+00540	Overall Architecture
+00560	.skip 3
+00580	Of course, Omnigraph is structured as a segment file that
+00600	resides on disk, and an appropriate .REL file that is loaded
+00620	with the user program.  The later is comprised of:
+00640	.asis
+00660	
+00680		DISFOR for FORTRAN programs
+00700		DISSAI for SAIL, and
+00720		DISLIS for LISP programs.
+00740	
+00760	.-asis
+00780	These files are on SYS.
+00800	.skip 1
+00820	.index Segment file, numbering scheme
+00840	.index Language interface modifications
+00860	The segment file is also on SYS, and
+00880	is called DIS00x.SEG, where x may vary.  That is, if you do
+00900	some catastrophic modification to Omnigraph such that the
+00920	language interfaces are affected, then you will need another
+00940	segment file.  For neatness they are sequentially numbered.
+00960	For example, the original DIS001.SEG was the one and only
+00980	segment file until the GT40 came along.  A new Omni call
+01000	(DSTAT) was written in order to take advantage of some hardware
+01020	features (italics, blinking, etc.).  This necessitated a 
+01040	modification to the dispatch table in both the language
+01060	independent and dependent code, hence there was need of two
+01080	segment files.  That is, Omni expects a given index down the
+01100	dispatch table in the language interface (e.g., DISSAI) to point
+01120	to the same routine as indicated in the parallel table that
+01140	sits in the device dependent code (e.g., DISGT4).
+01160	.skip 3
+01180	Generating a new Segment File
+01200	.index Segment file, generating a new
+01220	.skip 3
+01240	The procedure spelled out in the implementation manual
+01260	is adequate, however a few tips are useful:
+01280	Be sure to move the old versions of the segment file (if
+01300	not switching to another) and all language interfaces 
+01320	to OLD:, and document such changes in the Systems Change
+01340	Notebook.
+01360	For a final debugging, put the new version on NEW: and test
+01380	it there before placing it on SYS: (remember to code
+01400	REQUIRE "NEW:DISSAI").  Broadcast your changes if they are not
+01420	transparent to the user.
+01440	If you intend to generate a new segment file, you name
+01460	the file by changing SEGNAM in DISDEF.  The procedure is
+01480	then identical to that for merely generating another
+01500	version of the same segment file.
+01520	.skip 1
+01540	In general, one must make a new version of the segment file
+01560	after fixing
+01580	a bug.  For example, if you fix a bug in the DEVENT routine,
+01600	you would SOS the DEC340.FAI file, then execute:
+01620	.asis
+01640	
+01660	EX /COM DISDEF+DEC340+DISIND+DISWRT
+01680	
+01700	.-asis
+01720	in order to generate a new segment file in your area.
+01740	If however, you fix a bug in the device independent section
+01760	(DISIND.FAI), then you must perform the above for EACH
+01780	device (currently 6).  The latter is true if you add a new
+01800	global definition to DISDEF.FAI, also.
+01820	.skip 3
+01840	Debugging Omnigraph
+01860	.index Debugging
+01880	.skip 3
+01900	One can make his debugging task easier by using
+01920	a command file:
+01940	.asis
+01960	
+01980		100  POOP=DISDEF+DISXXX+DISIND+DISSAI
+02000		200  TEST.SAI
+02020	
+02040	.-asis
+02060	Where DISXXX is perhaps a new device section that you are
+02080	testing, TEST.SAI is your handy SAIL driver.  Note that in this
+02100	way you need no segment file.  If the above command file were
+02120	called BLAH.CMD, then you need only say:
+02140	.asis
+02160	
+02180		DEBUG @BLAH
+02200	
+02220	.-asis
+02240	When you reach DDT execution, you can control C and save it,
+02260	if you like, then continue.  This trick avoids worn fingers
+02280	that result from the LOA %S%B... method.
+02300	.skip 1
+02320	And it is true that you need to offset all symbolic addresses
+02340	in the device section by T (defined in the language interface
+02360	to be equated to CBEG, the beginning of code).  The accumulator
+02380	S is also loaded with the same value... a source of confusion
+02400	among the uninitiated.  Hence, you need first open the
+02420	symbol table for the appropriate device code (if that is
+02440	indeed what you are debugging) then reference QGET for example
+02460	as QGET+T.  Symbolic addresses in the language interface are
+02480	not offset (since they will not be brought in later as an
+02500	"overlay", but rather are loaded with the user program) hence
+02520	you can reference them directly: DGET for example.
+02540	.skip 1
+02560	To reference data items, use the offset indicated by the
+02580	contents of R (typically a value such as 400010).  Hence,
+02600	you would examine the number of pictures posted, for example,
+02620	as .POSTN+400010.  Furthermore, you will often need to see the
+02640	status of the many flags in accumulator 0.  Determine the
+02660	octal value of the flags by using the = operator in DDT, and
+02680	compare to 0/.
+02700	
+02720	.skip 3
+02740	Adding a New Routine to Omni
+02760	.index Routines, adding new ones
+02780	.index CALLS macro
+02800	.skip 3
+02820	You can add new routines to Omnigrah without too much pain
+02840	if you follow the following recipe:
+02860	.asis
+02880	
+02900		1.  Think up a unique name (be VERY careful) and
+02920		    add your entry to the CALLS macro in DISDEF.
+02940	
+02960		2.  Add routine to appropriate section of code.
+02980		    If it is device independent and language
+03000		    independent, put it in DISIND; however, if it
+03020		    is useful only for one device (as DSTAT was) then
+03040		    put it in one of the device sections, and include
+03060		    dummy routines (merely pop off any args and
+03080		    return through .RET(S)) in all other device
+03100		    dependent sections.
+03120	
+03140		3.  Generate a new segment file with a new number
+03160		    (e.g., DIS003.SEG).
+03180	
+03200	.-asis
+03220	It is most important to check to get a unique name, for
+03240	FAIL provides you with many ways to mess up.  Incidentally,
+03260	you should debug initially to see that the linkage through the
+03280	dispatch table operates properly, for you may end up offset by
+03300	one routine if you are not careful.
+03320	.skip 1
+03340	In the process of writing a new routine, you will probably
+03360	need to define some new symbols and allocate some new
+03380	variables.  Use the X macro liberally to equate a symbol to
+03400	a value (useful for immediate instructions).  Similarly, use
+03420	the XR macro to allocate a word or set of words in the data
+03440	area (which ends up in the high segment or user's array area).
+03460	Remember that the XR macro merely associates a variable name
+03480	with an integer offset, for all data items are offset by 
+03500	accumulator R (set up by DINI).
+03520	If you must define a new global symbol, do so in DISDEF, but
+03540	be careful to place it after any order-dependent sets of
+03560	variables.  Generally those ordered sets are used
+03580	sequentially by DENQ and friends.
+03600	.skip 3
+03620	Details of Coding a New Routine
+03640	.skip 3
+03660	Let's go over the initial setup necessary in coding a new
+03680	routine for Omni.  Using the DISGT4 code as a model, you can
+03700	see that the display number and name are included just after
+03720	the BLOCK PCHBRK.  Then you must expand the dispatch table
+03740	by DISPATCH (which invokes the CALLS macro, which uses CL, etc.).
+03760	That is rigid, now you can loosen up your stlye a bit.  You
+03780	still must include some manditory symbol definitions, namely:
+03800	.index Symbols, required for a device segment
+03820	.asis
+03840	
+03860		SMID,SMIDH,YVIEW,XVIEW,DISNUM,LEFTM,.COD3,
+03880		ENQTAB and CHARTB.
+03900	
+03920	.-asis
+03940	OK, now you have the manditory definitions, now you must
+03960	include your versions of the following routines:
+03980	.index Routines, required for a device segment
+04000	.asis
+04020	
+04040		QEVENT,QCURSOR,QOUT,QDONE
+04060		QGET,QREL,QOPEN,QCLOSE
+04080		QPOST,QUNPOST,QAPPEND,QKILL
+04100		QCODE,QTEXT,QINT,QSTAT
+04120	
+04140	.-asis
+04160	Also, you need to include some routines that
+04180	are referenced by DISIND:
+04200	.index PGEN
+04220	.index VGEN
+04240	.index STOBYT
+04260	.index CURSET
+04280	.index MGEN
+04300	.asis
+04320	
+04340		PGEN,VGEN,IPICTA,CURSET, and STOBYT
+04360	
+04380	.-asis
+04400	You very well may need an MGEN to handle your DSTAT-generated
+04420	data.  PGEN and VGEN are called to
+04440	either add a word to the virtual display file (in most cases),
+04460	or in the case of the DEC340, they generate executable 
+04480	instructions (directly into the display file).
+04500	You need a routine called IPICTA, which is PUSHJ'd
+04520	to by DINI.  IPICTA performs some initialization required
+04540	by the GT40 implemetation (see below).
+04560	CURSET is used to move a hardware cursor, and STOBYT is used
+04580	by PGEN,VGEN and others.
+04600	.skip 3
+04620	Choosing an Internal Representation
+04640	.index Internal data representation
+04660	.skip 3
+04680	If you are saddled with the task of including software
+04700	for a new graphics device, the first decision appears to
+04720	be the choice of internal data representation.
+04740	Of the six devices currently supported, five use a common
+04760	representation, and only the DEC340 has its own.  That
+04780	carries some intertia in that PLOTX must read this data,
+04800	and you may not find it necessary or advantageous to
+04820	generate another representation.  In adding the DSTAT routine
+04840	for the GT40 service, PLOTX had to be changed, but that
+04860	effort was finite, for it involved the addition of merely
+04880	another op-code to the storage tube-type data representation.
+04900	.skip 1
+04920	The DEC340 implementation was straightforward, for it
+04940	merely has the display file to worry about.  Storage tube
+04960	devices do not require a display file, and could have been
+04980	serviced in a one-shot manner.  That is, each DDRAW would
+05000	send the appropriate string to the device, with no trace
+05020	left.  However, when you desire to delete an already posted
+05040	picture, you would be in trouble, for you must repaint all
+05060	existing pictures that you didn't want to remove.  Consequently,
+05080	an internal representation (virtual display file) is maintained
+05100	so that it can be interpreted when necessary.  This also allows
+05120	the use of DDONE, so that you can do all screen updates at one
+05140	time, DOPEN/DCLOSE a picture without displaying it immediately,
+05160	etc.
+05180	.skip 1
+05200	.index Data representation for GT40
+05220	The storage tube design was chosen for the GT40 implementation
+05240	(as well as the Adage code), for it lends itself well to these
+05260	devices.  Neither device is a storage tube, however, neither
+05280	do they share memory with the DECsystem-10 computer.  You
+05300	could argue that you need not keep a redundant virtual display
+05320	file around, for you could send the picture descriptions
+05340	immediately, and the commands to post them later. True, however
+05360	you must leave some traces for PLOTX, and secondly, you
+05380	shouldn't fill up the remote core (especially the GT40's)
+05400	with pictures that arn't necessarily going to be shown
+05420	immediately.  It is quite conceivable that pictures that
+05440	just fit into the GT40 can be generated, such that one can
+05460	be transmitted and posted, however if both were transmitted,
+05480	neither would fit.  The GT40A monitor from DEC is a hog, and
+05500	only allows room for approximately 1400 moves/draws.  Of
+05520	course, a more svelt monitor would ease this situation.
+05540	The Adage is similarly restricted, however you should have
+05560	space for 5500 vectors.
+05580	.skip 3
+05600	The GT40 Implementation
+05620	.index GT40
+05640	.skip 3
+05660	.index QEVENT
+05680	.index QCURSOR
+05700	.index QOUT
+05720	.index QDONE
+05740	.index Threads, PP and UU
+05760	The GT40 code is derived largely from DISTK1.FAI, as that
+05780	was representative of a storage tube implementation.  The
+05800	first four routines, QEVENT,QCURSOR,QOUT and QDONE are
+05820	no-ops that carefully pop the stack the appropriate number
+05840	of times, to exhaust the argument list.  Note that DDONE is
+05860	treated as a no-op (in the same manner as with the DEC340).
+05880	Consequently there is no need for the four thread (PP,UU,etc).
+05900	Rather, the PP and UU were the only ones retained.
+05920	They are pointers to the list of all posted and unposted pictures, respectively.  A new picture, when
+05940	respectively.  A new picture when
+05960	closed, is added to UU, and when posted, is removed from UU and
+05980	added to PP.
+06000	.skip 1
+06020	.index QGET
+06040	The first routine of consequence is QGET.  Its task is to
+06060	do some initializing within the GT40.  It would be nice
+06080	to clear core at this time, however the nice command (K K) has
+06100	the undesirable side effect of prompting the GT40 to transmit
+06120	a control C to the monitor!!  Since there is no provision to
+06140	get it to then send a CONT, avoid this command like the plague.
+06160	Instead, be satisfied with setting up the lower left corner
+06180	of the screen... a noble jesture.  You will note that you
+06200	send commands while in "command mode".  The GT40A monitor
+06220	interprets graphics commands only when in this mode, and when in
+06240	the converse mode ("text mode"), it displays them with the VT06
+06260	simulator.  Since you must not confuse the monitor
+06280	(for it gets sick easily), the commands are sent in short bursts
+06300	with an ETB to send it back to text mode.  That provides
+06320	some protection from spurious operator messages and the
+06340	like.  The only exception is with the actual painting of
+06360	a picture (sendng of complete description).  Here, the command
+06380	language is so inefficient, that it would be prohibitive to
+06400	send an SOH/ETB with each command as well.
+06420	.skip  1
+06440	Continuing with QGET, a part of the philosophy of Omni is that
+06460	you can do picture descriptions (DOPEN/DCLOSE's) as well as
+06480	DPOST's, DUNPOST's and their ilk.  Consequently, when you do
+06500	the DGET, charge through the post list (PP) turning on pictures
+06520	as you go.  Note that the post commands are merely sent:  the
+06540	pictures are not painted.  Presumably, all previously posted
+06560	pictures have been sent to the GT40 when they were DPOSTed
+06580	(specifically by PAINT).
+06600	.skip 1
+06620	.index QREL
+06640	The next routine is QREL, which also runs down PP, however
+06660	this time unposting pictures in its wake.
+06680	.skip 1
+06700	.index QCODE
+06720	The operation of QCODE is trivial, as it merely sends a
+06740	character.
+06760	.skip 1
+06780	.index QPOST
+06800	Now come the meaty ones.  These were lifted from DISTK1.FAI,
+06820	however there are some changes (mostly concerning the
+06840	various thread pointers).
+06860	Posting, unposting, killing, and appending all generate an
+06880	immediate action, in contrast to the DDONE's necessary
+06900	for storage tubes.
+06920	Again, DPOST is the one that actually sends the picture
+06940	description to the GT40.  Now here is another GT40A feature.
+06960	There can only be 60 pictures in the GT40 at any one time.
+06980	Furthermore, they are restricted to numbers in the range of
+07000	4-63.  Furthermore again, when sending the number, make it
+07020	look like a graphic character by OR'ing in octal 100.
+07040	.index PICTAB
+07060	Anyway, to manage this situation, PICTAB was generated
+07080	to provide the correspondence between Omni picture numbers
+07100	(any integer value) and the corresponding GT40 picture
+07120	number.  The assignment of GT40 numbers is deferred to
+07140	post time so that you can describe more than 60 pictures
+07160	(as in the rest of Omni), but can have only 60 posted (a
+07180	restriction compared to the rest of Omni). 
+07200	.skip 1
+07220	.index ADD1
+07240	.index FIND1
+07260	.index REMOV1
+07280	.index IPICTA
+07300	To manage PICTAB, the routines ADD1,FIND1,and REMOV1 are
+07320	included.  Note that since 0 is a legal Omni picture
+07340	number, the table must be initialized to a funny value
+07360	(400000000000).  This table initialization is done at DINI
+07380	time by a PUSHJ to IPICTA.  This is a kludge in that non-GT40
+07400	devices (the majority) must include an IPICTA which merely
+07420	POPJ's.  The Adage code also needs a PICTAB, for it too
+07440	is limited to the number of pictures posted at any one time.
+07460	.skip 1
+07480	Getting back to QPOST, note that the painting occurs only
+07500	on the first post for that picture.  This is indicated by
+07520	not finding a corresponding GT40 picture number by FIND1.
+07540	.skip 1
+07560	If the picture to be posted is not already in the GT40, 
+07580	then the first step is to get another GT40 picture number
+07600	by ADD1 and send the open command with that number to the
+07620	GT40.  Then the program calls FIND to point to the
+07640	beginning of the virtual display file for the picture whose
+07660	number is in accumulator A.  With that address in F, we go to
+07680	PAINT, to actually interpret the individual data items in
+07700	the virtual display file, and send the appropriate commands
+07720	to the GT40.  PAINT calls INTERP repetitively, while
+07740	keeping its eye on block pointers.  INTERP dispatches through
+07760	DISP to the appropriate routine to interpret each data
+07780	item, based on the op-code.  Note that the first data item
+07800	will be a %OPEN, which tells the GT40 to show the picture
+07820	as it is transmitted, so the user can watch it grow.
+07840	.skip 1
+07860	.index QUNPOST
+07880	The QUNPOST operation is simple, in that you use FIND1 to get
+07900	.index SENDA
+07920	the picture number and then send the unpost command.  Since
+07940	such operations are numerous, the SENDA routine is provided,
+07960	in which the command is placed into accumulator D and the
+07980	Omni picture number in A.  After telling the GT40 to unpost
+08000	the picture, the total number of posted pictures is decremented,
+08020	and the picture is moved from PP to UU.
+08040	.skip 1
+08060	.index QKILL
+08080	QKILL is straightforward as well, for it removes the picture
+08100	from either PP or UU, then releases the core that was dedicated
+08120	to that picture, then kills it in the GT40, and finally removes
+08140	the entry in PICTAB by REMOV1.
+08160	Note that KILL is used also by QOPEN to delete an old version of
+08180	the same picture as is being opened.  In both cases, the GT40
+08200	version is killed (if present) at that time.
+08220	.skip 1
+08240	.index QAPPEND
+08260	The code for QAPPEND is very related to QOPEN, and joins it at
+08280	QOP0.  Before that, however, it closes any open picture,
+08300	turns on a flag that is checked in the QOPEN code, then sends
+08320	to the GT40 an open-for-appending command.  Since this is
+08340	.index SENDA
+08360	performed by SENDA, it would be sent only if the GT40 already
+08380	has the picture (which sounds reasonable).
+08400	.index MGEN
+08420	Now comes an important point.  A call to MGEN should be made
+08440	to save the current mode/status information that exists
+08460	at the time of the append (and NOT at the time of POSTING).
+08480	Once that is dne, it is free to join the QOPEN code.
+08500	.index QOPEN
+08520	.skip 1
+08540	QOPEN is shared from QOP0 on downstream by QAPPEND.
+08560	Before that, it need only 
+08580	close any open picture, and turn off the "now appending" flag.
+08600	Starting at QOP0 is some messy code that must initialize 
+08620	space for the new picture (or if appending, get some more).
+08640	This code is copied from the storage tube code, and has not
+08660	been touched.  This probably would be the case in generating
+08680	another device interface.  Note that to insure that an initial
+08700	move occurs, .IXBEAM is set to -1.
+08720	.index QCLOSE
+08740	.skip 1
+08760	The code for QCLOSE consists of a
+08780	PUSHJ to CLOSE (which is used by QAPPEND and QOPEN).
+08800	The CLOSE code appears self-explanitory.
+08820	.index QTEXT
+08840	.skip 1
+08860	The worst (most tricky) coding in all of Omni is in QTEXT.
+08880	The DTEXT calls from the user are dispatched to STRING in
+08900	the language interface, which then calls QTEXT to fill
+08920	(using STOBYT) and empty a text string buffer.  Hence, start your
+08940	study of text string stuff in the language interface before
+08960	jumping to QTEXT.  Note that accumulator A is used as a flag:
+08980	-1 means start of string, and -2 means end of string, else A
+09000	contains the octal value of each intervening character.
+09020	Omni allows carriage returns and line feeds.  Both of these
+09040	are relative to the initial beam position, hence, that beam
+09060	position is
+09080	saved during the first call to QTEXT (when A=-1).  Also, in that
+09100	first pass, the box highth/width and character
+09120	highth/width are computed.
+09140	.skip 1
+09160	There is also a problem with character positioning that is
+09180	very dependent on the hardware.  For example, the GT40 considers
+09200	its characters to be positioned with the character centered
+09220	in the the Y direction about the current beam position, while
+09240	the left edge of the character is at the current beam X
+09260	position.  Hence, QTEXT must tweak the position of the
+09280	characters in the Y direction, in order to meet the Omni
+09300	standard of having the lower left corner of the character box
+09320	at the "curret beam position".
+09340	The exact values are gained empirically by writing a program
+09360	that puts characters on the screen, then has a positionable
+09380	horizontal line (for measuring highth) and vertical line
+09400	(for measuring width).  You then position each line
+09420	in turn on each side of a character to measure its dimensions, 
+09440	then between two characters to measure the box size.  This
+09460	tedious process will generate some "real world" dimensions
+09480	that you will have to unscale.
+09500	Once you have some reasonable parameters for QTEXT, you can
+09520	further test them by using MLAB.  You should place a character
+09540	on the screen and a cross at the same place, wherein the
+09560	cross should line up on the left side of the character, halfway
+09580	up.
+09600	.skip 1
+09620	.index QINT
+09640	So much for text stuff.  Another Omni routine is DINT which
+09660	is serviced in the device code by QINT.  QINT has the
+09680	simple task of updating CURMOD (which keeps track of
+09700	intensity, line type, italics, and blinking).  Then, it
+09720	.index MGEN
+09740	puts that data in the virtual display file by a call to MGEN.
+09760	.skip 1
+09780	.index QSTAT
+09800	The QSTAT routine was added to exercise such goodies as
+09820	four types of vectors, italics, and blinking.  These parameters
+09840	are encoded in a binary scheme as documented in DISGT4, if
+09860	nowhere else.
+09880	The whole game is to generate a new data item via MGEN after
+09900	updating CURMOD.
+09920	.skip 1
+09940	At this point, we have gone over the major routines in
+09960	DISGT4.  Following QSTAT are a family of little routines
+09980	that do the actual outputting to the GT40.  SEND1 sends one
+10000	character (via TTCALL 15).  Then comes SENDSOH, which
+10020	performs the oft' needed task of sending an SOH (octal 1) just
+10040	before sending the character in accumulator D.  Of course, it
+10060	calls SEND1 a couple of times.  SENDEOM sends the character in
+10080	D followed by an EOM (octal 26).  This is useful when 
+10100	transmitting a series of commands to the GT40 when you need not
+10120	be careful to return it to text mode between commands.
+10140	SENDETB is like SENDEOM, but it returns the GT40 to
+10160	text mode after sending the character.  SENDC is used to 
+10180	send small numbers that might be misconstrued for control
+10200	characters, so it TRO's in octal 100.
+10220	.index SENDA
+10240	Finally, SENDA is useful for sendng a complete command, of
+10260	the form SOH COMMAND PICTURE-NUMBER ETB.  
+10280	Note that the command is not sent if the GT40 does not already
+10300	have that picture in its core.
+10320	.skip 1
+10340	After ADD1, FIND1, and REMOV1, comes a series of routines
+10360	that were copied from the storage tube code that manages
+10380	the threads and free space management.
+10400	These are FIND, REMOV, PUTIN, BLOCK, and KILL. The latter has
+10420	.index STOBYT
+10440	been modified for the GT40 code.  Then comes STOBYT which
+10460	also has been modified in that if one is appending to a 
+10480	picture that is in the GT40, then each data item that is
+10500	given to STOBYT to be put in the virtural display file is
+10520	also interpreted by jumping through APDISP.  The difference
+10540	between using this dispatch table and DISP (which is used
+10560	by PAINT), is that you must send SOH/ETB instead of SOH/EOM
+10580	because you are not interpreting the whole virtual display
+10600	file but rather an occassional data item, and since delays
+10620	(e.g., by interaction) might occur between the various items
+10640	until the user executes DCLOSE or DPOST, you want to leave the
+10660	GT40 in text mode.
+10680	.index PGEN
+10700	.index VGEN
+10720	The routines PGEN and VGEN are referenced by QMOVE, QDRAW,
+10740	QVECT, etc. from DISIND.
+10760	These routines generate the individual data items that are
+10780	passed to STOBYT for insertion into the virtual display
+10800	file.  Note that both update a integer beam position
+10820	(.IXBEAM,.IYBEAM).  
+10840	.index MGEN
+10860	Followng those two is MGEN, which uses a new op-code
+10880	(%OMOD).  Note that you don't always generate a new data
+10900	item, for you can code a DINT call anywhere, and not
+10920	necessarily between a DOPEN/DCLOSE pair.  Hence, you only
+10940	want to call STOBYT if a picture is currently open.
+10960	.skip 1
+10980	The final routine that merits discussion is CURSET, which
+11000	is called by DISIND in case there is a hardware cursor to 
+11020	reposition.
+11040	.skip 1
+11060	This discussion of the GT40 implementation hopefully would
+11080	allow straightforward modifications to the code.  Currently it
+11100	is clean, and except for some optimization that could be done
+11120	for recognizing short vectors (to save some transmission time),
+11140	no further work should be needed.  Chuck Bacon has written a
+11160	new monitor for the GT40 that is faster, smaller, and has a
+11180	much more efficient communication language.  It is based on the
+11200	principle of transmitting the graphics commands at a different
+11220	parity than regular messages.  In this manner, if you type
+11240	ahead, or have some unexpected messages arrive while the picture
+11260	commands are being sent, then the GT40 monitor will not become
+11280	upset.  It is dangerous in that if in the transmission a bit is
+11300	lost, then the parity will be affected, thus confusing the
+11320	monitor.  Anyway, if we decide to use this new monitor, the
+11340	only changes necessary to DISGT4 wlll lie in the INTERP routines
+11360	and SEND,SENDSOH, and friends.  This stems from the usage of
+11380	new command codes, and the fact that you no longer need the SOH
+11400	and ETB/EOM convention.  Note that you will also no longer need
+11420	APDISP, for there will no longer be the distinction between
+11440	appended commands (ending in EOM) and intra-picture commands
+11460	(ending in ETB).
+11480	.skip 3
+11500	The ADAGE Implementation
+11520	.index Adage AGT-30
+11540	.index Adage AGT-30
+11560	.skip 3
+11580	The implementation for the Adage was designed to provide Omni
+11600	support on the AGT-30 to the level of the GT40 and DEC340.
+11620	By no means was this implementation designed to take advantage
+11640	of the 3-dimensional capabilities of the device.  Rather, it
+11660	was intended to provide support for another display, and
+11680	increase the utilization of the Adage.
+11700	In the followng discussion of the Adage code you will see that
+11720	the basic structure of DISGT4 was quite sufficient as a basic
+11740	shell, for the Adage was not going to do any more than we would
+11760	expect of a GT40.  Refer to Chuck Bacon's "A 3-Dimensional 
+11780	Language for the PDP-10" for specifics of the communication
+11800	language.  Within the DISAGT code is a list of the op-codes
+11820	required for this implementation.  Of importance at the moment
+11840	is the fact that
+11860	you communicate to the Adage via a data channel, rather than
+11880	a teletype interface.
+11900	.skip 1
+11920	The Adage code, therefore, is the first device segment to do
+11940	OUT UUO's, as well as channel initialization.  
+11960	There were some surprises.  First, when the runtime SAIL code
+11980	starts up, it changes .JBFF to a very high value (72K).  This
+12000	leaves a large hole for SAIL to play in, however if ever you
+12020	ask the monitor for core (as in buffer allocation), you will
+12040	find that it is given to you at .JBFF, and zap, you have a 72K
+12060	program.  To get around this, DISAGT has its own buffers, which
+12080	are manually initialized.  They live in the device segment along
+12100	with the code, for you can't do I/O to a high segment.  They are
+12120	not excessively large (each of 100 words).  Another problem is
+12140	picking a software channel for the I/O.  This is chosen at DGET
+12160	time by looping on a GETDEV, until a free channel is found. Once
+12180	found, that 0-15 value is DPB'ed into all UUO locations.  UGLY.
+12200	.skip 1
+12220	Let's now run through the code.  First, notice that SMID and 
+12240	SMIDH are half the expected value.  This is a scaling problem.
+12260	The data format is the same old storage tube representation
+12280	as used by DISGT4 and friends.  Consequently, there is only
+12300	14 bits reserved for the coordinates, while the Adage has a 15
+12320	bit display space.  The solution is to represent the data 
+12340	internally with only half the screen resolution, and when
+12360	generating coordinates to output to the Adage, multiply the
+12380	internal value by 2.  Also, the Adage considers the origin to
+12400	be in the center of the screen, consequently, you actually
+12420	multiply by 2 and subtract half the screen width (see SENDC).
+12440	.skip 1
+12460	Continuing, note that the screen is symmetrical as indicated by
+12480	YVIEW and XVIEW.  After the display number comes the op-codes.
+12500	.index PICTAB
+12520	Then notice that the Adage also has a PICTAB,  for the Adage
+12540	is limited to 100 pictures (with restricted picture number
+12560	values).  This table is maintained in the same manner as in 
+12580	DISGT4.  The next interesting thing is VECFLG which is used for
+12600	optimizing the data transmission (to some extent).  It is set
+12620	to -1 when a vector command has been sent, so that another
+12640	need not be sent.  Also, it is used in TEXT to count the number
+12660	of characters sent so that the next DRAW can tweak the beam
+12680	position to where it should be.  POSTX and POSTY are also used
+12700	by INTERP-time routines to keep track of the post-time beam
+12720	position.
+12740	.skip 1
+12760	Next comes the I/O stuff that is exclusive to the Adage.
+12780	First, OBLOCK is the open block for the device AGT.  Then
+12800	there is the buffer ring header (BHEAD,BPOINT, and BCOUNT), 
+12820	followed by the buffers themselves (BUF1 and BUF2).
+12840	.skip 1
+12860	Chuck's language does not support interaction because
+12880	the I/O bus link isn't two-way, and the TTY line would
+12900	be awkward (at best) for event transmission.
+12920	Consequently, there is no event support for the Adage.
+12940	.index QGET
+12960	.skip 1
+12980	The
+13000	first routine that is more than a no-op is QGET.  QGET finds
+13020	a free software channel, sets up all the UUO's and does an open
+13040	on the AGT.  If that succeeds, the DISRUN flag of accumulator
+13060	0 is set.
+13080	Then it goes on to link the two buffers together, and initialize
+13100	the ring header.  Then an initial OUT is performed to prime the
+13120	the ring header.
+13140	The first command sent to the Adage is a clear
+13160	core.  Then, when the monitor in the Adage is fixed to allow
+13180	the reset pushbuttons, that command will be sent too.  Finally,
+13200	in the same manner as for the GT40, you see if there are any
+13220	posted pictures, and if so, they are painted and posted in the
+13240	Adage.
+13260	.index QREL
+13280	.skip 1
+13300	Then comes QREL, which sends a clear core command, flushes
+13320	the output buffer and releases the channel (if the display
+13340	was DGET'ed, or rather, DGOT).
+13360	Finally, it turns off the DISRUN flag and leaves.
+13380	.index QCODE
+13400	.skip 1
+13420	The QCODE routine sends a single halfword to the Adage.
+13440	The user places the data in the right half, but the SEND
+13460	routine shifts it to the left half, as it should.  Note that
+13480	the buffer is flushed immediately for otherwise, a user might
+13500	not generate enough data to fill a buffer, etc.
+13520	.index QPOST
+13540	.skip 1
+13560	Now comes QPOST.  This routine differs from the GT40 code
+13580	only in one respect: the "post list".  This is an artifact
+13600	of the Adage monitor in that there can be only one active
+13620	picture displayed on the screen at any one time.  However,
+13640	there can be many subpictures that are called by this pictures.
+13660	Consequently, a posted picture in the Omni sense is sent to 
+13680	the Adage as a subpicture.  Then a single Adage-type picture
+13700	is sent that merely calls all the currently posted 
+13720	subpictures.  Hence, this post list is the last thing that
+13740	is sent to the Adage, after each subpicture is sent.
+13760	Note that this post list must be sent whenever a picture
+13780	is posted, unposted, or killed, in order to reflect that
+13800	fact on the Adage screen.  The post list is generated by SENDP,
+13820	which walks the PP thread.
+13840	.skip 1
+13860	.index QUNPOST
+13880	.index QKILL
+13900	.index QAPPEND
+13920	The code for QUNPOST, QKILL, QAPPEND, QOPEN, and QCLOSE are
+13940	little changed from the DISGT4 code.  
+13960	The differences lie in the fact that the communication
+13980	languages are different.
+14000	.skip 1
+14020	Things get exciting in the QTEXT code, for the Adage is a
+14040	strange beast in terms of character generation.  Not only
+14060	are the characters offset in both x and y from the current
+14080	beam position, but after drawing a character string, the
+14100	beam bounces back to the initial position.  This causes a
+14120	hassle, for this hardware peculiarity should not be reflected
+14140	in the virtual display file as a bunch of extra move
+14160	commands, for that would mess up the plotting.  Consequently,
+14180	only when the data is interpreted, and the pictures are being
+14200	transmitted, are the extra moves generated.  Note,
+14220	the PUSHJ to PGEN in QTEXT, just before the NOTBEG routine
+14240	is necessary to insure that the beam is positioned correctly,
+14260	for a DMOVE merely updates .XBEAM and .YBEAM, but doesn't
+14280	generate a move data item.
+14300	.skip 1
+14320	.index QINT
+14340	The QINT routine is different, in that there is essentially
+14360	a continuous range of intensities available (0 to 6000).
+14380	.index QSTAT
+14400	.skip 1
+14420	The QSTAT routine is a trivial subset of the GT40 version, 
+14440	for all it has in common is dashed lines versus solid
+14460	lines.
+14480	.skip 1
+14500	Now for the utility routines.  SENDC is used to send the
+14520	coordinates to the Adage, and here the 14 bit coordinates are
+14540	mapped into the 15 bit Adage coordinates.  The code then falls
+14560	into SEND which IDPB's the data word into the current buffer.
+14580	Notice that if the DISRUN flag is off, then it immediately
+14600	returns.
+14620	SENDL is the routine that
+14640	generates the post list, by running down PP.  The post list 
+14660	consists of a PLIST followed by Adage picture number 100, 
+14680	followed by a string of CALL's for each Omni picture, 
+14700	specifying the corresponding Adage number as found in
+14720	PICTAB by FIND1.  If the display is running, as denoted
+14740	by DISRUN, then the completed post list is sent by flushing
+14760	the current output buffer at SL2.  SL2 is referenced any
+14780	time the buffer must be immediately flushed, as in the QCODE
+14800	routine.
+14820	SENDD is useful in sending a delete command to the Adage.
+14840	It is used by KILL.  Then comes STOBYT, BLOCK, and PLTIT
+14860	which are unchanged from the storage tube routines.  PGEN, VGEN
+14880	and MGEN are not noteworthy.  At post time, when the search
+14900	for a Adage picture number fails, and it is deemed necessary to
+14920	transmit a picture to the Adage, the dirty work is done by
+14940	PAINT.
+14960	.index PAINT
+14980	.skip 1
+15000	The actual code for PAINT is not new.  However, of some
+15020	interest is MOVE, DRAW, and TEXT.  First, a flag called
+15040	VECFLG is reset (to non-zero) by everybody except MOVE and DRAW, so that
+15060	so that
+15080	if you send a move followed by several draws, only one VECTOR
+15100	op-code need be sent.  This flag is also used by TEXT to 
+15120	count the number of characters sent.  Now, if there is a
+15140	MOVE after a text string, then the beam will be explicitly
+15160	repositioned, however since character strings do not update
+15180	the current beam position past the text, a draw would begin
+15200	at the beginning of the string, which is not good.
+15220	Consequently, the DRAW code checks to see if VECFLG is greater
+15240	than zero, in which case it considers the value of VECFLG to
+15260	be the total delta X that the string subtended.  Consequently,
+15280	the draw is preceeded by an appropriately tweaked VECTOR
+15300	command.  Note also that the TEXT code does the little
+15320	delta X and Y twiddling just before transmitting the
+15340	character string.  This is independent of the internal
+15360	data representation, and wouldn't show up on a plot.
+15380	.skip 1
+15400	The Adage picture number is assigned in the PICINI code, by
+15420	a call to ADD1.  The final routines of the Adage code are
+15440	CURSET (again not necessary since there is no cursor) and
+15460	IPICTA, which initializes PICTAB at DINI time.
+15480	.skip 3
+15500	XDVSER
+15520	.index XDVSER
+15540	.skip 3
+15560	The monitor service routine for the DEC340 certainly deserves
+15580	some documentation.  XDVSER handles the CALLI -10 as well as
+15600	all interrupts from the display, Graficon (sic), and function
+15620	box.  The user aspects of the CALLI are adequately documented
+15640	in the display manual and elsewhere, however there are some
+15660	aspects of the internal operations that are obscure.
+15680	.skip 1
+15700	First, other modules of the monitor must be modified for
+15720	coexistence with the DEC340, namely:
+15740	.asis
+15760	
+15780		COMMON,SYSINI,UUOCON,KILOCK,CLOCK1
+15800	
+15820	.-asis
+15840	These changes are included as conditionals under FT0005 (feature
+15860	test switch).  In COMMON, the 340 interrupts will be handled
+15880	on the channel 5 CONSO skip chain.  Currently, this channel is
+15900	shared with the Adage.  The entry in the chain for XDVSER is
+15920	XDVINT.
+15940	.skip 1
+15960	The patches in UUOCON, CLOCK1 and KILOCK are necessary for
+15980	schedling and releasing the display.  However, with the
+16000	advent of the KI10 processor and paging, KILOCK was further
+16020	modified.  The DEC340 addresses core in the manner of a KA10
+16040	(i.e., via protection and relocation in terms or 1K boundaries).
+16060	Consequently, even though the KI10 thinks in terms of 512 word
+16080	pages, you must be careful to give the DEC340 old fashioned
+16100	K.  This involves several patches to KILOCK that assure that
+16120	the locked segment lies on a K boundary (modifications to
+16140	LOKPHY).  Similarly, XDVSER was modified to insure that an
+16160	even number of K are being locked.  If not, XDVSER gets some
+16180	more core by going to CHGCOR.  Of course, when locked, it
+16200	must be locked physically contiguous(ly).  Another concern
+16220	was with respect to the mechanism for XDVSER to address the
+16240	user status area (XSTAT,DISTARTADR,...).  At interrupt time,
+16260	it is not clear which UPMP to use, hence it was easier to lock
+16280	into EVM.  
+16300	.skip 1
+16320	A recently added variable is XPHYS, which stores the actual
+16340	for-really segment start address and protection (length).
+16360	The start address is really a page address (as given in LOKPHY).
+16380	XPHYS is used in XDVSER at DISTART to load the protection and
+16400	relocation registers (along with the initial DAC value) by a
+16420	DATAO.
+16440	.skip 1
+16460	A note concerning the channel assignment:  beware of changing
+16480	from channel 5, for all the AC save and return routines are
+16500	"hard-coded".
+16520	.page
+16540	.print index

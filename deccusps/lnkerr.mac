@@ -1,0 +1,1234 @@
+TITLE	LNKERR - LINK-10 EXTENDED ERROR MESSAGE SEGMENT
+SUBTTL	D.M.NIXON/DMN		8-JUL-74	
+
+
+;***COPYRIGHT 1973, 1974  DIGITAL EQUIPMENT CORP., MAYNARD, MASS.***
+
+ENTRY	LNKERR
+SEARCH	LNKPAR,LNKLOW,C,SCNMAC
+EXTERN	LNKLOG,TTYCHK
+
+CUSTVR==0		;CUSTOMER VERSION
+DECVER==2		;DEC VERSION
+DECMVR==0		;DEC MINOR VERSION
+DECEVR==215		;DEC EDIT VERSION
+
+VERSION
+
+SALL
+SEGMENT
+
+
+SUBTTL	REVISION HISTORY
+
+;START OF VERSION 1A
+;41	ADD LNKFSI MESSAGE
+;46	ADD KLUDGE FEATURE MESSAGE
+;71	ADD LNKXIT INFO MESSAGES
+;102	ADD NO END BLOCK MESSAGE
+;105	ADD ITT MESSAGE (FOR BLOCK TYPE 12)
+;107	REPLACE KLUDGE BY MIXFOR
+
+;START OF VERSION 2
+;135	ADD OVERLAY FACILITY
+;162	ADD ISN MESSAGE
+;215	ADD OVERLAY ERROR MESSAGES
+
+SUBTTL	FIND MESSAGE
+
+LNKERR:	JFCL	.+1		;INCASE CCL ENTRY
+IFE FTSINGLE,<
+	MOVE	T1,SEGBLK+1	;GET SEGMENT NAME
+	CAME	T1,['LNKERR']	;IF MULTI-SEGMENTED
+	JRST	ERROK		;NO
+	MOVE	T1,[SAVEAC+P2,,P2]
+	BLT	T1,16		;RESTORE ALL ACCS
+	MOVE	P1,SAVEAC+T1	;P1 IS STORED TWICE
+ERROK:>;END IFE FTSINGLE
+	MOVE	T2,ERRCOD	;GET ASCII ERROR CODE
+	TRZ	T2,<BYTE (7) 0,0,0,177,177 (1) 1>
+	SETZ	T4,		;PUT SIXBIT IN HERE
+	SETZ	T1,		;CLEAR JUNK
+	LSHC	T1,7		;GET A CHAR
+	SUBI	T1," "		;SIXBITIZE
+	LSH	T4,6		;MAKE SPACE
+	ADDI	T4,(T1)		;ADD INTO WHATS THERE
+	JUMPN	T2,.-5		;LOOP FOR ALL (3) CHARS
+				;WE NOW USE T4 AS THE HASH TOTAL (18 BITS)
+	MOVE	T1,T4		;GET 18 BITS
+	IDIVI	T1,E.PRM	;INITIAL HASH
+	JUMPE	T1,[AOJA T1,ERRHS1]	;MAKE SURE T1 NOT ZERO
+	CAIGE	T1,E.PRM	;IF QUOTIENT LARGER THAN PRIME
+	JRST	ERRHS1		;NO
+	SUBI	T1,E.PRM	;STEP DOWN
+	JRST	.-4		;TRY AGAIN
+
+ERRHS0:	ADD	T2,T1		;STILL IN TABLE
+	CAIL	T2,E.PRM	;STILL IN TABLE
+	SUBI	T2,E.PRM	;NO,
+ERRHS1:	MOVS	T3,HSHTAB(T2)	;PROBE TABLE
+	CAIN	T4,(T3)		;MATCH
+	JRST	ERRFND		;YES
+	JUMPE	T3,ERRFAI	;FAILED IF ZERO, NOT IN TABLE
+	JRST	ERRHS0		;TRY AGAIN
+
+ERRIDX:	HRRZ	T1,ERRCOD	;GET NUMBER
+	ANDI	T1,<BYTE (7) 0,0,0,177,177 (1) 1>
+	TRNE	T1,<BYTE (7) 0,0,0,100>	;PROPAGATE SIGN
+	IOR	T1,[BYTE (7) 177,177,177]
+	HLRE	T2,@(T3)	;GET FIRST
+	HRRE	T4,@(T3)	;AND LAST
+	CAML	T1,T2		;RANGE CHECK
+	CAMLE	T1,T4
+	JRST	.RPOPJ		;NOT IN RANGE?
+	SUB	T1,T2		;ADJUST OFFSET OF TABLE
+	ADD	T1,(T3)		;PLUS BASE ADDRESS
+	HRRZ	T1,1(T1)	;GET ADDRESS OF MESSAGE
+	JRST	ERRFN0
+
+ERRFND:	MOVS	T3,T3		;ADDRESS IN RIGHT AGAIN
+	SKIPGE	(T3)		;INDEXED VAI TABLE?
+	JRST	ERRIDX		;YES
+	HRRZ	T1,T3		;GET MESSAGE POINTER
+ERRFN0:	PUSH	P,T1		;SAVE T1
+	OUTVIA	.TCRLF##	;START NEW LINE
+	SKIPA	T1,0(P)		;RELOAD T1
+ERRFN1:	PUSH	P,T1		;SAVE IT
+	ADDI	T1,1		;POINT TO MESSAGE
+	OUTVIA	.TSTRG##	;OUTPUT MESSAGE
+	POP	P,T1		;GET BACK POINTER
+	SKIPN	T1,(T1)		;MORE TO DO?
+	JRST	ERRFAI		;NO
+	SKIPN	1(T1)		;BUT IS IT A REAL MESSAGE?
+	JRST	ERRFN1		;NO, JUST TRANSFER
+	JRST	ERRFN0		;YES, NEED A CRLF ALSO
+
+ERRFAI:	JRST	ER.FIN##	;FINISH OFF MESSAGE
+
+.RPOPJ::			;HERE TO RETURN CPOPJ
+	MOVE	T1,UUOTRAP	;GET PC WORD
+	TXZ	T1,PC.LIP	;TURN OF LAST INST PUBLIC INCASE EXECUTE ONLY
+IFE FTSINGLE,<
+	MOVE	T2,SEGBLK+1	;GET THIS SEGMENT NAME
+	CAME	T2,['LNKERR']	;IF MULTI-SEGMENTED
+>
+	JRSTF	@T1		;NO
+IFE FTSINGLE,<
+	PUSH	P,T1		;STORE RETURN ADDRESS
+	JRST	@LSTSEG		;AND RETURN VIA PREV SEGMENT
+>
+
+
+
+SUBTTL	HASH MACROS
+
+IF1,<			;ALL ON PASS 1
+ DEFINE GETSYM (N)<$ER'N==0>
+ N==0
+	XLIST
+ REPEAT E.PRM,<
+  GETSYM \N
+  N==N+1
+ >
+
+ DEFINE HASH (CODE,GOTO,TEXT)<
+%ER'CODE:
+ IFIDN <GOTO><@>,<
+	1B0+CODE'TAB>
+ IFDIF <GOTO><@>,<
+	GOTO>
+	ASCIZ	\TEXT\
+  SXB=(<SIXBIT /CODE/>)
+  Q=SXB/E.PRM
+  R=SXB-Q*E.PRM
+  IFGE Q-E.PRM,<Q=Q-Q/E.PRM*E.PRM>
+  IFE Q,<Q=1>
+  TRY=1
+  ITEM Q,\R,CODE
+  IFL E.PRM-TRY,<PRINTX HASH FAILURE>
+ >
+
+ DEFINE ITEM (QT,RM,CD)<
+  IFN $ER'RM,<
+   R=R+QT
+   IFL E.PRM-R,<R=R-R/E.PRM*E.PRM>
+   IFGE E.PRM-<TRY=TRY+1>,<ITEM Q,\R,CD>
+  >
+  IFE $ER'RM,<
+   $ER'RM=SXB,,%ER'CD
+>>>
+
+IF2,<
+ DEFINE HASH (CODE,GOTO,TEXT)<
+  %ER'CODE:
+  PURGE %ER'CODE
+  IFIDN <GOTO><@>,<
+	1B0+CODE'TAB>
+  IFDIF <GOTO><@>,<
+	GOTO>
+	XLIST
+	ASCIZ	\TEXT\
+	LIST
+>>
+
+DEFINE TABLE (CODE,N)<
+	EXP	CODE'N
+>
+DEFINE VIATBL (CODE,FIRST,LAST)<
+CODE'TAB:	<FIRST&777777>,,<LAST&777777>
+	N=FIRST
+ REPEAT LAST-FIRST,<
+  M=N&777
+  TABLE CODE,\M
+  N=N+1
+>>
+
+DEFINE INDEX (CODE,IDX,GOTO,TEXT)<
+ IRP CODE,<
+  N=IDX&777
+  LABEL CODE,\N
+ >
+ EXP	GOTO
+	XLIST
+	ASCIZ	\TEXT\
+	LIST
+>
+
+DEFINE LABEL (CODE,NUMBER)<
+CODE'NUMBER:
+>
+
+SUBTTL	HASH TABLE
+
+HSHTAB:
+IF1,<	BLOCK	E.PRM>		;ALLOCATE SPACE ON PASS 1
+IF2,<
+ DEFINE GETSYM (N)<
+	$ER'N
+ >
+ N==0
+	SALL
+ REPEAT E.PRM,<
+  GETSYM \N
+  N==N+1
+ >
+
+ DEFINE PRGSYM (N)<
+  PURGE $ER'N
+ >
+ N==0
+ REPEAT E.PRM,<
+  PRGSYM \N
+  N==N+1
+ >
+ PURGE N,SXB,Q,R,TRY
+>
+SUBTTL	INDIRECT TABLES
+
+VIATBL	(FEE,-1,32)
+VIATBL	(FLE,0,32)
+VIATBL	(FRE,0,32)
+VIATBL	(GSE,0,32)
+.HWFRMT		;SAVE SPACE
+COMMENT	\
+SHORT LEVEL MESSAGE
+THESE ARE INCORE AT ALL TIMES (IN OTHER SEGMENTS)
+
+CODE	LVL SEV	MESSAGE
+AMP	%W %W	ALGOL main program not loaded
+ANC	%F %F	Address not in core
+ARL	%W %W	Ambiguous request in link [decimal] for [symbol] defined in links [decimal]
+AZW	%F %F	Allocating zero words
+B4R	%W %W	Bad F40 produced REL file for [name]
+CEF	%F %F	Core expansion failed
+CLF	%I %I	Closing LOG file, continuing on [file spec] 
+CMF	%F %F	Cobol module must be loaded first
+CNW	%F %F	Code not yet written at [label]
+CSF	%I %I	Creating SAV file
+DEB	 * %I	[name] execution
+DLT	 * %F	Execution deleted
+DNS	%I %I	Device not specified for /[SWITCH]
+DRC	%W %W	Decreasing  relocation counter [symbol] from [value] to [value]
+DSC	%F %F	Data store to common [symbol] not in link [decimal] for [module] in [file spec]
+DSL	%F %F	Data store to location [octal] not in link [decimal] for [module] in [file spec]
+DSO	%F %F	Data statement overflow
+DTX	%W %I	DDT10X not available, using DEC DDT
+DUZ	%F %F	Decreasing undefined symbol count below zero
+EID	%F %F	Error on input device
+					status (xxxxxx) for [file spec]
+ELF	%I %I	END OF LOG FILE
+ELC	%F %F	Error creating overflow file for area LC 
+EHC	%F %F	Error creating overflow file for area HC 
+ELS	%F %F	Error creating overflow file for area LS 
+EFX	%F %F	Error creating overflow file for area FX 
+EGS	%F %F	Error creating overflow file for area GS 
+
+EMS	%I %I	End of MAP segment
+EOV	%F %F	Error creating overlay file for [file spec]
+ESN	%F %F	Extended symbol not expected
+EXP	%I %I	Expanding low segment to [n]K
+EXS	%I %I	EXIT segment
+
+FCD	%F %F	FORTRAN confused about data statements
+FCF	%I %I	Final code fixups
+FIA	%F %F	Cannot mix KI10 and KA10 FORTRAN-10 compiled code
+FIN	%I %I	LINK-10 finished
+FON	%F %F	Cannot mix F40 and FORTRAN-10 compiled code
+FOV	%F %F	Cannot overlay F40 compiled code
+FSF	%W %W	Fortran subroutine [name] not in expected form, MIXFOR fixup not done
+FSI	%W %W	FORTRAN-10 requires FOROTS, /FORSE switch ignored
+
+FEE		ENTER error 
+FLE		LOOKUP error
+FRE		RENAME error
+GSE	%F %F	GETSEG error
+	%F %F	(0) Illegal file name
+	%F %E	(0) file was not found
+	%F %E	(1) no directory for project-programmer number
+	%F %E	(2) protection failure
+	%F %F	(3) file was being modified
+	%F %F	(4) rename file name already exists
+	%F %F	(5) illegal sequence of UUOs
+	%F %F	(6) bad UFD or bad RIB
+	%F %F	(7) not a SAV file
+	%F %F	(10) not enough core
+	%F %F	(11) device not available
+	%F %F	(12) no such device
+	%F %F	(13) not two reloc reg. capability
+	%F %F	(14) no room or quota exceeded
+	%F %F	(15) write lock error
+	%F %F	(16) not enough monitor table space
+	%W %W	(17) partial allocation only
+	%F %F	(20) block not free on allocation
+	%F %F	(21) can't supersede (enter) an existing directory
+	%F %F	(22) can't delete (rename) a non-empty directory
+	%F %F	(23) SFD not found
+	%F %F	(24) search list empty
+	%F %F	(25) SFD nest level too deep
+	%F %F	(26) no-create on for all search list
+	%F %F	(27) Segment not on swap space
+	%F %F	(xx) Uknown cause
+						for [file spec]
+
+HSL	%F %F	Attempt to set high segment origin too low
+HSO	%W %W	Attempt to change high segment origin from [value] to [value]
+HTL	%F %F	Symbol hash table too large.
+I4D	%F %F	Illegal F40 DATA code (xxxxxx)
+I4S	%F %F	Illegal F40 sub-block (xxxxxx)
+I4T	%F %F	Illegal F40 table entry (xxxxxx)
+IBC	%F %F	Attempt to increase size of blank common
+ICI	%F %F	Insufficient core to initialize LINK-10
+IDM	%F %E	Illegal data mode for device 
+IFD	%F %F	INIT failure for device [device]:
+
+ILC	%F %F	Error inputting area LC
+IHC	%F %F	Error inputting area HC
+ILS	%F %F	Error inputting area LS
+IFX	%F %F	Error inputting area FX
+IGS	%F %F	Error inputting area GS
+IOV	%F %F	Input error for overlay file
+					- status (xxxxxx)
+ILI	%F %F	Illegal link item type (xxxxxx) for [file spec]
+IMA	%I %I	Incremental maps not yet available
+INS	%F %F	I/O data block not set up
+IPO	%F %F	Invalid polish operator
+ISD	%F %F	Inconsistent symbol definition for [symbol]
+ISN	%F %F	Illegal symbol name [name]
+ISO	%F %F	Incorrect store operator
+ISP	%F %F	Incorrect symbol pointer
+IST	%F %F	Inconsistency in switch table
+ITT	%W %W	Illegal type 12 link number [n] in module [name]
+IUU	 * %F	Illegal user UUO at PC [value]
+IVC	%F %F	Index validation check failed at [address]
+
+LDS	%I %I	LOAD segment.
+LFC	%I %I	LOG file continuation
+LCI	%I %I	LOG file initialization
+LII	%W %I	Library index inconsistent, continuing
+LIM	%I %I	LINK-10 initialization
+LIT	%F %F	Link item type (xxxxxx) too short for [file spec]
+LMN	%I %I	Loading module [name] 
+LNA	%W %W	Link name [name] already assigned to link number [number]
+LNC	%F %F	Link number [number] not in core
+LNL	%W %W	Link number [number] not loaded
+LNN	%W %W	Link name [name] not assigned
+LSS	 * %I	Library Search Symbols (Entry points)
+MDS	%W %W	Multiply-Defined Global symbol [symbol] in module [name]
+	 defined value = [value], this value = [value]
+MNS	%I %I	MAP sorting not yet implemented
+MOV	%I %I	Moving low segment to expand area [area]
+MPS	%I %I	MAP segment
+MRN	%I %I	Multiple regions not yet implemented
+MSS	%W %W	MAXCOR set too small, increasing to [n]K
+MTB	%W %W	MAXCOR too big, [n]k used
+MTS	%W %W	MAXCOR too small, at least [n]K is required
+NCL	%W %W	Not enough core to load job, saved as [file spec]
+NCX	%W %I	Not enough core to load and execute job, will run from [file spec]
+NEB	%W %W	No end block seen for [name]
+NED	%F %E	Non-existent device [device]:
+NSA	 * %I	No start address
+NYI	%W %W	Not yet implemented - [/switch]
+
+OLC	%F %F	Error outputting area LC
+OHC	%F %F	Error outputting area HC
+OLS	%F %F	Error outputting area LS
+OFX	%F %F	Error outputting area FX
+OGS	%F %F	Error outputting area GS
+OOV	%F %F	Output error for overlay file
+					- status (xxxxxx)
+
+OEL	%W %W	Output error on LOG file, file closed, job continuing.
+OEM	%W %W	Output error on MAP file, file closed, job continuing
+OES	%W %W	Output error on SYMBOL file, file closed, job continuing
+OEX	%W %W	Output error on XPN file, file closed, job continuing
+OFN	%F %F	Old FORTRAN (F40) module not available.
+OHN	%F %F	Overlay handler not loader
+OMN	%F %F	Obsolete monitor will not support  LINK-10
+OOV	%F %F	output error for overlay file status (xxxxxxx) for [file spec]
+OS2	%I %I	Overlay segment phase 2
+PBI	%W %W	Program break [octal] invalid in [name]
+PEF	%F %F	Premature End-of-File on command file
+PHC	%I %I	Area HC overflowing to DSK
+PLC	%I %I	Area LC overflowing to DSK
+PLS	%I %I	Area LS overflowing to DSK
+PFX	%I %I	Area FX overflowing to DSK
+PGS	%I %I	Area GS overflowing to DSK
+PSF	%F %F	Polish symbol fixups not yet implemented
+
+RCF	%F %F	Relocation counter table full
+RCU	%F %F	Relocation counter [symbol] undefined, set to [symbol]
+RED	%I %I	Reducing low segment to [n]K
+RER	%I %I Request External References (Inter-Link Entry Points)
+RGS	%I %I	Rehashing Global symbol table from [old size] to [new size]
+RLC	 * %I	Reloc. ctr. initial value current value (octal)
+RME	 * %F	REMAP error
+RPR	%W %W	RESET past root not allowed
+RUC	%F %F	Returning unavailable core
+SIF	%F %F	Symbol insert failure, non-zero hole found
+SFU	%I %I	Symbol table fouled up
+SNC	%F %F	Symbol [symbol] already defined, but not as common
+SNL	%I %I	Scanning new command line
+SNP	%W %W	Subroutine [symbol] in link number [decimal] not on path for call from link number [decimal]
+SOE	%F %F	SAVE file output error - status (xxxxxx)
+SSN	%I %I	Symbol table sorting not yet implemented
+SST	%I %I	Sorting symbol table
+STC	%I %I	Symbol table completed
+T13	%F %F	LVAR (type 13) code not implemented
+TDS	%W %W	Too late to delete initial symbols
+TEC	%F %F	Trying to expand common [symbol] from [value] to [value] in module [name]
+TSO	%F %F	Cannot load a two segment module in one segment
+TTF	%W %W	Too many titles found
+UAR	%W %W	Undefined assign for [symbol] in [file spec]
+UGS	 *  *	undefined global symbols
+URC	%I %I	Unknown radix-50 symbol code
+USA	%W %W	Undefined start address [symbol]
+USC	%W %W	Undefined subroutine [name] called from link number [decimal]
+VAL	 * %I	[symbol] [value] [type]
+XCT	 * %I	[name] Execution
+ZSV	%W %W	Zero switch value illegal
+
+END OF COMMENT \
+
+SUBTTL	LONG MESSAGES
+
+HASH	AMP,0,<
+	The user  has  loaded  ALGOL  procedures  without  a  main
+	program.   Execution will be terminated because of missing
+	start address and undefined symbols.>
+	
+HASH	ANC,%L10,<
+	LINK-10 expected a particular user address to be in  core,
+	but it is not there.>>
+
+HASH	ARL,0,<
+More than one successor link  satisfies  a  call  from  an
+	ancestor  link.  At run time, the link in core, or the one
+	with the longest path in core, will be used to satisfy the
+	call.   No message will be given.  However, if none of the
+	successor links are in core, the overlay handler picks one
+	with  the  longest  path in core.  If all paths are equal,
+	the overlay handler  picks  one  at  random  and  gives  a
+	warning message to the user.  To avoid this situation, the
+	user  should  promote,  to  a  common  link,  the   module
+	containing the called subroutine.>
+
+HASH	AZW,%L10,<
+	LINK-10's space allocator was called with  a  request  for
+	zero words.>
+
+HASH	CEF,0,<
+	All attempts to obtain more core, including writing  files
+	onto  disk,  have  failed.   The  program  is  too big for
+	available user core, probably because of too  many  global
+	symbols.  A future version of LINK-10 will overflow global
+	symbols to the disk.  However,  there  will  always  be  a
+	minimum size below which LINK-10 will not operate.>
+
+HASH	CLF,0,<
+	This message occurs when the user changes  the  device  on
+	which  the  log  file  is  being written.  The log file is
+	closed on the first device and the remainder of  the  file
+	is written on the second device.>
+
+HASH	CMF,0,<
+	The COBOL-produced file must be the first file loaded when
+	loading   COBOL  modules.   COBDDT,  the  COBOL  debugging
+	program, or any other modules, such as  a  MACRO  routine,
+	cannot  be the first file in the command string.  The user
+	should begin  loading  again  and  place  the  COBOL  main
+	program  or  routine  as  the  first  file  in the command
+	string.>
+
+HASH	CNW,%L10,<
+	The user attempted a feature that is not yet  implemented.>
+
+HASH	CSF,0,<
+	LINK-10 is generating the requested save file  by  running
+	the  core image through a zero compressor routine in order
+	to produce a SAV format file.>
+
+HASH	DNS,0,<
+	A device switch, such as /REWIND or /BACKSPACE,  has  been
+	given,  but  there  is no device to be associated with it.
+	The switch is ignored.  This occurs when the user does not
+	give  a  device  name  in the specification containing the
+	switch or has not specified a device name in  the  current
+	line.   (Remember  that  devices are cleared at the end of
+	the line.) LINK-10's default device DSK does not apply  to
+	device  switches nor does a device specified in a /DEFAULT
+	switch apply.  The user should respecify the command  line
+	and include the appropriate device name with the switch.>
+
+HASH	DRC,0,<
+	The user is  reducing  the  size  of  an  already  defined
+	relocation  counter via the /SET switch.  The new value is
+	accepted.  The user should be extremely  careful  when  he
+	does  this  because  code  previously loaded under the old
+	relocation counter may be overwritten.  This  practice  of
+	reducing  counters  is  dangerous  unless  the  user knows
+	exactly where modules are loaded.>
+
+HASH	DSC,0,<
+	The user has a DATA statement in FORTRAN which sets  up  a
+	COMMON area, but the COMMON area is in another link closer
+	to the root.  The user should set up the  COMMON  area  in
+	the link in which it is first defined.>
+
+HASH	DSL,0,<
+	The  user  has  a  data  store  to  an  absolutely-defined
+	location that is not in the specified link (e.g., the user
+	is storing data in  JOBDAT).  The  user  should  move  the
+	module to the root link.>
+
+HASH	DSO,%F40
+
+HASH	DUZ,%SPR,<
+	On an internal check of the counter for undefined symbols,
+	LINK-10 determined that the counter was negative.>
+
+HASH	EID,%STS,<
+	A read error has occurred on the input device.  Use of the
+	device is terminated and the file is released.>
+	
+HASH	ELC,%E$$
+HASH	EHC,%E$$
+HASH	ELS,%E$$
+HASH	EFX,%E$$
+HASH	EGS,%E$$
+
+HASH	EOV,0,<
+	LINK-10 could not create the overlay  file  on  the  disk.
+	The user could be over quota, or the disk could be full or
+	have errors.>
+
+HASH	EMS,0,<
+	Notification that the LINK-10 module LNKMAP has  completed
+	the writing of the map file.  The map is now closed.>
+
+HASH	ESN,%SPR,<
+	The code to handle symbols longer than six characters  has
+	not  been  completed.   This  code  will be available in a
+	future release.>
+	
+HASH	EXP,0,<
+	LINK-10 needs more core and is expanding to the  specified
+	amount.   In  future  loads of the same programs, the user
+	can run LINK-10 more efficiently by requesting this amount
+	of  core  at  the  beginning  of  the  load with the /CORE
+	switch.>
+
+HASH	EXS,0,<
+	LINK-10 is entering the completion stages of  the  loading
+	process.   These  stages  include the creation of save and
+	symbol files and, if required, the execution of  the  core
+	image.>
+
+HASH	FCD,%SPR,<
+	Incorrect code was generated by the  F40  compiler  for  a
+	data statement in the form
+	     DATA A(I),I=1,4/1,2,3,4/
+	as opposed to a data statement in the form
+	     DATA (A(I),I=1,4)/1,2,3,4/>
+	
+HASH	FCF,0,<
+	LINK-10  is  now  reading  the  low  and/or  high  segment
+	overflow files backwards in order to do all remaining code
+	fixups.   This  process  may   cause   considerable   disk
+	overhead.   Note  that the message occurs only if the load
+	was too large to fit entirely in core.>
+
+HASH	FIA,0,<
+	The FORTRAN-10 compiler generates different output for the
+	KA10 and the KI10 processors (e.g., double precision code)
+	and the user cannot load this mixture.  He  should  decide
+	which  processor  he  wants  to use and then recompile the
+	appropriate programs.>
+
+HASH	FIN,0,<
+	LINK-10 has completed  its  task  of  loading  the  user's
+	program  and  other  required programs.  Control is either
+	returned to the monitor or given to the user's program for
+	execution.>
+
+
+HASH	FON,0,<	Output from the F40 and  FORTRAN-10  compilers  cannot  be
+	used  together  in  the same load.  The user should decide
+	which compiler he wants and then recompile the appropriate
+	program with that compiler.>
+
+HASH	FOV,0,<
+	Output from the F40  compiler  cannot  be  used  with  the
+	overlay  facility.   The user should recompile his program
+	with the FORTRAN-10 compiler.>
+
+HASH	FEE,@
+HASH	FLE,@
+HASH	FRE,@
+HASH	GSE,@
+
+HASH	FSF,0,<
+	LINK-10 cannot find the return  instructions  in  the  F40
+	compiled subroutine.>
+
+HASH	FSI,0,<
+	The user gave a /FORSE  switch  while  loading  FORTRAN-10
+	compiled code.>
+
+HASH	HSL,0,<
+	The user is trying  to  set  the  beginning  of  the  high
+	segment below the end of the last page of the low segment.
+	The user can either specify a /SET:.HIGH.   switch  or  in
+	the  case  of MACRO-10, reassemble the module.  (Note that
+	the setting of the beginning of  the  high  segment  below
+	400000 will fail on all KI10 monitors previous to 5.07 and
+	on all KA10 monitors.)>
+
+HASH	HSO,0,<
+	The user is attempting to change the starting  address  of
+	the  high  segment.   The specified value is ignored.  The
+	cause may be that  the  user  gave  a  /SET:.HIGH.:  value
+	switch  which does not agree with the LINK item type 3, or
+	that two LINK item type 3's have different  origins.   The
+	user should recompile the incorrect files.>
+
+HASH	HTL,%SPR,<
+	The user has more global  symbols  than  can  fit  in  the
+	maximum  hash  table  (about  25K  in  size)  LINK-10  can
+	generate.  Possible action  is  to  increase  the  maximum
+	allowable size of the hash table.>
+
+HASH	I4D,%F40
+HASH	I4S,%F40
+HASH	I4T,%F40
+
+HASH	IBC,0,<
+	An attempt was made to expand the blank COMMON area.  Once
+	a  COMMON  area  is  defined, the size cannot be expanded.
+	The user should load the module  with  the  largest  blank
+	COMMON  area  first  or  specify  the larger area with the
+	/COMMON switch before loading either module.>
+
+HASH	ICI,0,<
+	There is not enough  core  in  the  system  to  initialize
+	LINK-10.>
+
+HASH	IDM,0,<
+	The data mode specified for a device is illegal,  such  as
+	dump  mode  for  the terminal (e.g., TTY:/SAVE).  The user
+	should respecify the correct device.>
+
+HASH	IFD,0,<
+	The OPEN or INIT UUO failed for the specified device.  The
+	device could be in use by another user.>
+
+HASH	ILC,%I$$
+HASH	IHC,%I$$
+HASH	ILS,%I$$
+HASH	IFX,%I$$
+HASH	IGS,%I$$
+
+HASH	ILI,0,<
+	The input file either was generated by a  translator  that
+	LINK-10   does   not   recognize  (e.g.,  a  non-supported
+	translator) or is not in proper binary format (e.g., is an
+	ASCII or SAV file).>
+
+HASH	IMA,0,<
+	The  INCREMENTAL  keyword  for  the  /MAP  switch  is  not
+	implemented.  The switch is ignored.>
+	
+HASH	INS,%L10,<
+	LINK-10 attempted to do I/O (LOOKUP,  ENTER  UUOs)  for  a
+	channel  that  has  not  been set up.>
+
+HASH	IOV,%STS,<
+	An error occurred when reading the overlay file.>
+
+HASH	IPO,%L10,<
+	An incorrect link  item  type  11  was  seen.>
+	
+HASH	ISD,0,<
+	An  already-defined  symbol  has  been  given   a   second
+	"partial"  definition.   The user should examine the usage
+	of the named symbol.>
+
+HASH	ISN,%SPR,<>
+
+HASH	ISO,%L10,<
+	An incorrect link  item  type  11  was  seen.>
+	
+HASH	ISP,%SPR,<
+	The current symbol pointer  does  not  point  to  a  valid
+	symbol triplet.  This can occur if an extended symbol does
+	not terminate  properly.>
+
+HASH	IST,%SPR,<
+	An internal error occurred in the switch tables  built  by
+	the SCAN module.>
+
+HASH	ITT,0,<
+	A number other than 1 through 20 was used in a  link  item
+	type 12.>
+
+HASH	IVC,%SPR,<
+	The range checking of LINK-10's internal tables and arrays
+	failed.    The   address   output  is  the  point  in  the
+	appropriate LINK-10 segment at which this occurred.>
+
+HASH	LDS,0,<
+	Indication that the LINK-10 module LNKLOD has started  its
+	processing.>
+
+HASH	LII,0,<
+	The index (link item type 14) on a FUDGE library  file  is
+	not  correct.   The  file will be searched as if the index
+	were absent.>
+
+HASH	LIM,0,<
+	LINK-10 has begun its processing of the user's input.>
+
+HASH	LIT,0,<
+	An error occurred in the  named  link  item.   This  could
+	result  from  incorrect  output  generated by a translator
+	(e.g., no argument is seen on an END  block  when  one  is
+	required).>  The user should retranslate the module.
+
+HASH	LMN,0,<
+	LINK-10 is in the process of loading the named module.>
+
+HASH	LNA,0,<
+	The user has previously assigned  the  specified  name  to
+	another  link.   This attempt is ignored.  The user should
+	specify a different name if he wants one  associated  with
+	the link.>
+
+HASH	LNC,%SPR,<
+	The named link could not be found in core.>
+
+HASH	LNL,0,<
+	The indicated link has not  yet  been  loaded.   This  can
+	happen if the user specifies link numbers, instead of link
+	names, as arguments to the /RESET switch and then  forgets
+	the  numbers.   The  /RESET switch is ignored.  The use of
+	link numbers as arguments is not recommended.>
+
+HASH	LNN,0,<
+	The user specified a name of a link on the  /RESET  switch
+	and LINK-10 has not yet loaded a link with that name.  The
+	/RESET switch is ignored.>
+
+HASH	MDS,0,<
+	The user has given  an  existing  global  symbol  a  value
+	different from its original one.  The second occurrence of
+	the global symbol is in the named module.   The  currently
+	defined value is used.  The user should change the name of
+	the symbol or reassemble one of the files with the correct
+	parameters.>
+
+HASH	MNS,0,<
+	Alphabetic and numeric sorting of the map file is not  yet
+	implemented.   The  symbols  appear  in the order in which
+	they were placed in the symbol table.>
+
+HASH	MOV,0,<
+	This message indicates that LINK-10 is making  inefficient
+	use  of  core.   In future loads of the same programs, the
+	user should allocate more core to LINK-10 at the beginning
+	of  the load.  Area is one of the following: LC=user's low
+	segment code, HC=user's high segment code, LS=local symbol
+	table, FX=fixup area, and GS=global symbol table.>
+
+HASH	MPS,0,<
+	Indication that the LINK-10 module  LNKMAP  has  begun  to
+	write a map file.>
+
+HASH	MRN,0,<
+	Overlay structures consisting of more than one region  are
+	not yet supported.>
+
+HASH	MSS,0,<
+	The current value of MAXCOR is too small  for  LINK-10  to
+	operate.   In  future  loads of this program, the user can
+	save LINK-10 time by setting MAXCOR to this  new  expanded
+	size at the beginning of the load.>
+
+HASH	MTB,0,<
+	The user attempted to set MAXCOR to a value so large  that
+	the  low  segment  would  be greater than the start of the
+	high segment.  The value of n is usually 128K.>
+
+HASH	MTS,0,<
+	The user specified the /MAXCOR  switch  with  an  argument
+	that is below the minimum size LINK-10 requires as its low
+	segment.  The switch is  ignored.   The  minimum  size  is
+	dependent  upon  the code already loaded.  The user should
+	respecify the switch.>
+
+HASH	NCL,0,<
+	The user's program was too large to load into core.  Thus,
+	LINK-10  created  a  saved  file  on disk and cleared user
+	core.  The user can perform a GET or RUN operation on  the
+	program  to load it into core.  If the core image is still
+	too big, the user can either employ a  bigger  machine  or
+	obtain a larger core limit (e.g., increase CORMAX).>
+
+HASH	NCX,0,<
+	The user's program was too large to  load  into  core  and
+	LINK-10  created  a  saved file on disk.  It automatically
+	executes the program by performing a  RUN  UUO.   However,
+	the  saved  file  remains on disk and the user must delete
+	it, if he wishes.>
+
+HASH	NEB,0,<
+	The end block (type 5) has not been  seen  for  the  named
+	module.   This  can happen if two name blocks (type 6) are
+	seen without an intervening end block, or if  the  end  of
+	the  file  was  seen  before the end block.  Although this
+	message is not fatal, usually fatal errors follow.>
+
+HASH	NED,0,<
+	The user has specified a device that does not exist in the
+	system.   The  user can re-edit the input files to correct
+	the device name or type control-C to abort the load.>
+
+HASH	NYI,0,<
+	The user issued a switch that is not implemented  in  this
+	version of LINK-10.>
+
+HASH	OLC,%O$$
+HASH	OHC,%O$$
+HASH	OLS,%O$$
+HASH	OFX,%O$$
+HASH	OGS,%O$$
+
+HASH	OEL,%OE$
+HASH	OEM,%OE$
+HASH	OES,%OE$
+HASH	OEX,%OE$
+
+HASH	OFN,0,<
+	The standard released  version  of  LINK-10  includes  the
+	LNKF40   module   that   loads  F40  code.   However,  the
+	installation has removed it by loading a dummy version  of
+	LNKF40  and  thus LINK-10 is unable to handle F40 compiler
+	output.  The user should request his installation to  load
+	a version of LINK-10 with the real LNKF40 module.>
+
+HASH	OHN,%SPR,<
+	The internal symbols in the overlay handler could  not  be
+	referenced.   This  is  either an internal error or a user
+	error if the user supplied his own overlay handler.>
+	
+HASH	OMN,0,<
+	LINK-10 requires a monitor that contains the DEVSIZ UUO.>
+
+HASH	OOV,%STS,<
+	An error has occurred while writing the overlay file.>
+
+HASH	OS2,0,<
+	Indication that the LINK-10 module LNKOV2  has  begun  its
+	second phase of writing the overlay file.>
+
+HASH	PBI,0,<
+	The last address allocated  by  the  specified  module  is
+	greater  than  256K. The user should modify the modules of
+	his load list to reduce the  program  size  to  less  than
+	256K.  This  error condition is usually caused by the user
+	dimensioning arrays too large.>
+
+HASH	PEF,%SPR,<>
+
+HASH	PLC,%P$$
+HASH	PHC,%P$$
+HASH	PLS,%P$$
+HASH	PFX,%P$$
+HASH	PGS,%P$$
+
+HASH	PSF,0,<
+	The requested feature is not yet available.>
+
+HASH	RCF,0,<
+	The relocation counter table is a fixed length and  cannot
+	be  expanded  in  the  current  version  of LINK-10.  This
+	restriction will be eliminated in a future release.>
+
+HASH	RCU,0,<
+	The user has given a global symbol as  the  /SET   address
+	and  the  symbol  is currently undefined.  The user should
+	load the module that defines the symbol.>
+
+HASH	RED,0,<
+	LINK-10's internal tables have been deleted and  core  has
+	been  reclaimed.   This  message  occurs  near  the end of
+	loading.>
+
+HASH	RGS,0,<
+	LINK-10 is expanding the global symbol table either to the
+	next prime number as requested by the user (via /HASHSIZE)
+	or to its next expansion of about 50%.  In future loads of
+	this  program,  the  user can save LINK-10 time by setting
+	the hash table to this new expanded size at the  beginning
+	of the load.>
+
+HASH	RER,0,<
+	This is the response to the /REQUEST switch.>
+
+HASH	RPR,0,<
+	The user attempted to  move  LINK-10  backwards  from  its
+	current position on the path to a position beyond the root
+	link.  For example, if LINK-10  is  positioned  after  the
+	fourth  link  in  a  path, the largest negative number the
+	user can specify as an argument to the /NODE switch is -3.>
+
+HASH	RUC,%SPR,<
+	LINK-10's space allocator received some words that did not
+	fit into the area to which they were to be returned.>
+
+HASH	SIF,%SPR,<
+	An internal LINK-10 error.   LINK-10's  hashing  algorithm
+	failed.   A symbol already exists in the location in which
+	LINK-10 needs to place the  new  symbol.   The  error  may
+	disappear  if  the  user  loads  the  files in a different
+	order.>
+
+HASH	SFU,%SPR,<
+	An internal LINK-10 inconsistency.  LINK-10 cannot  locate
+	the  TITLE  triplets  in order to store the lengths of the
+	control sections.  The  loading  process  continues.   Any
+	maps requested by the user will not contain the lengths of
+	the control sections.>
+
+HASH	SNC,0,<
+	The user has defined a non-COMMON  symbol  with  the  same
+	name  as  a  COMMON  symbol.  The user should decide which
+	symbol  definition  he  wants.   If  he  uses  the  COMMON
+	definition, the COMMON area should be loaded first.>
+
+HASH	SNL,0,<
+	LINK-10 has completed the scanning and processing  of  the
+	current  command  line and is ready to accept the input on
+	the next line.>
+
+HASH	SNP,0,<
+	The named subroutine is not in a  successor  on  the  same
+	path  as  the  calling  link, but is in another path.  The
+	user should reconstruct his overlay  structure  and  place
+	the  subroutine on the correct path.  Otherwise, a call to
+	an undefined subroutine will occur at run time.>
+
+HASH	SOE,%STS,<
+	An error has occurred on  the  save  file.   The  file  is
+	closed  at  the end of the last data that was successfully
+	output.>
+	
+HASH	SSN,0,<
+	Alphabetic and numeric sorting of the symbol table is  not
+	yet implemented.  The symbols appear in the order in which
+	they were placed in the symbol table.>
+
+HASH	SST,0,<
+	LINK-10  is  arranging  the  symbol  table  in  the  order
+	specified  by  the  user  via  the  /SYSORT switch, and if
+	required, is converting the symbols from the  new  to  old
+	format  as  indicated  on  the /SYMSEG, /SYMBOL, or /DEBUG
+	switch.>
+
+HASH	STC,0,<
+	The symbol table has been sorted and  moved  according  to
+	the  user's  request  via  the /SYMSEG, /SYMBOL, or /DEBUG
+	switch.>
+
+HASH	T13,0,<
+	LINK item type 13 (LVAR) is not implemented in LINK-10 nor
+	supported  by  DEC.   The TWOSEG pseudo-op in the MACRO-10
+	language should be used.>
+
+HASH	TDS,0,<
+	The /NOINITIAL switch was placed  in  the  command  string
+	after  the  first file specification.  Because this switch
+	was not first in the  command  string,  LINK-10's  initial
+	symbol table was loaded.>
+
+HASH	TEC,0,<
+	An attempt was made to expand a COMMON area.  The  largest
+	occurrence  of  the  COMMON  area  of a given name must be
+	linked first.  Once defined, the size cannot  be  expanded
+	although  new  COMMON  areas  of  different  names  can be
+	defined.  The user  should  load  the  largest  occurrence
+	first, or use the /COMMON switch.>
+
+HASH	TSO,0,<
+	The user attempted to force two segments into one  segment
+	via the /SEGMENT switch.  However, the binary file dos not
+	contain the necessary information (i.e., the length of the
+	high  segment)  in  LINK  item  type 3.  This situation is
+	usually caused by a one-pass compiler (e.g.,ALGOL).>
+
+HASH	TTF,%SPR,<
+	When LINK-10 produces the index for the map it  has  found
+	more  program names than actually exist.  The symbol table
+	is in error.>
+
+HASH	URC,0,<
+	Bits 0-3 of the first word of the  link  item  contain  an
+	unknown  symbol code.  Either the translator is generating
+	incorrect code or the binary file is bad.  The user should
+	recompile the file.>
+
+HASH	USA,0,<
+	The user has given a global symbol as  the  start  address
+	and  the  symbol  is currently undefined.  The user should
+	load the module that defines the symbol.>
+
+HASH	USC,0,<
+	A reference to the named subroutine has  occurred  in  the
+	specified  link,  and  LINK-10  has  not  yet  loaded  the
+	referenced subroutine.  If this subroutine is required for
+	execution, the user should reload and include the required
+	modules on the path on which they were referenced.>
+
+
+SUBTTL	INDEXED MESSAGES
+
+INDEX	<FEE,FRE>,0,0,<
+	One of the following conditions occurred:
+
+	1.  The filename given was illegal.
+
+	2.  When updating a file, the filename given did not match
+	    the file to be updated.
+
+	3.  The RENAME UUO following a LOOKUP UUO failed.>
+
+INDEX	<FLE,GSE>,0,0,<
+	The file requested by the user was not  found.   The  user
+	should respecify the correct filename.>
+
+INDEX	<FEE,FLE,FRE,GSE>,1,0,<
+	The UFD does not exist on the named file structure, or the
+	project-programmer number given was incorrect.>
+
+INDEX	<FEE,FLE,FRE,GSE>,2,0,<
+	The user does not have the correct  privileges  to  access
+	the named file.>
+
+INDEX	FEE,-1,0,<
+	The directory on the DECtape has no room for the file.>
+
+INDEX	<FEE,FLE,FRE,GSE>,3,0,<
+	Another user is currently modifying the named  file.   The
+	user should try accessing the file later.>
+
+INDEX	<FEE,FLE,FRE,GSE>,4,0,<
+	The specified filename  already  exists,  or  a  different
+	filename  was  given  on  the ENTER UUO following a LOOKUP
+	UUO.>
+
+INDEX	<FEE,FLE,FRE,GSE>,5,%SPR,<
+	The user specified an illegal sequence of  monitor  calls,
+	UUOs, (e.g., a RENAME without a preceding LOOKUP or ENTER,
+	or a LOOKUP after an ENTER).>
+
+INDEX	<FEE,FLE,FRE,GSE>,6,%SPR,<
+	One of the following conditions occurred:
+
+	1.  Transmission, device, or  data  error  occurred  while
+	    attempting to read the UFD or RIB.
+
+	2.  A hardware-detected device or data error was  detected
+	    while reading the UFD RIB or UFD data block.
+
+	3.  A  software-detected  data  inconsistency  error   was
+	    detected while reading the UFD RIB or file RIB.>
+
+INDEX	<FEE,FLE,FRE,GSE>,7,%NPOS,<
+	The named file is not a core image file.>
+
+INDEX	<FEE,FLE,FRE,GSE>,10,%NPOS,<
+	The system cannot supply enough core to use as buffers  or
+	to read in a program.>
+
+INDEX	<FEE,FLE,FRE,GSE>,11,%NPOS,<
+	The  device  indicated  by  the  user  is  currently   not
+	available.>
+
+INDEX	<FEE,FLE,FRE,GSE>,12,%NPOS,<
+	The device specified by the user  does  not  exist.>
+
+INDEX	<FEE,FLE,FRE,GSE>,13,%NPOS,<
+	The  machine  does  not  have  a  two-register  relocation
+	capability.>
+
+INDEX	<FEE,FLE,FRE,GSE>,14,0,<
+	There is no room on the file structure for the named file,
+	or  the  user's  quota  on  the  file  structure  would be
+	exceeded if the file were placed on the structure.>
+
+INDEX	<FEE,FLE,FRE,GSE>,15,0,<
+	The user cannot write on the specified device  because  it
+	is write-locked.>
+
+INDEX	<FEE,FLE,FRE,GSE>,16,0,<
+	There is not enough table space in the monitor's  (FILSER)
+	4-word blocks for the specified file.  The user should try
+	running the job at a later time.>
+
+INDEX	<FEE,FLE,FRE,GSE>,17,0,<
+	Because of the user's quota or the available space on  the
+	device,  the total number of blocks requested could not be
+	allocated and a partial allocation was given.>
+
+INDEX	<FEE,FLE,FRE,GSE>,20,%NPOS,<
+	The  block  required  by  LINK-10  is  not  available  for
+	allocation.>
+
+INDEX	<FEE,FLE,FRE,GSE>,21,%NPOS,<
+	The user attempted to  supersede  an  existing  directory.>
+
+INDEX	<FEE,FLE,FRE,GSE>,22,%NPOS,<
+	The user attempted to delete  a  directory  that  was  not
+	empty.>
+
+INDEX	<FEE,FLE,FRE,GSE>,23,0,<
+	The required sub-file directory in the specified path  was
+	not found.>
+
+INDEX	<FEE,FLE,FRE,GSE>,24,0,<
+	A LOOKUP and ENTER UUO was performed on generic device DSK
+	and the search list is empty.>
+
+INDEX	<FEE,FLE,FRE,GSE>,25,%NPOS,<
+	An attempt was made to create a subfile  directory  nested
+	deeper  than  the maximum level allowed.>
+
+INDEX	<FEE,FLE,FRE,GSE>,26,0,<
+	No file structure in the job's search list  has  both  the
+	no-create bit and the write-lock bit equal to zero and has
+	the UFD or SFD specified by the default or explicit path.>
+
+INDEX	<FEE,FLE,FRE,GSE>,27,%NPOS,<
+	A GETSEG UUO was issued from a locked  low  segment  to  a
+	high  segment  which  is  not  a  dormant, active, or idle
+	segment.>
+
+INDEX	<FEE,FLE,FRE,GSE>,30,%NPOS,<
+	A LOOKUP and ENTER UUO was given to update a file, but the
+	file cannot be updated for some reason (e.g., another user
+	is superseding it or the file was deleted between the time
+	of the LOOKUP and the ENTER.>
+
+INDEX	<FEE,FLE,FRE,GSE>,31,0,<
+	The end of the low segment is above the beginning  of  the
+	high segment.>
+
+INDEX	<FEE,FLE,FRE,GSE>,32,%SPR,<
+	This message indicates that a  LOOKUP,  ENTER,  or  RENAME
+	error  occurred which was larger in number than the errors
+	LINK-10 knows about.>
+
+IF2,<	PURGE N,M>
+SUBTTL	COMMON MESSAGES
+
+%L10:	%SPR
+.ASCIZ	<
+	This is an internal LINK-10 error.>
+
+%F40:	%SPR
+.ASCIZ	<
+	Incorrect code has been generated by the F40 compiler.>
+
+%NPOS:	%SPR
+.ASCIZ	<
+	This  message  can  never  occur  and is included only for
+	completeness of the LOOKUP, ENTER, and RENAME error codes.>
+
+%SPR:	0
+.ASCIZ	<
+	This message is not expected to occur.  If it does, please
+	notify   your  Software  Specialist  or  send  a  Software
+	Performance Report (SPR) to DEC.>
+
+%E$$:	0
+.ASCIZ	<
+	LINK-10  could  not  make  the  named  file  on  the  disk
+	(LC=user's  low segment code, HC=user's high segment code,
+	LS=local symbol table, FX=fixup area, and GS=global symbol
+	table).   The  user could be over quota, or the disk could
+	be full or have errors.>
+
+%I$$:	%STS
+.ASCIZ	<
+	An  error  occurred  while  reading  in  the  named   area
+	(LC=user's  low segment code, HC=user's high segment code,
+	LS=local symbol table, FX=fixup area, and GS=global symbol
+	table).>
+
+%O$$:	%STS
+.ASCIZ	<
+	An  error  occurred  while  writing  out  the  named  area
+	(LC=user's  low segment code, HC=user's high segment code,
+	LS=local symbol table, FX=fixup area, and GS=global symbol
+	table).>
+
+%OE$:	%STS
+.ASCIZ	<
+	An error has occurred on the output file.  The output file
+	is   closed   at  the  end  of  the  last  data  that  was
+	successfully output.>
+
+
+%P$$:	0
+.ASCIZ	<
+	the job is too large to fit into the allowed core and  the
+	named  area  is  being  moved to disk (LC=user low segment
+	code, HC=user high segment code,  LS=local  symbol  table,
+	FX=fixup area, and GS=global symbol table).>
+
+%STS:	0
+.ASCIZ	<
+	The status is represented by the right half  of  the  file
+	status  word.  Refer to DECsystem-10 Monitor Calls for the
+	explanation of the file status bits.>
+
+ERRLIT:
+END	LNKERR

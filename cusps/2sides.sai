@@ -1,0 +1,970 @@
+begin "sides"
+
+comment sddt not available at SUMEX;
+ifc false thenc require "<sail>sddt" load!module endc;
+external integer rpgsw;
+
+require "{}<>" delimiters;
+require 10000 string!space;
+require 1000 new!items;
+define form = {'14},
+	ref = {reference},
+	# = {comment},
+	intbl={1},  septbl={2},  lartbl={3},  comtbl={4},  attbl={5},
+	formtbl={6}, ptbl={7};
+
+
+# option varaiables;
+integer wide, s!wide, long, s!long, ncolumn, s!ncolumn,
+	headflag, s!headflag, pageflag, s!pageflag,
+	subheadflag, s!subheadflag, rcnt, s!rcnt,
+	blankflag, s!blankflag, postflag, s!postflag,
+	tempflag, s!tempflag, s!oneside, oneside;
+string	pagespec, s!pagespec;	
+
+integer rjust, nextrjust;
+integer inchn, brk, eof, linnum, pagnum, subpag, sosnum,
+	rpgchn, rpgbrk, rpgeof, rpgtty, paglow, paghigh,
+	ochn1, ochn2, tmp, star, FBRK, o1page, o2page;
+boolean resflag, indflag;
+external integer !skip!;
+string	stmp, boxes, spaces, tabs, nform, paglist,
+	line, pag, infile, intime, o1file, o2file;
+STRING FILECMD, fcmd, THISFILE, rpgnam, thisday;
+list pagplc;	integer pagvalid;
+integer itemvar pagiv;
+string own array aline[0:10,0:120];
+integer own array lline[0:10,0:120], cwide[0:10];
+
+COMMENT		      bs ht lf vt ff cr;
+PRELOAD!WITH 0, [7] 3, 4, 1, 1, 4, 1, 1, 4, 4,
+	['20] 4, ['140] 1;
+INTEGER OWN ARRAY CHRORG,s!chrwide,CHRWIDE[0:'177];
+
+SIMPLE PROCEDURE str!init;
+   begin
+	spaces_" ";
+	for tmp_1 step 1 until 8 do spaces_spaces&spaces;
+	tabs_"	";
+	for tmp_1 step 1 until 8 do tabs_tabs&tabs;
+	boxes_'177;
+	for tmp_1 step 1 until 8 do boxes_boxes&boxes;
+	nform_null;
+	for tmp_0 step 1 until (form-1), (form+1) step 1 until '177 do
+		nform_nform&tmp;
+	resflag_indflag_false;
+	setbreak( intbl, '12&'13&'37&form, '15, "INS" );
+	setbreak( septbl, "/&", null, "INS" );
+	setbreak( lartbl, "_", null, "INS" );
+	setbreak( comtbl, ",", null, "INS" );
+	setbreak( attbl, "@", null, "INS" );
+	setbreak( formtbl, form, nform, "INS" );
+	setbreak( ptbl, "0123456789-:,", null, "XNS" );
+	rpgtty_rpgchn_inchn_0;
+   end;
+REQUIRE str!init INITIALIZATION;
+
+
+simple procedure rpgerr;
+begin
+if rpgtty then cfile(rpgtty);
+if rpgchn then cfile(rpgtty);
+if inchn then cfile(inchn);
+if ochn1 then cfile(ochn1);
+if ochn2 then cfile(ochn2);
+start!code haltf; end;
+end;
+
+simple procedure outs( string s );
+if rpgsw then 
+   begin
+	if rpgtty=0 then
+	   begin
+		rpgtty _ openfile( rpgnam[1 to 7]&"LST" , "WE" );
+		if !skip! then rpgerr;
+	   end;
+	out( rpgtty, s );
+   end else outstr( s );
+
+string simple procedure ttyin;
+if rpgsw then if rpgeof then rpgerr else 
+   begin string echo;
+	echo _  input( rpgchn, intbl );
+	outs( echo );
+	return( echo );
+   end else
+   return(inchwl);
+
+string simple procedure upcase( string s);
+begin
+string ss;  integer c;
+ss _ null;
+while length(s) do
+   begin
+	c _ lop(s);
+	if "a" leq c leq "z" then c _ c - "a" + "A";
+	ss _ ss & c;
+   end;
+return(ss);
+end;
+
+
+
+integer simple procedure submatch( string sub, str );
+
+comment If sub matches any substring of str then c is
+returned where equ(sub,str[c for length(sub)]) is true
+else 0 is returned.
+Assumes that sub is upper case but str may be mixed case.
+Match is independent of str's case;
+
+start!code
+label texit, fexit, nexit, xexit, strlop, sublop, subcon, cascon;
+define p="'17", sp="'16";
+define subc="-3(sp)", subp="-2(sp)", strc="-1(sp)", strp="(sp)";
+	
+	hrrz	3, strc;
+	hrrz	4, subc;
+	jumple	4, nexit;	# null sub matches anything;
+	subi	3, (4);		# 3 _ strc-subc;
+	jumpl	3, fexit;
+	movei	1, 1(3);	# 1 _ strc-subc+1;
+
+strlop:	movei	6, -1(4);	# 6 _ subc-1;
+	move	7, subp;
+	ildb	'10, strp;	# get 1st char from next str substring;
+	move 	5, strp;
+	jrst	subcon;
+
+sublop:	sojl	6, texit;
+	ildb	'10, 5;
+subcon:	ildb	2, 7;
+	caige	'10, "a";
+	  jrst	cascon;
+	caig	'10, "z";
+	caie	2, -'40('10);
+cascon:	cain	2, ('10);
+  	  jrst sublop;
+	sojge	3, strlop;	
+
+fexit:	setz	1,;	
+	jrst	xexit;
+nexit:	movei	1, 1;
+	jrst	xexit;
+texit:	sub	1, 3;
+xexit:		
+end;
+
+
+simple procedure init!options;
+begin
+s!rcnt_1;	s!pageflag_0;
+s!wide_75;	s!long_60;	s!headflag_true;
+s!subheadflag_true;	s!ncolumn_1;
+s!blankflag_0;		s!tempflag _ false;
+s!postflag_0;	s!oneside_0;	s!pagespec_null;
+arrtran( s!chrwide, chrorg );
+end;
+require init!options initialization;
+
+boolean simple procedure options;
+begin
+integer tmp;
+rcnt _ s!rcnt;			pageflag_s!pageflag;
+wide _ s!wide;	long_s!long;	headflag_s!headflag;
+subheadflag_s!subheadflag;	ncolumn_s!ncolumn;
+blankflag_s!blankflag;		tempflag_s!tempflag;
+postflag_s!postflag;		pagespec_s!pagespec;
+oneside_s!oneside;
+arrtran( s!chrwide, chrwide );
+
+while FBRK="/" do
+   BEGIN "opt1"
+	tmp _ lop(filecmd);
+	if tmp="B" then
+		blankflag _ lnot blankflag else
+	if tmp="R" then
+		RCNT _ INTSCAN( FILECMD, FBRK ) else
+	if tmp="U" then
+		pageflag _ lnot pageflag else
+	if tmp="W" then	
+		wide _ intscan( filecmd, fbrk ) else
+	if tmp="Z" then
+		long _ intscan( filecmd, fbrk ) else
+	if tmp="H" then
+		headflag _ lnot headflag ELSE
+	IF TMP="S" THEN
+		SUBHEADFLAG _ LNOT SUBHEADFLAG ELSE
+	if tmp="Y" then
+		postflag _ lnot postflag else
+	IF TmP="C" THEN
+		NCOLUMN _ INTSCAN( FILECMD,FBRK ) min 10 ELSE
+	IF TMP="^" THEN
+		CHRWIDE[LOP(FILECMD)]_INTSCAN(FILECMD,FBRK) ELSE
+	IF TMP="P" then
+		pagespec _ scan( filecmd, ptbl, fbrk ) else
+		return(false);
+
+	while (fbrk_filecmd)=" " or fbrk="	" do
+		fbrk_lop(filecmd);
+	if filecmd="/" then fbrk_lop(filecmd);
+
+   END;
+return(true);
+end;
+
+boolean simple procedure s!options;
+begin
+if not options then return(false);
+s!rcnt_rcnt;	s!pageflag_pageflag;	s!wide_wide;
+s!long_long;	s!headflag_headflag;
+s!subheadflag_subheadflag;	s!ncolumn_ncolumn;
+s!blankflag_blankflag;		s!tempflag_tempflag;
+s!postflag_postflag;		s!pagespec_pagespec;
+s!oneside_oneside;
+arrtran( s!chrwide, chrwide );
+return(true);
+end;
+
+
+string simple procedure inpag;
+comment returns a string for the next page to be outputted;
+begin "inpag"
+integer ccnt, lcnt, c, e, cc, lc, cstart, cstop, bf;
+string nline;
+simple procedure ceinit; c _ e _ 0;
+require ceinit initialization;
+label inagain;	inagain:
+
+arrclr(lline); arrclr(aline);
+lcnt _ 0;
+if not ( paglow leq pagnum leq paghigh ) then
+  if length(paglist)=0 then eof_-1 else
+    begin "inpag0"
+	paglow _ intscan( paglist, 0 );
+	if (tmp_lop(paglist))="-" or tmp=":" then
+	   begin
+		paghigh _ intscan(paglist,0); 
+		tmp _ lop(paglist);
+	   end else paghigh_paglow;
+	if paghigh<paglow then paghigh_paglow;
+	outs(" (");
+	if paglow<length(pagplc) then
+	   begin 
+		schptr(inchn, datum( pagplc[pagnum_paglow] ) );
+		eof_0;
+	   end else
+	if paglow>pagnum then
+	   while not eof and pagnum<paglow do
+	     begin
+		outs(" "&cvs(pagnum) );
+		pag _ input( inchn, formtbl );
+		put new( rchptr( inchn ) ) in pagplc after inf;
+	     end;
+	subpag _ 0;
+	outs( " )" );
+    end;
+if not eof then
+outs( if subpag=0 then " "&cvs(pagnum) else if ncolumn>1 then "," else "." );
+if headflag then
+   begin "inpg1"
+	pag _ intime & spaces[1 to (ncolumn*wide+ncolumn-1)%2-6-length(intime)] & "Page " &
+	cvs(pagnum) & ( if subpag then "."&cvs(subpag) else null);
+	pag _ pag & spaces[ 1 to ncolumn*wide + ncolumn - 1 - length(pag) - length(infile)] &
+		infile & "
+
+";
+   end else pag _ null;
+
+
+for cc _ 1 step 1 until ncolumn do
+   begin "inpg2"
+	lcnt _ 0;
+	cstart _ (cc-1)*(wide+1);
+	cstop _ cc*wide + (cc-1);
+	if subheadflag and ncolumn>1 then
+	   begin "inpg3"
+		aline[cc,0] _ cvs(pagnum)&(if subpag then "."&cvs(subpag) else null);
+		if length(aline[cc,0])<wide-7 then
+		   aline[cc,0] _ " PAGE "&aline[cc,0]&" ";
+		if length(aline[cc,0])<wide then
+		   aline[cc,0] _ boxes[1 to (wide+1-length(aline[cc,0]))%2] &
+		        aline[cc,0]&boxes[1 to (wide-length(aline[cc,0]))%2];
+		if length(aline[cc,0])>wide then 
+		   aline[cc,0] _ aline[cc,0][1 to wide] ;
+		aline[cc,1] _ null;
+		lline[cc,0] _ wide;
+		lline[cc,1] _ 0;
+		lcnt _ 2;
+	   end;
+
+
+
+do begin "inpg4"
+	if c geq e then
+	   begin "inpg5"
+		if eof then done;
+		line _ input( inchn, intbl );
+		if brk=form and pagnum>length(pagplc) then
+		   put new( rchptr( inchn ) ) in pagplc after inf;
+		e _ length(line);
+		if subpag and e=0 and brk=form and cc=1 and
+		   (lcnt=0 or (lcnt=2 and subheadflag and ncolumn>1))
+		   then
+		   begin
+			subpag_0;
+		 outs("# "&cvs(pagnum));
+			goto inagain;
+		   end;
+		while (tmp _ line[e to e])=" " 
+		    or tmp="	" do   e _ e-1;
+		c _ 0;
+           end;
+	   begin "inpg6"
+		line _ line[ c+1 to e ];
+		e _ length(line);
+	   end;
+	nline _ null;
+	ccnt _ cstart;
+	for c _ 1 step 1 until e do
+	   begin "inpg7"
+		INTEGER CH, occnt, oppsc;
+		occnt _ ccnt;
+		ccnt _ if (CH_line[c to c])="	" then
+			 ccnt land '777770 + '10
+				  else ccnt+CHRWIDE[CH];
+		if ccnt>cstop then
+		   begin "inpg8"
+oppsc _ c;	nextrjust _ true;
+if line[c to c]=" " or line[c to c]="	" then
+   begin "inpg9"
+	ccnt_occnt;
+	line _ line[1 to (c_c-1)] & line[ c+2 to e];
+	e _ e-1;
+	done;
+   end;
+while c>0 and not(line[c to c]=" " or line[c to c]="	") do
+   begin "inp10"
+	ccnt _ ccnt - chrwide[line[c to c]];
+	c _ c-1;
+   end;
+if c leq 0 then 
+   begin "inp11"
+	c _ oppsc-1;
+	ccnt _ occnt;
+   end;
+done;
+
+		   end"inpg8";
+	   end"inpg7";
+
+
+
+	if c>e then c_e;
+	aline[cc,lcnt] _ if rjust then spaces[1 to wide-ccnt+cstart]&line[1 to c]
+			   else line[1 to c];
+	lline[cc,lcnt] _ if rjust then wide else ccnt - cstart;
+	rjust _ nextrjust;	nextrjust _ false;
+	lcnt _ lcnt + 1;
+	if pageflag and brk=form and pagnum leq paghigh then
+	   if lcnt+3<long then
+	   begin "inp12"
+		subpag _ 0;
+		outs( " " & cvs(pagnum) );
+		aline[cc,lcnt] _ " FILE PAGE " & cvs(pagnum) & " ";
+		tmp _ wide - length( aline[cc,lcnt] );
+		aline[cc,lcnt] _ boxes[1 to (tmp+1)%2] & aline[cc,lcnt] & boxes[1 to tmp%2];
+		if length(aline[cc,lcnt])>wide then
+		   aline[cc,lcnt] _ aline[cc,lcnt][inf-wide+1 to inf];
+		lline[cc,lcnt] _ wide;
+		aline[cc,lcnt_lcnt+1] _ null;
+		lline[cc,lcnt] _ 0;
+		brk _ 0;
+		lcnt _ lcnt + 1;
+	   end else lcnt _ long;
+
+end "inpg4" until brk=form or lcnt geq long;
+subpag _ if brk=form then 0 else subpag+1;
+line _ line[ c+1 to e ];
+c _ 0; e _ length(line);
+
+end"inpg2";
+
+for lc _ 0 step 1 until long-1 do
+   begin"inp13"
+	pag _ pag & aline[1,lc];
+	for cc _ 2 step 1 until ncolumn do
+	   pag _ pag & spaces[ 1 to wide - lline[cc-1,lc]+1]&aline[cc,lc];
+	pag _ pag & "
+";
+   end;
+
+BEGIN"inp14"  COMMENT CHECK THIS ISNT AN ENTRIERY BLANK PAGE;
+STRING PAG1;
+
+PAG1_PAG;
+WHILE LENGTH(PAG1) DO
+  IF NOT('11 LEQ (TMP_LOP(PAG1)) LEQ '12 OR '14 LEQ TMP LEQ '15
+   	OR TMP='40 ) THEN RETURN( PAG & FORM );
+if blankflag=0 and eof=0 then
+   begin
+ outs("#");
+	goto inagain;
+   end;
+RETURN( PAG & ( IF LCNT GEQ LONG THEN "." ELSE "
+.
+" ) & FORM );
+END;
+
+end"inpag";
+
+
+COMMENT NEXT PAGE IS BLANK;
+
+
+
+
+
+
+
+
+begin "main"
+LABEL RESTART,readagain, alldone; 
+resflag_indflag_false;
+if rpgsw then
+   begin
+	rpgnam_ cvs( gjinf( 0,0,0 ) ) & "TWO.TMP";
+	rpgnam _ "00"[ 1 to 10-length(rpgnam)] & rpgnam;
+	rpgchn _ openfile( rpgnam, "RE" );
+	if !skip! then rpgerr;	
+	setinput( rpgchn, 200, rpgbrk, rpgeof );
+   end;
+if false then
+   begin
+	RESTART:
+	resflag_resflag+1;
+   end;
+
+init!options;
+ochn1 _ ochn2 _ 0;
+
+ outs( "
+	two sided listing
+
+Command (? for help) * " );
+FILECMD _ NULL;
+DO begin "tsid1"
+	FILECMD _ FILECMD & ttyin;
+	while filecmd[inf to inf]=" " or filecmd[inf to inf]="	" do
+		filecmd _ filecmd[1 to inf-1];
+   end UNTIL FILECMD[INF TO INF] NEQ "&";
+
+readagain:
+if length(filecmd)=0 then goto restart;
+filecmd _ upcase(filecmd);
+
+IF FILECMD="?" THEN 
+   BEGIN "tsid2"
+ outs("
+	2SIDES spilts your files in two so they may be listed on
+both sides of the paper by standard lineprinter programs. It will
+also columnate the listing so files with narrow lines can be
+listed in multiple columns.
+
+
+	[To produce multiple-columns in a 1-sided file use]
+	[the command 				  	  ]
+	[	/1 outputfilename_inputfilename/options   ]
+
+
+Type a series of file names separated by ampersands as:
+
+<DIR>FOO.TXT&XXX.*/R3&<RID>DLE
+
+	Which will use file <DIR>FOO.TXT
+	then will use all files for XXX.*
+	and repeat them (as a group) three times
+	then will use file <RID>DLE
+
+/B  compliments Blank paging( initally blank pages are eaten ).
+/Cn gets n columns, each width wide with a space separating columns
+    thus the total width is (# of col.)*(width) + # of column - 1.
+/Rn gets repeats (ie, n copies)
+/U  compliments Uniform paging( initally non-uniform )
+/Wn sets width to n spaces.
+/Zn sets length to n lines (standard heading not included in n).
+/H  compliments whether a standard heading is put on.
+/P<page spec> causes only those pages in that order to be printed.
+/S  compliments whether a subheading is put on multiple columns.
+    (Initially, identical to the answer to the heading question ).
+/Y  gets poster of filenames between files.
+/^an sets character width of letter a to n.
+
+Options specified before a filename are sticky and those specified
+immediately after a filename apply only to that one file. Thus,
+/u<rid>dle/c2&<eld>dir will list both with uniform paging but
+<rid>dlr will have two columns where <eld>dir will have the
+default of just one column.
+
+To be asked questions about some option values, terminate the command
+with a comma, and to extend the command onto another line, terminate
+with an ampersand(&).
+");
+if resflag=0 then outs("
+To get more help, type ? again.
+") else outs("
+File command syntax:
+
+  <command> ::= ? | @<indiect file name>(,) |
+		(<side files>_)<source file list>(,) |
+		=<file>(/Rn)<string list>
+  <side files> ::= (<side options>)<front side file>,<back side file>
+  <side options> ::= /<s-option>(<side options>)
+  <s-option> ::= T | 1
+  <source file list> ::= @<indirect file> |
+	(<option list>)<file name>(<option list>)(&<source file list>)
+  <option list> ::= <option>(<option list>)
+  <option> ::= /<option letter>(<option value(s)>)
+  <string list> ::= &<string><string list>
+
+Thus if you specify the temporary front and back side files in the 
+command, the program will not ask you about them later unless it
+was unable to open the specified file. /T gets them opened as temporary
+files.  /1 gets a 1sided out file (useful for 1sided columating).
+If you fail to terminate the command with a comma, the following
+defaults apply:  standard heading and subheading, width=75, length=60,
+non-uniform paging.  You may change the values from these defaults by
+using the option syntax in the command or by putting a comma at the end
+of the command to get asked questions later on about option values.
+The command may be read from a file by using the @<indirect file>
+syntax.  Note that @<indirect file> must be the last thing in the
+command except for the optional terminating comma.
+
+Multiple columns may be generated by using the /Cn option.  When more
+than one column is specified, a subheading of the file page number will
+be put on the top of each column unless the /S switch is used and odd
+number of times.
+
+A typical complex command would look like:
+
+front,back_foo1/c2/w37&foo2&
+foo3/c4/w16/h/s/z62
+
+This command would cause foo1 to be printed with 2 columns per page,
+each column would be 37 spaces wide with 1 space between columns.
+Thus the total width on the page would be 75.  Standard defaults
+for heading, subheading, and page length would apply.  Then FOO2
+would be printed in one column 75 spaces wide (eg, the same as
+the default case). Then FOO3 would be printed in four columns,
+each 16 spaces wide for a total page width of 4*16+3=67. No
+headings or subheadings would be added and the page length is 
+increased to the maximum allowed when headings are not added.
+
+You will need to list the front side file in the normal way
+using linepr.  The back side file does not have to
+listed immedately after the front side file; however, when
+you are ready to list the back side file, you must follow
+the setup procedure discribed in the program output.  This
+involves loading the listing of the front side file in the
+lineprinter with the printed side facing the rear and getting
+the red pointer pointing to the right place.  When the 
+lineprinter becomes READY, do not push ON-LINE until
+you have started the listing program.  Then push on-line
+within the next 15 seconds.  This will avoid someone else
+getting the lineprinter before your program does.
+
+If the system crashes durning the printing of a 2sides listing,
+then you may use the =<file>(/Rn)<string list> construct to be
+told where to restart the listing. Type =? for an explanation.
+
+" );
+
+	GOTO RESTART;
+   end;
+
+
+if filecmd="=" then
+   begin
+	string array str[1:100];
+	integer si,i;
+
+	tmp _ lop(filecmd);
+	if filecmd="?" then
+	   begin
+	 outs("
+
+=<file>(/Rn)<string list> will cause 2sides to search thru
+the file for the nth occurance of a line that contains all
+the strings in <string list>.  Say you had created files
+FRONT and BACK with 2sides using the following commands:
+		FRONT,BACK_FIRST&FOO/R5
+and the system crashed in the middle of printing BACK. The last page
+that it had complete printed was page 7.1 of the third copy of FOO.
+Your command to 2sides would be 
+		=BACK/R3&Page 7.1&FOO
+This tells 2sides to look thru BACK for the 3rd occurance of
+Page 7.1 and FOO both on the same line.  It will then printout
+the command needed to list the rest of BACK assuming you
+reposition the at the top of the last page which was completely
+listed. What will happen when you continue the listing is
+that the page which was only partially printed will be complete
+printed, causing that part of it which was printed to be overprinted
+with the same thing, (eg, part of it will be a little darker
+than the rest.).
+
+Note that the search ignores case shifting.
+
+" );
+	  	goto restart;
+	   end;
+
+
+	thisfile _ scan(filecmd,septbl,fbrk);
+	while thisfile=" " or thisfile="	" do
+		thisfile _ thisfile[2 to inf];
+	if length(thisfile)=0 then goto restart;
+	inchn _ openfile( thisfile, "RE" );
+	if !skip! then begin erstr(!skip!,0); goto restart; end;
+	setinput( inchn, 300, brk, eof );
+	setpl( inchn, linnum, pagnum, sosnum );
+	pagnum _ 1;
+
+	rcnt _ 1;  si_0;
+	while length(filecmd) do
+	begin
+	while fbrk="/" do
+	   begin
+		tmp _ lop(filecmd);
+		if tmp="R" then
+			rcnt _ intscan( filecmd, fbrk) else
+		goto restart;
+		fbrk _ lop(filecmd);
+	   end;
+	while fbrk="&" do
+		str[si_si+1] _ upcase( scan( filecmd, septbl, fbrk ) );
+	end;
+
+	for rcnt _ rcnt step -1 until 1 do
+	   while not eof do
+	     begin
+		line _ input( inchn, intbl );
+		if brk=form then outs(" "&cvs(pagnum));
+		for i _ 1 step 1 until si do
+		   if not submatch( str[i], line ) then done;
+		if i>si then done;
+	     end;
+
+	if eof then
+	   begin
+	 outs("
+Could not find match to: ");
+		for i _1 step 1 until si do outs("
+" & str[i] );
+	   end else
+	   begin
+	 outs("
+Match found on Page " & cvs(pagnum) & " Line " & cvs( linnum ) &":
+"& LINE &"
+
+First set paper up so red pointer points at the begining of the last
+completed page. Eg, the one where the match was found.
+Then list file "& jfns( inchn, '011110000001 ) &"/H/P"& cvs(pagnum+1) &"-999
+
+");
+
+	   end;
+	CFILE( INCHN);
+	goto alldone;
+   end;
+
+
+fcmd _ filecmd;
+o2file _ scan( fcmd, lartbl, tmp );
+if tmp="_" then
+    begin "tsid3"
+	while o2file="/" do
+	begin
+	if equ(o2file[1 to 2],"/T") then
+	   begin
+		o2file_o2file[3 to inf];
+		s!tempflag_tempflag _ true;
+	   end else
+	if equ(o2file[1 to 2],"/1") then
+	   begin
+		o2file_o2file[3 to inf];
+		s!oneside _ oneside _ true;
+	   end else done;
+	while o2file=" " do o2file_o2file[2 to inf];
+	end;
+	filecmd _ fcmd;
+	if ochn1=0 then
+	   begin "tsid4"
+		o1file _ scan( o2file, comtbl, tmp );
+		if length(o1file) then
+		  ochn1 _ openfile( o1file, "WE"&(if tempflag then "T"
+					else null) ) else
+		  !skip!_ochn1_0;
+		if !skip! then 
+		   begin "tsid5"
+		 outs(" *** error for "& o2file );
+			erstr(!skip!,0);
+			ochn1_0;
+		   end;
+	   end "tsid4" else
+	   begin
+		o1file _ scan( o2file, comtbl, tmp );
+		if tmp neq "," then o2file _ o1file;
+	   end;
+	if ochn2=0 then
+	   begin "tsid6"
+		!skip!_0;
+		if length(o2file) then	
+		  ochn2 _ openfile( o2file, "WE"&(if tempflag then "T"
+					else null) ) else
+		  !skip!_ochn2_0;
+		if !skip! then
+		   begin "tsid7"
+		 outs(" *** error for "& o2file );
+			erstr(!skip!,0);
+			ochn2_0;
+		   end;
+	   end "tsid6";
+   end "tsid3";
+
+if filecmd="@" then
+   begin "tsid8"
+	tmp _ lop(filecmd);
+	if filecmd[inf to inf]="," then
+	   begin "tsid9"
+		tmp _ true;
+		filecmd_ filecmd[1 to inf-1];
+	   end else tmp_false;
+	inchn _ openfile( filecmd, "RE" );
+	if !skip! then
+	   begin "tsi10"
+	 outs(" *** problem with indirect file "&filecmd );
+		erstr(!skip!,0);
+		goto restart;
+	   end;
+	filecmd _ null;
+	do begin "tsi11"
+		filecmd _ filecmd & input( inchn, intbl );
+		while filecmd[inf to inf] = " " or
+		      filecmd[inf to inf] = "	" do
+			filecmd _ filecmd[1 to inf-1];
+	   end until filecmd[inf to inf] neq "&";
+	cfile( inchn );
+	if tmp and filecmd[inf to inf] neq "," then
+	  filecmd _ filecmd & ",";
+	goto readagain;
+   end "tsid8";
+
+
+
+if ochn1=0 then
+   begin "tsi12"
+ outs( "
+FRONT side file * ");
+	ochn1 _ openfile( null, "W"&(if tempflag then "T" else null) );
+   end;
+o1file _ jfns( ochn1, '011110000001 );
+
+if oneside=0 and ochn2=0 then
+   begin "tsi13"
+ outs( "
+BACK side file * ");
+	ochn2 _ openfile( null, "W"&(if tempflag then "T" else null) );
+   end;
+if not oneside then o2file _ jfns( ochn2, '011110000001 );
+
+if filecmd[inf to inf]="," then
+   begin "tsi14"
+ outs( "
+Do you want standard headings added(yes)? ");
+	stmp _ upcase(inchwl);
+	s!subheadflag _ 
+	s!headflag _ not( equ(stmp,"N") or equ(stmp,"NO") );
+   end;
+
+if filecmd[inf to inf]="," then
+   do begin "tsi15"
+ outs( "
+how many characters per line/column allowed(75)? " );
+	stmp _ inchwl;
+	s!wide _ if length(stmp)=0 then 75 else intscan( stmp, 0 );
+      end until s!wide>0;
+
+if filecmd[inf to inf]="," then
+  do begin "tsi16"
+ outs( "
+how many lines per page allowed("& (if s!headflag then "60" else "62")&")? ");
+	stmp _ inchwl;
+	s!long _ if length(stmp)=0 then (if s!headflag then 60 else 62)
+			else intscan( stmp, 0 );
+     end until s!long>0;
+
+if filecmd[inf to inf]="," then filecmd_filecmd[1 to inf-1];
+
+if not oneside then
+out( ochn1, " 
+**  ** tear here **  **
+" & form & "
+************************  Start Here ***************************
+Place paper for back side listing so that red pointer
+points at the top of this page.
+" & form );
+star_true;
+o1page_3;	o2page_1;
+thisday _ odtim(-1,-1);
+
+
+WHILE LENGTH( FILECMD) DO
+BEGIN "FILELOOP"
+LABEL REJECT;
+IF FALSE THEN
+   BEGIN  REJECT:
+ outs("
+*** BAD COMMAND !"& THISFILE & FBRK & FILECMD &"! ");
+   END;
+
+while (fbrk_filecmd)=" " or fbrk="	" do fbrk_lop(filecmd);
+if fbrk="/" then fbrk_lop(filecmd);
+if not s!options then goto reject;
+
+while filecmd=" " or filecmd="	" or filecmd="&" do
+	fbrk _ lop(filecmd);
+THISFILE _ SCAN( FILECMD, septbl, FBRK );
+IF LENGTH(THISFILE)=0 AND LENGTH(FILECMD)=0 THEN DONE;
+
+if not options then goto reject;
+pagvalid_false;
+
+if postflag then
+   begin
+	stmp _ null;  
+	while length(stmp)+length(thisfile)+length(thisday)+4<wide-26 do
+		stmp _ stmp&"  "&thisfile&"  "&thisday;
+	stmp _ "** ** ** **  "& stmp &"  ** ** ** **";
+	stmp _ "
+"& stmp[1 to wide] &"
+";
+
+	for tmp_5 step 2 until long do out( ochn1, stmp );
+	out( ochn1, stmp & form );
+	if not oneside then
+	   begin
+		for tmp_5 step 2 until long do out( ochn2, stmp );
+		out( ochn2, stmp & form );
+	   end;
+   end;
+
+FOR RCNT _ RCNT STEP -1 UNTIL 1 DO
+BEGIN "file2"
+
+IF LENGTH(THISFILE)=0 THEN GOTO REJECT;
+inchn _ openfile( THISFILE, "RE*" );
+IF !SKIP! THEN BEGIN ERSTR(!SKIP!,0);  GOTO REJECT; END;
+setinput( inchn, 300, brk, eof );
+setpl( inchn, linnum, pagnum, sosnum );
+
+do begin "starloop"
+
+pagnum _ 1; subpag _ 0;	rjust _ nextrjust _ false;
+paglist _ pagespec; 
+if length(paglist) then
+	paglow_paghigh_0 else
+   begin
+	paglow_1; paghigh_99999;
+   end;
+if not pagvalid then
+   while length(pagplc) do delete( lop( pagplc) );
+infile _ jfns( inchn, '011100000001 );
+if infile[inf to inf]="." then infile_infile[1 to inf-1];
+intime _ jfns( inchn, '4010 );
+if intime="," then tmp_lop(intime);
+stmp _ jfns( inchn, '000100000000 );
+if star=0 or
+   not ( equ( stmp, "REL" ) or equ( stmp, "SAV" ) ) then
+begin "star1"
+ outs("
+"& infile &"	");
+
+while length(paglist) or not eof do
+  begin "loop"
+	out ( ochn1, inpag );	" right side (front) page "
+	o1page_o1page+1;
+	if not oneside then
+	out ( ochn2, inpag );	" left  side (back)  page "
+	o2page_o2page+1;
+  end;
+
+if length(line) then
+   begin "loop2"
+	out( ochn1, line & "
+" & form );
+	o1page_o1page+1;
+	if not oneside then
+	out( ochn2, if headflag then "
+." & form else "
+." & form );
+	o2page_o2page+1;
+   end;
+end "star1";
+
+  end "starloop" until (pagvalid _ not indexfile(inchn));
+
+CFILE(INCHN);
+
+END "file2";
+END "FILELOOP";
+
+if not oneside then
+out( ochn1, "
+" & form & "
+xx
+" & form & "
+
+Now list file " & o2file & "/H/C/E/M1
+
+" );
+o1page_o1page+2;
+
+if ochn1 and not cfile ( ochn1 ) then erstr(!skip!,0);
+if ochn2 and not cfile ( ochn2 ) then erstr(!skip!,0);
+
+ outs( "
+
+now list file  " & o1file & "/H/C/E 
+"&(if oneside then null else
+" Tear off the paper and reinsert in the lineprinter 
+  so the <start here> message is just below the red line,
+then list file " & o2file & "/H/C/E/M1
+
+") );
+
+alldone:if rpgsw then
+	   begin	
+		cfile( rpgtty );
+		cfile( rpgchn );
+	   end;
+	start!code haltf; end;
+
+end "main";
+
+end "sides";
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

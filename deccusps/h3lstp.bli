@@ -1,0 +1,667 @@
+!COPYRIGHT 1972,1973,1974 DIGITAL EQUIPMENT CORPORATION, MAYNARD, MASS. 01754
+!FILENAME:	H3LSTP.BLI
+!DATE:		9 JULY 73	MGM/FLD
+
+%3.2%	GLOBAL BIND H3LSV=3;	!MODULE VERSION NUMBER
+
+
+
+
+MACRO
+    ADDOPP(I)=(.CTCELTYP[I] EQL LTRELOC AND .CTACC[I] EQL .SREG 
+       AND (.CTFUNC[I] EQL ADD OR .CTFUNC[I] EQL SUB))$,
+    CONDJMPP(I)=(REGISTER R; R_.CTFUNC[I] AND #770; .R EQL JUMP OR .R EQL AOJ OR .R EQL SOJ)$,
+    CONT=EXITBLOCK$,
+    DUMMY=BIND Z=0;$,
+    INFLOOPP(I)=(.CTOPAD[I] EQL (I))$,
+    LABREFED(I)=(.CTREFE[.CTOPAD[I]])$,
+    MOVEP(I)=(IF .CTFUNC[I] EQL MOVE THEN .CTACC[I] NEQ 0 ELSE 0)$,
+    NOPP(I)=(.CTCELTYP[I] EQL NORELOC AND .CTFUNC[I] EQL JUMP)$,
+    NULLP(I)=(NOT HEADERP(I) OR .CTNEXT1[I] EQL (I))$,
+    PCOPAD(R,I)=(IF (R) EQL CTRELOC THEN CTOPAD[I] ELSE PTOPAD[I])$,
+    REVERSE(I)=(CTOP[I]_.CTOP[I] XOR 4^(36-9))$,
+    SETCHANGE=(CHANGE_-1)$;
+
+
+
+
+!OWN
+EXTERNAL
+    CHANGE,
+    CURS,
+    JMPING,
+    LINENO,
+    REFED;
+
+
+
+
+BIND BITVECTOR SKIPVEC =
+    PLIT(-1,#30002576777,3:0,#26010,#37600167356,#37600177000,4:0,2:#37477176374,2:-1);
+    ! ABOVE PLIT MODIFIED FOR NON-SKIPPING UUO'S   2/20/73 - RJ14
+FORWARD
+    BACKOV,
+    EQLCCS,
+    ERASECELL,
+    FIXJMPIND,
+    FLATFUNC,
+    JMP2P,
+    LABREFP,
+    MAKEINFLOOP,
+    MAKEJMP,
+    MVLABREF,
+    NXTCC,
+    NXTCELL,
+    NXTLCC,
+    PADDOP,
+    %PASS2,%
+    PCONDJMP,
+    PJMP,
+    PLAB,
+    PMOVE,
+    POTHER,
+    PREVSKP,
+    PRVCC,
+    PRVLCC,
+    PUSHLABREF,
+    PUSHREF,
+    REPL1P,
+    REVSKPP,
+    RMVCELL,
+    RMVLABREF,
+    SKIPP;
+
+
+
+
+ROUTINE BACKOV(F,T) =
+  BEGIN
+    IF NOT REPL1P(.F,.T) THEN RETURN 0;
+  (
+    LOCAL VAL;
+    VAL _ 0;
+    DO
+        IF NOT JMPP(.F) THEN (VAL_MAKEJMP(.F,.T))
+     WHILE
+        EQLCCS(F_PRVCC(.F),T_PRVCC(.T)) AND .CTREL[.F] NEQ NOBORELOC;
+    -.VAL * .F
+  )
+  END;     !BACKOV
+ROUTINE EQLCCS(I,J) =
+    IF
+        .CTCELTYP[.I] EQL .CTCELTYP[.J]
+     THEN IF
+        LABREFP(.I)
+     THEN IF
+        INFLOOPP(.I)
+     THEN
+        INFLOOPP(.J)
+     ELSE IF
+        LABREFED(.I) EQL LABREFED(.J)
+     THEN
+        .CTOPLEFT[.I] EQL .CTOPLEFT[.J]
+     ELSE
+        0
+     ELSE
+        .CTOP[.I] EQL .CTOP[.J]
+     ELSE
+        0;
+
+
+
+
+
+
+GLOBAL ROUTINE ERASECELL(IND)=
+    DELCELL(DETCELL(.IND));
+
+
+
+
+ROUTINE FIXJMPIND(IND) =
+  BEGIN
+    LOCAL NEXT,LAB;
+    IF
+        INFLOOPP(.IND)
+     THEN
+        RETURN 1;
+    IF
+        .CTLABSEEN[LAB_LABREFED(.IND)]
+     THEN
+        RETURN MAKEINFLOOP(.IND);
+    IF
+	(NEXT_NXTCC(.LAB); NOT JMPP(.NEXT))
+     THEN
+        RETURN 0;
+   !EXTRA LEVEL(S) OF INDIRECTION.  MUST RECUR
+    CTLABSEEN[.LAB] _ SETCHANGE;
+    PLAB(LABREFED(.NEXT));
+    IF
+        FIXJMPIND(.NEXT)
+     THEN
+        RETURN IF INFLOOPP(.IND) THEN 1 ELSE MAKEINFLOOP(.IND);
+   !NOT INF LOOP.  CHANGE LABEL REF
+    MVLABREF(.CTOPAD[.IND],LABREFED(.NEXT));
+    CTLABSEEN[.LAB] _ 0
+  END;     !FIXJMPIND
+GLOBAL ROUTINE FLATFUNC=
+  BEGIN
+    LOCAL NEXT,CELL,XCELL,OBJ,CURS;
+    BIND XCTFIXHD = HEADER(0,0,0), NOPFIXHD = HEADER(0,0,0);
+
+    CURS _ .CODEPTR;
+    WHILE
+        .CURS NEQ .CTPREV1[.CODEPTR]
+     DO       !FLATTEN, FIX LABEL REFS, MARK XCT'S
+      BEGIN
+        CURS _ IF LABELP(.CURS) THEN .CTNEXT[.CURS] ELSE NXTCELL(.CURS);
+        IF
+            LABELP(.CURS)
+         THEN     !CREATE CELL FOR LOCATION
+            PUSHTOP(.CURS,GETSPACE(1))
+         ELSE IF
+            HEADERP(.CURS)
+         THEN     !FLATTEN
+            CURS _ FLATTEN(.CURS)
+         ELSE IF
+            NOPP(.CURS)
+         THEN     !ERASE
+            PUSHREF(NOPFIXHD,.CURS)
+         ELSE IF
+            XCTP(.CURS)
+         THEN     !MARK FOR FIXUP
+            PUSHREF(XCTFIXHD,.CURS)
+         ELSE IF
+            LABREFP(.CURS)
+         THEN     !INDICATE REF
+            PUSHLABREF(.CTOPAD[.CURS],.CURS,CTRELOC)
+         ELSE IF
+            PTREFP(.CURS)
+         THEN     !MAY BE LABEL REF
+          BEGIN
+            BIND PTREF = PT[.CTOPAD[.CURS]];
+            IF
+                .PTREF<RELOCF> EQL CTRELOC
+             THEN IF
+                LABELP(OBJ_.PTREF[1]<OPADF>)
+             THEN
+                PUSHLABREF(.OBJ,.CTOPAD[.CURS],PTRELOC)
+          END
+      END;
+
+    CELL _ .CTPREV1[XCTFIXHD];
+    UNTIL
+        .CELL EQL XCTFIXHD
+     DO       !FIXUP EXECUTES
+      BEGIN
+        XCELL _ .CTREFR[.CELL];
+        OBJ _ NXTCC(.CTOPAD[.XCELL]);
+        CTCELTYP[.XCELL] _ .CTCELTYP[.OBJ];
+        CTOP[.XCELL] _ .CTOP[.OBJ];
+        IF LABREFP(.XCELL) THEN PUSHLABREF(LABREFED(.XCELL),.XCELL,CTRELOC)
+         ELSE IF NOPP(.XCELL) THEN PUSHREF(NOPFIXHD,.XCELL);
+        CELL _ .CTPREV[.CELL]
+      END;
+    ERASEDET(XCTFIXHD);
+    CELL _ .CTPREV1[NOPFIXHD];
+    UNTIL
+        .CELL EQL NOPFIXHD
+     DO       !ERASE NOOPS
+      BEGIN
+        ERASECELL(.CTREFR[.CELL]);
+        CELL _ .CTPREV[.CELL]
+      END;
+    ERASEDET(NOPFIXHD);
+
+    DO       !OPTIMIZE
+      BEGIN
+        CHANGE _ 0;
+        CURS _ .CTNEXT1[.CODEPTR];
+        WHILE
+            .CURS NEQ .CODEPTR
+         DO
+          BEGIN
+            JMPING _ -1;
+            CURS _ (IF JMPP(.CURS) THEN PJMP ELSE
+                IF LABELP(.CURS) THEN (JMPING_0;PLAB) ELSE
+                IF ADDOPP(.CURS) THEN PADDOP ELSE
+                IF MOVEP(.CURS) THEN PMOVE ELSE
+                IF REVSKPP(.CURS) THEN PREVSKP ELSE
+		IF CONDJMPP(.CURS) THEN PCONDJMP ELSE POTHER)(.CURS)
+          END
+      END
+     WHILE
+        .CHANGE;
+
+    CURS _ .CTNEXT1[.CODEPTR];
+    IF .LUNDEFLG THEN (CTREL[.CURS]_NORELOC;CURS_.CTNEXT[.CURS]);
+    UNTIL
+        .CURS EQL .CODEPTR
+     DO       !INTERFACE WITH WRITECODE
+      BEGIN
+        IF
+            LABELP(.CURS)
+         THEN
+          BEGIN
+            CELL _ .CTNEXT1[.CURS];
+            NEXT _ NXTLCC(.CURS);
+            UNTIL
+                (CELL_.CTNEXT[.CELL]) EQL .CURS
+             DO       !FIXUP REFS
+                PCOPAD(.CTREL[.CELL],.CTREFR[.CELL]) _ .NEXT;
+            ERASE(.CURS);
+            IF CASEJMPP(.NEXT) THEN CTREL[.NEXT] _ CTRELOC;
+            CTHDR[.NEXT] _ 1;
+            CURS _ .NEXT
+          END
+         ELSE IF
+            CASEJMPP(.CURS)
+         THEN
+            CTCELTYP[.CURS] _ CTRELOC
+         ELSE IF
+            .CTREL[.CURS] EQL NOBORELOC
+         THEN
+            CURS _ ERASECELL(.CURS)
+         ELSE IF
+            CTREFP(.CURS) AND INFLOOPP(.CURS)
+         THEN
+            CTHDR[.CURS] _ -1;
+        CURS _ .CTNEXT[.CURS]
+      END
+  END;     !FLATFUNC
+ROUTINE JMP2P(IND) =
+    IF NOT JMPP(.IND) THEN 0 ELSE
+     IF CASEJMPP(.IND) THEN 0 ELSE
+      IF FIXJMPIND(.IND) THEN 0 ELSE NXTLCC(NXTCC(.IND)) EQL LABREFED(.IND);
+
+
+
+
+ROUTINE LABREFP(I) =
+    IF CTREFP(.I) THEN .CTCELTYP[.CTOPAD[.I]] NEQ FRC+32 ELSE 0;
+
+
+
+
+ROUTINE MAKEINFLOOP(IND) =
+  BEGIN
+    BIND LAB=LABREFED(.IND);
+    CTLABSEEN[LAB] _ 0;
+    ERASECELL(.CTOPAD[.IND]);
+    PLAB(LAB);
+    CTOPAD[.IND] _ .IND;
+    SETCHANGE
+  END;     !MAKEINFLOOP
+
+
+
+
+ROUTINE MAKEJMP(F,T) =
+  BEGIN
+    BIND NEWLAB = HEADER(0,LABELC,0);
+    IF
+        LABREFP(.F)
+     THEN
+      BEGIN
+        LOCAL LAB;
+        LAB _ LABREFED(.F);
+        ERASECELL(.CTOPAD[.F]);
+        PLAB(.LAB)
+      END;
+    CTREL[.F] _ CTRELOC;
+    CTOPLEFT[.F] _ JRST ^ 9;
+    PRECEDE(.T,NEWLAB);
+    NEWBOT(NEWLAB,1);     !LOCATION CELL
+    PUSHLABREF(NEWLAB,.F,CTRELOC);
+    PLAB(NEWLAB);
+    SETCHANGE
+  END;     !MAKEJMP
+
+ROUTINE MVLABREF(IND,LAB) =
+  BEGIN
+    BIND VAL = .CTPREV[.IND];
+    CTREFE[.IND] _ .LAB;
+    PUSHBOT(.LAB,DETCELL(.IND));
+    VAL
+  END;     !MVLABREF
+
+
+
+
+
+ROUTINE NXTCC(IND)=
+  BEGIN
+    WHILE LABELP(IND_NXTLCC(.IND)) DO;
+    .IND
+  END;     !NXTCC
+
+
+
+
+ROUTINE NXTCELL(IND)=
+    IF
+        NOT NULLP(.IND)
+     THEN
+        .CTNEXT1[.IND]
+     ELSE
+      BEGIN
+        WHILE
+            LASTP(.IND)
+         DO
+            IND _ .CTNEXT[.IND];
+        .CTNEXT[.IND]
+       END;
+
+
+
+
+ROUTINE NXTLCC(IND) =
+  BEGIN
+    WHILE LINENOP(IND_.CTNEXT[.IND]) DO;
+    .IND
+  END;     !NXTLCC
+ROUTINE PADDOP(IND) =
+  BEGIN
+    BIND PM1 = PLIT(-1,1);
+%2.9%    MACRO ADDOPVAL(I) = (.PM1[.CTFUNC[I] EQL ADD] * GETLITVAL(.CTOPAD[I]))$;
+    LOCAL NEXT,SUM;
+    IF
+        SKIPP(PRVLCC(.IND))
+     THEN
+        RETURN .CTNEXT[.IND];
+    SUM _ 0;
+    WHILE
+        (NEXT_NXTLCC(.IND);ADDOPP(.NEXT))
+     DO
+      BEGIN
+        SETCHANGE;
+        SUM _ .SUM + ADDOPVAL(.NEXT);
+        ERASECELL(.NEXT)
+      END;
+    IF
+        .SUM EQL 0
+     THEN
+        RETURN .NEXT;
+    SUM _ .SUM + ADDOPVAL(.IND);
+    IF
+        .SUM EQL 0
+     THEN
+      BEGIN
+        SETCHANGE;
+        ERASECELL(.IND);
+        RETURN .NEXT
+      END;
+    CTFUNC[.IND] _ IF .SUM LSS 0 THEN (SUM_-.SUM;SUB) ELSE ADD;
+    CTOPAD[.IND] _ LTINSERT(.SUM);
+    .NEXT
+  END;     !PADDOP
+ROUTINE PCONDJMP(IND)=
+  BEGIN
+    LOCAL NEXT;
+    IF (.CTFUNC[.IND] AND #7) EQL 0 THEN RETURN POTHER(.IND);
+    NEXT_NXTLCC(.IND);
+    IF
+	NOT SKIPP(PRVCC(.IND))
+     THEN
+      BEGIN
+	PLAB(LABREFED(.IND));
+	IF
+	   LABREFED(.IND) EQL .NEXT
+	 THEN
+	    RETURN (CTFUNC[.IND]_.CTFUNC[.IND] AND #7; RMVLABREF(.IND));
+      END
+     ELSE
+        PLAB(LABREFED(.IND));
+    FIXJMPIND(.IND);
+    .NEXT
+  END;	! PCONDJMP
+ROUTINE PJMP(IND) =
+  BEGIN
+    LOCAL NEXT,PREV1,PREV2,NEWLAB;
+    IF .CTCELTYP[PREV1_PRVLCC(.IND)] EQL NOBORELOC
+      THEN RETURN (RMVLABREF(.IND); .CTNEXT[.PREV1]);
+    IF
+        NOT (SKIPP(PREV1_PRVCC(.IND)) OR CASEJMPP(.IND))
+     THEN
+      BEGIN
+        UNTIL
+            (NEXT_NXTLCC(.IND);LABELP(.NEXT) OR .NEXT EQL .CODEPTR)
+         DO       !REMOVE UP TO NEXT LABEL
+            RMVCELL(.NEXT);
+        IF
+            INFLOOPP(.IND)
+         THEN
+            RETURN .CTNEXT[.IND];
+        PLAB(LABREFED(.IND));
+        IF
+            LABREFED(.IND) EQL .NEXT
+         THEN     !JRST .+1
+            RETURN RMVLABREF(.IND)
+      END
+     ELSE
+        PLAB(LABREFED(.IND));
+    IF
+        FIXJMPIND(.IND)
+     THEN     !INF LOOP
+        RETURN .CTNEXT[.IND];
+   !NOT INF LOOP
+    IF CASEJMPP(.IND) THEN RETURN .CTNEXT[.IND];
+    PREV2 _ PRVCC(LABREFED(.IND));
+    IF
+        (PREV1 _ BACKOV(.PREV1,.PREV2)) NEQ 0
+     THEN
+        NXTCC(.PREV1)
+     ELSE
+        .CTNEXT[.IND]
+  END;     !PJMP
+ROUTINE PLAB(IND) =
+  BEGIN
+    LOCAL LAB1,LAB2,PREV1,PREV2,CURS1,CURS2,PREV,NEXT,CURS;
+    LAB1 _ LAB2 _ .IND;
+    WHILE
+        LABELP(PREV_PRVLCC(.LAB1))
+     DO       !FIND 1ST LABEL IN SEQUENCE
+        LAB1 _ .PREV;
+    WHILE
+        LABELP(NEXT_NXTLCC(.LAB2))
+     DO       !FIND LAST LABEL IN SEQUENCE
+        LAB2 _ .NEXT;
+    WHILE
+        .LAB1 NEQ .LAB2
+     DO       !COMBINE LABELS
+      BEGIN
+        SETCHANGE;
+        CURS _ .CTPREV1[.LAB1];
+        PREV _ .CTNEXT1[.LAB1];
+        UNTIL
+            .CURS EQL .PREV
+         DO
+            CURS _ MVLABREF(.CURS,.LAB2);
+        ERASE(REPLACEVAL(LAB1,NXTLCC(.LAB1)))
+      END;
+    IF
+        .CTNEXT1[.LAB2] EQL .CTPREV1[.LAB2]
+     THEN     !NOT REFED
+      BEGIN
+        SETCHANGE;
+        ERASE(.LAB2);
+        RETURN .NEXT
+      END;
+   !LABEL IS REFED
+    IF .JMPING THEN RETURN .NEXT;
+    JMPING _ -1;
+    CURS1 _ .CTNEXT1[.LAB2];
+    WHILE
+        (CURS1_CURS2_.CTNEXT[.CURS1]) NEQ .CTPREV1[.LAB2]
+     DO       !FIX CROSS JUMPS
+      BEGIN DUMMY
+        IF NOT CTREFP(.CURS1) OR CASEJMPP(.CTREFR[.CURS1]) THEN CONT;
+        WHILE
+            (CURS2_.CTNEXT[.CURS2]) NEQ .LAB2
+         DO
+          BEGIN DUMMY
+            IF NOT CTREFP(.CURS2) OR CASEJMPP(.CTREFR[.CURS2]) THEN CONT;
+            PREV1 _ .CTREFR[.CURS1];
+            IF NOT JMPP(.PREV1) THEN EXITLOOP;
+            PREV2 _ .CTREFR[.CURS2];
+            IF NOT JMPP(.PREV2) THEN CONT;
+            PREV1 _ PRVCC(.PREV1); PREV2 _ PRVCC(.PREV2);
+            IF
+                BACKOV(.PREV1,.PREV2) NEQ 0
+             THEN
+                CONT
+             ELSE IF
+                JMPP(.PREV1)
+             THEN
+                CONT
+             ELSE IF
+                REPL1P(.PREV2,.PREV1)
+             THEN
+              BEGIN
+                PUSHBOT(.LAB2,DETCELL(REPLACEVAL(CURS1,.CTPREV[.CURS1])));
+                EXITLOOP
+              END
+             ELSE
+                CONT
+          END
+      END;
+    .NEXT
+  END;     !PLAB
+ROUTINE PMOVE(IND) =
+  BEGIN
+    LOCAL NEXT;
+    NEXT _ NXTLCC(.IND);
+    IF NOT JMP2P(.NEXT) THEN RETURN .NEXT;
+    CTFUNC[.IND] _ SKIPA;
+    RMVLABREF(.NEXT);
+    .CTNEXT[.IND]
+  END;
+
+
+
+
+ROUTINE POTHER(IND) =
+  BEGIN
+    BIND NEXT = .CTNEXT[.IND];
+    IF
+        LINENOP(.IND)
+     THEN IF
+        LINENOP(NEXT)
+     THEN
+        ERASECELL(.IND);
+    NEXT
+  END;     !POTHER
+
+
+
+
+ROUTINE PREVSKP(IND) =
+  BEGIN
+    LOCAL NEXT;
+    WHILE JMP2P(NEXT_NXTLCC(.IND)) DO
+      BEGIN
+        REVERSE(.IND);
+        RMVLABREF(.NEXT)
+      END;
+    .NEXT
+  END;
+
+
+
+
+ROUTINE PRVCC(IND) =
+  BEGIN
+    WHILE (IND_PRVLCC(.IND);LABELP(.IND)) DO;
+    .IND
+  END;
+
+
+
+
+ROUTINE PRVLCC(IND) =
+  BEGIN
+    WHILE LINENOP(IND_.CTPREV[.IND]) DO;
+    .IND
+  END;     !PRVLCC
+
+
+
+
+ROUTINE PUSHLABREF(LAB,REFIND,RELOC) =
+  BEGIN
+    BIND C = PUSHREF(.LAB,.REFIND);
+    CTREFE[C] _ .LAB;
+    CTREL[C] _ .RELOC;
+    PCOPAD(.RELOC,.REFIND) _ C
+  END;     !PUSHLABREF
+
+
+
+
+ROUTINE PUSHREF(H,REFIND) =
+  BEGIN
+    BIND C = NEWBOT(.H,1);
+    CTREFR[C] _ .REFIND;
+    C
+  END;     !PUSHREF
+ROUTINE REPL1P(F,T) =     !IS 1ST INSTR ABOVE THE JUMP REPLACEABLE
+  BEGIN
+    LOCAL NEXT1,NEXT2;
+    IF .CTREL[.F] EQL NOBORELOC THEN RETURN 0;
+    IF NOT EQLCCS(.F,.T) THEN RETURN 0;
+    IF NOT SKIPP(.F) THEN RETURN 1;
+    IF CTREFP(.F) THEN RETURN 1;
+    NEXT1 _ NXTCC(NXTCC(.F));
+    IF NOT JMPP(.NEXT1) THEN RETURN 0;
+    NEXT2 _ NXTCC(NXTCC(.T));
+    IF JMPP(.NEXT2) THEN RETURN EQLCCS(.NEXT1,.NEXT2);
+    LABREFED(.NEXT1) EQL PRVLCC(.NEXT2)
+  END;
+
+
+
+
+ROUTINE REVSKPP(IND) =
+    (.PLIT(6:0,#35600167356,#35600167000,4:0,2:#31463146314,2:0)
+        [.CTFUNC[.IND]^(-5)])^(-(.CTFUNC[.IND] AND #37));
+
+
+
+
+ROUTINE RMVCELL(IND) =
+    (IF LABREFP(.IND) THEN RMVLABREF ELSE (SETCHANGE;ERASECELL))(.IND);
+
+
+
+
+ROUTINE RMVLABREF(IND) =
+  BEGIN
+    LOCAL VAL;
+    SETCHANGE;
+    IF
+        INFLOOPP(.IND)
+     THEN
+      BEGIN
+        VAL _ .CTNEXT[.IND];
+        ERASECELL(.IND);
+        .VAL
+      END
+     ELSE
+      BEGIN
+        VAL _ LABREFED(.IND);
+        ERASECELL(.CTOPAD[.IND]);
+        ERASECELL(.IND);
+        PLAB(.VAL)
+      END
+  END;     !RMVLABREF
+
+
+
+
+ROUTINE SKIPP(I) =
+    NOT HEADERP(.I) AND .SKIPVEC[.CTFUNC[.I]];
+
+
+
+
+!END OF H3LSTP.BLI

@@ -1,0 +1,859 @@
+//<SOURCES>TELPRM.BCP;20408    10-NOV-77 10:13:01    EDIT BY DALE
+//[ISI] Remove conversion of ^A and ^Q to EC and EL in SNDCH
+//<DODDS>TELPRM.BCP;64    31-JUL-75 22:17:37    EDIT BY DODDS
+// Add reset send lock in STRPCH
+// PRIMITIVE PACKAGE FOR TELNET
+
+get "<bcpl>head"
+get "<bcpl>utilhead"
+get "<bcpl>nlhead"
+get "<bcpl>jshead"
+
+external { ST; SNDCH; TRNSMT; SNDSYN; RCVCH; DOOPT; DNTOPT; WILOPT;
+	   WNTOPT; SUBOPT; INSRCV; DOAICP; INITPK; DSCNXE; DRCNXE;
+           DSCNCT; RTSJFN; RTRJFN; STRPCH; RSITM; RSOTM; RTOPTS; 
+	   ZINSCT; BRKSND; RTNSST; SETSST; CLRSST; RTNOSC; RTNISC;
+           Optlim; Dorcv; Dntrcv; Wilrcv; Wntrcv; INTSND
+	   MONITR
+	 }
+
+manifest { IAC	:=#377		// TELNET command characters
+	   SE	:=#360
+	   NOP	:=#361
+	   DM	:=#362
+	   BRK	:=#363
+	   IP	:=#364
+	   AO	:=#365
+	   AYT	:=#366
+	   EC	:=#367
+	   EL	:=#370
+	   GA	:=#371
+	   SB	:=#372
+	   WILL	:=#373
+	   WONT	:=#374
+	   DO	:=#375
+	   DONT	:=#376
+	   OUT := 4
+	   IN  := 0
+	   MaxCnx:= #10
+	 }
+
+
+static { Optlim:= nil
+	 OPTSRV:= nil
+         ZCFOBF:= nil
+         RCVBIN:= nil
+       }
+
+
+structure
+ { Dat				// TELNET data 
+    { TD^0^MaxCnx		// one table per connection
+       { Sendjfn word 1		// sending JFN
+         Recvjfn word 1		// receiving JFN
+         Scnxstat bit 1		// status of sending cnx (1=ok)
+         Rcnxstat bit 1		// ditto receiving conx
+         fill word
+         Insct	word 1		// count of INS's - DM's
+         Hldsnd	word 1		// ok to send if -1
+         Optsem	word 1		// option negotiation interlock -1=ok
+         Ip^0^255		// 256 incoming options...
+          { Is bitb 1		// for each option: state (1=on)
+            Ict bit 3		// ct of stacked req to change
+             overlay
+              { Ir   bit 2
+                Icts bitb 1 	// Icts eqv Is => command legal now 
+              }			// (1 = DO/WILL)
+          }
+         fill word
+         Op^0^255 		// 256 outgoing options...
+          { Os bitb 1		// same stucture for each
+            Oct bit 3		//   outgoing option
+             overlay
+              { Or   bit 2
+                Octs bitb 1
+              }
+          }
+         fill word
+       }
+    }
+ }
+
+
+let SNDCH(Cnx,ch) be			// general send char rtn
+ { let CNX:= rhz Cnx
+   let Jfn:= ST>>Dat.TD^CNX.Sendjfn
+   if (Jfn=0 \ ~ST>>Dat.TD^CNX.Scnxstat) then return
+   while TLOCK(lv ST>>Dat.TD^CNX.Hldsnd) do Wait(100)  // intlk on c snd
+// if ch eq $^a then			//[ISI] // translate ^A to EC
+//  { BOUT(Jfn,IAC) ; ch:= EC		//[ISI]
+//  }					//[ISI]
+// if ch eq $^q then			//[ISI] // translate ^Q to EL
+//  { BOUT(Jfn,IAC) ; ch:= EL		//[ISI]
+//  }					//[ISI]
+   if ch eq IAC then BOUT(Jfn,IAC)	// IAC's must be escaped
+   BOUT(Jfn,ch)				// finally output char
+   ST>>Dat.TD^CNX.Hldsnd:= -1		// reset send interlock
+ }
+
+and TRNSMT(Cnx) be			// to force out send buf
+ { let CNX:= rhz Cnx
+   let v:= vec 2
+   v|1:= ST>>Dat.TD^CNX.Sendjfn
+   v|2:= #21
+   JSYS(jsMTOPR,v)			// perform MTOPR w/21
+ }
+
+and SNDSYN(Cnx) be			// send a Sync (INS/DM)
+ { let CNX:= rhz Cnx
+   if Scnxng(CNX) then return
+   let v:= vec 2
+   v|1:= ST>>Dat.TD^CNX.Sendjfn
+   v|2:= #22
+   JSYS(jsMTOPR,v)			// first do MTOPR to send INS
+   v|2:= #21
+   BOUT(v|1,IAC)
+   BOUT(v|1,DM)
+   JSYS(jsMTOPR,v)			// then force out DM to Jfn
+ }
+
+and BRKSND(Cnx) be SpcSnd(Cnx,BRK)	// send a BRK command
+
+and INTSND(Cnx) be
+{ SpcSnd(Cnx,IP)			// send an IP command
+  SNDSYN(Cnx)
+ }
+
+and SpcSnd(Cnx,Code) be
+ { let CNX:= rhz Cnx
+   and v:= vec 2
+   v|1:= ST>>Dat.TD^CNX.Sendjfn
+   v|2:= #21
+   BOUT(v|1,IAC)			// send IAC Code & transmit it
+   BOUT(v|1,Code)
+   JSYS(jsMTOPR,v)
+ }
+
+
+and STRPCH(Cnx,Char) be			// send verbatim character
+  { let CNX:= rhz Cnx
+    let Jfn:= ST>>Dat.TD^CNX.Sendjfn
+    if (Jfn=0 \ ~ST>>Dat.TD^CNX.Scnxstat) then return
+    while TLOCK(lv ST>>Dat.TD^CNX.Hldsnd) do Wait(100)  // intlk on c sn
+    let v:= vec 2
+    BOUT(Jfn,Char)
+    if Char=IAC then BOUT(Jfn,Char)	// must double IAC's
+    v|1,v|2:= Jfn,#21
+    JSYS(jsMTOPR,v)			// and transmit it
+    ST>>Dat.TD^Cnx.Hldsnd:= -1	// reset send interlock
+  }
+
+
+and Scnxng(CNX):= valof			// check if send cnx is ok,
+ { 					// return false if ok (not NG)
+
+   if ST>>Dat.TD^CNX.Sendjfn=0 \ ~ST>>Dat.TD^CNX.Scnxstat
+	 then resultis true
+					// perhaps other condx
+   resultis false
+ }
+
+and Rcnxng(CNX):= valof			// similar check for recvng JFN
+ { if ST>>Dat.TD^CNX.Recvjfn=0 \ ~ST>>Dat.TD^CNX.Rcnxstat
+	 then resultis true
+   resultis false
+ }
+
+
+and RTOPTS(Cnx,Opt,IO):= valof		// return state of spec. optn as
+ { let CNX:= rhz Cnx			// true or false; 
+   test IO				// IO true means outgoing
+    ifso resultis ST>>Dat.TD^CNX.Op^Opt.Os
+    ifnot resultis ST>>Dat.TD^CNX.Ip^Opt.Is
+ }
+
+
+
+and RCVCH(Cnx):= valof			// general receive char rtn
+ { let CNX:= rhz Cnx
+   let Jfn:= ST>>Dat.TD^CNX.Recvjfn
+   if (Jfn=0 \ ~ST>>Dat.TD^CNX.Rcnxstat) then resultis -1 // "false" jfn
+   { let ch:= RCVBIN(Jfn)		// read an incoming char (specl)
+     if ch ne IAC then resultis ch	// if not IAC pass as data char
+     ch:= BIN(Jfn)			// if IAC get next byte
+     switchon ch into			// see what to do with it
+      { case IAC:  resultis ch		// escaped IAC as data
+        case DM:   Dmrcv(CNX); endcase	// count Data Mark
+        case SB:   Subrcv(CNX); endcase	// call subcommand parser
+        case WILL: Wilrcv(CNX); endcase	// parse option request/response
+        case WONT: Wntrcv(CNX); endcase
+        case DO:   Dorcv(CNX); endcase
+        case DONT: Dntrcv(CNX); endcase
+
+   // The following commands are all treated as nop's for various
+   // reasons. NOP IS one; SE is meaningless and souldn't occur at this
+   // level; GA is not supported in TENEX, likewise BRK; IP, EL, EC,
+   // AO and AYT only really have meaning going from user to server.
+
+        case SE:   case NOP: case IP: case EC: case EL:
+        case BRK:  case AO: case AYT: case GA: endcase
+        default:   WriteS("*c*lUndefined TELNET command received ")
+  	         WriteOct(ch); endcase	// flush and report undef. comds
+      }
+   } repeat				//keep reading until data char
+ }
+
+
+
+and Sndcmd (CNX,Cntrl,Opt) be		// sends sequence IAC DO Opt
+ { switchon Cntrl into			//  (or DONT, WILL, WONT)
+    { case WILL to DONT: endcase
+      default: return
+    }
+   while TLOCK(lv ST>>Dat.TD^CNX.Hldsnd) do Wait(100)  // intlk on c snd
+   let Jfn:= ST>>Dat.TD^CNX.Sendjfn
+   BOUT(Jfn,IAC)
+   BOUT(Jfn,Cntrl)
+   BOUT(Jfn,Opt)			// send command sequence
+   TRNSMT(CNX)				// push it out
+   ST>>Dat.TD^CNX.Hldsnd:= -1		// reset send lock
+   if MONITR do PrintMon("Sent ",Cntrl,Opt)
+ }
+
+and Schcmd(CNX,Cntrl,Opt) be		// check JFN & send command
+ { unless Scnxng(CNX) do Sndcmd(CNX,Cntrl,Opt)
+ }
+
+
+and DOOPT(Cnx,Opt):= valof		// send an OnOption request
+ { let CNX:= rhz Cnx
+   if Scnxng(CNX) then resultis false	// returns false if req bad
+   while TLOCK(lv ST>>Dat.TD^CNX.Optsem) do Wait(100) // hang on neg sem
+   let S  := ST>>Dat.TD^CNX.Ip^Opt.Is	// get state, neg ct & ct lo
+   and Ct := ST>>Dat.TD^CNX.Ip^Opt.Ict	//  for this cnx/opt incoming
+   and Cts:= ST>>Dat.TD^CNX.Ip^Opt.Icts
+   and Jfn:= ST>>Dat.TD^CNX.Sendjfn
+   if Ct eq 0 & S \ Ct ne 0 & ~(S eqv Cts) then
+    { ST>>Dat.TD^CNX.Optsem:= -1
+      resultis false			//request illegal: asks for
+    }					// change to pres state or req.
+   if Ct ge 7 then
+    { ST>>Dat.TD^CNX.Optsem:= -1
+      resultis false			// not allowed if 7 outs. req.
+    }
+   if Ct eq 0 then Sndcmd(CNX,DO,Opt)	// send DO Opt if no outst. req.
+   ST>>Dat.TD^CNX.Ip^Opt.Ict:= Ct + 1	// req. ok, increment ctr
+   ST>>Dat.TD^CNX.Optsem:= -1		// reset option semaphore
+   resultis true
+ }
+
+
+
+and DNTOPT(Cnx,Opt):= valof		// send an OffOption request
+ { let CNX:= rhz Cnx
+   if Scnxng(CNX) then resultis false
+   while TLOCK(lv ST>>Dat.TD^CNX.Optsem) do Wait(100) // hang on neg sem
+   let S  := ST>>Dat.TD^CNX.Ip^Opt.Is	// get state, ctr, ctr loord
+   and Ct := ST>>Dat.TD^CNX.Ip^Opt.Ict
+   and Cts:= ST>>Dat.TD^CNX.Ip^Opt.Icts
+   and Jfn:= ST>>Dat.TD^CNX.Sendjfn
+   if Ct eq 0 & ~S \ Ct ne 0 & (S eqv Cts) then
+    { ST>>Dat.TD^CNX.Optsem:= -1
+      resultis false			// illegal: asks change to pres.
+    }					// state or request
+   if Ct ge 7 then
+    { ST>>Dat.TD^CNX.Optsem:= -1
+      resultis false			// not allowed if 7 outst req
+    }
+   if Ct eq 0 then Sndcmd(CNX,DONT,Opt)	// send DONT Opt if no outst req
+   ST>>Dat.TD^CNX.Ip^Opt.Ict:= Ct + 1	// ok, increment negot. ctr
+   ST>>Dat.TD^CNX.Optsem:= -1
+   resultis true
+ }
+
+
+and WILOPT(Cnx,Opt):= valof		// send OnOption offer
+ { let CNX:= rhz Cnx
+   if Scnxng(CNX) then resultis false
+   while TLOCK(lv ST>>Dat.TD^CNX.Optsem) do Wait(100) // hang on neg sem
+   let S  := ST>>Dat.TD^CNX.Op^Opt.Os	// get state, neg ctr, ctr lo
+   and Ct := ST>>Dat.TD^CNX.Op^Opt.Oct	// for this cnx/opt outgoing
+   and Cts:= ST>>Dat.TD^CNX.Op^Opt.Octs
+   and Jfn:= ST>>Dat.TD^CNX.Sendjfn
+   if Ct eq 0 & S \ Ct ne 0 & ~(S eqv Cts) then
+    { ST>>Dat.TD^CNX.Optsem:= -1
+      resultis false			// illegal: asks for change to
+    }					// pres state or request
+   if Ct ge 7 then
+    { ST>>Dat.TD^CNX.Optsem:= -1
+      resultis false			//not allowed if 7 outst req.
+    }
+   if Ct eq 0 then Sndcmd(CNX,WILL,Opt)	// ok: send WILL Opt if no outst
+   ST>>Dat.TD^CNX.Op^Opt.Oct:= Ct + 1	// increment negotiation ctr
+   ST>>Dat.TD^CNX.Optsem:= -1
+   resultis true
+ }
+
+
+and WNTOPT(Cnx,Opt):= valof		// send an OffOption offer
+ { let CNX:= rhz Cnx
+   if Scnxng(CNX) then resultis false
+   while TLOCK(lv ST>>Dat.TD^CNX.Optsem) do Wait(100) // hang on neg sem
+   let S  := ST>>Dat.TD^CNX.Op^Opt.Os	// get state, neg ctr, ctr lo
+   and Ct := ST>>Dat.TD^CNX.Op^Opt.Oct	// for this cnx/opt outgoing
+   and Cts:= ST>>Dat.TD^CNX.Op^Opt.Octs
+   and Jfn:= ST>>Dat.TD^CNX.Sendjfn
+   if Ct eq 0 & ~S \ Ct ne 0 & (S eqv Cts) then
+    { ST>>Dat.TD^CNX.Optsem:= -1
+      resultis false			// illegal: asks for change to
+    }					// pres state or request
+   if Ct ge 7 then
+    { ST>>Dat.TD^CNX.Optsem:= -1
+      resultis false			//not allowed if 7 outst req.
+    }
+   if Ct eq 0 then Sndcmd(CNX,WONT,Opt)	// ok: send WONT Opt if no outst
+   ST>>Dat.TD^CNX.Op^Opt.Oct:= Ct + 1	// increment negotiation ctr
+   ST>>Dat.TD^CNX.Optsem:= -1
+   resultis true
+ }
+
+
+
+and SUBOPT(Cnx,Opt,Ctr,Ptr):= valof	// send an option subcommand str
+ { let CNX:= rhz Cnx
+   if Scnxng(CNX) then resultis false
+   while TLOCK(lv ST>>Dat.TD^CNX.Optsem) do Wait(100) // hang on neg sem
+   let S  := ST>>Dat.TD^CNX.Op^Opt.Os	// get state, ct & JFN
+   and Ct := ST>>Dat.TD^CNX.Op^Opt.Oct
+   and Jfn:= ST>>Dat.TD^CNX.Sendjfn
+   if Ct ne 0 \ ~S then
+    { ST>>Dat.TD^CNX.Optsem:= -1
+      resultis false			// error if opt not on or negot.
+    }					// in progress
+   if Opt gt Optlim then
+    { ST>>Dat.TD^CNX.Optsem:= -1
+      resultis false			// error if unknown option
+    }
+   if (lh Ptr & #7700) rshift 6 ne #10 then
+    { ST>>Dat.TD^CNX.Optsem:= -1
+      resultis false			// error if ptr not for 8-bit
+    }
+   while TLOCK(lv ST>>Dat.TD^CNX.Hldsnd) do Wait(100)  // intlk on c snd
+   BOUT(Jfn,IAC) ; BOUT(Jfn,SB) ; BOUT(Jfn,Opt)
+   for j:= 1 to Ctr do			// send IAC SB Opt followed by
+    { let d:= ILDB(lv Ptr)		// Ctr bytes furnished
+      BOUT(Jfn,d)
+    }
+   BOUT(Jfn,IAC) ; BOUT(Jfn,SE)		// ending with IAC SE
+   TRNSMT(CNX)				// and push it out
+   ST>>Dat.TD^CNX.Hldsnd:= -1		// reset sendlock
+   ST>>Dat.TD^CNX.Optsem:= -1		//and option semaphore
+   resultis true			// indicate ok
+ }
+
+
+
+and Dorcv(CNX):= valof 			// here to process rcpt of DO
+ { let Opt:= Semchk(CNX)		// get next char & intlk on sem.
+   let S  := ST>>Dat.TD^CNX.Op^Opt.Os	// get state, neg ctr, ctr lo
+   and Ct := ST>>Dat.TD^CNX.Op^Opt.Oct	// for this cnx/opt outgoing
+   and Cts:= ST>>Dat.TD^CNX.Op^Opt.Octs
+   and Jfn:= ST>>Dat.TD^CNX.Sendjfn
+   if MONITR do PrintMon("Rcvd ",DO,Opt)
+   test S				// 4 possibilites of state & ctr
+    ifso
+     { test Ct eq 0
+	ifnot				// ct>0 & S on: bad WONT rsp
+	 { Schcmd(CNX,WONT,Opt)		// repeat request & log error
+	   WriteS("*c*lImproper WONT response ")
+	 }
+	ifso				// ct=0 & S on: bad request
+	 { WriteS("*c*lImproper request DO ")  // send nothing
+	 }				// (to avoid loops) & log error
+       WriteOct(Opt)
+     }
+    ifnot
+     { test Ct eq 0
+	ifnot
+	 { ST>>Dat.TD^CNX.Op^Opt.Os:= true	// ct>0 & S off: pos rsp
+	   ST>>Dat.TD^CNX.Op^Opt.Oct:= Ct - 1	// to WILL, decr & ON
+	   Onopt(CNX,Opt,OUT)
+	 }
+	ifso				// ct=0 & S off: request
+	 { test Shlopt(CNX,Opt,OUT)	// ask if we should
+	    ifso
+	     { Schcmd(CNX,WILL,Opt)	// yes: respond WILL
+	       ST>>Dat.TD^CNX.Op^Opt.Os:= true
+	       Onopt(CNX,Opt,OUT)	 // option on
+	     }
+	    ifnot
+	     { Schcmd(CNX,WONT,Opt)	// no: respond WONT
+	     }
+	 }
+     }
+   ST>>Dat.TD^CNX.Optsem:= -1		// finally, reset option sema.
+   resultis Opt
+ }
+
+
+and Semchk(CNX):= valof			// get next incoming byte and
+ { let Jfn:= ST>>Dat.TD^CNX.Recvjfn	// hang on option semaphore
+   and Opt:= BIN(Jfn)
+   while TLOCK(lv ST>>Dat.TD^CNX.Optsem) do Wait(100) // hang on neg sem
+   resultis Opt
+ }
+
+
+
+and Dntrcv(CNX):= valof			// process receipt of DONT
+ { let Opt:= Semchk(CNX)		// get next char & intlk on sem.
+   let S  := ST>>Dat.TD^CNX.Op^Opt.Os	// get state, neg ctr, ctr lo
+   and Ct := ST>>Dat.TD^CNX.Op^Opt.Oct	// for this cnx/opt outgoing
+   and Cts:= ST>>Dat.TD^CNX.Op^Opt.Octs
+   and Jfn:= ST>>Dat.TD^CNX.Sendjfn
+   if MONITR do PrintMon("Rcvd ",DONT,Opt)
+   test S				// 4 possibilites of state & ctr
+    ifnot
+     { test Ct eq 0
+	ifnot				// ct>0 & S off:WILL refused
+	 { ST>>Dat.TD^CNX.Op^Opt.Oct:= Ct - 1	// decr ct & log refusal
+	 }
+	ifso				// ct=0 & S off: bad request
+	 { 				// agree (to resync) & log
+	   WriteS("*c*lImproper request DONT ")
+           WriteOct(Opt)
+	 }
+     }
+    ifso
+     { test Ct eq 0
+	ifnot
+	 { ST>>Dat.TD^CNX.Op^Opt.Os:= false	// ct>0 & S on: pos rsp
+	   ST>>Dat.TD^CNX.Op^Opt.Oct:= Ct - 1	// to WONT, decr & OFF
+	   Offopt(CNX,Opt,OUT)
+	 }
+	ifso
+	 { Schcmd(CNX,WONT,Opt)		// ct=0 & S on: request to DONT
+	   ST>>Dat.TD^CNX.Op^Opt.Os:= false	// must agree, OFF
+	   Offopt(CNX,Opt,OUT)		// should we log this?
+	 }
+     }
+   ST>>Dat.TD^CNX.Optsem:= -1		// finally, reset option sema.
+   resultis Opt
+ }
+
+
+
+and Wilrcv(CNX):= valof			// here to process rcpt of WILL
+ { let Opt:= Semchk(CNX)		// get next char & intlk on sem.
+   let S  := ST>>Dat.TD^CNX.Ip^Opt.Is	// get state, neg ctr, ctr lo
+   and Ct := ST>>Dat.TD^CNX.Ip^Opt.Ict	// for this cnx/opt incoming
+   and Cts:= ST>>Dat.TD^CNX.Ip^Opt.Icts
+   and Jfn:= ST>>Dat.TD^CNX.Sendjfn
+   if MONITR do PrintMon("Rcvd ",WILL,Opt)
+   test S				// 4 possibilites of state & ctr
+    ifso
+     { test Ct eq 0
+	ifnot				// ct>0 & S on: bad DONT rsp
+	 { Schcmd(CNX,DONT,Opt)		// repeat request & log error
+	   WriteS("*c*lImproper DONT response ")
+	 }
+	ifso				// ct=0 & S on: bad request
+	 { WriteS("*c*lImproper request WILL ")  // send nothing
+	 }				// (to avoid loops) & log error
+       WriteOct(Opt)
+     }
+    ifnot
+     { test Ct eq 0
+	ifnot
+	 { ST>>Dat.TD^CNX.Ip^Opt.Is:= true	// ct>0 & S off: pos rsp
+	   ST>>Dat.TD^CNX.Ip^Opt.Ict:= Ct - 1	// to DO, decr & ON
+	   Onopt(CNX,Opt,IN)
+	 }
+	ifso				// ct=0 & S off: request
+	 { test Shlopt(CNX,Opt,IN)	// ask if we should
+	    ifso
+	     { Schcmd(CNX,DO,Opt)	// yes: respond DO
+	       ST>>Dat.TD^CNX.Ip^Opt.Is:= true
+	       Onopt(CNX,Opt,IN)	// option on
+	     }
+	    ifnot
+	     { Schcmd(CNX,DONT,Opt)	// no: respond DONT
+	     }
+	 }
+     }
+   ST>>Dat.TD^CNX.Optsem:= -1		// finally, reset option sema.
+   resultis Opt
+ }
+
+
+
+and Wntrcv(CNX):= valof			// process receipt of WONT
+ { let Opt:= Semchk(CNX)		// get next char & intlk on sem.
+   let S  := ST>>Dat.TD^CNX.Ip^Opt.Is	// get state, neg ctr, ctr lo
+   and Ct := ST>>Dat.TD^CNX.Ip^Opt.Ict	// for this cnx/opt incoming
+   and Cts:= ST>>Dat.TD^CNX.Ip^Opt.Icts
+   and Jfn:= ST>>Dat.TD^CNX.Sendjfn
+   if MONITR do PrintMon("Rcvd ",WONT,Opt)
+   test S				// 4 possibilites of state & ctr
+    ifnot
+     { test Ct eq 0
+	ifnot				// ct>0 & S off:DO refused
+	 { ST>>Dat.TD^CNX.Ip^Opt.Ict:= Ct - 1	// decr ct & log refusal
+	 }
+	ifso				// ct=0 & S off: bad request
+	 { 				// agree (to resync) & log
+	   WriteS("*c*lImproper request WONT ")
+           WriteOct(Opt)
+	 }
+     }
+    ifso
+     { test Ct eq 0
+	ifnot
+	 { ST>>Dat.TD^CNX.Ip^Opt.Is:= false	// ct>0 & S on: pos rsp
+	   ST>>Dat.TD^CNX.Ip^Opt.Ict:= Ct - 1	// to DONT, decr & OFF
+	   Offopt(CNX,Opt,IN)
+	 }
+	ifso
+	 { Schcmd(CNX,DONT,Opt)		// ct=0 & S on: request to WONT
+	   ST>>Dat.TD^CNX.Ip^Opt.Is:= false	// must agree, OFF
+	   Offopt(CNX,Opt,IN)		// should we log this?
+	 }
+     }
+   ST>>Dat.TD^CNX.Optsem:= -1		// finally, reset option sema.
+   resultis Opt
+ }
+
+and PrintMon(s,cntrl,opt) be
+{ WriteS("*c*l")
+  WriteS(s)
+  WriteS(selecton cntrl into
+          { case DO: "DO "
+            case DONT: "DONT "
+            case WILL: "WILL "
+            case WONT: "WONT "
+            default: "Undefined "
+           }
+         )
+  WriteOct(opt)
+  WriteS("*c*l")
+ }
+
+
+
+// The linkage from the following 4 routines to manipulate the various
+// option states in TELNET to the many actual specific routines that
+// exist in TELNET is by means of 2 half-word quantities Optlim, which
+// contains the number of the highest-numbered option actually supported
+// and OPTSRV, which contains the adress of the first location in a
+// table of adresses of the form JRST ADR in TELNET.  The table is
+// ordered thus: ON rtn for option 0 on the incoming side; OFF rtn for
+// option 0, incoming; SHALL-I rtn for 0, incoming; Subcommand
+// parsing rtn for 0, incoming; then adresses for the same set of rtns
+// for option 0 on the outgoing side; then for option 1, in, and 1, out,
+// etc.  The index on this table is then simply 8*opt# + io + f, where
+// io is 0 for incoming side, 4 for outgoing, and f is 0 for ON, 1 for 
+// OFF, 2 for SHALL-I, and 3 for subcommands.  The particular routines
+// take one arg (connection #) for ON and OFF, cnx# and a vector (one
+// byte per member, -1 terminator) for Subcommands, and cnx# for
+// SHALL-I with a truth-value returned (shall or shant).
+
+and Subrcv(CNX) be			// process subcommand string
+ { let Opt:= Semchk(CNX)		// get next char & intlk
+   let S  := ST>>Dat.TD^CNX.Ip^Opt.Is	// get state, count & JFN
+   and Ct := ST>>Dat.TD^CNX.Ip^Opt.Ict
+   and Jfn:= ST>>Dat.TD^CNX.Recvjfn
+   and v:= vec 50
+   and j:= 0				// declare array and index
+   and d:= 0
+    { d:= BIN(Jfn)			// read bytes and store them
+      if d eq IAC then
+       { d:= BIN(Jfn)			// filtering out doubled IAC
+         if d eq SE then break		// until IAC SE read
+         if d ne IAC then		// IAC anything else is error
+          { WriteS("*c*lImproper SuBcommand string"); break
+          }				//    and aborts input
+       }
+      v|j:= d
+      j:= j + 1
+      if j gt 49 then			// diagnose too many bytes
+       { WriteS("*c*lSuBcommand string overflow"); break
+       }				//  also probably in error
+    } repeat
+   v|j:= -1				// end with -1 terminator
+   unless Ct ne 0 \ ~S \ Opt gt Optlim do // if opt not on, do nothing
+    {					// with string; likewise unknown
+      let Dspt:= Opt * 8 + IN + 3	// ok: call option server #3 for
+      (OPTSRV|Dspt)(CNX,v)		// this opt (subcommand parser)
+    }
+   ST>>Dat.TD^CNX.Optsem:= -1
+ }
+
+and Onopt(CNX,Opt,Iopr) be		// to call option-ON rtn for Opt
+ { if Opt gt Optlim then return		// nogo if unknown option
+   let Dspt:= Opt * 8 + Iopr		// call option server #0 for
+   (OPTSRV|Dspt)(CNX)			// this opt (turn-On)
+ }
+
+
+and Offopt(CNX,Opt,Iopr) be		// to call option-OFF rtn
+ { if Opt gt Optlim then return
+   let Dspt:= Opt * 8 + Iopr + 1	// call option server #1 for
+   (OPTSRV|Dspt)(CNX)			// this opt (turn-Off)
+ }
+
+and Shlopt(CNX,Opt,Iopr):= valof	// to call shall-we-turn-on-opt
+ { if Opt gt Optlim then resultis false	// returns true if Yes (we shall
+   let Dspt:= Opt * 8 + Iopr + 2	// call server #2 for this opt
+   resultis (OPTSRV|Dspt)(CNX)		// (shall-we), returns truthval
+ }
+
+and ZINSCT(Cnx) be			// Zero INS count to start
+ { let CNX:= rhz Cnx			//  recv fork
+   ST>>Dat.TD^CNX.Insct:= 0
+ }
+
+and Dmrcv(CNX) be
+ { ST>>Dat.TD^CNX.Insct:= ST>>Dat.TD^CNX.Insct - 1
+   ZCFOBF(CNX,ST>>Dat.TD^CNX.Insct)	// for DM decrement INS ctr
+ }					// call clr buf rtn w/new ct
+
+
+and INSRCV(Cnx):= valof
+ { let CNX:= rhz Cnx
+   ST>>Dat.TD^CNX.Insct:= ST>>Dat.TD^CNX.Insct + 1
+   resultis ST>>Dat.TD^Cnx.Insct	// INS received: increm INS ctr
+ }					// and return result
+
+and JfnRel() be
+ { let v:= vec 4
+   v|1:= -1				// do RLJFN for all unopened JFN
+   JSYS(jsRLJFN,v)
+ }
+
+and RSITM(Cnx) be			// reset state of INcoming
+ { ST>>Dat.TD^Cnx.Ip^6.Is:= false	// Timing-Mark (optn 6)--necess.
+ }					// due to bad protocol
+
+and RSOTM(Cnx) be			// likewise OUTgoing Timing-Mark
+ { ST>>Dat.TD^Cnx.Op^6.Os:= false
+ }
+
+
+and RTNOSC(Cnx,Opt):= valof		// return optn stat & ct, outg
+ { let CNX:= rhz Cnx
+   resultis ST>>Dat.TD^Cnx.Op^Opt
+ }
+
+and RTNISC(Cnx,Opt):= valof		// return optn state & ct, incm
+ { let CNX:= rhz Cnx
+   resultis ST>>Dat.TD^CNX.Ip^Opt
+ }
+
+
+// Initial Connection Protocol routine
+
+and DOAICP(Cnx,Fhst,Fskt,Lskt):= valof	// perform ICP for Cnx
+  { let CNX:= rhz Cnx
+    let Gf:= lh Cnx
+    let w:= vec 10
+    and q,Fhost:= 0,0
+    and Sjfnlv:= lv ST>>Dat.TD^CNX.Sendjfn
+    and Rjfnlv:= lv ST>>Dat.TD^CNX.Recvjfn
+    ST>>Dat.TD^CNX.Scnxstat:= false
+    ST>>Dat.TD^CNX.Rcnxstat:= false
+    test (lhz Fhst) eq 0		// if Fhst is host # use it
+      ifso Fhost:= Fhst
+      ifnot { ASCIZToString(Fhst,w)	// else convert name to string
+              Fhost:= -1,,w		//  in w with ptr in Fhost
+            }
+    Lskt:= -1,,(rh Lskt)		// -1 lh means ;T (job relative)
+    q:= ICP(Fhost,lv Fskt,lv Lskt,Sjfnlv,Rjfnlv) // perform actual ICP
+    if ICPDiag(q,Gf)=0 then InitCnxDat(CNX)	// diagnose errs
+    resultis q				// if any, if OK initlz cnx data
+  }					// return 0 if OK, else err code
+
+
+
+and InitCnxDat(CNX) be			// initialize data block for cnx
+  { let j:= 0
+    ST>>Dat.TD^CNX.Scnxstat:= true	// connection status OK
+    ST>>Dat.TD^CNX.Rcnxstat:= true
+    ST>>Dat.TD^CNX.Insct:= 0		// clean INS count
+    ST>>Dat.TD^CNX.Hldsnd:= -1		// option & send semas > OK
+    ST>>Dat.TD^CNX.Optsem:= -1
+    for j:= 0 to 255 do
+     { ST>>Dat.TD^CNX.Ip^j:= 0		// all options & ctrs cleared
+       Offopt(CNX,j,IN)
+       ST>>Dat.TD^CNX.Op^j:= 0
+       Offopt(CNX,j,OUT)
+     }
+  }
+
+
+
+// The actual Initial Connection Protocol routine
+//  calls Netlib routines, marks errors
+//  returns value of 0 if ok, otherwise -JSYS error code that it 
+//  failed on, or -1 if send conx failed to open; also returns
+//  value of connected foreign socket in Fskt.
+
+and ICP(Fhost,Fsktlv,Lsktlv,Sjfnlv,Rjfnlv):= valof
+  { let q,qq,tt,vv:= 0,0,0,vec 4
+    rv Sjfnlv,rv Rjfnlv:= 0,0 
+    NETWAITFLAG:= false			// immediate return always
+    q:= FindNetInput(32,Fhost,rv Fsktlv,rv Lsktlv,#403001,,#200000)
+    if q lt 0 then			// make 32-bit logger connection
+     { JfnRel()
+       resultis -4,,rh q
+     }
+    rv Rjfnlv:= q			// store JFN for intrpt access
+     { NetStatus(q,vv)			// check status of logger cnx
+       switchon vv|1 into
+        { case 7: break			// status code 7: opened ok
+          case 6: tt:= tt+1		// code 6: pending, keep testng
+                  Wait(2000)		//  every 2 seconds,
+                  if tt < 10 then endcase  // time out after 20 secs
+          default: EndRead(q); JfnRel()	// other codes: fails, close,
+                   rv Rjfnlv:= 0
+                   resultis -4,,-#600144 //  return "host rejecting"
+        }
+     } repeat
+    rv Fsktlv:= BIN(q); EndRead(q)	// read fsocket # & close conn.
+    rv Lsktlv:= rv Lsktlv+2		// open send, 8-bit, immed rtrn
+    q:= CreateNetOutput(8,Fhost,rv Fsktlv,rv Lsktlv,#103430,,#100000)
+    if q lt 0 then
+     { JfnRel(); rv Rjfnlv:= 0
+       resultis -3,,rh q
+     }
+    rv Sjfnlv:= q
+    qq:= FindNetInput(8,Fhost,rv Fsktlv,rv Lsktlv,#100010,,#200000)
+    if qq lt 0 then			// open recv, 8-bit, defrd rtrn
+     { EndRead(q); rv Rjfnlv,rv Sjfnlv:= 0,0  // no rcv, flush send cnx
+       JfnRel(); resultis -2,,rh qq	// return error code
+     }
+    rv Rjfnlv:= qq
+    tt:= 0
+     { NetStatus(q,vv)			// check progress of send cnx
+       switchon vv|1 into
+        { case 7: break			// status code 7: opened ok
+          case 6: tt:= tt+1
+                  Wait(2000)		// code 6: pending, keep testing
+                  if tt < 16 then endcase // time out after 32 secs
+          default: EndNetDialogue(q,qq)	// other codes: fails,
+                  rv Sjfnlv,rv Rjfnlv:= 0,0
+                  resultis -1		// close cnx, return -1
+        }
+     } repeat
+    resultis 0				// everything OK, return 0
+  }
+
+
+and ICPDiag(Ercode,Gf):= valof		// print diags for marked ercode
+  { let x,E:= lh Ercode,rhz (- Ercode)	// separate marker & JSYS code
+    let y:= E-#600000
+    if x = 0 then resultis 0		// 0 -> no error
+    if Gf gt 0 then resultis -1		// no diags for repeated trials
+    WriteS("incomplete*c*lbecause ")
+    switchon x into			// partition marked cases
+     { case -4: 			// -4 -> no logger cnx made...
+        switchon y into
+         { case #55 to #117: WriteS("IMP is disconnected.")
+                             endcase		// error GJFXnn
+           case #142: WriteS("IMP is not up.")		// OPNX19
+                      endcase
+           case #143: WriteS("host is disconnected.")	// OPNX20
+                      endcase
+           case #144: WriteS("host is rejecting.")	// OPNX21
+                      endcase
+           default:   WriteS("of other problem.*c*l")	// others
+                      WriteOct(E); PBOUT($:); ERSTR(E)
+         }
+        endcase
+
+       case -3:				// -3 -> send cnx not opened...
+        switchon y into
+         { case #55 to #117: WriteS("no send JFN.")
+                             endcase			// error GJFXnn
+           case #120 to #145: WriteS("send connection can't be opened.")
+                              endcase			// error OPNXnn
+           default: WriteS("of other problem.*c*l")	// others
+                    WriteOct(E); PBOUT($:); ERSTR(E)
+         }
+        endcase
+
+       case -2:				// -2 -> recv cnx not opened...
+        switchon y into
+         { case #55 to #117:  WriteS("no receive JFN.")
+                              endcase			// error GJFXnn
+           case #120 to #145:
+                     WriteS("receive connection can't be opened.")
+                              endcase			// error OPNXnn
+           default: WriteS("of other problem.")		// others
+                    WriteOct(E); PBOUT($:); ERSTR(E)
+         }
+        endcase
+
+       case -1:				// -1 -> send cnx failed to open
+        WriteS("send connection was not successfully opened.")
+        endcase
+
+       default: WriteS("This error should never happen.")
+     }
+    resultis -1				// return -1 for any error
+  }
+
+
+and INITPK(Optrtns,Olim,Cfobfadr,Rcvbadr) be	// initialize params:
+  { OPTSRV:= Optrtns			// pointer to option server rtns
+    Optlim:= Olim			// highest-numbered option recog
+    ZCFOBF:= Cfobfadr			// pointer DM clr buf rtn
+    RCVBIN:= Rcvbadr			// ptr special BIN rtn
+  }
+
+
+and DSCNXE(Cnx):= valof			// returns true if sendjfn
+  { let CNX:= rhz Cnx			// exists for Cnx
+    resultis (ST>>Dat.TD^CNX.Sendjfn ne 0)
+  }
+
+and DRCNXE(Cnx):= valof			// returns true if recvjfn
+  { let CNX:= rhz Cnx			// exists for Cnx
+    resultis (ST>>Dat.TD^CNX.Recvjfn ne 0)
+  }
+
+
+and DSCNCT(Cnx) be			// terminate designated connect
+  { let CNX:= rhz Cnx
+    let Sjfn:= ST>>Dat.TD^CNX.Sendjfn
+    and Rjfn:= ST>>Dat.TD^CNX.Recvjfn
+    EndNetDialogue(Sjfn,Rjfn)		// say goodbye,...
+    ST>>Dat.TD^CNX.Sendjfn:= 0		// and set JFN's to 0
+    ST>>Dat.TD^CNX.Recvjfn:= 0
+  }
+
+
+and RTSJFN(Cnx):= valof			// temp?: return send jfn
+  { let CNX:= rhz Cnx
+    resultis ST>>Dat.TD^CNX.Sendjfn
+  }
+
+and RTRJFN(Cnx):= valof			// return receive jfn
+  { let CNX:= rhz Cnx
+    resultis ST>>Dat.TD^CNX.Recvjfn
+  }
+
+and RTNSST(Cnx):= valof			// return send cnx status
+  { let CNX:= rhz Cnx
+    resultis ST>>Dat.TD^CNX.Scnxstat
+  }
+
+and SETSST(Cnx) be			// set send cnx status ON
+  { let CNX:= rhz Cnx
+    ST>>Dat.TD^CNX.Scnxstat:= true
+  }
+
+and CLRSST(Cnx) be			// set send cnx status OFF
+  { let CNX:= rhz Cnx
+    ST>>Dat.TD^CNX.Scnxstat:= false
+  }
+

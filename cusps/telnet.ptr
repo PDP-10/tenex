@@ -1,0 +1,119 @@
+	TITLE TELNET
+
+	SUBTTL	TELNET ptr file
+
+SEARCH STENEX
+EXTERN .JBSA
+
+A==1
+B==2
+C==3
+D==4
+E==5
+F==6
+G==7
+P==17
+
+PRGPAG==10
+PRGADR==PRGPAG*1000
+
+RELOC PRGADR-140
+
+START:	RESET
+	MOVSI 1,100001		; Find real TELNET
+	HRROI B,[ASCIZ \<ARPANET>TELNET.SAV\]
+	GTJFN
+	 JRST  [CAIN A,GJFX20	; No version?
+		 SKIPA A,[-1,,ERRPTR]
+		HRROI A,[ASCIZ \Subsystem not available\] 
+		JRST BMBOUT]	; OK bomb out
+	MOVEM A,TJFN		; Got it, save the JFN
+	MOVEI A,400000		; Interrupts for GET failure
+	MOVE B,[LEVTAB,,CHNTAB]
+	SIR
+	EIR
+	MOVSI B,(1B15)		; Activate channel 15
+	AIC
+	MOVE A,TJFN		; Now prepare to get the file
+	HRLI A,400000
+	MOVE LNCD1,[RGCD1,,RGCD1A]   ; Get register code
+	BLT LNCD1,LNCD1
+	JRST RGCD1A		; And execute it
+
+; Error exit for subsystem fetch error
+BMBOUT:	ESOUT			; Print error msg
+	MOVEI A,37
+	PBOUT
+	MOVE LNCD0,[RGCD0,,RGCD0A]  ; Register code
+	BLT LNCD0,LNCD0
+	JRST RGCD0B		; Execute it
+
+; Pseudo interrupt routine to handle illegal instruction traps
+ILLINS:	CAIE A,OPNX3		; No read access?
+	CAIN A,OPNX5		; Or execute access?
+	 JRST  [HRROI A,ERRPTR	; Yes, print msg
+		JRST BMBOUT]
+	HRRZ B,1		; No, print general msg
+	HRLI B,400000
+	HRROI A,[ASCIZ \JSYS error return: \]
+	ESOUT
+	MOVEI A,101
+	SETZ C,
+	ERSTR
+	 JFCL
+	 JRST  [HRROI A,[ASCIZ \Error string not found for error \]
+		PSOUT
+		MOVEI A,101
+		HRRZS B
+		MOVEI C,10
+		NOUT
+		 JFCL
+		JRST BMBOUT] 
+	JRST BMBOUT
+
+; Register code to cleanup before bombing
+RGCD0: 	PHASE 1
+RGCD0A:	-1
+	400000,,PRGPAG
+	0
+RGCD0B:	PMAP
+	RESET
+RGCD0C:	HALTF
+	JRST RGCD0C
+LNCD0==.-1
+	DEPHASE
+
+; Register code to load TELNET save file
+RGCD1:	PHASE 2
+RGCD1A:	GET
+	MOVEI A,400000		; Close files
+	CLZFF
+	SETO B,			; Clear interrupt system
+	DIC
+	SETZ B,
+	DIR
+	SIR
+	GEVEC			; Get entry vector
+	TLNE B,777000
+	 HRR B,.JBSA
+	JRST 0(B)		; Start the program
+LNCD1==.-1
+	DEPHASE
+
+TJFN:	0
+
+; Pseudo interrupt tables
+LEVTAB:	LEV1PC
+	LEV2PC
+	LEV3PC
+LEV1PC:	0
+LEV2PC:	0
+LEV3PC:	0
+
+CHNTAB:	REPEAT ^D15,<0>
+	1,,ILLINS		; Illegal instruction trap
+	REPEAT ^D20,<0>
+
+ERRPTR:	ASCIZ \RESTRICTED SUBSYSTEM: see <DOC>TELNET.INFO\
+
+	END START

@@ -1,0 +1,1526 @@
+
+BEGIN "search"
+
+COMMENT	   Sentence/Word/Character Search, in TENEX SAIL
+	 IMSSS, Stanford University.  Pentti Kanerva, 1973
+
+		To compile and save:
+
+	@SAIL'CR'
+	*SEARCH_
+	...
+	@SSAV$ $ $ SEARCH'CR'
+;
+
+EXTERNAL INTEGER  !skip!;
+
+REQUIRE  3000	STRING!SPACE;
+
+LET	NON!SIMPLE!PROCEDURE = PROCEDURE;
+DEFINE	PROCEDURE = "SIMPLE NON!SIMPLE!PROCEDURE";
+
+DEFINE
+	!! = "COMMENT",
+
+		COMMENT  Some ASCII characters;
+
+	TAB	= "'11",
+	LF	= "'12",
+	FF	= "'14",
+	pageMark= "'14",	COMMENT  Form Feed;
+	CR	= "'15",
+	ESC	= "'33",
+	TNXEOL	= "'37",
+	SPACE	= "'40",
+
+	big	= "'654321",	COMMENT  Large (default line) number;
+
+		COMMENT  Common Abbreviations;
+
+	NIL = "NULL",
+
+	FOREVER = "WHILE TRUE",
+	upto = "STEP 1 UNTIL",   downto = "STEP -1 UNTIL",
+
+	inc(x) = "x_x+1",   dec(x) = "x_x-1",
+	empty = "NOT length",
+	nonEmpty = "length",
+	upperCase(chr) = "ucTable[chr]",
+	eolStr = """
+""",
+	closeFile = "cFile",
+	
+
+		COMMENT  Break Tables;
+
+	br.skipBlank = "1",	COMMENT  Scan past spaces and TABs;
+
+	br.fileLine = "2",	COMMENT  File name line;
+	br.line = "br.fileLine",
+	br.bName = "3",		COMMENT  Scan to beginning of file name;
+	br.name = "4",		COMMENT  To get a file name;
+	br.ranges = "5",	COMMENT  To get file page/line ranges;
+	br.skipRange = "6",	COMMENT  To junk invalid range spec;
+	br.number = "7",	COMMENT  To get page and line numbers;
+
+	br.dataLine = "8",	COMMENT  Lines to be examined;
+	br.skipLine = "9",	COMMENT  Lines to be junked;
+	br.skipPage = "10",	COMMENT  Pages to be junked;
+
+	br.word = "11",		COMMENT  Words to be examined;
+	br.skipWord = "12",	COMMENT  Words to be junked;
+	br.skipNonW = "13",	COMMENT  Separators (to be junked);
+
+	br.char = "14";		COMMENT  Characters to be search;
+
+
+!! GLOBAL VARIABLES
+   ====== =========;
+
+!! Variables and Stacks for File Input
+   --------- --- ------ --- ---- -----;
+
+INTEGER
+	bPage, bLine,	!! Block beginning page/line numbers;
+	level,		!! Depth of recursion of file getter;
+	errorNo;	!! Counts OPENFILE failures;
+
+
+DEFINE	maxLevel = "5";
+
+SAFE INTEGER ARRAY
+
+	datas,			!! TRUE/FALSE for data/indirect file;
+
+	inChans, 		!! Input channels gotten by 'OPENFILE';
+	counts, brChars, eofs,		!! 'SETINPUT' arguments;
+	pagNums, linNums, sosNums,	!! 'SETPL' arguments;
+	ePages, eLines [0:maxLevel];	!! Block end page/line numbers;
+		
+STRING
+	fileName,	!! File name string, temporary;
+	partRange;	!! Part of range spec not yet fully analysed.
+			   Its sole function is to facilitate the re-
+			   porting of range errors.  Updated by 
+			   'GETSRANGE', used also by 'GETSBLOCK';
+
+SAFE STRING ARRAY
+	lines [0:maxLevel],	!! Current input lines;
+	inFiles,		!! Name of input file;
+	wholeRanges,		!! Range strings as typed in;
+	ranges [1:maxLevel+1];	!! Block specification ranges, chewed
+				   up by 'GETSPL' and others;
+
+
+!! The above arrays are accessed at current level using the following
+   abbreviated names.  Many of the defined names are those used in
+   the TSAIL manual;
+
+DEFINE	
+	data	=  "datas  [level]",
+
+	inChan	=  "inChans[level]",
+	count	=  "counts [level]",
+	brChar	=  "brChars[level]",
+	eof	=  "eofs   [level]",
+
+	pagNum	=  "pagNums[level]",
+	linNum	=  "linNums[level]",
+	sosNum	=  "sosNums[level]",
+
+	ePage	=  "ePages [level]",
+	eLine	=  "eLines [level]",
+
+	line	=  "lines  [level]",
+	inFile	=  "inFiles[level]",
+	wholeRange = "wholeRanges [level]",
+	range	=  "ranges [level]",
+
+	eoInput	=  "level LEQ 0";
+
+
+!! Variables and Arrays for Searching and Output
+   --------- --- ------ --- --------- --- ------;
+
+INTEGER
+	outChan,	!! Channel for reporting finds;
+	plChan,		!! Channel for ".PL" file;
+	linesOnPage,	!! Counts output lines for pagination;
+	linesPerFind,	!! # of lines to output for each find;
+	nFinds,		!! # of finds on current file;
+	offset,		!! Preface pages to "omit" at beginning if file.
+			   Affects numbering of find pages;
+
+	head,		!! First char. of current input word, in UC;
+	heads1,		!! HEADS[1], for speed.  Eliminates indexing;
+	state,		!! Word to test next while searching;
+	nWords;		!! # words in search "sentence";
+
+BOOLEAN
+	ttyOutput,	!! No page marks if output on tty;
+	do.PL,		!! .PL file is wanted;
+	plOpen,		!! TRUE iff ok to output page.line numbers;
+	wordIn;		!! TRUE iff the whole word, not just the head
+			   character, has been input;
+STRING
+	word,		!! Current input word (minus the head character);
+	restOfLine,	!! Part of current data line not yet scanned;
+	outFile,	!! Name of output file;
+	plFile;		!! Name of .PL file;	
+
+DEFINE	maxState = "30";	!! Max no. of search words;
+
+SAFE INTEGER ARRAY
+	heads [1:maxState],	!! Search word head characters, in UC;
+	states [0:maxState];	!! State to examine if this one fails;
+
+SAFE STRING ARRAY
+	words [1:maxState];	!! Search words, "minus" head char, in UC;
+
+!! Miscellaneous Variables
+   ------------- ---------;
+
+INTEGER
+	char,		!! Character, temp.  'PEEK' and 'GETSANSWER'
+			   return "break" character in 'CHAR';
+	language,	!! "E" for English, "A" for Algol (and sAil);
+	object,		!! "S" for Sentence, "W" for Words, "C" for
+			   Characters;
+	punctuatin,	!! "I" to Ignor, "P" to observe Punctuation;
+	i,		!! Index, temp;
+	junk;		!! Common write-only variable;
+
+BOOLEAN
+	same,		!! All options accepted so far;
+	accepted,	!! Use default (old) option;
+	rushed;		!! Ask no useless questions, proceed to search;
+!! These two variables are set by 'PEEK' and 'GETSANSWER';
+
+STRING
+	answer,		!! Filled by 'GETSANSWER';
+	sentence,	!! Search sentence, the words to look for;
+	key,		!! Characters found on a line;
+	root,		!! Line of tty input that gives input files;
+	spaces,		!! A string of 30? spaces;
+	omitables,	!! Omit-characters;
+	A.to.z,		!! The upper- and lowercase letters;
+	digits,		!! 0 to 9;
+	letters,	!! Word characters;
+	visibles,	!! Acitive punctuation (one-char. words);
+	invisibles,	!! "Invisible" separators;
+	separators,	!! Non-word characters;
+	everything;	!! The ASCII characters from 1-'177;
+
+
+PRELOAD!WITH
+
+ '0,  '1,  '2,  '3,  '4,  '5,  '6,  '7, 
+'10, '11, '12, '13, '14, '15, '16, '17, 
+'20, '21, '22, '23, '24, '25, '26, '27, 
+'30, '31, '32, '33, '34, '35, '36, '37, 
+
+'40, "", '42, '43, '44, '45, '46, '47, 
+'50, '51, '52, '53, '54, '55, '56, '57, 
+'60, '61, '62, '63, '64, '65, '66, '67,
+'70, '71, '72, '73, '74, '75, '76, '77, 
+
+'100, '101, '102, '103, '104, '105, '106, '107, 
+'110, '111, '112, '113, '114, '115, '116, '117, 
+'120, '121, '122, '123, '124, '125, '126, '127, 
+'130, '131, '132, '133, '134, '135, '136, '137, 
+
+'140,  "A",  "B",  "C",  "D",  "E",  "F",  "G",
+ "H",  "I",  "J",  "K",  "L",  "M",  "N",  "O",
+ "P",  "Q",  "R",  "S",  "T",  "U",  "V",  "W",
+ "X",  "Y",  "Z", '173, '174, '175, '176, '177; 
+
+SAFE INTEGER ARRAY	ucTable [0:'177];
+
+SAFE BOOLEAN ARRAY	punctuation [0:'177];	!! TRUE for non-letters;
+
+
+FORWARD BOOLEAN PROCEDURE	getsLine;
+
+FORWARD BOOLEAN PROCEDURE	matches;
+
+FORWARD PROCEDURE		putPageMark;
+
+FORWARD PROCEDURE		found;
+
+
+
+PROCEDURE	countErrors;
+!!		-----------
+	Counts file and range errors, halts after every tenth one.
+	;
+IF  (inc(errorNo)) MOD 5 = 0
+THEN	
+BEGIN
+	outStr ("
+" & cvs(errorNo) & " errors detected.  CONTINUE  to try some more.
+");
+	START!CODE  HALTF  END;
+END
+;
+
+
+
+PROCEDURE	errorReport;
+!!		-----------
+	;
+BEGIN
+	outStr ("
+   ");
+	erStr (-1, 0);
+END
+;
+
+
+
+PROCEDURE	rangeError (STRING str);
+!!		----------;
+BEGIN
+	outStr ("
+   Range error in '" & inFile & "(..." & partRange & ")'
+... " & str & "
+");
+	countErrors;
+END
+;
+
+!! PLACE LIST FILE START AND FINISH
+   ===== ==== ==== ===== === ======;
+
+PROCEDURE	openPL;
+!!		------;
+BEGIN "openPL"	STRING ext;
+
+	plChan _ OPENFILE (plFile _ "#" & JFNS (inChan, '001000000000)
+		    & (IF nonEmpty (ext _ JFNS (inChan, '000100000000))
+			THEN "-"&ext ELSE "")
+		    & ".PL",
+		   "AWE");
+
+	IF  NOT (plOpen _ NOT !skip!)  THEN
+	BEGIN
+		outStr ("   File " & plFile);
+		errorReport;
+	END
+	;
+END "openPL"
+;
+
+
+
+PROCEDURE	closePL;
+!!		-------
+	;
+IF  plOpen
+THEN  BEGIN  OUT(plChan,eolStr); CLOSEFILE(plChan); plOpen_FALSE  END
+;
+
+
+!! INPUT FILE PROCEDURES
+   ===== ==== ==========;
+
+!! GETTING OF VALID PAGE NUMBER (RANGE) SPECS
+   ------- -- ----- ---- ------  -----  -----;
+
+
+PROCEDURE	pace;	scan (range, br.skipBlank, char);	 
+!!		----;
+!! Scans past SPACEs, TABs.  Return brk char in CHAR;
+
+
+
+PROCEDURE	skip1;  junk _ lop (range);
+!!		-----;
+
+
+
+BOOLEAN PROCEDURE	getsNumber (REFERENCE INTEGER  n);
+!!			----------
+	Gets positive numbes.
+	TRUE  iff  first non-blank character is a digit.
+	   If not,  N  will be set to -BIG.
+	Returns the number in reference integer  N,
+	   scans and returns non-blank terminator in CHAR.
+	;
+BEGIN "getsNumber"
+!! Scan past initial spaces, Tabs;
+	pace;
+
+	IF  char<"0" OR char>"9"  	!! Positive numbers only;
+	THEN  BEGIN  n_-big; RETURN (FALSE)  END
+	;
+!! Scan to a ".", "-", space, TAB, comma, or ")";
+	n _ cvd (scan (range, br.number, junk) );
+	pace;  RETURN (TRUE);
+END "getsNumber"
+;
+
+
+
+BOOLEAN PROCEDURE	getsPL (REFERENCE INTEGER  pg, ln);
+!!			------
+	;
+BEGIN "getsPL"
+	IF  NOT getsNumber(pg)  
+	THEN  BEGIN  ln_-big; RETURN (FALSE)  END
+	;
+	IF  char="."  THEN  BEGIN  skip1; getsNumber(ln)  END
+	ELSE  ln _ -big
+	;
+	RETURN (TRUE);
+END "getsPL"
+;
+
+
+BOOLEAN PROCEDURE	getsRange (REFERENCE INTEGER  p1, l1, p2, l2);
+!!			---------
+	Scans page.line number (range) string for next valid range,
+	  i.e., beginning line "LEQ" end line.
+	Reports (and ignors) garbage in range spec string.  The sole
+	  function of global 'PARTRANGE' and local 'STR' and 'GARBAGE'
+	  is range error reporting.
+	Updates 'PARTRANGE' for benefit of 'GETSBLOCK'.
+	TRUE  if  gets valid range.
+	FALSE  if  range string is exhasted.
+	;
+BEGIN "getsRange"  BOOLEAN garbage;  STRING str;  LABEL bug;
+
+	scan (range, br.bName, junk);
+	partRange _ range;  garbage _ FALSE;	
+
+	DO
+	BEGIN		LABEL trash;
+!! Scan past initial SPACEs, TABs, commas;	
+		scan (range, br.bName, char);
+		str _ range;	!! Mark end of possible garbage;
+		IF  NOT char  THEN  DONE;
+
+!! Get block begin page.line number;
+		IF  NOT getsPL(p1,l1)  
+		THEN  BEGIN  scan(range,br.skipRange,junk); GOTO trash  END
+		;
+		pace;
+
+		IF  char="-"  
+		THEN  BEGIN  skip1; IF NOT getsPL(p2,l2) THEN GOTO trash  END
+		ELSE  BEGIN  p2_p1; l2_l1  END
+		;
+		l1 _ l1 MAX 1;  
+		IF  l2<0  THEN  BEGIN  l2_0; inc(p2)  END;
+		dec(p1);  dec(l1);  dec(p2);  dec(l2);
+!! Validity check;
+		IF  p1<p2 OR (p1=p2 AND l1 LEQ l2)  THEN  DONE;
+trash:		garbage _ TRUE;
+	END
+	UNTIL FALSE
+	;
+!! Show what was eaten but not digested;
+bug:	IF  garbage
+	THEN  rangeError ("'" 
+		& partRange[1 FOR length(partRange)-length(str)] 
+		& "' ignored")
+	;
+	RETURN (nonEmpty (partRange_str));   !! Update for 'GETSBLOCK';	
+END "getsRange"
+;
+
+
+!! INITIALIZING A FILE FOR INPUT
+   ============ = ==== === =====;
+
+
+BOOLEAN PROCEDURE	getsBlock;
+!!			---------
+	Scan to beginning of next valid block so that next 'GETSLINE' 
+	  will get the first line of block.
+	Ranges that lie entirely to the left of current read position
+	  get ignored by consequent 'GETSLINE'.
+	Also, ranges that cannot be reached are reported as errors.
+	FALSE  iff  no more blocks (or got EOF).
+	;
+IF  level<1  THEN  RETURN (FALSE)	
+ELSE
+BEGIN "getsBlock"	INTEGER pn, ln;
+	pn _ pagNum;  ln _ linNum;
+	IF  NOT getsRange(bPage,bLine,ePage,eLine)  THEN  RETURN (FALSE);
+
+!! Scan to the desired line, 
+  ...first by pages;
+	WHILE  pagNum < bPage  AND  NOT eof
+	DO  input (inChan, br.skipPage)
+	;
+!! ..then by lines;
+	WHILE  pagNum = bPage  AND  linNum < bLine  AND  NOT eof
+	DO  input (inChan, br.skipLine)
+	;
+	IF  eof  
+	THEN  rangeError ("End Of File, '" & partRange & "' ignored")
+	ELSE  IF  bPage<pn OR (bPage=pn AND bLine<ln)
+	THEN  rangeError ("'" 
+	        & partRange[1 FOR length(partRange)-length(range)]
+		& ( IF (junk_ePage)<pn OR (junk=pn AND eLine<ln)
+		    THEN "'" ELSE "' up to (page.line)=("
+				 & cvs(pn+1)&"."&cvs(ln) & ")" )
+		& " ignored")
+	;
+	RETURN (NOT eof);
+END "getsBlock"
+;
+
+
+BOOLEAN PROCEDURE	startFile;
+!!			---------
+	Sets up to scan to first block of file open on INCHAN.
+	Clears EOF flag ('INDEXFILE' does not do it for us (yet)).
+	End PAGE=-1 will cause first 'GETSLINE' to scan for a block.
+	;
+BEGIN "startFile"
+	nFinds _ linNum _ pagNum _ eof _ 0;  ePage _ -1;
+	range _ IF empty(wholeRange) THEN "1-999999"
+		ELSE wholeRange[2 TO INF-1];
+	outStr ("
+" & spaces[1 FOR 3*(level-1)]);
+	outStr ("...Searching file " & (IF data THEN "" ELSE " @ ")
+		& (inFile _ jfns(inChan,'221120000001)) & wholeRange & "
+");
+	IF  data AND NOT ttyOutput  
+	THEN  out ( outChan, "(Search sentence) " & sentence & "
+(Options) " & language & object & ( IF offset THEN "
+(Initial pages) " & cvs(offset) ELSE "" ) & "
+(Input file) " & inFile & wholeRange & "
+")
+	;
+!! Remove version number from end of name;
+	DO  inFile _ inFile [1 TO INF-1]  
+	UNTIL  inFile [INF FOR 1] = ";"
+	;
+	DO  inFile _ inFile [1 TO INF-1]  
+	UNTIL  inFile [INF FOR 1] NEQ "."
+	;
+!! Start line number accounting;
+	linesOnPage _ linesOnPage + 3 + (IF offset THEN 1 ELSE 0);
+END "startFile"
+;
+
+
+LABEL  finish;
+
+
+BOOLEAN PROCEDURE	getsIndexFile;
+!!			-------------
+	Attempts INDEXFILE first, drops down a level if fails.
+	Escape to FINISH when all files done.
+	;
+IF  level LEQ 0  THEN  GOTO finish
+ELSE
+BEGIN "getsIndexFile"
+	IF  data  THEN  putPageMark;
+	IF  plOpen  THEN  closePL;
+
+	IF  indexFile (inChan) 
+	THEN  BEGIN  startFile; RETURN (TRUE)  END
+	;
+	closeFile (inChan);  dec (level);  RETURN (FALSE);
+END "getsIndexFile"
+;
+
+
+PROCEDURE	getFile (BOOLEAN indir);
+!!		-------
+	Gets next file name from top level LINE, starts up the file
+	  (including its possible INDEXFILE successors).
+	Sets 'DATA' according to 'INDIR'.
+	Reads in first line of first block.
+	FALSE  iff  nothing to be got from the file (or its
+	  successors).
+	There is only one 'GETFILE' call for a file and its (indexed)
+	  successors.  The indexing is called from 'GETSLINE'.
+	;
+BEGIN "getFile"		BOOLEAN ov;  STRING rng;
+
+	scan (line, br.bName, char);
+	fileName _ scan(line, br.name, junk);
+	scan (line, br.skipBlank, char);
+
+	rng _ IF  char="("
+		THEN  scan (line, br.ranges, junk) & ")"
+		ELSE  NIL
+	;
+	IF  empty (fileName)  THEN  RETURN;
+
+	IF  (ov _ (inc(level))>maxLevel)
+		OR  (inChan _ openFile (fileName, "ORE*")) = -1
+		!! In that order;
+	THEN
+	BEGIN "notGot"
+		dec(level);
+		IF  NOT ov  THEN  errorReport;
+		outStr ( "
+... file '" & fileName & "' dismissed
+");
+		countErrors;  RETURN;
+	END "notGot"
+	;
+!! Success.  Do initial setup, save 'WHOLERANGE' for benefit of INDEXFILE;
+	setInput (inChan, count_200, brChar, eof);
+	setPL (inChan, linNum, pagNum, sosNum);
+
+	data _ NOT indir;  wholeRange _ rng;
+	startFile;  getsLine;
+END "getFile"
+;
+
+
+PROCEDURE	nextFile;
+!!		--------
+	Loops here until gets next DATA file.
+	Indexing through the previous data file has already been
+	   completed (using indexfile).
+	Current LINE (and file) holds file names and page specs
+	   (current file is an indirect file).
+
+	Each loop through 'NEXTFILE' does ONE of the following:
+	 (1) Scans current line for file name and page specs, opens
+	     the file (tries to).
+	 (2) Prints current line as a comment.
+	 (3) Gets next line of current input file.  GETSLINE drops
+	     down a level if fails.
+	;
+WHILE  level GEQ 0  AND  NOT data
+DO
+BEGIN "nextFile"
+
+	scan (line, br.bName, char);
+
+	IF  char=0  THEN  getsLine
+	ELSE  IF  char=";"  
+	THEN  
+	BEGIN
+		outStr("
+" & spaces[1 FOR 3*(level+1)] & line & "
+");
+		line _ NIL;
+	END
+	ELSE
+	BEGIN  BOOLEAN indir;
+!! Remove possible "@"-sign;
+		IF  indir _ char="@"  THEN  junk _ lop(line);
+		getFile (indir);
+!! Successful 'GETFILE' goes up a level;
+	END
+	;
+END "nextFile"
+;
+
+
+!! LINE-BY-LINE READING OF A FILE
+   ==== == ==== ======= == = ====;
+
+
+BOOLEAN PROCEDURE	getsLine;
+!!			--------
+	Get next line from current (top level) file.
+	Scans to next block when current one is exhausted, to next
+	  INDEXFILE successor when current file finished.
+	FALSE  iff  last block of last INDEXFILE finished.
+	GETSLINE makes indexed files appear as one (continuous) input
+	  file to the rest of the world.
+	Special case 'LEVEL=0 AND DATA', to return to 'SETSWORDS'.
+	;
+FOREVER  DO
+IF  level>0  
+THEN
+BEGIN "getsLine"
+	WHILE  pagNum GEQ ePage AND (pagNum>ePage OR linNum>eLine)
+	DO  
+	IF  NOT getsBlock AND NOT getsIndexFile   !! In that order;
+	THEN  RETURN (FALSE)
+	;
+	line _ input (inChan, br.line);
+	IF  eof AND empty(line)  THEN  ePage _ -1  ELSE  RETURN (TRUE);
+!! EPAGE=-1 will force recognition of EOF;
+END "getsLine"
+ELSE  IF  level=0 AND data  THEN  RETURN (TRUE)  ELSE  GOTO finish
+;	!! For 'SETSWORDS';
+
+
+
+PROCEDURE	nextLine;
+!!		--------
+	Gets next DATA line.
+	;
+IF  NOT getsLine  THEN  nextFile;   !! Returns only if gets data file;
+
+
+!! SCANNING OF WORDS
+   ======== == =====;
+
+
+PROCEDURE	nextHead;
+!!		--------		
+	Global arguments:  WORDIN (must be TRUE when program starts).
+	Returns, in HEAD, the head character of next word in upper case.
+	;
+BEGIN "nextHead"
+	IF  NOT wordIn  
+	THEN  
+	BEGIN
+		scan (restOfLine, br.skipWord, junk);
+		wordIn _ TRUE;
+	END
+	;
+	DO
+	BEGIN
+		scan (restOfLine, br.skipNonW, head);
+
+!! Maybe last word of line;
+		IF  head NEQ 0  
+		THEN  
+		BEGIN  
+			head _ upperCase(head);
+			IF  wordIn _ punctuation[head]  THEN  word _ NIL;
+			RETURN; 
+		END
+		ELSE  BEGIN  nextLine; restOfLine_line  END
+		;
+	END
+	UNTIL  eoInput
+	;
+END "nextHead"
+;
+
+
+
+PROCEDURE	thisWord;
+!!		--------
+	Puts rest of this word to  WORD.
+	;
+BEGIN "thisWord"
+	word _ scan (restOfLine, br.word, junk);
+	wordIn _ TRUE;
+END "thisWord"
+;
+
+
+!! SEARCH PROCEDURES
+   ====== ==========;
+
+
+BOOLEAN PROCEDURE	finds1;
+!!			------
+	;
+BEGIN "finds1"
+	state _ 1;
+
+	WHILE  NOT eoInput
+	DO
+	BEGIN
+		nextHead;
+		IF  head=heads1 AND matches  THEN  RETURN (TRUE);
+	END
+	;
+	RETURN (FALSE);
+END "finds1"
+;
+
+
+BOOLEAN PROCEDURE	matches;
+!!			-------
+	Global arguments: STATE, HEAD, WORDIN, WORD
+	TRUE  iff  HEAD=HEADS[STATE] and WORD=WORDS[STATE].
+	;
+!! Do first letters match?;
+
+IF  head NEQ heads[state]  THEN  RETURN (FALSE)
+ELSE
+BEGIN "matches"		INTEGER c1;  STRING w1, w2;
+
+!! Make sure that the rest of the word is read in;
+	IF  NOT wordIn
+	THEN
+	BEGIN
+		word _ scan (restOfLine, br.word, junk);
+		wordIn _ TRUE;
+	END
+	;
+
+!! Do the lengths match?;
+	IF  length(word) NEQ length(words[state])
+	THEN  RETURN (FALSE)
+	;
+	w1 _ word;  w2 _ words[state];	
+
+!! Match character by character?;
+	WHILE  (c1_lop(w1))
+	DO  IF  upperCase(c1) NEQ lop(w2)  THEN  RETURN (FALSE)
+	;	
+	RETURN (TRUE);
+END "matches"
+;
+
+PROCEDURE	advance;
+!!		-------
+	Increment state, report find if found.
+	A find on a line terminates furter search of the line.
+	;
+IF  (inc(state)) > nWords
+THEN  BEGIN  found; state_0  END
+ELSE  nextHead
+;
+
+
+
+
+PROCEDURE	findAll;
+!!		-------
+	The search is conducted here....
+	Each cycle of FINDALL processes a word through one state of the
+	   search "net".
+	;
+WHILE  NOT eoInput
+DO
+IF  state=0  THEN  BEGIN  IF finds1  THEN  advance  END
+ELSE  IF  matches  THEN  advance  ELSE  state _ states[state]
+;
+
+
+
+PROCEDURE	wFindAll;
+!!		--------
+	Each cycle tests a word against the list of words.
+	;
+WHILE  NOT eoInput
+DO
+BEGIN
+	nextHead;
+
+	FOR  state_1 upto nWords
+	DO  IF  matches  THEN  BEGIN  found; DONE  END
+	;
+END
+;
+
+
+
+PROCEDURE	cFindAll;
+!!		--------
+	Find and report all occurences of search characters.
+	;
+BEGIN "cFindAll"
+
+	PROCEDURE	cFound;	
+	!!		------;
+	BEGIN
+		line _ "..." & char & (restOfLine _ line);
+		key _ NIL;
+
+		WHILE  char  DO
+		BEGIN
+			key _ key & " " & char;
+			scan (restOfLine, br.char, char);
+		END  
+		;		
+		found;
+	END
+	;
+
+	!!		* * * * * ;
+
+	FOREVER  DO
+	BEGIN
+!! Scan first line, which is already in;
+		scan (line, br.char, char);   IF  char  THEN  cFound;
+
+!! Scan to next token in file;
+		INPUT (inChan, br.char);
+
+		IF  char _ brChar
+		THEN  BEGIN  line_INPUT(inChan,br.line); cFound  END
+		;
+		nextLine;
+	END !! of FOREVER;
+	;
+END "cFindAll"
+;
+
+!! REPORTING OF FINDS
+   ========= == =====;
+
+
+
+PROCEDURE	putPageMark;
+!!		-----------
+	;
+BEGIN  IF NOT ttyOutput THEN out(outChan,pageMark); linesOnPage_0  END;
+
+
+
+
+PROCEDURE	found;
+!!		-----	
+	Report a find as:
+		File name (page.line)
+		The text line
+	;
+BEGIN "found"	INTEGER oc;  STRING ls, pls;
+	IF  linesOnPage+linesPerFind > 60  THEN  putPageMark;
+	out (oC_outChan, "
+");
+	out (oC, inFile);
+	out (oC, " (");
+	out (oC, cvs(pagNum+1-offSet));
+	out (oC, ".");
+	out (oC, ls _ cvs(linNum));
+	out (oC, ") ");
+	out (oC, key);
+	out (oC, "
+");
+	out (outChan, line);
+	out (outChan, "
+");
+	linesOnPage _ linesOnPage + linesPerFind;
+	restOfLine _ NIL;
+
+!! Output of Page.Line number string;
+
+	IF  do.PL OR NOT ttyOutput  THEN
+	BEGIN
+		pls _ " " & cvs(pagNum+1) & "." & ls;
+
+		IF  do.PL  THEN
+		BEGIN
+			IF  NOT nFinds  THEN  openPL;
+			IF  plOpen  THEN  OUT (plChan, plS);
+		END
+		;
+		IF  NOT ttyOutput  THEN  outStr (plS);
+
+		IF  NOT ( (inc(nFinds)) MOD 10 )  THEN
+		BEGIN
+			IF  plOpen  THEN  OUT (plChan, eolStr);
+			IF  NOT ttyOutput  THEN  outStr (eolStr);
+		END
+		;
+	END
+	;	  
+END "found"
+;
+
+
+!! DIALOG, SCANNER, AND INITIALIZATION PROCEDURES
+   ======  =======  === ============== ==========;
+
+
+
+STRING PROCEDURE	raise (STRING  str);
+!!			-----
+	;
+BEGIN "raise"	INTEGER c;  STRING s;
+	s _ NIL;			
+	WHILE  c_lop(str)  DO  s _ s & upperCase(c);
+	RETURN (s);
+END "raise"
+;
+
+
+
+
+BOOLEAN PROCEDURE	ijMatch (INTEGER  i, j);
+!!			-------
+	TRUE  iff  the words indexed by  i  and  j  match.
+	;
+RETURN ( heads[i]=heads[j] AND equ(words[i],words[j]) );
+
+BOOLEAN PROCEDURE	setsWords (STRING  sentns);
+!!			---------
+	Prepares search tables on bases of SENTENCE, unless char search.
+	SENTENCE  contains the string of words to search.
+	Results:
+	   'NWORDS' will hold the number of words to search.
+	   'HEADS' array will have first characters of search words, in UC.
+	   'WORDS' array will have rest of the search words, in UC.
+	   'STATES' array will hold back pointers to "next state" to try.
+	Returns NWORDS, i.e., FALSE  iff  SENTENCE  scans to an empty 
+	  string without providing any search words.
+	;
+IF  object="C"  THEN  RETURN (nonEmpty(sentence))
+ELSE
+BEGIN "setsWords"	INTEGER  i, j, i1, j1;
+	nWords _ 0;
+!! Itialization to allow the use of 'NEXTHEAD', 'THISWORD';
+	level _ 0;  line _ NIL;  data _ TRUE;
+	restOfLine _ sentns;  wordIn _ TRUE;
+
+!! Load head-character and search-word arrays, in upper case;
+	FOREVER DO
+	BEGIN
+		nextHead;   IF  NOT head  THEN  DONE;
+
+		IF  nWords GEQ maxState  
+		THEN
+		BEGIN
+			outStr ("
+   Over " & cvs(nWords) & " search words (and punctuation marks)
+... '" & head & restOfLine & "' ignored
+");
+			DONE;
+		END
+		;
+		heads[inc(nWords)] _ upperCase(head);
+		IF  NOT wordIn  THEN  thisWord;
+		words[nWords] _ raise (word);
+	END
+	;
+
+!! Head and word arrays and 'NWORDS' are now set;
+
+!! Set the "next state" array 'STATES'.  Its function is to tell what
+  earlier word  j  to test next if the word next in sequence,  i,  does 
+  not match.
+    The following "diagram" gives some idea of how words are scanned.
+
+			  j	  i
+	|   |   |   |   |   |   |   |   |
+	| 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+	|   |   |   |   |   |   |   |   |
+	   <------------ j1
+		   <------------ i1
+;
+
+	states[0] _ 0;
+
+	FOR  i _ nWords downto 1
+	DO
+	BEGIN
+		j _ i;
+
+		WHILE  (dec(j)) > 0
+		DO
+		BEGIN
+			IF  NOT ijMatch(i1_i, j1_j)
+			THEN
+			WHILE  (dec(j1)) > 0
+			DO  IF  NOT ijMatch(dec(i1),j1) THEN  DONE
+			;
+			IF  j1=0  THEN  DONE;  !! Found longest match sequence;
+		END
+		;
+		states[i] _ j;		!! "Back state" is assigned here;
+	END
+	;
+	heads1 _ heads[1];
+	RETURN (nWords);
+END "setsWords"
+;
+!! Variable Break Table Initialization
+   -------- ----- ----- --------------;
+
+PROCEDURE	setBrTables;
+!!		-----------
+	Cares about options:
+	OBJECT:
+	  C - characters:  Uses 'SENTENCE' as break characters.
+	LANGUAGE:
+	  E - English words
+	  A - sAil IDs
+	  O - user's Own break tables (NOT YET IMPLEMENTED).
+	;
+IF  object="C"  THEN
+BEGIN	STRING s1, s2;
+
+ REQUIRE  "{}{}"  DELIMITERS;
+
+	s1 _ NIL;  s2 _ sentence;
+
+	WHILE  char _ upperCase ({lop(s2)})  DO
+	BEGIN
+		s1 _ s1 & char;
+		IF  "A" LEQ char LEQ "Z"  THEN  s1 _ s1 & char+'40;
+		IF  char = ""  THEN  s1 _ s1 & "!";
+	END
+	;
+	setBreak (br.char, s1, everything, "IS");
+
+ REQUIRE  UNSTACK!DELIMITERS;
+
+END
+ELSE  
+BEGIN "setBrTables"	STRING letters, omitChar;
+
+	letters _ A.to.z & digits 
+		  & (IF language="E" THEN NIL ELSE '30 & "!#$\.'@");
+	omitChar _ NIL;
+
+!! Non-standard break tables accepted here...NOT YET IMPLEMENTED...;
+
+
+!! To scan, i.e. get, (the rest of) the current word;
+	setBreak (br.word, letters, omitChar, "XR");
+
+!! To skip over current word to next separator;
+	setBreak (br.skipWord, letters, everything, "XR");
+
+!! To skip over space and TAB to next word (or punctuation);
+	setBreak (br.skipNonW, invisibles, everything, "XS");
+	
+!! Set punctuation table;
+	punctuation [0] _ TRUE;
+	arrBlt (punctuation[1], punctuation[0], '177);
+	letters _ letters & invisibles;
+	WHILE  i_lop(letters)  DO  punctuation[i] _ FALSE;
+
+END "setBrTables"
+;
+
+
+!! Dialog Routines
+   ------ --------;
+
+
+DEFINE	backUp = 
+
+       "START!CODE
+		movei	1, '100;
+		BKJFN;
+		 HALTF;
+	END";
+
+
+PROCEDURE	peek;
+!!		----
+	Checks beginning of reply for special one-character options.
+	Line terminator sets 'ACCEPTED' meaning: use default option.
+	ALTM sets 'RUSHED'.
+	Backs up one if CHAR is other than "^", "?", CR, LF, or ALTM.
+	Leaves "break" character in CHAR.
+	;
+BEGIN "peek"
+	DO  char _ upperCase (INCHRW)
+	UNTIL  char NEQ " " AND char NEQ "	"
+	;
+	accepted _ FALSE;
+
+	IF  char=ESC  THEN  rushed _ accepted _ TRUE
+	ELSE  IF  char=TNXEOL OR char=LF  THEN  accepted _ TRUE
+	ELSE  IF  char NEQ "^" AND char NEQ "?"  THEN  backUp
+	;
+END "peek"
+;
+
+
+
+BOOLEAN PROCEDURE	getsAnswer;
+!!			----------	
+	Accepts a line of input, checks for special options.
+	Returns string in 'ANSWER', its first character in 'CHAR' (un-
+	  less it is "^" or "?").
+	Sets 'RUSHED' if ESC was used to terminate input.
+	Sets 'ACCEPTEC' if strig is empty (blank).
+	FALSE  iff  ANSWER is empty or "^" or "?" (TRUE for "^ ", "? ").
+	;
+BEGIN "getsAnswer"	INTEGER term;
+	answer _ NIL;
+
+!! The following hassle to overcome that damn DEC ALT MODE "}";
+	FOREVER DO
+	BEGIN  
+		answer _ answer & INCHWL;   backUp;   
+
+		IF  (term _ INCHRS) NEQ "}"  THEN  DONE
+		ELSE  answer _ answer & term;
+	END
+	;
+	scan (answer, br.skipBlank, char);
+
+	IF  length(answer)=1 AND (char="^" OR char="?")
+	THEN  RETURN (FALSE)
+	;
+!! Was 'ESC' used as terminator?;
+	IF  term=ESC  THEN  rushed _ TRUE;
+
+	IF  char  THEN  RETURN (char_TRUE);	!! Make CHAR non-^/?;
+!! Empty input;
+	accepted _ TRUE;  RETURN (FALSE);
+
+END "getsAnswer"
+;
+
+LABEL	startOver, getWords, getOptions, getOFile, ask.PL, getIFiles;
+
+
+		!! PROGRAM STARTS HERE
+		   ======= ====== ====;
+
+outStr ("
+
+  --- WORD SEARCH ---
+( ? for help, any time)
+");
+
+spaces _ "                              ";
+
+omitables _ "";
+A.to.z _ "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+digits _ "0123456789";
+invisibles _ SPACE & TAB & CR & LF & FF;
+
+everything _ NIL;
+FOR  i _ 1 upto '177  DO  everything _ everything & i;
+
+!! Break table for scanning over spacesa and TABs;
+setBreak (br.skipBlank, " 	", " 	", "XR");
+
+!! For getting next line from input file;
+setBreak (br.line, LF & FF & TNXEOL, CR, "ISPL");
+
+!! To skip over a line from input file;
+setBreak (br.skipLine, LF & FF & TNXEOL, everything, "IS");
+
+!! To skip over a page from input file;
+setBreak (br.skipPage, FF, everything, "IS");
+
+!! To scan past TABs, spaces, and commas to beginning of file name;
+setBreak (br.bName, " ,	", " ,	", "XR");
+
+!! For getting the file name;
+setBreak (br.name, " ,	(", NIL, "IR");
+
+!! To get the ranges for a file;
+setBreak (br.ranges, ")", NIL, "IS");
+
+!! To skip to next range field in  RANGES[LEVEL];
+setBreak (br.skipRange, " ,	", everything, "IS");
+
+!! For getting page/line numbers from  RANGES[LEVEL];
+setBreak (br.number, digits, NIL, "XR");
+
+
+!! INITIAL DIALOG
+   ======= ======;
+
+language _ "E";  object _ "W";  outFile _ "TTY:";  do.PL _ FALSE;
+linesPerFind _ 3;  offSet _ 0;   key _ NIL;
+
+same _ FALSE;  GOTO getWords;
+
+	!! Search-Word Input
+	   ------ ---- -----;
+
+startOver: !!
+---------;
+
+outStr ("
+
+   Starting over...
+");
+
+
+getWords: !!
+--------;
+DO
+BEGIN		LABEL bottom;	
+	rushed _ FALSE;
+
+	outStr ("
+(Search ""sentence"") ");
+	IF  nonEmpty (sentence)  THEN  outStr (sentence & "// ");
+
+	peek;			!! Look at first character of answer;
+	IF  accepted  THEN  GOTO bottom;
+
+	IF  char NEQ "?"	!! 'CHAR' loaded by 'PEEK';
+	THEN
+	BEGIN
+		IF  char="^"  THEN  backUp;	!! 1st question, no restarts;
+
+		IF  getsAnswer OR char="^"  	!! In that order;
+		THEN  BEGIN  sentence_answer; same_FALSE; GOTO bottom  END
+		;			
+	END
+	;
+
+	IF  char="?"	!! 'CHAR' loaded by 'PEEK' or 'GETSANSWER';
+	THEN
+	BEGIN
+		outStr ("
+
+   'CR' or 'ALT MODE' ('ESC') alone for the old list of words.
+   Anything else, and the old list is replaced by whatever you type.
+   You cannot append to the old list.
+
+   Use spaces to separate words, or punctuation if you want to search
+   for punctuated sentences.  Lists of up to 30 words are legal.
+   No distinction between upper and lower case.
+
+   Use 'CR' or 'ALT MODE' to terminate the list.  ALT MODE after any
+   answer means:  Ask no more, start the search.
+");
+		GOTO getWords;
+	END
+	;
+bottom:
+END
+UNTIL nonEmpty (sentence)
+;
+
+
+	!! Options Input
+	   ------- -----;
+
+getOptions: !!
+----------;
+WHILE  NOT rushed
+DO
+BEGIN
+	outStr ("
+(Options) " & language & object & " ");
+
+	peek;
+	IF  accepted  THEN  DONE;
+
+	IF  char NEQ "^" AND char NEQ "?" AND getsAnswer  !! In that order;	
+	THEN
+	BEGIN	BOOLEAN clean;
+
+REQUIRE "{}{}" DELIMITERS;
+
+		clean _ TRUE;
+
+		WHILE  char _ upperCase({lop(answer)})
+		DO  
+		IF  char="E" OR char="A"  THEN  language _ char
+		ELSE  IF  char="S" OR char="W" OR char="C"
+		THEN  object _ char
+		ELSE  IF  char NEQ " " AND char NEQ "	"
+		THEN
+		BEGIN
+			outStr ("
+   Invalid option '" & char & "' ignored
+");
+			clean _ FALSE;
+		END
+		;
+		IF  clean  THEN  BEGIN  same_FALSE; DONE  END;
+	END
+	ELSE  IF  char="^"  THEN  GOTO startOver
+	ELSE  IF  char="?"  THEN  outStr ("
+
+   Language options (choice of alphabet):
+     E - English 
+     A - ALGOL (or SAIL)
+
+   Object of search:
+     S - Sentence.  Look for a SEQUENCE of words.
+     W - Words.  Look for ANY WORD in search sentence.
+     C - Characters.  Look for any CHARACTER in search sentence.
+
+   In 'S' and 'W', punctuation marks count as one-letter words.
+
+   You can change one option or both by typing the appropriate 
+   letter(s), followed by a 'CR' (or ALT MODE).
+")
+	ELSE  DONE	!! Empty answer;
+	;
+END
+;
+
+setBrTables;	!! Set language dependent break tables;
+
+IF  NOT setsWords(sentence)  
+THEN
+BEGIN
+	outStr ("
+   Search sentence has no words!
+");
+	GOTO getWords;
+END
+;
+
+	!! Offset Input (for option 'C')
+	   ------ -----;
+
+IF  object NEQ "C"  THEN  offSet _ 0
+ELSE  IF  NOT rushed  THEN
+FOREVER DO
+BEGIN
+	outStr ("
+  (Initial pages) " & cvs(offset) & "// ");
+	peek;   IF  accepted  THEN  DONE;
+
+	IF  char NEQ "^" AND char NEQ "?" AND getsAnswer  !! In that order;
+	THEN  BEGIN  offSet_intScan(answer,char); same_FALSE; DONE  END
+	ELSE  IF  char="^"  THEN  GOTO startOver
+	ELSE  IF  char="?"  THEN  outStr ("
+
+   Option 'C' helps to locate non-standard characters that must be 
+   manually entered in the final copy of your paper.
+
+   ""Initial pages"" is the number of pages such as Foreword, Table of
+   Contents, etc., before Page 1 of text (PUB page 1, that is).  Use
+   it to make the page numbers output by the search program to agree
+   with numbering of pages by PUB.
+")
+	ELSE  DONE	!! Empty answer;
+	;
+END
+;
+
+	!! Output File Name Input
+	   ------ ---- ---- -----;
+
+getOFile: !!
+--------;
+
+accepted _ rushed;	!! Looked at under the next loop;
+
+WHILE  NOT rushed	
+DO
+BEGIN
+	outStr ("
+(Output file) " & outFile & "// ");
+
+	peek;
+
+	IF  accepted  THEN  DONE
+	ELSE  IF  char="^"  THEN  GOTO startOver
+	ELSE  IF  char="?"  THEN  outStr ("
+
+   The output will be APPENDED to the specified file.
+   Type file name (recognition by TENEX is available) or just a 'CR'.
+")
+	ELSE  DONE
+	;
+END
+;
+same _ same AND accepted;
+outChan _ IF accepted THEN openFile(outFile,"AW") ELSE openFile(NIL,"AWC");
+ttyOutput _ EQU (outFile_jfns(outChan,0), "TTY:");
+
+
+
+!! Want ".PL" files?
+   ----   --  -----;
+
+ask.PL: !!
+------;
+
+WHILE  NOT rushed  DO
+BEGIN
+	outStr ( "
+(.PL files?) " & (IF do.PL THEN "Y// " ELSE "N// ") );
+
+	peek;
+
+	IF  accepted  THEN  DONE
+	ELSE  IF  (junk _ char = "Y") OR char = "N"
+	THEN  BEGIN  do.PL_junk; INCHRW; same_FALSE; DONE  END
+	ELSE  IF  char = "^"  
+	THEN  BEGIN  closeFile(outChan); GOTO startOver  END
+	ELSE  IF  char = "?"  THEN  outStr ("
+
+   The  $+G  command of TEC TV-Edit goes to the next place in the
+   file as given by a list of file places.  This ""go to""-list can
+   be accepted from a ""#name-ext.PL"" file generated by the SEARCH
+   program (use TEC (Page.Line) option ""@"").  The .PL files contain
+   page and line numbers of lines with tokens on them.
+
+   Type  Y  to create the "".PL"" file(s),
+	 N  to not to,
+	 ^  to start over.
+")
+	ELSE  INCHRW	!! Remove offending character;
+	;
+END
+;
+
+
+!! Get Source File Names
+   --- ------ ---- -----;
+
+getIFiles: !!
+---------;
+
+IF  empty(root) OR same OR NOT rushed  THEN
+DO  
+BEGIN	LABEL request, bottom;
+request:
+	outStr ("
+(Input files) ");
+	IF  nonEmpty (root)  THEN  outStr (root & "// ");
+
+	peek;
+	IF  accepted  THEN  GOTO bottom;
+
+	IF  char NEQ "^" AND char NEQ "?" AND getsAnswer  !! In that order;
+	THEN  root _ answer
+	ELSE  IF  char="^"  
+	THEN  BEGIN  closeFile(outChan); GOTO startOver  END
+	ELSE  IF  char="?"
+	THEN
+	BEGIN
+		outStr ("
+
+   Type file names and page/line numbers.  For example,
+
+	FOO.BAZ(3,7.11-15), <DIR1>FOO.*, @FOO2
+
+   means:  Page 3, then from page 7 line 11 through page 15,
+   of file 'FOO.BAZ', then all files with name '<DIR1>FOO',
+   any extension, and finally all files whose names are to be 
+   found on (indirect) file 'FOO2'.
+
+   No file name recognition by TENEX here.
+
+   Type '^' to start over (to review and change options).
+");
+		GOTO  request;
+	END
+	;
+bottom:
+END
+UNTIL  nonEmpty (root)
+;
+
+level _ state _ errorNo _ linesOnPage _ nFinds _ 0;
+line _ root;  data _ plOpen _ FALSE;  nextFile;  
+restOfLine _ line;  wordIn _ TRUE;  key _ NIL;
+
+IF  object="S"  THEN  findAll
+ELSE  IF  object="W"  THEN  wFindAll  ELSE  cFindAll
+;
+
+finish: !!
+------;
+
+closeFile (outChan);
+
+outStr ("
+...DONE... 
+CONTINUE  for more
+");
+
+START!CODE  HALTF  END;
+
+same _ TRUE;  GOTO  getWords;
+
+
+END "search"
+;
+
+------------------------------------------------------------------------
+------------------------------------------------------------------------
+------------------------------------------------------------------------
+------------------------------------------------------------------------
+------------------------------------------------------------------------
+------------------------------------------------------------------------
+------------------------------------------------------------------------
+------------------------------------------------------------------------
+------------------------------------------------------------------------
+------------------------------------------------------------------------
+
+
+

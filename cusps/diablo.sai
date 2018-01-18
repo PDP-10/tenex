@@ -1,0 +1,250 @@
+begin "driver"
+
+comment a driver for listing PUB output files on the DIABLO
+	printer--using standard listing defaults, adjusting
+	offset, and moving up and down half-lines for
+	sub/superscripts;
+
+require "<><>" delimiters;
+
+define lf = <'12>,
+       cr = <'15>,
+       ff = <'14>,
+       crlf = <"
+">,
+       ctlF = <'6>,
+       ctlG = <'7>,
+       ctlH = <'10>,
+       ctlR = <'22>,
+       ctlS = <'23>,
+       ctlK = <'13>,
+
+       space = <'40>,
+
+       ! = <comment>,
+       maxpage = <1000>,
+
+       fftbl = <3>,
+       checknotbl = <2>,
+       pagetbl = <1>;
+integer array printingpages [1:maxpage];
+string page, printpages, offset, confirmation;
+integer infile, ppbrchar, pbrchar, ibrchar, brchar, eof;
+integer ac2, ac3, nac2, nac3;
+integer nmaxpage;
+integer offseti;
+integer o;
+integer curpage;
+integer curchar;
+integer pagecount;
+integer nextpage;
+integer success;
+integer isend;
+
+	
+simple integer procedure GETNEXTPAGE;
+
+comment checks printingpages table to find next page which
+	is to be printed and returns the number;
+
+	begin 
+	integer i;
+	if curpage > nmaxpage then return (0);
+	curpage _ curpage+1;
+	for i _ curpage step 1 until nmaxpage do 
+	  if printingpages[i] then begin
+				   curpage_i;
+				   return (curpage); end;
+	return (0);
+	end;
+
+simple integer procedure GOTONEXT (integer page);
+
+comment inputs file breaking on FF until desired page is reached;
+
+	begin
+	while true do 
+	  begin "getinput"
+	  integer char;
+	  do char _ charin(infile) until char = ff or eof;
+	  if eof then return (false);
+	  if char = ff then pagecount_pagecount+1;
+	  if pagecount = page then return (true);
+	  end "getinput";
+	end;
+
+simple procedure SETUPPRINTINGPAGES;
+
+comment scans desired page list and marks desired pages true in array;
+
+	begin
+	integer i, jbrchar;
+	integer bpage, epage;
+	string s;
+	if not length(printpages) then return;
+	s_printpages;
+	nmaxpage _ 1;
+      while true do begin
+	bpage _ cvd(scan(s, pagetbl, ppbrchar));
+	if ppbrchar = 0 then
+		begin
+		if bpage neq 0 then 
+			begin
+			printingpages[bpage] _ true;
+			nmaxpage _ bpage;
+			end;
+		return;
+		end;
+	if ppbrchar = "," then begin printingpages[bpage] _ true; 
+					nmaxpage _ bpage; continue; end;
+	if ppbrchar = "-" then 
+		begin
+		epage_cvd(scan(s, pagetbl, jbrchar));
+		for i _ bpage step 1 until epage do
+				printingpages[i] _ true;
+		nmaxpage _ epage;
+		if jbrchar = 0 then return;
+		end;
+	end;	
+	end;
+
+simple procedure UPORDOWN;
+
+comment moves printer up or down halfline;
+
+	begin
+	integer i;
+	sfcoc('101, nac2, nac3);
+	pbout(ctlF);
+	if curchar = ctlS then 
+		for i _ 1 step 1 until 4 do pbout(lf); 
+	if curchar = ctlR then
+		for i_ 1 step 1 until 4 do pbout(ctlK);
+	pbout(ctlF);
+	sfcoc('101, ac2, ac3);
+	end;
+
+simple procedure dooffset;
+	begin
+	integer char, pointer;
+	define spaces = <"                                                                                         ">;
+	if offseti = 0 then return;
+	pointer _ rchptr (infile);
+	char _ charin (infile);
+	if char = lf then char _ charin(infile);
+	if eof then return;
+	if char neq cr and char neq ff then psout(spaces[1 to offseti]);
+	schptr (infile, pointer);
+	return;
+	end;
+
+simple procedure CARRIAGERETURN;
+
+comment outputs offset number of spaces after each cr;
+
+	begin
+	integer i;
+	pbout(curchar);
+	dooffset;
+	end;
+
+simple integer procedure FORMFEED;
+
+comment counts current page, checks if it is to be printed, if not gets
+	page number of next page to be printed and moves to that page;
+
+	begin
+	pagecount _ pagecount+1;	  
+	if length(printpages) then  
+	  begin
+	  nextpage _ getnextpage;
+	  if nextpage = 0 then return (false);
+	  if nextpage neq pagecount then success _ gotonext(nextpage) 
+				else success _ true;
+	  if not success then return (false);
+	  end;
+	intty;
+	return (true); 
+	end;
+
+setbreak(pagetbl,",-", '40, "is");
+setbreak (fftbl, FF, null, "ins");
+
+nac2 _ '000042120000;
+nac3 _ '000000000000;
+
+curpage _ 0;
+pagecount _ 0;
+outstr("PUB-DIABLO LISTING PROGRAM
+
+NAME OF FILE:  ");
+
+comment should use .doc default extension;
+infile _ openfile (null, "roc");
+
+setinput (infile, 200, ibrchar, eof);
+
+
+outstr("PAGES TO BE LISTED--<CR> for all
+:  ");
+
+printpages _ intty;
+comment need ? for help here;
+
+setupprintingpages;
+
+setbreak (checknotbl,"0123456789", null, "x");
+
+
+while true do begin
+  string s;
+  outstr("OFFSET:  ");
+  s _ intty;
+  offset _ scan(s, checknotbl, brchar);
+  if brchar = 0 then done;
+  end;
+
+if length(offset) then offseti_cvd(offset) else offseti _ 0;
+
+outstr(crlf);
+outstr("PLACE PAPER AND TYPE <CR> WHEN READY!");
+
+
+rfcoc('101, ac2, ac3);
+
+formfeed;   ! start page 1, check if it is to be printed, confirm, etc;
+dooffset;
+
+while true do 
+	begin
+	curchar _ charin(infile);
+	if eof then done;
+	if curchar = ff then 
+		begin
+		isend _ formfeed;
+		if not isend then done;
+		dooffset;
+		continue;
+		end;
+	if curchar = cr then
+		begin
+		carriagereturn;
+		continue;
+		end;
+	if curchar = ctlH then
+		begin
+		sfcoc('101,nac2,nac3);
+		pbout(curchar);
+		sfcoc('101,ac2,ac3);
+		continue;
+		end;
+	if (curchar = ctlR) or (curchar = ctlS)  then
+		begin
+		upordown;
+		continue;
+		end;
+	pbout(curchar);
+	end;
+
+intty;
+end "driver"

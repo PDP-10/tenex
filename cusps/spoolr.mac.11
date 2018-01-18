@@ -1,0 +1,538 @@
+TITLE	SPOOLR	top level SPOOLeR fork
+SUBTTL	S. NOGA/FSG
+SEARCH	STENEX
+
+
+;	***************************************************
+;	*  Frank Gilmurray			4-Jan-80  *
+;	*  SUMEX Computer Project,   Stanford University  *
+;	*  Funded by NIH Biotechnology Resources Program  *
+;	*  under grant RR-00785.			  *
+;	***************************************************
+
+
+;If DEBUG is defined, then assemble a test version that will only
+;process jobs queued by GILMURRAY. Also, this test version will
+;look for the STATUS, FORMS, and xx-FRK files on (GILMURRAY).
+
+A=1		; ACCUMULATORS
+B=2
+C=3
+D=4
+SN=15		;SEQUENCE NUMBER
+QX=16		;QUEUE INDEX
+P=17		;PDL POINTER
+
+OPDEF 	CALL 	[PUSHJ P,]
+OPDEF	RET  	[POPJ P,]
+
+SPLNAM:	IFNDEF DEBUG,<
+	[ASCIZ \DPT*.*;*\]
+	[ASCIZ \LPT*.*;*\]
+	[ASCIZ \LPA*.*;*\] 
+	[ASCIZ \RPT0*.*;*\]
+	[ASCIZ \RPA0*.*;*\]
+	[ASCIZ \SPT*.*;*\]>
+	IFDEF DEBUG,<
+	[ASCIZ \DPT*.GILMURRAY;*\]
+	[ASCIZ \LPT*.GILMURRAY;*\]
+	[ASCIZ \LPA*.GILMURRAY;*\] 
+	[ASCIZ \RPT0*.GILMURRAY;*\]
+	[ASCIZ \RPA0*.GILMURRAY;*\]
+	[ASCIZ \SPT*.GILMURRAY;*\]>
+NUMSPN=.-SPLNAM
+
+FILNAM:	<LP%NDX==0>,,[ASCIZ \-LPT-QUEUE;\]	;FORK INDEX,,QUEUE NAME
+	LP%NDX     ,,[ASCIZ \-LPA-QUEUE;\]
+	<RP%NDX==1>,,[ASCIZ \-RPT-QUEUE;\]
+	RP%NDX     ,,[ASCIZ \-RPA-QUEUE;\] 
+	<SP%NDX==2>,,[ASCIZ \-SPT-QUEUE;\]
+
+COMPAG:	1B0!<LPT%PG==100>	;LP-FRK COMMUNICATION PAGE
+	1B0!<RPT%PG==101>	;RP-FRK COMMUNICATION PAGE
+	1B0!<SPT%PG==102>	;SP-FRK COMMUNICATION PAGE
+WIDNAM:	-1,,[ASCIZ \*.*-LPT-QUEUE;*\]	;RENAMED FILENAMES FOR WIDE FORMS
+	-1,,[ASCIZ \*.*-RPT-QUEUE;*\]
+	-1,,[ASCIZ \*.*-SPT-QUEUE;*\]
+NARNAM:	-1,,[ASCIZ \*.*-LPA-QUEUE;*\]	;RENAMED FILENAMES FOR NARROW FORMS
+	-1,,[ASCIZ \*.*-RPA-QUEUE;*\]
+;;;	-1,,[ASCIZ \*.*-SPA-QUEUE;*\]	;(ONLY WIDE FORMS MOUNTED ON SPT)
+
+FORMS:	IFNDEF DEBUG,<
+	-1,,[ASCIZ \FORMS.LPT\]
+	-1,,[ASCIZ \FORMS.RPT0\]
+	0>			;ONLY WIDE FORMS MOUNTED ON SPT
+	IFDEF DEBUG,<
+	-1,,[ASCIZ \<GILMURRAY>FORMS.LPT\]
+	-1,,[ASCIZ \<GILMURRAY>FORMS.RPT0\]
+	0>			;ONLY WIDE FORMS MOUNTED ON SPT
+
+STATUS:	IFNDEF DEBUG,<
+	[ASCIZ \STATUS.LPT\]
+	[ASCIZ \STATUS.RPT0\]
+	[ASCIZ \STATUS.SPT\]>
+	IFDEF DEBUG,<
+	[ASCIZ \<GILMURRAY>STATUS.LPT\]
+	[ASCIZ \<GILMURRAY>STATUS.RPT0\]
+	[ASCIZ \<GILMURRAY>STATUS.SPT\]>
+
+FORKS:	IFNDEF DEBUG,<
+ 	[ASCIZ \LP-FRK.SAV\]
+	[ASCIZ \RP-FRK.SAV\]
+ 	[ASCIZ \SP-FRK.SAV\]>
+	IFDEF DEBUG,<
+	[ASCIZ \<GILMURRAY>LP-FRK.SAV\]
+	[ASCIZ \<GILMURRAY>RP-FRK.SAV\]
+	[ASCIZ \<GILMURRAY>SP-FRK.SAV\]>
+NPTRS=.-FORKS
+
+PDLSIZ==^D10	 	;SIZE OF PDL STACK
+SEC==	^D1000		;NBR OF MS IN A SECOND
+CHKSEC==^D10		;NBR OF SECONDS BETWEEN QUEUE SCANS
+SPTMIN==^D15		;NBR OF MINUTES BETWEEN SP-FRK STARTS
+
+QUEFIL:	BLOCK	20
+BUFFER:	BLOCK	20
+PASWRD:	BLOCK	10
+FILSIZ:	BLOCK	1
+OWNER:	BLOCK	1
+QUEJFN:	BLOCK 	1
+SPTCHK:	BLOCK	1	;NBR OF CHKSEC INTERVALS BEFORE SFORKING SPT
+PTRDIR:	BLOCK	1	;(PRINTER) DIRECTORY NUMBER
+STAJFN:	BLOCK	NPTRS
+CURSTA:	BLOCK	NPTRS
+FRMJFN:	BLOCK	NPTRS
+FRKHDL:	BLOCK	NPTRS
+PSTACK:	BLOCK 	PDLSIZ
+STRTUP: RESET				; Start from scratch...
+	MOVE	P,[IOWD PDLSIZ,PSTACK]	; Set up stack
+	MOVEI	A,400000 		; Enable special capabilities
+	SETOB	B,C
+	EPCAP
+	MOVE	A,[SIXBIT \SPOOLR\]	; Set the JOB NAME to SPOOLR
+	SETNM
+	MOVEI 	A,1			; Grab (PRINTER) directory number
+	HRROI 	B,[ASCIZ \PRINTER\]
+	STDIR
+	  HALT				;NO MATCH
+	  HALT				;AMBIGUOUS
+	TLZ	A,-1			; Connect to (PRINTER)
+	MOVEM	A,PTRDIR		;SAVE (PRINTER) DIRECTORY NBR
+	SETZ	B,			; No password for this directory
+	CNDIR
+	  HALT
+START1:	GTAD				; Make sure clock is set ....
+	JUMPL	A,[MOVEI  A,^D5*SEC	; Clock not set yet..wait 5 seconds
+		  DISMS
+		  JRST START1]		;     and try again
+	TLZ	A,-1			; Isolate the seconds
+	IDIVI	A,SPTMIN*^D60		; Compute nbr of CHKSEC intervals
+	MOVEI	A,SPTMIN*^D60		;  till next time we start SP-FRK
+	SUBI	A,(B)
+	IDIVI	A,CHKSEC
+	MOVEM	A,SPTCHK
+	MOVEI	D,NPTRS-1
+START2:	SKIPN	B,FORMS(D)		;FORMS file for this fork?
+	  JRST	[SETZM	FRMJFN(D)	;No, check for STATUS file
+		 JRST	START3]
+	MOVSI	A,(1B2!1B17)
+	GTJFN				; Grab FORMS.*  jfn
+	  HALT
+	HRRZM	A,FRMJFN(D)		; Save them : RIGHT HALF
+START3:	MOVSI	A,(1B2!1B17)
+	HRRO	B,STATUS(D)		; GRAB STATUS.*  jfn
+	GTJFN
+	  HALT
+	MOVEM	A,STAJFN(D)		; Save jfn in STAJFN : RIGHT HALF
+	MOVE	B,[XWD 1,16]
+	MOVEI	C,C
+	GTFDB
+	HLLM	C,STAJFN(D)		; Save number of writes in LEFT HALF
+	MOVE	B,[070000,,200000]
+	OPENF				; Open STATUS.* up to read
+	  JRST  [MOVEI	A,SEC		; Busy?... Then wait a second
+		DISMS
+		HRRZ  	A,STAJFN(D)	; Supply jfn and try again
+		JRST	.-2]
+	BIN				; Read the status
+	TRZ	B,40
+	HRRZM	B,CURSTA(D)		; Save it...Capitalized of course
+	TLO	A,400000
+	CLOSF				; Close the STATUS.* file
+	  HALT
+	CALL 	STRTFK			; Start	the fork if applicable
+	SOJGE	D,START2		; Evaluate next fork
+	SETZ 	SN,			; Start with sequence number 1
+
+;Here every CHKSEC seconds to check for newly queued files
+
+CHKQUE: MOVEI	D,NPTRS-1
+CKQUE1:	HRRZ	A,STAJFN(D)
+	MOVE	B,[XWD 1,16]
+	MOVEI	C,C
+	GTFDB				; Get write count for STATUS.* file
+	HLRZ	C,C
+	HLRZ	B,STAJFN(D)
+	CAME	B,C			; Has it changed..?
+	  CALL  [HRLM	C,STAJFN(D)	; Yes, then reset the count...
+		JRST 	CHGSTA]		; and check out the change
+	HRRZ	A,FRMJFN(D)
+	JUMPE	A,CKQUE3		; Jump if no FORMS file for this fork
+	MOVE 	B,[XWD 1,16]
+	MOVEI	C,C
+	GTFDB				; Get write count of FORMS.* file
+	HLRZ	C,C
+	HLRZ	B,FRMJFN(D)
+	CAMN	B,C			; Has it changed..?
+	  JRST	CKQUE3			;HERE IF NO CHANGE
+	HRLM	C,FRMJFN(D)		;REMEMBER NEW WRITE COUNT
+CKQUE2:	MOVE	B,[7B5!1B19]		;READ 7-BIT BYTES
+	OPENF				;OPEN THE FORMS FILE
+	  JRST	[MOVEI	A,SEC		;ASSUME IT'S BUSY
+		 DISMS			;WAIT 1 SECOND
+		 HRRZ	A,FRMJFN(D)	;RESTORE FORMS FILE JFN
+		 JRST	CKQUE2]		;AND TRY AGAIN
+	BIN				;GET THE FORMS CHAR
+	TLO	A,(1B0)			;DON'T RELEASE THE FORMS JFN
+	CLOSF
+	  JFCL				;WELL WHAT WOULD YOU DO
+	TRZ	B," "			;CONVERT LOWER TO UPPER CASE
+	MOVE	C,COMPAG(D)		;GET COMMUNICATION PAGE NBR
+	LSH	C,^D9			;CONVERT PAGE ADDR TO WORD ADDR
+	MOVEM	B,1(C)			;SAVE NEW FORMS CHAR IN COMM PAGE
+CKQUE3:	SOJGE	D,CKQUE1		; Check the next fork..
+	MOVEI	QX,NUMSPN-1
+CHKXX1:	MOVSI 	A,(1B2!1B7!1B11!1B17)	; Look for  newly queued
+	HRRO	B,SPLNAM(QX)		;  files
+	GTJFN
+	  JRST	NXTQUE			; No luck..check next queue
+	TLZ	A,-1			; Isloate the JFN
+	MOVEM	A,QUEJFN		; Save jfn of newly queued file
+	HRROI	A,BUFFER
+	MOVE	B,QUEJFN
+	MOVSI	C,(1B11)		; Get directory name of submiter
+	JFNS
+	HRROI	B,BUFFER
+	STDIR				; grab his directory number
+	  JFCL
+	  JRST	[MOVE 	A,QUEJFN	; Invalid number..then scrap
+		DELF			;  the request.
+		  JFCL
+		JRST	CHKXX1]
+ 	HRRZM 	A,OWNER			; Save owner number 
+	JUMPE	QX,DELFIL		; Jump if file is a delete request
+	MOVE	A,QUEJFN
+	MOVE	B,[XWD 1,11]
+	MOVEI	C,C			; Grab file size in pages  
+	GTFDB
+	HRRZ	C,C
+	JUMPE	C,[MOVE	 A,QUEJFN
+		  DELF			; Don't allow page sizes of 0 to
+		    JFCL		;  get through
+		  JRST 	CHKXX1]
+	MOVEM	C,FILSIZ
+RENFIL: AOJ	SN,			; Increment to next seq #
+	CAIL	SN,^D1000		; Make sure the number is .LT. 1000
+	  JRST	[SETZ	SN,
+		JRST	RENFIL]
+	HRROI	A,BUFFER
+	HRROI	B,[ASCIZ \*.*-QUEUE;\]
+	SETZ	C,
+	SOUT
+	MOVEI	B,^D1000
+	SUB 	B,SN
+	MOVEI	C,^D10
+	NOUT
+	  JFCL
+	MOVE	A,[100101,,0]
+	HRROI	B,BUFFER
+	GTJFN				; Make sure the sequence number is
+	  JRST 	RENXX1			;   unique...
+	TLZ	A,-1
+	RLJFN
+	  HALT
+	JRST	RENFIL
+RENXX1: GTAD				; Get time and date
+	HRRZ	A,A			; Grab seconds since 6 am
+  	IDIVI	A,^D60			; Determine minutes since 6 am
+	HRRZ	B,FILSIZ		; Place page count in B
+	ADD	B,A			; Add page count to 1.0 min since 6am
+	HRROI	A,QUEFIL
+	MOVE 	C,[140006,,12]
+	NOUT				; Output priority to QUEFIL
+	  JFCL
+	MOVEI	B,"."
+	IDPB	B,A			; Create extension...
+	MOVE	B,OWNER
+	MOVE	C,[140004,,^D8]
+	NOUT				; Place users directory number first
+	  JFCL
+	MOVEI	B,"-"
+	IDPB	B,A
+	MOVE	B,FILSIZ
+	MOVE	C,[140004,,^D10]
+	NOUT				; Next the file size in pages
+	  JFCL
+	PUSH	P,A
+	HRROI	A,BUFFER
+	MOVE	B,QUEJFN
+	MOVSI	C,(1B8)
+	JFNS				; Grab the job name
+	MOVE	A,(P)			; Restore ptr to created file name
+	HLRZ	D,FILNAM-1(QX)		; Get fork index
+	CAIN	D,RP%NDX		; Which queue is this?
+	SKIPA	B,[POINT 7,BUFFER,27]	; Here if RPx0 file name
+	  MOVE	B,[POINT 7,BUFFER,20]	; Here if LPx or SPT file name
+	MOVE	C,B			; Get a copy of the byte ptr
+	ILDB	C,C			; Get 1st char after device spec
+	CAIE	C,"-"			; Was a job name specified?
+RENXX2:	  MOVE	B,[POINT 7,[ASCIZ \-NONAME\]] ; No, then set job name to this
+	MOVEI	D,7			; Max chars in job name (including dash)
+RENXX3:	ILDB	C,B			; Get char from job name
+	JUMPE	C,RENXX4		; Job name ends with null
+	CAIE	C,"^"			; Don't allow ^ or ^V in job name
+	CAIN	C,"V"-100
+	  JRST	[MOVE	A,(P)		; Reset ptr to job name field
+		 JRST	RENXX2]		; and use NONAME as job name
+	IDPB	C,A			; Stuff char in QUEFIL
+	SOJG	D,RENXX3		; Loop back for next char
+RENXX4:	POP	P,(P)			; Adjust stack for QUEFIL ptr
+	SKIPA	B,["^"]			; Char to fill out job name to 6 chars
+	  BOUT
+	SOJGE	D,.-1			; Insure that job name is 6 chars
+	HRRO 	B,FILNAM-1(QX)		; Output proper queue designator
+	SETZ	C,			; Quit on ascii null
+	SOUT	
+	MOVEI	B,^D1000
+	SUB	B,SN
+	MOVE 	C,[140004,,^D10]	; Output sequence number to string..
+	NOUT
+	  JFCL
+	SETZ	B,
+	IDPB	B,A
+	MOVSI	A,(1B1!1B7!1B17)
+	HRROI	B,QUEFIL
+	GTJFN				; Grab a jfn for our new file name
+	  HALT
+	HRRZ	B,A
+	HRRZ	A,QUEJFN
+	RNAMF				; Rename the file to our new name
+	  HALT
+	MOVE	A,B
+	RLJFN				; Release the jfn...file submitted
+	  HALT				;	to queue
+	JRST	CHKXX1			; Look for another file to print
+NXTQUE:	SOJGE 	QX,CHKXX1		; Finished this queue, check next
+	MOVE	A,PTRDIR		;(PRINTER) DIRECTORY NBR
+	DELDF				;EXPUNGE (TO CLEAN UP)
+	MOVEI	D,NPTRS-1		; Check for new renamed files
+NXQUE1:	CAIN	D,SP%NDX		; SPT index?
+	  JRST	[SOSLE	SPTCHK		; Yes, time to start SPT fork?
+		  JRST	NXQUE3		; No, check next queue
+		 MOVEI	A,<SPTMIN*^D60>/CHKSEC
+		 MOVEM	A,SPTCHK	; Yes, reset timer
+		 JRST	NXQUE2]
+	MOVE	B,COMPAG(D)		;GET COMMUNICATION PAGE NBR
+	LSH	B,^D9			;CONVERT TO WORD ADDRESS
+	MOVE	B,1(B)			;GET THIS FORK'S FORMS CHAR
+	CAIN	B,"N"			;NARROW FORMS?
+	  SKIPA	B,NARNAM(D)		;YES
+NXQUE2:	MOVE	B,WIDNAM(D)		;NO
+	MOVSI	A,(1B2!1B11!1B17)	; Any files to print in this queue?
+	GTJFN
+	  JRST	NXQUE3			; No, check next queue
+	TLZ	A,-1			; Isolate JFN
+	RLJFN				; Get rid of it
+	  HALT
+	CALL	FRKXX1			; Start fork (if necessary)
+NXQUE3:	SOJGE	D,NXQUE1		; Loop thru all queues
+	MOVEI	A,CHKSEC*SEC
+	DISMS				; Finished, wait awhile
+	JRST	CHKQUE			; Go look for new files to print
+CHGSTA: HRRZ	A,STAJFN(D)		; Open the status file
+	MOVE	B,[7B5!1B19]
+	OPENF
+	  JRST	[MOVEI	A,SEC		; Trouble..Then wait a while...
+		DISMS
+		JRST	CHGSTA]
+	BIN				; Grab the contents
+	TLO	A,400000
+	CLOSF				; Close it up...
+	  HALT
+	TRZ	B,40			; Make input capital
+	CAIN	B,"N"			; NORMAL...then no change
+	  RET
+	CAIN	B,"F"			; Request to FREEZE..
+	  JRST	[MOVE	A,FRKHDL(D)
+		FFORK				; Then FREEZE the fork..
+		MOVEM	B,CURSTA(D)		; Save the current status
+		RET]				;  as FROZEN ...
+	CAIN	B,"P"			; Request to PURGE..
+	  JRST	[MOVE	A,FRKHDL(D)
+		KFORK				; Kill the fork..
+		MOVEM	B,CURSTA(D)		; Save the current status 
+		RET]				;   as PURGED
+	CAIN	B,"R"			; Request to RESTART..
+	  JRST  [MOVE	A,FRKHDL(D)
+		KFORK				; Kill the fork..
+		CALL	NRESET			; Reset the status as NORMAL
+		CALL 	STRTFK			; Start the fork over again
+		RET]
+	CAIE	B,"S"			; Request to START...
+	  JRST	[CALL	NRESET		; Not a proper request..then set
+		RET]			;  status to normal and continue
+	MOVE	A,CURSTA(D)			; Was previous status
+	CAIN	A,"P"				;  PURGED..
+	  JRST 	[CALL NRESET				; Yes..reset status
+		CALL STRTFK	 			; to Normal & start
+		RET]					; fork..
+	MOVE	A,FRKHDL(D)		;  to normal...
+	RFSTS				; Read the status of fork
+	TLNE	A,777777
+	 CAIA
+	  JRST	[CALL	NRESET
+		 CALL	STRTFK
+		 RET]
+	TLNN	A,400000
+	  RET				; Not frozen...then return
+	MOVE	A,FRKHDL(D)
+	RFORK				; Frozen...then resume fork..
+	CALL	NRESET			; Fork exists then..reset status
+	RET
+FRKXX1:	MOVE	A,FRKHDL(D)
+ 	RFSTS				; Grab the fork status..
+	JUMPL	A,.POPJ			; Process next file if fork is frozen
+ 	TLNN	A,2			; Is it halted.....voluntarily
+	  RET				; No..still running...leave it be
+ 	MOVE	A,FRKHDL(D)
+ 	SFORK				; Halted..then fire it up again
+.POPJ:	RET
+
+STRTFK:	MOVSI	A,200000		; Set fork capabilities to currents
+ 	CFORK				; Create a fork
+ 	  HALT
+ 	MOVEM	A,FRKHDL(D)		; Save it
+	MOVSI	A,102001
+ 	HRRO	B,FORKS(D)
+ 	GTJFN				; Grab the jfn
+ 	  HALT
+ 	HRL	A,FRKHDL(D)		; Get the save file and map it into
+ 	GET				;    the proper fork
+	MOVE	B,COMPAG(D)		; Create page to communicate
+	MOVE	A,B			;  with lower fork
+	HRL	A,FRKHDL(D)
+	MOVSI	C,(1B2!1B3)		; Read+write access
+	PMAP
+	MOVE	A,CURSTA(D)
+	CAIE	A,"N"
+	  RET
+	MOVE	A,FRKHDL(D)
+ 	SETZ	B,
+ 	SFRKV				; Start up the fork...
+	RET
+
+NRESET:	HRRZ	A,STAJFN(D)		
+	SETZ	B,
+  	SFPTR				; Reset the file pointer to 0..
+	MOVE	B,[070000,,300000]
+	OPENF				; Open the status file
+	  JRST	[MOVEI	A,SEC
+		DISMS			; Busy..then wait a bit..
+		HRRZ	A,STAJFN(D)	;    try again
+		JRST	.-2]
+	MOVEI	B,"N"
+	BOUT				; Reset the status to NORMAL
+	MOVEM	B,CURSTA(D)		; Reset the current status to NORMAL
+	TLO	A,400000
+	CLOSF				; Close STATUS.* file
+	  HALT
+	RET
+;Routine to delete printer requests (process the DPT files from UNLIST)
+
+DELFIL:	MOVE	A,QUEJFN		; Get DPT file's jfn
+	MOVE	B,[7B5!1B19]		; Open the DPT file
+	OPENF
+	  JRST	[MOVEI	A,2*SEC		; Assume file busy, wait 2 secs
+		 DISMS
+		 JRST	DELFIL]		; Try to open the DPT file now
+	HRROI	B,BUFFER		; Where to read in the file name
+	SETZ	C,			; Stop on first null
+	SIN
+	HRROI	B,PASWRD		; Where to read in the owner's password
+	SIN
+	HRROI	A,BUFFER+4		; Byte ptr to file owner's dir nbr
+	MOVEI	C,^D8
+	NIN				; Get file's directory number
+	  JRST	DELDPT			; Ignore request if invalid filename
+	MOVEI	A,(B)
+	TLO	A,(1B0)			; Flag to just check the password
+	HRROI	B,PASWRD		; Pointer to password string
+	CNDIR				; Valid DPT file?
+	  JRST	DELDPT			; No, then ignore it
+	MOVSI	A,(1B2!1B7!1B17)	; Get a JFN for the file to delete
+	HRROI	B,BUFFER		; Pointer to file name
+	GTJFN
+	  JRST	DELDPT			; No such file (i.e. already printed)
+	TLZ	A,-1			; Isolate the JFN
+	PUSH	P,A			; Save the file's JFN
+	MOVE	B,[7B5!1B19!1B20]	; Read+write 7-bit bytes
+	OPENF				; Interlock the file to delete
+	  JRST	DELPRT			; Can't open it, probably being printed
+	TLO	A,(1B0)			; Don't release JFN yet
+	CLOSF				; Close file before deleting it
+	  JFCL				; Ignore error return
+	POP	P,A			; Restore JFN of file to delete
+	DELF				;  and delete it now
+	  JFCL				; Well what would you do???
+DELDPT:	MOVE	A,QUEJFN		; Get the DPT file's JFN
+	TLO	A,(1B0)			; Flag not to release the JFN
+	CLOSF				; Close the DPT file
+	  JFCL
+	MOVE	A,QUEJFN
+	DELF				; Delete DPT file and release JFN
+	  JFCL
+	JRST	CHKXX1			; Loop back for next DPT file
+;Routine to delete a file that is (probably) being printed by lower fork
+
+DELPRT:	POP	P,A			; Release JFN of file to delete
+	RLJFN
+	  JFCL
+	LDB	A,[POINT 7,BUFFER+7,20]	; Get 1st char of queue name
+	SETO	D,			; Eventual fork index
+	CAIN	A,"L"			; LPT?
+	  MOVEI	D,LP%NDX
+	CAIN	A,"R"			; RPT?
+	  MOVEI	D,RP%NDX
+	CAIN	A,"S"			; SPT?
+	  MOVEI	D,SP%NDX
+	JUMPL	D,DELDPT		; Ignore DPT request if not L, R or S
+	MOVE	A,FRKHDL(D)		; Get this fork's handle
+	FFORK				; Freeze the fork
+	RFSTS				; Now get its status
+	TLNE	A,2			; Is it HALTFed?
+	  JRST	[MOVE	A,FRKHDL(D)	; Yes, melt it
+		 RFORK
+		 JRST	DELDPT]		; Ignore this DPT request
+	MOVE	A,[POINT 7,BUFFER+11,13] ; Byte ptr to file's version nbr
+	MOVEI	C,^D10
+	NIN				; Get the version
+	  JRST	DELDPT			; Ignore DPT request if error
+	MOVEI	A,^D1000		; Compute sequence number
+	SUBM	A,B			; Seq nbr = 1000-version
+	HRL	B,OWNER			; DPT submitter,,sequence nbr
+	MOVE	C,COMPAG(D)		; Get page shared with this fork
+	LSH	C,^D9			; Convert page addr to word addr
+	MOVEM	B,(C)			; Tell fork what seq nbr to delete
+	MOVE	A,FRKHDL(D)		; Get this fork's handle (good buddy)
+	MOVSI	B,(1B8)			; PSI channel to delete file
+	IIC				; Tell fork to delete file
+	RFORK				; Melt the fork
+	MOVEI	A,SEC/4			; Time to wait between checks
+DLPRT1:	SKIPN	(C)			; Has fork processed the PSI yet?
+	  JRST	DELDPT			; Yes, then finish up DPT request
+	DISMS				; No, wait awhile
+	JRST	DLPRT1			; And check it again
+	LIT
+
+
+  	END	STRTUP

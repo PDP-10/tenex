@@ -1,0 +1,311 @@
+;<SOURCES>GROUPS.MAC;1				EDIT BY HEDBERG
+
+	TITLE	GROUPS 
+	SUBTTL	SETUP
+;
+	SEARCH	STENEX
+P==17
+COLL==50
+STKSIZ==20
+MAXNAM==600
+SUSTXT==100000	     		;start of user group text string
+SDITXT==400000			;start of directory group text
+;
+GROUPS:	MOVE	P,[IOWD STKSIZ,STACK]
+;
+	HRROI	1,[ASCIZ /
+Where do you want the output to go ? /]
+	PSOUT
+	HRLZI	1,(1B0!3B4!3B17) ;output ,message, confirm, short call
+	HRRI	2,101		;I/O jfns
+	HRLI	2,100
+	GTJFN
+	  JRST	GROUPS		;try again
+	MOVEM	1,JFN
+	MOVE	2,[7B5!1B20]	;7 bit bytes, write
+	OPENF
+	  JRST	GROUPS
+;
+	MOVEI	1,400000
+	RPCAP
+	SETO	3,		;enable all possible caps.
+	EPCAP
+;
+	MOVE	1,116		;PUT LINKED LIST AFTER SYMBOLS
+	HLRE	2,1		;(set free core pointer to
+	HRRZ	1,1		;end of symbol table)
+	SUB	1,2
+	MOVEM	1,FRECOR
+	MOVE	[POINT 7,SUSTXT]
+	MOVEM	UTEXT		;utext points to user group text
+	MOVE	[POINT 7,SDITXT]
+	MOVEM	DTEXT		;and dtext to directory group text
+;
+	SUBTTL	GATHER THE INFORMATION
+	HRROI	1,[ASCIZ /
+Gathering the existing directory names and their group information.
+/]
+	PSOUT
+;
+	SETZM	DIRNUM		;this is the directory counter
+NAMEL:	AOS	2,DIRNUM
+	CAILE	2,MAXNAM	;don't go on for ever
+	JRST	INVEST
+	SETZM	NAMES(2)
+;
+	HRRO	1,FRECOR
+	DIRST			;use dirst to find existing directories
+	 JRST	NAMEL		;and to get the name
+;
+	SETZ	3,
+	IDPB	3,1
+	MOVE	4,FRECOR
+	MOVEM	4,NAMES(2)	;names(n) points to the name of dir. #n
+	HRRZ	1,1
+	AOS	1
+	MOVEM	1,FRECOR	;frecor points to word after last name
+;
+	MOVE	1,DIRNUM
+	MOVEI	2,PARMS
+	HRROI	3,PASSW
+	GTDIR			;get the group info
+	MOVE	PARMS+13
+	MOVEM	USER(1)		;array user has the user group words
+	MOVE	PARMS+14
+	MOVEM	DIRECT(1)	;and direct has the directory group words
+	JRST	NAMEL
+;
+INVEST:	MOVEM	2,CURDIR	;the current number of directories
+	HRROI	1,[ASCIZ /Now sorting the groups.
+/]
+	PSOUT
+	MOVE	1,UTEXT
+	HRROI	2,[ASCIZ/
+   User groups by name.
+
+/]
+	PUSHJ	P,PRINT
+	MOVEM	1,UTEXT		;set up the two headers
+	MOVE	1,DTEXT
+	HRROI	2,[ASCIZ/
+   Directory groups by name.
+
+/]
+	PUSHJ	P,PRINT
+	MOVEM	1,DTEXT
+;
+	SUBTTL	SORT ALL THE GROUPS
+	MOVE	UTEXT
+	MOVEM	TEXT
+	MOVE	1,NULL
+	MOVEM	1,GROUP		;set all group pointers to null
+	HRLI	1,GROUP
+	HRRI	1,GROUP+1
+	BLT	1,GROUP+^D36
+;
+	SETZM	DIRNUM
+ULOOP:	AOS	10,DIRNUM
+	CAMLE	10,CURDIR	;loop over all directories with user groups
+	JRST	DSET
+	SKIPN	NAMES(10)
+	JRST	ULOOP		;ignore nonexistant names
+	MOVE	1,USER(10)
+	JUMPE	1,ULOOP		;and names with no groups
+	MOVEM	1,GROUPW
+	PUSHJ	P,DOIT
+	JRST	ULOOP
+;
+DSET:	PUSHJ	P,LISTIT	;set up for the directory group loop
+	MOVE	TEXT
+	MOVEM	UTEXT		;exchange text pointers
+	MOVE	DTEXT
+	MOVEM	TEXT
+	MOVE	1,NULL
+	MOVEM	1,GROUP		;set all group pointers to null
+	HRLI	1,GROUP
+	HRRI	1,GROUP+1
+	BLT	1,GROUP+^D36
+;
+	SETZM	DIRNUM
+DLOOP:	AOS	10,DIRNUM
+	CAMLE	10,CURDIR	;same as uloop, only over directory groups
+	JRST	FINSHD
+	SKIPN	NAMES(10)
+	JRST	DLOOP
+	MOVE	1,DIRECT(10)
+	JUMPE	1,DLOOP
+	MOVEM	1,GROUPW
+	PUSHJ	P,DOIT
+	JRST	DLOOP
+;
+	SUBTTL	LIST THE RESULTS
+FINSHD:	PUSHJ	P,LISTIT
+	MOVE	10,[POINT 7,SDITXT]
+	MOVE	11,[POINT 7,SUSTXT]
+	MOVE	1,JFN
+FLL:	MOVEI	7,COLL
+	MOVE	6,10
+	PUSHJ	P,OUTLIN	;output one line of user group text
+	MOVE	10,6
+FILLIT:	MOVEI	2,40		;fill to col. COL with spaces
+	BOUT
+	SOJGE	7,.-1
+	MOVE	6,11
+	PUSHJ	P,OUTLIN	;output	one line of directory grp text
+	MOVE	11,6
+	MOVEI	2,37		;with EOL
+	BOUT
+	LDB	2,10
+	LDB	3,11
+	IOR	2,3
+	JUMPN	2,FLL		;stop when both strings are exhausted
+;
+	RESET			;get rid of the jfn mess
+	HALTF
+	JRST	.-1
+
+	SUBTTL	ROUTINES
+DOIT:	SETZM	FLAG		;doit decodes each group word and controls
+DOIT1:	MOVE	1,GROUPW	;the building of the linked lists
+	JFFO	1,DO1
+	SKIPN	FLAG		;no more groups for this directory, put
+	POPJ	P,		;out an eol if there were any.
+	HRRZI	2,37
+	IDPB	2,TEXT
+	POPJ	P,
+;
+DO1:	MOVN	4,2		;group number arrives in 2
+	MOVEM	2,NUMBER#
+	MOVE	3,MASK		;mask is a 1b0
+	ASH	3,0(4)		;rotate mask to cover the group
+	TDZ	1,3		;zero it. ugw now contains the groups the
+	MOVEM	1,GROUPW	;user belongs to that havn't been listed
+	SKIPE	FLAG
+	JRST	DO2		;if we haven't already, put out dir. name
+	MOVE	10,DIRNUM
+	MOVE	1,TEXT
+	HRRO	2,NAMES(10)	;and "---", else just put out ","
+	PUSHJ	P,PRINT
+	HRROI	2,[ASCIZ / --- /]
+	PUSHJ	P,PRINT
+	MOVEM	1,TEXT
+;
+DO2:	MOVE	1,TEXT
+	MOVEI	2,","
+	SKIPE	FLAG
+	IDPB	2,1
+	MOVE	2,NUMBER	;output the group number
+	MOVEI	3,12
+	NOUT
+	  JFCL
+	MOVEM	1,TEXT
+	PUSHJ	P,ADDLST	;add dir. num. to list for this group
+	SETOM	FLAG
+	JRST	DOIT1
+;
+LISTIT:	MOVE	1,TEXT		;listit lists the linked list of
+				;members of each group
+	HRROI	2,[ASCIZ /
+
+   Members of each group by group./]
+	PUSHJ	P,PRINT
+;
+	MOVEM	1,TEXT
+	SETZ	7,
+LISTL:	CAILE	7,^D35		;GROUPS 0-35 IS ALL THAT CAN EXIST
+	POPJ	P,
+	MOVE	6,GROUP(7)	;6 gets pointer to linked list of members
+	CAMN	6,NULL
+	AOJA	7,LISTL
+	MOVE	1,TEXT
+;
+	HRROI	2,[ASCIZ /
+
+Group /]
+	PUSHJ	P,PRINT		;if there is one, list it
+	MOVE	2,7
+	MOVEI	3,12
+	NOUT
+	 JFCL
+	HRROI	2,[ASCIZ /
+--------
+/]
+	PUSHJ	P,PRINT
+;
+LIST1:	MOVE	5,0(6)		;5 gets the directory number
+	HRRO	2,NAMES(5)	;names points to the text for that dir.
+	PUSHJ	P,PRINT
+	MOVEI	2,37		;tack on the EOL
+	IDPB	2,1
+	MOVEM	1,TEXT
+	AOS	6
+	MOVE	6,0(6)		;6 gets link
+	CAME	6,NULL
+	JRST	LIST1		;go to next member or group as the case
+	AOJA	7,LISTL		;may be
+	JRST	LISTL
+;			
+OUTLIN:	ILDB	2,6		;outputs a line through the text pointer
+	SKIPN	2		;and counts the characters.
+	POPJ	P,
+	CAIN	2,15		;6 has byte pointer
+	ILDB	2,6		;7 has char. counter
+	CAIN	2,12
+	POPJ	P,
+	CAIN	2,37
+	POPJ	P,
+	BOUT
+	SOJA	7,OUTLIN
+;
+				;addlst builds the linked list of
+				;members of each group.
+ADDLST:	MOVE	4,NUMBER	;get directory number
+	MOVEI	1,GROUP(4)	;get address of group #(4)'s pointer
+ADD1:	MOVE	3,0(1)		;get pointer to group #(4)'s list
+	CAMN	3,NULL		;is the list null
+	JRST	ADDIT		;yes, make one
+	AOS	3
+	MOVE	1,3		;no, go to end of list and append
+	JRST	ADD1
+;
+ADDIT:	MOVE	3,FRECOR	;get pointer pointer to free core
+	MOVEM	3,0(1)		;put it in the link
+	MOVE	2,DIRNUM
+	MOVEM	2,0(3)		;put the dir. num in free core
+	AOS	3
+	MOVE	2,NULL
+	MOVEM	2,0(3)		;followed by a null
+	AOS	3
+	MOVEM	3,FRECOR	;and update free core pointer
+	POPJ	P,
+;	
+PRINT:	PUSH	P,3
+	SETZ	3,
+	SOUT
+	POP	P,3
+	POPJ	P,
+;
+	SUBTTL	VARIABLES
+FRECOR:	0			;pointer to free core
+NULL:	707070,,707070		;null indicator for linked list
+DIRNUM:	0
+JFN:	0
+FLAG:	0			;tells doit whether this dir. has >1 group
+CURDIR:	0			;current number of directories
+GROUPW:	0			;group word.  fed to doit by calling loop
+TEXT:	0			;current text pointer
+DTEXT:	0			;directory group text pointer
+UTEXT:	0			;user	    "      "    "
+MASK:	1B0			;mask to clear groups already found
+PARMS:	BLOCK	^D20		;parameter block for gtdir
+PASSW:	BLOCK	8		;password from gtdir
+GROUP:	BLOCK	^D36		;group is an array indexed by group number
+	LIT			;that will point to that group #'s member
+	VAR			;list
+STACK:	BLOCK	STKSIZ
+	0
+NAMES:	BLOCK	MAXNAM		;names points to the text of the dir. names
+USER:	BLOCK	MAXNAM		;user group words
+DIRECT:	BLOCK	MAXNAM		;directory  "  "
+;
+	END	GROUPS

@@ -1,0 +1,199 @@
+;<SOURCES>GWATCH.MAC;1    25-JUN-75 03:48:19    EDIT BY HEDBERG
+
+	title	gwatch
+	subttl	sits under sysjob and looks at people
+	search	stenex
+
+initm=^d15000			;wait for 15 secs when initializing
+waitm=^d30000			;and for 30 when running
+p=17
+recpnt=16			;pointer into "record"
+jobnum=15			;job currnetly working on
+njobs=14			;negative number of jobs
+
+start:
+	setzm winit		;say we have to init first
+	movei	1,400000
+	setob	2,3
+	epcap
+
+top:	move	p,[iowd 40,stack]
+	move	1,['SNAMES']	;first gather up all the information
+	sysgt
+	hrro	1,2
+	movei	2,snames
+	gtblt			;set up the current snames table
+	 0
+
+	move	1,['JOBDIR']
+	sysgt
+	hrro	1,2
+	movei	2,jobdir
+	gtblt			;set up the current jobdir table
+	 0
+
+	move	1,['JOBNAM']
+	sysgt
+	hrro	1,2
+	movei	2,jobnam
+	gtblt			;set up the current jobnam table
+	 0
+
+	gtad
+	movem	1,ntad
+
+	move	1,['SYSTAT']
+	sysgt
+	movem	1,nidle		;save idle time
+	movsi	1,1
+	hrr	1,2
+	push	p,1		;save table number
+	getab			;get the iowt
+	 0
+	movem	1,niowt		;and save it
+	pop	p,1
+	hrli	1,2		;get core time
+	getab
+	 0
+	movem	1,ncore
+
+	move	1,['SPTIME']
+	sysgt
+	movem	1,nsched
+	movsi	1,2
+	hrr	1,2
+	getab
+	 0
+	movem	1,nlost
+
+	move	1,['JOBRT ']
+	sysgt
+	hlrem	2,njobs		;save negative number of jobs
+	hrro	1,2
+	movei	2,jobrt
+	gtblt			;set up the current jobrt table
+	 0
+
+	move	1,ntad		;make the record header
+	movem	1,record+1
+	tlz	1,-1
+	hrrz	2,otad
+	sub	1,2
+	skipg	1
+	addi	1,^d24*^d3600
+	hrlm	1,record
+
+	move	1,nidle
+	sub	1,oidle
+	hrlm	1,record+2
+	move	1,nlost
+	sub	1,olost
+	hrrm	1,record+2
+	move	1,niowt
+	sub	1,oiowt
+	hrlm	1,record+3
+	move	1,nsched
+	sub	1,osched
+	hrrm	1,record+3
+	move	1,ncore
+	sub	1,ocore
+	hrrm	1,record+4
+
+	movei	recpnt,5		;then loop over all the jobs
+	movei	jobnum,0
+
+loop:	skipg	1,jobrt(jobnum)		;does job exist?
+	jrst	loop1			;nope, go on
+	move	2,jobdir(jobnum)	;get the dir nums
+	tlz	2,-1			;zap conn dir num for the compare
+	movem	2,record(recpnt)	;save the login num
+	movem	2,ndirs(jobnum)		;for next time too
+	movem	1,nruntm(jobnum)	;save for the next record
+	camn	2,odirs(jobnum)		;is this the same job as last time?
+	sub	1,oruntm(jobnum)	;yes, make a difference
+	hrlm	1,record(recpnt)	;no, just use runtim
+	hrr	1,jobnam(jobnum)	;get the index into snames
+	move	1,snames(1)		;and then the subsys name
+	movem	1,record+1(recpnt)
+	addi	recpnt,2		;up three
+loop1:	aoj	jobnum,			;next job
+	aojl	njobs,loop		;do-overs
+
+	hrrm	recpnt,record		;put length in the record
+
+	skipn	winit		;first time through?
+	 jrst	close1
+	
+	movsi	1,1
+	hrroi	2,[asciz \<ACCOUNTS>FIB.\]
+	gtjfn
+	 jrst 	close2
+	move	2,[^d36b5!1b22]		;36 bit, append
+	openf
+	 jrst 	close2
+	
+	move	2,[point 36,record]
+	hrrz	3,record
+	movns	3
+	sout
+	closf
+	 jfcl
+
+close1:	setom	winit
+	hrli	1,upfrom
+	hrri	1,upto
+	blt	1,upend			;update the new <=> old tables
+
+close2:	reset
+
+	movei	1,waitm
+	disms
+	jrst	top
+
+winit:	0			;init flag
+stack:	block	40
+lits:	lit
+record:	block	200		;what will be written out to use
+
+;		Record format is:
+;
+; word	      lh	   		rh
+;  0	secs slr* 		length of record
+;  1			TAD
+;  2	idle time slr*		lost slr*
+;  3	io wait slr*		sched slr*
+;  4				core slr*
+;  5	runtm slr*		login dir num of job 0
+;  6	        subsys name of job 0
+;  7	runtm slr*		login dir num of job 1
+; 10	        subsys name of job 1
+;  .
+;  .
+;  .
+;  slr* = since last record
+
+upfrom==.			;----------------------
+ntad:	0
+nidle:	0
+niowt:	0
+nsched:	0
+nlost:	0
+ncore:	0
+nruntm:	block	100		;new runtime
+ndirs:	block	100		;new login dir nums
+upto==.				;----------------------
+otad:	0
+oidle:	0
+oiowt:	0
+osched:	0
+olost:	0
+ocore:	0
+oruntm:	block	100		;old runtime
+odirs:	block	100		;old login dir nums
+upend==.-1			;----------------------
+snames:	block	^d80		;subsys names for all the jobs
+jobrt:	block	100		;job run time
+jobdir:	block	100		;connected,,login   dir nums
+jobnam:	block	100		;rh is index into snames for job name
+
+	end	start
