@@ -1,0 +1,1066 @@
+
+			TENEX BASIC
+
+      		        August 1974
+
+		     by Steven Reiss
+
+ABSTRACT: TBASIC is a simple but powerful high level language for the
+   PDP-10 designed to operate under TENEX.  The language is based on
+   the latest (Sixth) version of Dartmouth BASIC.
+
+
+I.    Introduction
+
+II.   Language Differences
+
+III.  Running TBASIC
+      A.  Elementary Operation
+      B.  General Operation
+
+IV.   TBASIC Debugger
+      A.  Introduction
+      B.  Commands
+      C.  Compiler commands
+      D.  Other debugging features
+
+V.    Implementation Details
+      A.  System Description
+      B.  Register Allocation
+      C.  String Representation
+      D.  Calling Sequences
+      E.  Use of Macro Subprograms
+      F.  Building TBASIC
+
+
+
+I.    INTRODUCTION
+
+      This document is designed to provide a description of TENEX 
+BASIC.  An effort has been made to keep the language compatible with
+DARTMOUTH BASIC as documented in the Sixth Edition of the BASIC user's
+manual, edited by Stephen V.F. Waite and Diane G. Mather, University
+Press of New England, Hanover, New Hampshire, 03755 and in Dartmouth
+BASIC:  A Specification, by Stephen J. Garland, Kiewit Computation
+Center, Dartmouth College, Hanover, New Hampshire, 03755.  As such,
+these should be used for language reference.  The main purpose of this
+document will be to describe differences between Dartmouth BASIC and
+TENEX BASIC, as well as how to run TENEX BASIC and various technical
+aspects of the implementation.  It is assumed that the user is familiar
+with TENEX to some extent, and either is familiar with or has a 
+Dartmouth BASIC manual.
+II.   LANGUAGE DIFFERENCES
+
+      Much of the language is directly compatible with Dartmouth 
+BASIC.  The only differences are:
+
+      1.  Strings are kept normally as 5 7-bit characters per word.
+          Hence the usual CHANGE statement converts numbers less than
+          128 into a 7-bit number.
+
+      2.  The CHANGE BIT statement will not pack a byte of a string
+          accross a word boundary.  Any extra space left therefore,
+          will simply not be used.  Thus, given a bit size of N and a
+          string length of M, you could get INT(36/N) bytes per word,
+          or the string would occupy M/INT(36/N) words if this is a
+          whole number, and INT(M/INT(36/N))+1 if not.  To determine
+          the specified margin for a random string file, multiply the
+          maximum number of words needed by 5.  (For more information,
+          refer to BASIC, 6th EDITION, section 2.4.7, page 41.)
+              Note that this change is compatible with the DEC hardware
+          handling of strings of various byte sizes.
+
+      3.  The notation in which some numbers are printed will differ
+          slightly.  Integers are still printed as integers.  All
+          numbers < 10^6 but >= 10^-4 are printed in fractional notation.
+          This may result in more than six digits being printed with up
+          to three leading zeros after the decimal point.  Moreover,
+          up to seven significant digits will be printed in both 
+          fractional and exponential notation.  In exponential
+          notation no space is printed before the E, and, for positive
+          exponents, no sign is printed following the E.
+              These new conventions coform to TENEX standard output
+          conversion.
+
+      4.  In the PRINT USING statement, the ^ character need not appear
+          in groups of 5.  A minimum of a 2 character field (E1 for
+          instance) is all that is mandatory.  There is no maximum size.
+
+      5.  Multiple line DEFs may be called recursively in TENEX BASIC.
+
+      6.  The TIME statement has not been implemented.
+      7.  Filenames given in the FILE statement are TENEX file names.
+          This allows for an optional directory name, extension,
+          version, etc.  Moreover the *** convention does not exist.
+              If at all possible, an existing file will be returned.
+          If no file exists with the given name, then a new file
+          will be created with that name.  The highest version number
+          of an existing file will usually be chosen.  The user can
+          force a new version of an exixting file to be created by
+          specifying version -1  (ie. FILE #1: "NEWFILE;-1").  Scratch
+          files may still be accessed by a "*".  These create TENEX
+          temporary files with the names  nnnBAS.BTM;T. on the user's
+          directory.  These files should be deleted by the user as
+          appropriate.  Also, an EXPUNGE command will delete them all.
+              The type of a file not created by TBASIC will be undefined
+          if the file is empty.  If the file contains data, it will be
+          assumed to be either numeric or terminal format.  Non-empty
+          files created by TBASIC will be typed as they were written.
+              Because of the possibility of creating new files, the PER
+          function will indicate that INPUT, LINPUT and READ are not
+          possible on an empty file.
+
+      8.  Filenames specified in a LIBRARY statement are again TENEX 
+          format filenames.
+
+      9.  Chaining has been implemented in a restricted sense.  Chaining
+          to another TBASIC program is fully implemented.  However, if
+          another system is specified, that system will be started in a
+          normal manner, thus ignoring the user's choice of a filename.
+          An exception to this is the special system "RUN", which 
+          causes the given filename to be taken as a TENEX saved file
+          and run immediately.  Finally, a null system name will be
+          taken as TBASIC.
+              When chaining to TBASIC, the filename specification should
+          look like an input line to the computer and will be interpre-
+          ted accordingly.  In all other cases a TENEX filename should
+          be given.
+
+     10.  It is possible in TENEX BASIC to take the transpose of a
+          string matrix.
+
+     11.  The TEACH system has not been implemented.
+
+     12.  The debugger has been notably enhanced in TENEX BASIC,
+          allowing the user to do more as well as call an editor or
+          return to the compiler (see the section on the debugger).
+     13.  Line editing characters are different from the Dartmouth
+          implementation.  In particular the following control
+          characters perform the indicated functions:
+
+	      Rubout, ^A              Delete last character
+              ^X, ^U, ^Q              Delete line of input
+	      ^R                      Delete input line
+
+          These characters are in effect both for runtime teletype
+          input and for compiler command scan input.
+
+     14.  Two new functions have been added to the language for creation
+          of SOS-style line and page numbers.  These are LIN(N) and PAG.
+          These are print functions and are handled like the TAB
+          function in that they may only appear in PRINT statement and
+          that they return no value and that they operate through side
+          effects.  The function LIN(N) inserts the line number N in the
+          file associated with the print statement it appears in.  N
+          must be in the range  0<=N<=99999.  The function PAG inserts
+          an SOS-style page mark in the file.
+
+     15.  Some error messages and the specific causes may differ
+          slightly from the DARTMOUTH version.
+
+     16.  The following specifications and limits differ from
+          DARTMOUTH BASIC:
+
+          Maximum nesting of FOR-NEXT loops:  none
+          Longest string:  5110 seven-bit characters.  (Same maximum
+              for string constants on data strings.  Same maximum can
+              be read from terminal format file.)
+
+          Maximum length of subprogram names:  8 characters unless a
+              binary file is being produced, then 6 characters.
+      
+          Maximum number of subprograms:  85
+
+          Maximum length of filenames:  30 characters, unless the file
+              is to be used as a relocatable binary file for use with
+              an outside loader or that will be required, in which case
+              DEC- type names only should be used (ie. 6 character
+              names, 3 character extension).
+III.  RUNNING TBASIC
+
+      A.  Elementary Operation
+
+              TBASIC is designed to be easy to operate for simple
+          tasks, yet to allow the user to specify items such as a save
+          or binary file, or different mode of compilation or execution.
+          This first section describes what the elementary user should
+          know, and the type of use that will occur most frequently.
+          The second section goes into the details and the various 
+          options.
+
+              The user should first prepare a source file with line
+          numbers.  This can be done with any of the editors on the
+          system.  SOS is especially nice because if the command
+          '_BASIC' has been given, line numbers will be treated
+          correctly on such commands as number, transfer or copy.
+              Once the user's source file has been created, he should
+          give the command 'TBASIC' followed by a carriage return to
+          the TENEX EXEC. ('TB'-escape-carriage return will suffice)
+          In response a blank line and a '*' will be typed as a prompt.
+          At this point the user need only type the name of his source
+          file (possibly omitting a .BAS extension) followed by a
+          carriage return.  This will cause TBASIC to compile and
+          execute his program.  If the user wants to run his program
+          with the TBASIC debugger, then he should answer the prompt
+          with the name of his sourcefile and '/DEBUG' ('/D' is enough).
+          This will cause TBASIC to compile the program and start
+          it executing, thereby entering the debugger.  [See EXAMPLE I]
+
+              The user may use line and character editing on the 
+          command line just as with teletype input during runtime.
+
+
+			EXAMPLE I
+
+          @SOS
+
+          TENEX SOS  15-JUL-74
+          TYPE /H FOR OPTIONS
+
+          #/C
+          File=PROGRAM.BAS [New file]
+          TYPE H FOR HELP
+          00100
+          00200   PRINT "THIS IS A TEST PROGRAM"
+          00300   LET A=5*555
+          00400   PRINT A
+          00500   END
+          00600   $
+          *
+          *E
+          @TBASIC
+          *PROGRAM
+
+          THIS IS A TEST PROGRAM
+           2775
+
+          Program halted in 500
+          TIME: .317 SEC.
+
+          @TBASIC
+
+          *PROGRAM/DEBUG
+
+          
+          DEBUGGER HERE
+          *? TRACEON LINE,A
+          *? CONTINUE
+          *200
+          THIS IS A TEST PROGRAM
+          *300
+          A = 2775
+          *400
+           2775
+          *500
+
+          Program halted in 500
+          TIME: .593 SEC.
+
+
+      B.  General Operations
+             
+              Actually TBASIC is able to handle more than a single
+          filename in its command scan.  The general scan allows for
+          multiple source files; for the production of binary (reloca-
+          table) and save files; and for various switches such as the
+          /DEBUG previously mentioned.  The syntax and switches for
+          this scan are described below.
+
+              The general format is:
+
+              <item> <separator> <item> <separator>...<item>
+
+          where <item> may either be a switch or a file name and where
+          <separator> may either be a space, a comma, an equals
+          sign or backarrow, or, preceding a switch, nothing, or, more
+          generally, some combination of these.  Only one equals sign
+          or backarrow may be present, with source files permitted only
+          on the right hand side if it appears.  A command line may be
+          continued by ending it with a comma.  TBASIC will respond with
+          a new prompt and the user can continue typing the command 
+          line.
+              Switches are all preceded with a slash (/) character.
+          Some switches may refer to a given filename.  In this case,
+          they should immediately follow the name, with no intervening
+          delimiters other than possibly spaces.  For this reason,
+          filenames with slashes in them will not be recognized.
+          Switches can be abbreviated to their shortest non-ambiguous
+          form, usually one or two characters.
+
+              A filename which does not have a switch associated with
+          it, is assumed to be a source file.  If no extension is given,
+          then the null extension, the extension 'BAS', and finally the
+          extension 'REL' are tried in that order until an existing
+          file is found.  If these all fail, the user will be asked to
+          enter a new filename.  Filenames associated with switches are
+          all output files and will be created by TBASIC.  If no
+          extension is given for these, then the default extension
+          associated with the switch (REL for /BINARY, SAV for /SAVE)
+          will be used.  If no name is given, then that of the first
+          source file will be used.  Otherwise filenames are standard
+          TENEX names, with directory, extension, version, protection,
+          account, etc.  All optional, but without the slash character.
+          Recognition of filenames may be accomplished using the
+          appropriate characters (escape, ^F), but this will not
+          occur interactively.
+
+          A description of the various switches follows:
+
+          /BINARY   (Abbreviation: /B) - This switch has a filename
+               associated with it.  It declares that file to be a
+               relocatable binary file with a .REL default extension.
+               If compilation is successful, the resultant file can be
+               Loaded via TBASIC (in place of a source file to cut
+               down on compilation time) or via any of the loaders on
+               the system.
+
+
+          /COMPILE   (Abbreviation: /CO) - This switch causes the
+               compiler not to execute the users program but only to
+               compile it.
+
+
+          /DEBUG   (Abbreviation: /D) - This switch causes the compiler
+               to compile the program in debugging mode.  This results
+               in extra code being added to facilitate the debugging
+               operation.  When the program is started the debugger will
+               be entered.  For more information see the section on
+               the debugger.
+
+   
+          /GO   (Abbreviation: /G) - This switch causes the compiler to
+               generate in core code and to start executing it after a
+               successful compilation.  It is the default setting and
+               need not be specified.
+          /HELP   (Abbreviation: /H) - Prints a summary of the available
+               switches and the command scan format.
+
+
+          /INITIALIZE   (Abbreviation: /I) - This command restarts the
+               command scan.  It causes all previous specifications to
+               be ignored and the standard defaults reset.  It is useful
+               after a typing error when the user wants to start over
+               again.
+
+
+          /LOAD   (Abbreviation: /LO) - This command causes the users
+               program to be set up in core to be run, but not to be
+               started.  After a successful compilation, the program 
+               will halt and the user can then type START or CONTINUE
+               in order to start his program.
+
+
+          /NCHECK   (Abbreviation: /NC) - Normally the compiler 
+               generates code to check that each subscript is in bounds
+               before it is used, and prints an error message if it is
+               not.  Use of this switch causes the compiler to not 
+               insert these instructions, resulting in a shorter and
+               faster (and more difficult to debug) program.
+               Use of this switch will not suspend all dimension
+               checking--the matrix and CHANGE routines for example will
+               still check.
+
+
+          /NDEBUG   (Abbreviation: /ND) - This switch causes the
+               compiler to compile the program in the normal mode (not
+               in debug mode).  It is the inverse of /DEBUG and is the
+               default.
+
+
+          /NLIBRARY   (Abbreviation: /NL) - This switch causes new
+               programs that are first mentioned in a LIBRARY statement
+               to not be compiled, but rather to be required at load
+               time.  Use of this switch implies /COMPILE.  It may be
+               used without a binary file to just compile one routine
+               without worrying about library routines; or with a
+               binary file to compile only the program and not programs
+               below.
+
+
+          /RELOCATABLE   (Abbreviation: /R) - This switch is a synonym
+               for /BINARY.
+          /SAVE   (Abbreviation: /S) - This switch has a filename
+               associated with it.  It declares that file to be a TENEX
+               shared save file with a .SAV default extension.  If
+               compilation is successful, then the users program will
+               be loaded into core and then saved in this file.  The
+               compiler will halt with the message "CORE IMAGE SAVED".
+               At this point the user may type START or CONTINUE to
+               start executing his program.
+
+
+          The following switches are known to the command scan
+          but have not been implemented yet:
+
+               /CREF  -  create a CREF - type listing file
+               /LIST  -  create a listing file
+               /TEST  -  standard teach mode
+              /XTEST  -  debugging teach mode
+
+
+EXAMPLES:
+
+          @TBASIC
+          *FOOMAIN, FOOSUB/D
+
+               will compile and execute FOOMAIN.BAS and 
+               FOOSUB.BAS in debug mode.
+
+          @TBASIC
+          */SAV/BIN=FOO
+
+               will compile FOO.BAS, producing FOO.REL as
+               a loadable binary file and FOO.SAV as a
+               runnable shared save file.
+
+          @TBASIC
+          *XXX/BIN=FOOSUB/COM
+
+               will compile FOOSUB.BAS to produce
+               XXX.REL.  No core image will be set up.
+
+          @TBASIC
+          *FOOMAIN, FOOSUB.REL
+
+               will compile FOOMAIN.BAS and load FOOSUB.REL
+               to produce a running program which will be
+               executed.  If a binary file were asked for here,
+               it would contain only FOOMAIN and would contain
+               a required block (see LINKI0 description)
+               for FOOSUB.REL.
+IV.  DEBUGGER
+
+     A.  TBASIC has a debugging facility built in to aid the
+         user in debugging the program.  The facility is invoked by
+         using the /DEBUG switch in the command scan.  When used, the
+         debugger will get control at the beginning of execution and
+         print the message:
+             DEBUGGER HERE
+         followed by the prompt string *?.  At this point the user can
+         enter any of the valid debugger commands.  The user can also
+         enter the debugger during execution of his program via
+         break points and the STEP command.  The debugger will also be
+         entered after most terminal error messages, or in response to
+         the user typing a control-B during execution.  On each of these
+         entries the debugger will print an appropriate message telling
+         the user the type of entry and the location in the program of
+         the entry.
+             Commands are typed to the debugger in a form similar to
+         statements in the language, that is, they should not be
+         abbreviated, and any embedded spaces will be ignored.
+         Multiple commands may be entered on one line, in which case,
+         they should be separated with an escape (alt-mode).
+
+
+     B.  COMMANDS:
+
+         BREAK  <LIST OF LINE NUMBERS or 'ONCALL'>
+             BREAK  100
+             BREAK  100, 200, 300, 150
+             BREAK  ON  CALL
+             BREAK  100, ONCALL, 50
+
+             This command will cause the users program to enter the
+         debugger before execution of the specified line number in the
+         current subprogram.  If the string ONCALL is substituted for
+         a line number, then the debugger will be entered at the start
+         of each subroutine called.  There is no limit to the
+         number of lines that may be breakpointed at any one time.  The
+         effects of the BREAK command can be undone by way of the
+         UNBREAK command.
+         COMPILE
+             COMPILE
+             TBASIC
+             TB
+
+             This command will cause the compiler to be started up
+         at its restart entry.  This will cause the users program to be
+         recompiled in the same manner it was compiled before.  
+         However no output (binary, save) files will be produced.  If
+         the user has made changes via an EDIT command, these will be
+         reflected in the resultant program.  If a different command
+         string is desired, then the user should exit the debugger
+         (via STOP or ^C or having his program halt), and then 
+         restart the compiler via the TENEX EXEC TBASIC command.  Note
+         that in order to incorporate in this compilation new versions
+         of files produced by editing, the highest version existing of
+         each source file will be used, regardless of which was
+         specified in the original compilation.
+
+         CONTINUE
+             CONTINUE
+             CON
+
+             This command will cause the execution of the users program
+         to start (initia entry) or continue from the last point where
+         the debugger was entered.  Commands on the same line
+         following CONTINUE will be ignored.  Note that CONTINUE may be
+         abbreviated as CON.
+
+
+         DEF  <Function descriptor>
+             DEF FNA (X,Y)
+             DEF FNA
+             DEF
+
+             This command allows the user to specify a function name
+         and arguments for use by the debugger.  Normally, the debugger
+         is unable to determine which function the user is executing in
+         and which variables are local to the function.  This command
+         allows the user to specify the name and local variables of the
+         current function.  If no function name and variable list is
+         given, then the current definition is forgotten.  The
+         definition given will apply to the current subprogram until
+         replaced or deleted.  If the variables given are then used in
+         the compiler-type debugger commands, they will refer to
+         the local variables of the current function rather than global
+         variables.
+
+         DO  <line #>
+             DO 100
+
+             This command is equivalent to a GOTO to the given line,
+         except that control will be returned to the debugger after
+         that line is executed.  Commands following DO on the same
+         line will be ignored.
+         EDIT  <filename>
+             EDIT
+             EDIT  FOO.BAS
+             TECO
+             TECO  FOO.BAS
+             TV
+             TV    FOO.BAS
+             SOS 
+             SOS   FOO.BAS
+
+             These commands run the editor in an inferior fork, editing
+         the file if one is given.  If no file is given, then the
+         normal editor entry is taken, allowing it to determine the
+         file.  The commands EDIT and SOS will both run SOS; the
+         command TECO will run TECO and the command TV will run the
+         TV editor.  When the editor terminates control is returned to
+         the debugger.  Note that changing the source via this command
+         will not affect the current running program.  To have any
+         changes go into effect, the program must be recompiled.
+
+         FILSTAT
+             FILSTAT
+
+             This command will print a summary of the files the users
+         program currently has open.
+
+         GOSUB <line #>
+             GOSUB 100
+
+             This command will do a GOSUB to the specified line.  If
+         a return is then executed to this GOSUB, control will be
+         returned to the debugger.  Commands following GOSUB on the
+         same line will be ignored.
+
+         GOTO  <line#>
+             GOTO  100
+
+             This command will cause execution of the users program to
+         continue with the given line.  Commands following GOTO on the
+         same line will be ignored.
+
+         JOBSTAT
+             JOBSTAT
+
+             This command will type the status of the users program.
+
+         START
+             START
+
+             This command will cause the users program to be restarted
+         from scratch.  The debugger will be given control as with an
+         initial run and will print the mesage DEBUGGER HERE.
+         Commands following START on the same line will be ignored.
+         STEP  <count>
+             STEP  10
+             STEP
+
+             This command will cause the execution of the users program
+         to continue from where the debugger was entered.  However, the
+         debugger will be given control again after the specified
+         number of lines have been executed.  If no number is given,
+         1 is assumed.  Commands following STEP on the same line will
+         be ignored.
+
+         STOP
+             STOP
+
+             This command halts execution of the users program and 
+         returns control to TENEX.  Commands following STOP on the
+         same line will be ignored.
+
+         TRACE  <TRACE SET LIST>
+             TRACE  ON, A
+             TRACE  ON, A, B0, C(3,2), LINE; OFF, D, E
+
+             This command is used to cause either a line trace or a
+         variable trace to occur.  A line trace will cause *<line #>
+         to be printed BEFORE the execution of that line.  A
+         variable trace will print the variable name and its new value
+         as well as the line number whenever the variable is changed.
+             The arguments to trace consist of one or more lists of
+         variables.  The first item in this list is either the word
+         ON or the word OFF.  ON implies that trace of the
+         items given in the rest of the list should occur; OFF implies
+         that these items are currently being traced and should not be.
+         The rest of the list consists of items, either variable  
+         descriptors or the word LINE.  Variable descriptors may either
+         be a variable name or a matrix name with a constant subscript
+         list.  The word LINE will cause the line trace feature to
+         be turned on or off as appropriate.
+
+         UNBREAK  <line# list or 'ON CALL'>
+             UNBREAK  100
+             UNBREAK  100, 200, ONCALL, 50
+             UNBREAK
+
+             This command removes breakpoints in the specified lines,
+         or disables the BREAK ON CALL feature.  If no argument list is
+         given, then all break points in the current subprogram will be
+         deleted, however BREAK ON CALL will not be disabled.
+     C.  COMPILER COMMANDS
+
+         In addition to the preceding set of commands, the debugger
+         allows the user to execute a number of statements within
+         certain bounds.  These statements are entered as debugger
+         commands and are then actually compiled and executed.
+             The following statements are allowed:
+                 LET
+		 PRINT
+		 CALL
+		 CHAIN
+		 CHANGE
+		 FILE
+		 INPUT
+		 LINPUT
+		 MARGIN
+              	 MAT  (assignment, operation, and I/O)
+		 RANDOMIZE
+		 READ
+		 RESET
+		 RETURN
+		 SCRATCH
+		 WRITE
+         Several restrictions are put on these statements.  The
+         primary ones are that no new variables, matrices, functions, or
+         subprograms can be referenced.  Moreover, access to variables 
+         local to a function the user is currently in can only be
+         accessed via the DEF command and the variables specified
+         therein.
+             If there is an error in the given statement, then an
+         appropriate message will be printed and control returned to
+         the debugger.  Note that no line number is specified for
+         these commands.
+     D.  OTHER DEBUGGING FEATURES
+
+         In addition to the debugger, TBASIC offers other debugging
+         features to aid the user:
+
+             ^W - typing a control-W during the execution of your
+ 	          program will cause a trace of where you are and where
+     		  it was called from.  This is useful in tracking down
+   		  infinite loops, or just to see where your program is.
+
+             ^B - typing a control-B will, if the debugger is loaded
+    		  and the program is running in debug mode, cause an
+                  immediate break point.  This is useful in stopping
+		  a run away program.
+
+             ^O - typing a control-O will cause output to the teletype
+                  to be ignored until the next input statement, a
+		  debugger entry, the end of the program, or another
+		  control-O.  Note this acts as a flip-flop.
+
+             ^T - (handled by TENEX) - prints your total accumulated
+	 	  runtime, terminal time, the system load average, etc.
+
+             ^C - (handled by TENEX) - this command will halt execution
+		  of your program and return control to the TENEX
+		  EXEC.  If no commands are given that destroy the
+		  current fork, then the user may continue execution via
+		  the CONTINUE command, or restart it via the START
+		  command.
+
+
+V.   Implementation Details
+
+     A.  SYSTEM DESCRIPTION
+
+         The TBASIC system is composed of two main modules--the 
+     compiler and the runtime system.  The compiler uses pages 400
+     through 477 (although much of this currently isn't being used),
+     while the runtime system uses pages 600 through 677 (although
+     again, much of this isn't used).  The users program is placed
+     in low core (starting at location 140).  The system will use what
+     is left in low core after the users program and variables have
+     been placed there, for dynamic string storage, starting with page
+     377 and working down.  A simple buddy system allocation is used.
+     Also, pages 760-767 are used as a global communications area.
+         There are several entries to the compiler.  The first is the
+     normal entry.  It prompts the user for the command string.  The
+     second entry is for reentry and for entry from the debugger via the
+     COMPILE command.  It uses the information saved on the source files
+     (saved in the global area) to recompile the previous or current
+     run if at all possible.  The third entry is used by the debugger
+     to compile one line of BASIC (debugger compiler commands).
+     It assumes the line is in page 767 and places the resultant code
+     in the same place.  The final entry is for chains.  It assumes
+     that the command string appears in page 767 and will use it
+     rather than prompting the user.
+         The runtime system is designed so it can be assembled as
+     either a relocatable library or as a complete system to set in
+     pages 600 to 677.  Code is generated in the main program to load
+     the runtime system from <SYSSUP>.  Currently, therefore, the
+     runtime system is not available as a relocatable library.
+     The runtime system consists of three main parts.  The first is
+     the core, consisting of error message routines, interrupt
+     routines, initialization routines, storage allocation routines,
+     and a few common file and string routines.  The second part
+     consists of a series of subprograms.  These are split into
+     three groups:  first general routines such as I/O and string
+     processing;  second function routines for all of the
+     implemented functions; and third, the matrix routines.  The
+     last section of the runtime system is the debugger.
+         The debugger is used only if the program is compiled in debug
+     mode.  In this case calls are generated to the debugger at the
+     beginning of each line of the users program.  Also, there is an
+     initial entry and entries at the start of each subroutine and after
+     each call statement.  Break points are handled by modifying the
+     entry for the line in question to go thru a different routine.
+     Traced variables are handled by checking to see if the variable
+     has changed value at the start of each line.  Skipping is handled
+     via a flag counter which is checked at the start of each line.
+     Entries via ^B are handled by setting this flag.  Use of the
+     debugger will slow the program down but not excessively.
+
+
+     B.  REGISTER ALLOCATION
+
+         During runtime, five registers are reserved for internal and
+     global information.  These are:
+      
+         13 -- pointer to current file block
+         14 -- pointer to base of stack for current function variables
+         15 -- pointer to base of stack for current subroutine variables
+               in lower half; upper half contains the current line
+               number
+         16 -- use for JSA's
+         17 -- push down stack pointer
+
+     Also, registers 0 and 1 are used for returning results for user
+     defined and internal functions.  Numeric results are returned in
+     register 0, string results in register 1.  The remaining registers
+     (2 through 13) are used by the object code for storing intermediate
+     results.
+     C.  STRING REPRESENTATION
+
+         One word of storage is reserved for each numeric or string
+     variable or matrix number.  For numbers, this location contains
+     the floating point number associated with the variable.  For
+     strings it contains a byte pointer to the string.  This pointer
+     should be to the first character of the string and must contain
+     the byte size of the string.
+         The string itself is stored dynamically in free storage. 
+     Free storage is allocated through a simple power-of-2 buddy system
+     mechanism with the largest block being 1K words or 2 pages.  In
+     addition to strings, dynamic storage is used for file blocks,
+     buffers for terminal format file input, matrix copys (for
+     expression like MAT A=A*B or MAT A=TRN(A)), and by the debugger
+     for information concerning the DEF command.  This storage grows
+     down from page 377 to the top of the push down list.  Each 
+     allocated block contains one word of storage information, either
+     the block size number if the block is allocated or a link to the
+     next free block of the same size if the block is free.  Currently
+     no merging of free blocks is done.
+     Strings are stored in these blocks with one additional word of
+     information.  This word immediately precedes the first word
+     of the string and contains the number of bytes in the string in
+     the upper half and a usage count in the lower half.  The byte
+     size to which the number of bytes refers is given in the byte
+     pointer to the string.  The usage count contains the number of
+     byte pointers to this string block minus one.  String assignment
+     then is done by saving the pointer to the old string as the new
+     string and adding one to the strings allocation count.  Before
+     changing a string, it must be deallocated.  This is done by
+     subtracting from the usage count and, if it goes negative, to
+     actually deallocate the string block.  Null strings are 
+     represented without string blocks by a word containing zero.
+
+
+     D.  CALLING SEQUENCES
+
+         TENEX BASIC uses three basic calling sequences at runtime.
+         These are:
+
+         1.  For user defined functions:
+             LET Z=FNB(A,A$)
+             PUSH 17,A
+             PUSH 17,A$
+             PUSHJ 17, FNB
+
+         2.  For most runtime package calls (general routines as well
+             as functions):
+             LET A=POS(A$,B$,3)
+             JSA 16, POS.
+             JUMP A$
+             JUMP B$
+             JUMP [3]
+         3.  For subroutines (SUBs):
+             CALL "ABC":X,Y,Z
+             PUSHJ 17, ABC
+             JUMP X
+             JUMP Y
+             JUMP Z
+
+
+     E.  USE OF MACRO SUBPROGRAMS
+
+         It is possible with TBASIC to use the relocatable binary files
+     of other processors, notably MACRO, as subroutins, if certain
+     restrictions are met.  These subroutines are handled like regular
+     TBASIC SUBs:  argument types of all the calls must be consistent
+     and the standard subroutine calling sequence will be used.
+         Some care should be taken in using non-TBASIC subroutines.
+     First of all, the subroutine is expected not to destroy any
+     registers other than 0 and 1.  The push down list may be used as
+     long as it is left with the return address just popped off it
+     (ie. as a POPJ 17, would have left it), but all other registers
+     (2 thru 16) should be saved and restored if the program is
+     going to use them.  Secondly, the loader incorporated in TBASIC
+     is not extremely sophisticated.  It handles all internal or entry
+     symbols as subroutines and, for this purpose will link them
+     correctly.  Use of other internal-external references is not
+     encouraged because the limit on the allowable number of subroutines
+     is small and because more complicated use of them (symbols whose
+     value is dependent on a global, for example) will not work 
+     correctly in all circumstances.  If however, the user uses entry
+     only, and then only for the subroutine entry points (ie. the most
+     common cases) everything will work.  Lastly, use of processors
+     other than MACRO, especially FORTRAN or SAIL, will not
+     generally work.  Both of these require their own extensive run
+     time system which would conflict with TBASIC's.
+         Normally, TBASIC will check to make sure that all calls to a
+     subroutine as well as the subroutine entry have the same number
+     and the same types of arguments.  In the case of MACRO
+     subprograms, all the calls are still checked for consistency,
+     however, the entry generally isn't.  It is possible for the user
+     to force type checking on the call by including another program
+     in the MACRO relocatable file that has the name ".SUBTB".
+     This program should consist of 10 (octal) words per subroutine.
+     The format of these is:
+
+         WORD(S)                CONTENTS
+           0                     IGNORED
+           1,2                   ASCIZ NAME OF SUBPROGRAM
+           3,4,5,6               ARGUMENT TYPE WORDS
+           7                     IGNORED
+     where the argument type words are in the format:
+
+         BYTE  (8)<#args>(4)<typ-1>,<typ-2>,...<typ-N>
+
+     where <typ-i> is the type of argument i and is coded as follows:
+
+         TYPE            CODE              EXAMPLES
+     NUMERIC VARIABLE      0                A, A0, 3.4, 2+C
+     STRING VARIABLE       1                A$, B3$, "XYZ", A$&"XYZ"
+     NUMERIC VECTOR        2                A()
+     STRING VECTOR         3                B$()
+     NUMERIC MATRIX        4                A(,)
+     STRING MATRIX         5                B$(,)
+     NUMERIC FUNCTION      6                FNA, SIN, LEN
+     STRING FUNCTION       7                FNB$, SEG$
+         FILE              '17               #1
+
+     The use of this extra program to force type checking is an
+     optional feature.
+
+
+     F.  BUILDING TBASIC
+
+         The TBASIC system is built from 5 source files.  Use MACRO,
+     LINK10, DDT, and, if desired, CREF.  The source files are:
+                BGBL.MAC     global definitions
+                BRSYMS.MAC   runtime global definitions
+                BCOM.MAC     the compiler
+                BRTP.MAC     the runtime system
+                BDBG.MAC the debugger
+     The process is:
+
+     1.  Use MACRO to assemble the five source files.  Note that BGBL
+         is a parameter file for BCOM, BRTP, and BDBG and that BRSYMS is
+         a parameter file for BRTP and BDBG and should be assembled
+         accordingly.  Also, the STENEX parameter file is assumed to
+         have been made a part of MACRO.
+
+     2.  If desired, produce CREF listings of BCOM, BRTP, and BDBG.
+
+     3.  Using LINKI0 load the compiler:
+             @LINKI0
+             */SYMSEG:HIGH, BCOM/G
+         and save the result.
+
+     4.  Using LINKI0 again, load the runtime system:
+
+         @LINKI0
+         */SYMSEG:HIGH, /SEGMENT:HIGH, /SET:.HIGH.:600000, BRTP, BDBG/G
+         then START the result.  This executes the program BRLOAD at the
+         end of BRTP which moves the code to pages 600 on up and places
+         the transfer vector in the proper place.  There it sets a 
+         location in the transfer vector to the symbol table word and
+         saves only the runtime system, its symbol table, and the
+         transfer vector page as BRTP.SAV on the current directory.
+
+     5.  (If desired.) To get a version of BRTP for patching with 
+         symbols, do the following:
+             @ GET BRTP
+             @ DDT
+
+             MOVE 1, 762777$X
+             MOVEM 1,116$X
+             <ctl>C
+             and shared save pages 0 thru 767 as your patching version.
+         To get the running version from this, save only pages 400
+         through 762.
+
+     6.  Delete all the unnecessary created files.  These include:
+             BCOM.REL; BCOM.CRF (or .LST)
+             BRTP.REL; BRTP.CRF (or .LST)
+             BDBG.REL; BDBG.CRF (or .LST)
+             BGBL.REL
+             BRSYMS.REL
+
+     7.  Now the file BCOM.SAV should be moved to <SUBSYS>  as
+         TBASIC.SAV and the file BRTP.SAV should be moved to
+         <SYSSUP> BRTP.SAV.
+
+     8.  For editing, the files
+             <SUBSYS> SOS.SAV
+             <SUBSYS> TECO.SAV
+         and <SUBSYS> TV.SAV
+         are assumed to exist and accept a CCL entry with a JFN in
+         register 1 on entry.
+
+     9.  For typing help information, the file <DOC>TBASIC.HELP must be
+         there.
+
+         (A sample run file follows)
+     FIGURE I-- SAMPLE RUN FILE for BUILDING TBASIC
+
+     ;
+     ;   TBASIC.RUN--RUNFIL INPUT TO PRODUCE .SAV FILES FOR THE TENEX
+     ;       BASIC SYSTEM.  WILL ALSO PRODUCE CREF LISTINGS.
+     ;
+     ;   PRODUCES:
+     ;       BCOM.SAV          COMPILER SSAVE FILE
+     ;       BRTP.SAV          RTP SSAVE FILE
+     ;       XBRTP.SAV         RTP SSAVE FILE FOR PATCHING WITH SYMBOLS
+     ;                             THIS FILE SHOULD NOT BE USED FOR
+     ;                             RUNNING.
+     ;
+     ;   THE FILE BCOM.SAV SHOULD BE SAVED ON SUBSYS AS TBASIC.SAV.  THE
+     ;       FILE BRTP.SAV SHOULD BE MOVED TO <SYSSUP>BRTP.SAV.
+     ;
+     ;   SOURCE FILES:
+     ;       BGBL.MAC          GLOBAL DEFS
+     ;       BRSYMS.MAC        RT GLOBAL DEFS
+     ;       BCOM.MAC          COMPILER
+     ;       BRTP.MAC          runtime ROUTINES
+     ;       BDBG.MAC          DEBUGGER
+     ;
+     ;   SYSTEM FILES NEEDED:
+     ;       MACRO.SAV
+     ;       CREF.SAV
+     ;       LINK10.SAV
+     ;       UDDT.SAV
+     ;
+     MACRO
+     BGBL,LPT:_BGBL
+     BRSYMS,LPT:_BRSYMS
+     BCOM,BCOM/C_BCOM
+     BRTP,BRTP/C_BRTP
+     BDBG,BDBG/C_BDBG
+     CREF!
+     _BCOM
+     _BRTP
+     _BDBG
+     ^^B
+     LINK10
+     /SYMSEG:HIGH,BCOM/G
+     SSA 0 500 BCOM
+
+     LINK10
+     /SYMSEG:HIGH/SEGMENT:HIGH/SET:.HIGH.:600000,BRTP,BDBG/G
+     START
+     GET BRTP
+     DDT
+     MOVE 1,762777^^[XMOVEM 1,116^^[XHALTF^^[X
+     SSA 0 766 XBRTP
+
+     DEL BCOM.REL,BCOM.CRF,BRTP.REL,BRTP.CRF,BDBG.REL,BDBG.CRF
+     DEL BGBL.REL,BRSYMS.REL
+         APPENDIX I -- <DOC>TBASIC.HELP
+
+
+         Command input to TBASIC is of the form:
+
+             <item> <separator> <item> <separator> ...
+
+     where <item> may either be a switch or a filename and where
+     <separator> may be a space, a comma, an equals sign or 
+     a backarrow, or, preceding a switch, nothing.
+
+         Switches can refer to a given filename. In this case the
+     switch follows the filename without a separator.  Any file
+     not declared an output file by such a switch will be taken to
+     be a source file with the default extension BAS.
+
+         Switches are preceded by a slash.  The legal switches include:
+
+             NAME              ABBREVIATION      EFFECT
+
+           /binary             /b                declares file as binary
+                                                     output
+           /compile            /co               compile only
+           /cref               /cr               not implemented
+           /debug              /d                debug mode
+           /go                 /g               *execute the program
+           /help               /h                prints this
+           /initialize         /i                restarts the scan
+           /list               /li               not implemented
+           /load               /lo               loads the program after
+                                                     compiling.
+           /ncheck             /nc               causes subscripts not
+                                                     to be checked
+           /ndebug             /nd              *not debug mode
+           /nlibrary           /nl               don't compile librarys
+           /rel                /r                same as /binary
+           /save               /s                declares file as ssave
+                                                     file output
+           /test               /t                not implemented
+           /xtest              /x                not implemented
+
+     where '*' indicates default actions.
+
+         Examples:
+
+                     @TBASIC
+                     *FOO
+
+           will compile and execute FOO.BAS;
+
+                     @TBASIC
+                     *FOO,FOOSUBS/D
+ 
+           will compile and execute FOO.BAS and FOOSUBS.BAS in
+               debug mode;
+
+                     @TBASIC
+                     */SAV/BIN=FOO
+
+           will compile FOO.BAS, producing FOO.REL as a loadable
+               binary file and FOO.SAV as a runable shared save file.
