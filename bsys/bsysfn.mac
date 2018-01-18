@@ -1,0 +1,714 @@
+TITLE BSYSFN  BSYS FUNCTION EXECUTION ROUTINES (CALLED BY "CHECK")
+
+;******************************************************
+;  linkage to other modules
+;******************************************************
+
+
+;	output to (BSYS,BSYSFN.MAC,) with (WALLACE,FILTER,)
+
+	search	stenex,bsys
+intern	backup,docnt,dolist,domap,domrka,domrkd,dorest,dorun
+intern	doveri,dotrim,verr
+extern	addfdb,bldjfn,cfiles,chdwrd,delivr,dmpfil
+extern	error,fixfdb,getnpg,getpt,listfl,lookup,lstfil,lsthdr
+extern	nouter,print,ptfile,rstfil,strcmp,$setms,strcom
+
+;******************************************************
+;  "BACKUP"	test backup bits for backup flavor
+;******************************************************
+
+;check for temp,no ext.,deleted,or does not exist
+backup:
+	move	a,cvf		;load current ver fdb pointer
+	add	a,diradr	;make it real
+	setz	b,		;clear b
+	move	c,fdbctl(a)	;load flag word
+	tlne	c,fdbtmp	;is it temporary?
+	hrroi	b,[asciz / temporary/]
+	tlne	c,fdbnex	;any extention yet
+	hrroi	b,[asciz / no ext. yet/]
+	tlne	c,fdbdel	;deleted ?
+	hrroi	b,[asciz /  deleted/]
+	tlne	c,fdbnxf	;does file exist ?
+	hrroi	b,[asciz / not written/]
+	skipe	b		;skip if none of above
+backua:
+	jrst	[tlne	f,arcbit	;only archived files if archiving
+		popj	p,0
+		push	p,b		;save b
+		hrrz	c,fdbbyv(a)	;get byte count
+		movem	c,flpgs		;set up pages count
+		jrst	backu3]		;go type file name and text
+	tlne	f,fulbit+dmpbit+conbit	;check for dump functions
+	jrst	[tlnn	f,incbit	;is it incremental?
+		jrst	backu1		;no, dump it
+		move	b,fdbbck(a)	;get backup flags
+		tlne	b,fdbdmp	;dumped but not complete?
+		jrst	backu1		;yes, dump it
+		move	b,fdbbck+2(a)	;load t&d of last backup
+		trne	f,since		;skip if not using supplied date
+		move	b,sdate		;load supplied date
+		caml	b,fdbwrt(a)	;written since?
+		popj	p,0		;return if not
+		jrst	backu1]		;if yes then backup now
+	tlne	f,arcbit	;is it archival?
+	jrst	[trz	f,rearch	;reset re-archive flag
+		move	b,fdbbck(a)	;get flags
+		tlne	b,fdbarc	;archive requested?
+		jrst	backuc		;yes , do it
+		tlne	b,fdbnar+fdbaar	;dont archive or already ?
+		popj	p,0		;yup, exit
+		move	c,fdbwrt(a)	;get last written date
+		camle	c,fdbbck+3(a)	;written since archived
+		tro	f,rearch	;then re-archive if time up
+		camge	c,fdbref(a)	;get latest - write or reference
+		move	c,fdbref(a)	;load ref if newer
+		hlrz	b,tod		;just date
+		hlrz	c,c		;get date alone
+		sub	b,c		;compute days since last ref
+		camge	b,adays		;more than n days??
+		popj	p,0		;no ignore
+		jrst	backuc]		;no go dump this one
+	popj	p,0		;return no dump requested???
+backuc:		;bump total counts
+	aos	tflcnt		;bump file count
+	hrrz	b,fdbbyv(a)	;get page count
+	addm	b,tpgcnt	;and bump pages
+backub:
+	hlrz	b,fdbbck+1(a)	;get 1st archive tape
+	camn	b,tpnum		;skip if not the same
+	popj	p,0		;dont archive if not diff tape
+; dump this file on tape
+backu1:
+	trne	f,lonly		;listing request only?
+	jrst	backu2		;yes, ignore dump
+	call	dmpfil		;go dump it to tape
+		jrst	backu3-1	;go put error message on stack
+	call	addfdb		;go add this one to directory(tape)
+		jrst	backu3-1	;go put error message on stack
+backu2:
+	skipe	uflag		;skip if not delivering to users
+	call	delivr
+	hrroi	b,[asciz / /]
+	push	p,b
+backu3:
+	move	a,lstjfn	;use listing device
+	movei	b,cr		;new line
+	bout
+	movei	b,tab		;indent
+	bout
+	call	listfl		;go list file name
+	move	a,lstjfn	;load lister jfn
+	pop	p,b		;get text pointer
+	setz	c,		;signify asciz
+	sout
+	move	b,linect
+	cail	b,maxlns	;over flow 
+	call	lsthdr		;go put new header out
+	popj	p,0		;return to caller
+	
+
+
+;******************************************************
+;  "DOCNT"	count used pages
+;******************************************************
+
+docnt:
+	move	a,cvf		;load fbd pointer
+	add	a,diradr	;make it real
+	move	c,fdbctl(a)	;get flags
+	tlne	c,fdbtmp+fdbnex+fdbnxf	;skip if not temp
+	popj	p,0		;ignore if temp or doesnt exist
+	hrrz	b,fdbbyv(a)	;get pages
+	addm	b,tpgcnt	;bump count
+	addm	b,usrpgs	;bump count (this user)
+	aos	tflcnt		;bump file count
+	aos	flcnt		;bump files (this dir)
+	popj	p,0		;and return
+
+;******************************************************
+;  "DOLIST"	list files in tape directory
+;******************************************************
+
+dolist:
+	move	a,lstjfn	;use listing device
+	movei	b,cr
+	bout
+	movei	b,tab
+	bout
+	call	listfl		;go type file stuff
+	move	a,lstjfn	;load listing jfn
+	move	b,linect
+	cail	b,maxlns	;overflow?
+	call	lsthdr		;yup go do header
+	popj	p,0		;return
+
+;******************************************************
+;  "DOMAP" map a user directory
+;******************************************************
+
+domap:
+	trne	f,wrtdir	;write access request?
+	jrst	[typem <**CAUTION** write access to a user directory>
+		jrst	.+1]
+	movsi	a,(JFCL)	;check if a breakpoint is set
+	camn	a,bploc
+	jrst	[typen <(This would be easier if you had a breakpoint set at BPLOC!>
+		haltf]
+	typem <Type $P to reenter BSYS>
+	typec	cr
+bploc:
+	jfcl			;put break point here
+	popj	p,0		;return
+
+;******************************************************
+;  "DOMRKA"	archiving mark or clear backup words
+;******************************************************
+
+domrka:
+	move	aa,adrfdb	;get fdb address
+	move	b,fdbbck(aa)	;get backup flags
+	trne	f,clear		;clearing backup words?
+	jrst	[tlz	b,fdbdmp+fdbmrk+fdbaar	;leave user options
+		movem	b,fdbbck(aa)	;and put back in fdb
+		;now clear all backup words in fdb
+		setz	b,
+		hrrm	b,fdbbck(aa)	;clear last dump tape #
+		setzm	fdbbck+1(aa)	;and arcive tape #'s
+		setzm	fdbbck+2(aa)	;tod of last dump
+		setzm	fdbbck+3(aa)	;tod of 1st archive
+		setzm	fdbbck+4(aa)	;tod of 2nd archive
+		popj	p,0]		; go do next one (if any)
+	tlnn	b,fdbmrk	;this one need marking?
+	trne	f,bildng	;or building archive directories?
+	caia			;yes
+	jrst	domrk2		;no,see if archived and time to delete
+	move	bb,b		;save backup flags
+	hrli	a,fdbbck	;word to be changed
+	hrlzi	b,fdbmrk	;just mark bit for now
+	setz	c,
+	skipe	fdbbck+4(aa)	;skip if not 2nd archive
+	jrst	[tlo	b,fdbarc+fdbaar	;turn off archive req.
+		tlo	c,fdbaar	;and say already archived
+		call	chdwrd		;go change directory word
+		tlne	bb,fdbadl	;delete with archive ?
+		jrst	.+2		;no
+		hrli	a,fdbctl
+		hrlzi	b,fdbdel	;delete it
+		move	c,b
+		jrst	.+1]
+	call	chdwrd		;go change directory word
+	 jfcl
+	skipn	fdbbck+4(aa)	;skip if 2nd archive
+	popj	p,0
+;clear bdb prototype
+	setzm	bdbblk+1
+	move	a,[xwd bdbblk+1,bdbblk+2]
+	blt	a,bdbblk+bdblen-1
+;now put this one in archive directory
+	movei	bb,bdbblk	;point to prototype
+	move	a,arcjfn	;archive dir file jfn
+	setz	c,		;1st word is next free
+	rin
+	skipn	b		;skip if setup already
+	movei	b,^d10		;initialize if not
+	push	p,b		;save it 
+	movei	c,1		;word 1 is chain pointer
+	rin			;get chain pointer 
+	skipn	b		;skip if not 1st entry
+	jrst	[move	b,0(p)		;will be at start of free
+		hrl	b,b		;both halves
+		jrst	domrk1]
+	hrrm	b,bdbext(bb)	;put in bdb block
+	hrr	b,0(p)		;get new bdb loc
+	rout			;update chain pointer
+	hrrz	c,bdbext(bb)	;get old top of chain
+	addi	c,bdbver	;update back pointer
+	rin
+	hrr	b,0(p)		;to point to new
+domrk1:
+	rout
+;now build rest of bdb (data and strings)
+	move	aa,adrfdb
+	move	b,fdbctl(aa)	;get flags
+	tlo	b,bdbflg	;say its a bdb
+	tlz	b,fdbdel	;ensure its not deleted
+	hrr	b,0(p)		;point to where file str goes
+	addi	b,bdblen
+	movem	b,bdbctl(bb)
+	hrrz	c,fdbctl(aa)
+	add	c,diradr	;make it real
+	hrrz	d,0(c)		;get file string length
+	add	b,d
+	hrlm	b,bdbext(bb)	;set ext string ptr
+	hlrz	c,fdbext(aa)
+	add	c,diradr	;make it real
+	hrrz	d,0(c)		;get ext string length
+	add	b,d
+	skipl	fdbact(aa)	;skip if no acct string
+	jrst	[hrli	b,400000	;set acct string flag
+		hrlm	b,bdbact(bb)	;set bdb acct string
+		hrr	c,fdbact(aa)	;get acct string ptr
+		add	c,diradr	;make it real
+		hrrz	d,0(c)		;get acct string length
+		add	b,d
+		jrst	.+1]
+	hrli	b,0
+	setz	c,
+	rout		;update next free location
+	move	b,fdbbck+1(aa)	;get tape nos.
+	movem	b,bdbadr(bb)	;set as file address
+	move	b,fdbprt(aa)
+	movem	b,bdbprt(bb)	;set protection
+	move	b,fdbbck+3(aa)	;t&d of 1st archive
+	movem	b,bdbad1(bb)
+	move	b,fdbbck+4(aa)	;t&d of 2nd archive
+	movem	b,bdbad2(bb)
+	move	b,fdbver(aa)	;version number
+	hllm	b,bdbver(bb)	
+	move	b,fdbusw(aa)	;user settable word (for nls)
+	movem	b,bdbusw(bb)
+;output bdb to file
+	move	b,0(p)		;get starting loc
+	sfptr			;set file byte pointer
+	 jsr	error
+	move	b,[point 36,bdbblk]
+	movni	c,bdblen	;output "n" words
+	sout
+;now file name string
+	hrr	b,fdbctl(aa)	;get pointer
+	add	b,diradr		;make it real
+	hrli	b,444400	;make it a 36 bit byte ptr
+	hrrz	c,0(b)		;get length
+	movn	c,c		;make it neg
+	sout
+;now extension string
+	hlr	b,fdbext(aa)	;get ext string pointer
+	add	b,diradr	;make it real
+	hrli	b,444400	;make it a 36 bit byte ptr
+	hrrz	c,0(b)		;get length
+	movn	c,c		;make it neg
+	sout
+;check for account string
+	skipl	fdbact(aa)	;skip if not one
+	jrst	[hrr	b,fdbact(aa)
+		add	b,diradr
+		hrli	b,444400	;make it a 36 bit byte ptr
+		hrrz	c,0(b)		;get length
+		movn	c,c		;make it neg
+		sout
+		jrst	.+1]
+	pop	p,a
+	popj	p,0
+domrk2:
+	skiple	adays		;exit if bypass of this check
+	tlnn	b,fdbaar	;this one already archived?
+	popj	p,0		;nope
+	tlne	b,fdbadl	;skip if not dont delete
+	popj	p,0		;ignore it
+	move	c,fdbwrt(a)	;get last written date
+	camge	c,fdbref(a)	;get latest - write or reference
+	move	c,fdbref(a)	;load ref if newer
+	hlrz	b,tod		;just date
+	hlrz	c,c		;get date alone
+	sub	b,c		;compute days since last ref
+	camge	b,adays		;more than n days??
+	popj	p,0		;no, ignore
+	hrli	a,fdbctl
+	hrlzi	b,fdbdel	;delete this one
+	move	c,b
+	call	chdwrd		;go change directory word
+	popj	p,0		;return
+
+;******************************************************
+;  "DOMRKD"	incr dump marking function
+;******************************************************
+
+domrkd:
+	move	aa,adrfdb	;get fdb address
+	move	b,fdbbck(aa)	;get backup flags
+	tlnn	b,fdbdmp	;this one need marking?
+	popj	p,0		;no, return
+	hrli	a,fdbbck	;yes, turn off the bit
+	hrlzi	b,fdbdmp
+	setz	c,
+	call	chdwrd
+	 jfcl
+	popj	p,0
+	
+
+
+;******************************************************
+;  "DOREST"	restore files to disc routine
+;******************************************************
+
+dorest:
+	move	a,tdrnum	;load current sub dir number
+	camn	a,sysnum	;skip if not system dir
+	jrst	[call	cfiles	;go check for non-restore
+		jrst	dorst0		;dont restore return
+		jrst	.+1]		;continue checking
+	skipe	bypass		;restore check bypass on?
+	jrst	dorst3		;yes bypass checks
+; construct lookup pointer for file name
+	move	c,adrfdb	;load fdb address(real)
+	hrrz	a,fdbctl(c)	;load file name string pointer
+	addi	a,tdrect	;make it real
+	movn	b,(a)		;load neg. word count
+	hrli	a,2(b)		;make it string lenght 0
+	movei	b,0		;entry type 0
+	call	lookup	;go see if it's in saved directory
+dorst0:
+	jrst	[hrroi	b,[asciz /  not restored/]
+		push	p,b
+		jrst	dorst9]		;go type cr
+; now construct compare word for extension
+	move	b,adrfdb	;load fdb address(real)
+	hlrz	a,fdbver(b)	;get version number
+	movem	a,temp4		;save it for compare
+	hlrz	a,fdbext(b)	;pick up ext string pointer
+	addi	a,tdrect	;make it real
+	movn	c,0(a)		;load length (-)
+	hrli	a,2(c)		;set in lh of a
+	call	$setms	;go get mask for string compare
+	move	b,dirloc	;load pointer to symtab entry
+	hrrz	a,direct(b)	;load fdb pointer
+	movem	a,dirloc	;make tdrloc be fdb pointer
+dorst1:
+	move	b,dirloc	;load pointer to fdb
+	skipn	b		;skip if an entry
+	jrst	dorst0		;take not found in saved dir exit
+	hrrzi	a,direct(b)	;get fdb address
+	movem	b,temp3		;save for version stuff
+	hrrz	b,fdbext(a)	;get next fdb address(for next)
+	movem	b,dirloc	;save it
+	hlrz	b,fdbext(a)	;get extension string pointer
+	addi	b,direct+1	;make it real
+	movn	a,-1(b)		;load neg string length
+	hrli	b,2(a)		;make it string length -1
+	move	a,tdrinp	;load tape string pointer
+	move	c,tdrmsk	;load mask
+	call	strcmp	;go check if the same
+	  jrst	dorst1		;a<b look at next
+	  jrst	dorst1		;a>b look at next
+	  jrst	dorst1		;a=subset of b look at next
+;  now look for version
+dorst2:
+	move	a,temp3		;load fdb address
+	skipn	a		;skip if fdb
+	jrst	dorst0		;if not then take not found exit
+	addi	a,direct	;make it real
+	hrrz	b,fdbver(a)	;get next ver fdb pointer
+	movem	b,temp3		;save it for next
+	hlrz	b,fdbver(a)	;get version number
+	camge	b,temp4		;skip if higher or found
+	jrst	dorst0		;if lower then not here
+	came	b,temp4		;skip if this is it
+	jrst	dorst2		;if not look at next
+; at this point ghosts restore checks are complete
+dorst3:	;now check for "*"'s in subfields
+	trne	f,allfil	;specific file name??
+	jrst 	dorst4		;nope
+	move	c,adrfdb	;point to FDB
+	hrrz	a,fdbctl(c)	;get filename string pointer
+	add	a,diradr	;make it real
+	addi	a,1		;step over header
+	hrli	a,440700	;make it a byte pointer
+	move	b,[point 7,tmpfil]
+	call	strcom		;go compare them
+	   jrst dorst0	;a<b
+	  jrst dorst0		;a>b
+	 jrst dorst0		;a initial subset of b
+dorst4:
+	trne	f,allext	;specific extension??
+	jrst 	dorst5		;nope - allow all
+	move	c,adrfdb	;point to FDB
+	hlrz	a,fdbext(c)	;get extension string pointer
+	add	a,diradr	;make it real
+	addi	a,1		;step over header
+	hrli	a,440700	;make it a byte pointer
+	move	b,[point 7,tmpext]
+	call	strcom		;go compare them
+	   jrst dorst0	;a<b
+	  jrst dorst0		;a>b
+	 jrst dorst0		;a initial subset of b
+dorst5:
+	trne	f,allver	;specific version??
+	jrst 	dorst6		;nope - allow all
+	move	c,adrfdb		;point to FDB
+	hlrz	a,fdbver(c)	;get version number
+	came	a,vershn	;same ?
+	jrst dorst0		;no
+dorst6: ; check dates to see if this is really the one
+	move	a,adrfdb	;load fdb address
+	hrrz	a,fdbadr(a)	;load file #
+	trze	a,400000	;skip if file not continued
+	jrst	[push	p,a		;save file number
+		typem	<
+  this file is continued on the next dump tape>
+		pop	p,a		;restore file number
+		jrst	.+1]		;continue on
+	call	ptfile	;if not go position tape
+	 jrst	[push p,[-1,,[asciz /Not on tape/]]
+		jrst	dorst4]
+	call	bldjfn	;go build jfn 
+	jrst	[hrroi	b,[asciz /  cant get jfn/]
+		push	p,b
+		jrst	dorst9]
+	move	a,dmpjfn	;get date of last write (if file exists)
+	move	b,[xwd 1,fdbwrt]
+	movei	c,c		;put it in "c"
+	gtfdb
+	move	b,adrfdb
+	caml	c,fdbwrt(b)	;skip if tape file is "newer"
+	jrst	[closf
+		errr	<dorst6: closf jsys failure>
+		hrroi	b,[asciz /  newer exists/]
+		push	p,b
+		jrst	dorst9]
+	call	fixfdb		;go fix fdb
+	trne	f,alldir	;full restore?
+	jrst	dorst7		;yes, leave read date alone
+	;special code to make last reference date "today"
+	gtad
+	move	c,a		;move date and time for chfdb
+	hrrz	a,dmpjfn
+	hrli	a,fdbref
+	seto	b,		;change all bits
+	chfdb
+dorst7:
+	move	a,adrfdb	;load fdb address
+	hlrz	b,fdbadr(a)	;load 1st block #
+	soj	b,		;dec for 1st
+	movem	b,blkno		;set for restore
+	hrrz	aa,fdbbyv(a)	;get pages in file(for check in rstfil)
+	call	rstfil		;go restore file
+	move	a,dmpjfn	;load jfn of file just restored
+	closf			;close it and release jfn
+	  jsr	error
+	hrroi	b,[asciz / /]
+	push	p,b
+dorst9:
+	jrst	backu3		;list file and bump line count
+	
+
+
+;******************************************************
+;  "DORUN"	do utility function (user defined)
+;******************************************************
+
+dorun:
+	popj	p,0		;normally dummy
+	repeat 100,<popj p,0>	;patch space (all returns)
+
+;******************************************************
+;  "DOTRIM"	retain "n" versions of each file
+;******************************************************
+
+;		keeps n-1 most recent and oldest
+dotrim:
+	move	a,trmcnt	;load versions to retain
+	skipn	lvf		;skip if not 1st version in chain
+	movem	a,vcnt		;set count only on 1st ver
+	move	a,cvf		;load current fdb pointer
+	add	a,diradr
+	move	b,fdbctl(a)	;load flags
+	tlne	b,fdbtmp+fdbnex+fdbdel+fdbnxf
+; if any of the above ignore this one
+	popj	p,0
+	call	doveri		;go make sure all is ok
+	skipe	badflg		;continue only if directory ok
+	popj	p,0
+	move	a,vcnt		;load working count
+	camn	a,trmcnt	;skip if not 1st to delete
+	jrst	[sos	vcnt	;say passed 1st ver
+		popj	p,0]
+	skipn	trmcnt		;if retain =1
+	jrst	.+3		;dont save oldest
+	skipn	nvf		;is this oldest?
+	popj	p,0		; yes, save it
+	sosl	vcnt		;skip if version to delete
+	popj	p,0
+; if it gets here then delete current version
+	hrlzi	a,fdbctl	;word containing flags
+	hrlzi	b,fdbdel	;only change delete bit
+	hrlzi	c,fdbdel	;delete it
+	call	chdwrd		;go change word in directory
+dotrm1:
+	  jfcl		;ignore errors
+	popj	p,0
+	
+
+
+;******************************************************
+;  "DOVERI"	verify user directory routine
+;******************************************************
+
+doveri:
+	movei	aa,fdbtbl	;point tostartof saved fdb's
+	move	cc,cvf		;pick up current fdb
+	skipn	cntfdb		;skip in some there
+	jrst	dover2		;if not put this one in
+	move	bb,cntfdb	;load count
+dover1:
+	camn	cc,0(aa)	;alredy in table?
+	jrst	[call	verifc	;check if verify function
+		typen	<  fdb in multiple strings or ring -  sym1= >
+		move	b,1(aa)		;load previous sym entry addr
+		movei	c,10		;octal
+		nout
+		  jsr	nouter
+		call	verr		;go type error data
+		jrst	dover3]		;and check other errors
+	addi	aa,2		;point to next entry
+	sojn	bb,dover1	;loop through entire table
+dover2:
+	movem	cc,0(aa)	;save this one
+	move	cc,syment	;and symtab pointer too
+	sub	cc,diradr	;make it a displacement
+	movem	cc,1(aa)
+	aos	cntfdb		;bump count
+dover3:
+	move	aa,diradr	;load directory address
+	move	bb,adrfdb	;load fdb address (real)
+	hlrz	c,0(bb)		;load fdb header word
+	caie	c,400100	;skip if real fdb (or bdb)
+	jrst	[call	verifc	;check if verify function
+		typen	<  invalid fdb header>
+		call	verr
+		jrst	.+1]
+	move	c,fdbctl(bb)	;load file name string pointer
+	tlne	c,fdbnex+fdbnxf	;skip if it exists
+	popj	p,0		;ignore if not
+	add	c,aa		;make it a real addr
+	hlrz	c,0(c)		;pick up header word
+	caie	c,400001	;skip if valid header
+	jrst	[call	verifc	;check if verify function
+		typen	<  invalid file name string pointer>
+		call	verr
+		jrst	.+1]
+	hlrz	c,fdbext(bb)		;load ext string pointer
+	add	c,aa		;make it real
+	hlrz	c,0(c)		;pickup header
+	caie	c,400002	;skip if valid
+	jrst	[call	verifc	;check if verify function
+		typen	<  invalid ext string pointer>
+		call	verr
+		jrst	.+1]
+	move	c,fdbact(bb)	;pickup possible acct string ptr
+	tlne	c,500000	;skip if not account #
+	jrst	dover4		;bypass if #
+	add	c,aa		;make it real
+	hlrz	c,0(c)		;pick up header
+	caie	c,-1		;skip if ok
+	jrst	[call	verifc		;check if verify function
+		typen	<  invalid account string pointer>
+		call	verr
+		jrst	.+1]
+dover4:
+	move	aa,syment
+	sub	aa,diradr
+	camn	aa,symbot	;skip if not 1st entry
+	jrst	verdsk		;ignore this check for 1st
+; construct "rst" lookup pointer for last file name string
+	move	aa,syment
+	hlrz	a,-1(aa)	;pick up last file string ptr
+	add	a,diradr	;make it real
+	movn	c,0(a)
+	hrli	a,2(c)
+	aoj	a,
+	push	p,a		;save lookup pointer
+	call	$setmsk	;go construct mask for compare
+	pop	p,a
+;now construct "rst" lookup pointer for current file name
+	hlrz	b,0(aa)		;pickup current file string ptr
+	add	b,diradr	;ke it real
+	movn	c,0(b)
+	hrli	b,2(c)
+	aoj	b,
+	move	c,tdrmsk	;load mask constructed above
+	call	strcmp		;go compare strings
+	  jrst	verdsk		;a<b ok ascending
+	  skipa			;a>b bad fall into error code
+	jrst	verdsk		;;a subset of b --ok
+	call	verifc		;check if verify function
+	 typen	<file names not in ascending order >
+	 typen	<  last file = >
+	hlrz	b,-1(aa)	;load last
+	add	b,diradr	;make it real
+	addi	b,1		;step over header
+	hrli	b,-1		;make it a string pointer
+	setz	c,		;asciz
+	sout
+	typem	<  current file = >
+	hlrz	b,0(aa)		;load current file pointer
+	add	b,diradr	;make it real
+	aoj	b,		;step over header
+	hrli	b,-1
+	setz	c,		;asciz
+	sout
+	call	verr		;type other for good measure
+;check for disc verify function and do it if yes
+verdsk:
+	skipn	disk		;skip if verify requested
+	popj	p,0		;return if not
+	setzm	pgtbl		;ensure page really there
+	call	getpt		;go get page table
+verds1:
+	jrst	[typec	cr
+		call	lstfile
+		hrroi	b,[asciz /     bad index/]
+		setz	c,0
+		sout
+		movei 	1,101	; !!MAH @ SUMEX!! bug fix, must restore AC1.
+				; 12/74
+		call	print+1	;go list file and msg
+		jrst 	verr]	;type the rest too
+	popj	p,0		;no index is ok
+verds2:
+	call	getnpg	;get a page
+	jrst	verds1		;bad index (long file)
+	popj	p,0		;no more, exit
+	jrst	verds2		;do next one
+verr:	;error bad block found type pertinate shit
+	aos	errors		;bump error count
+	call	verifc	;check if verify function
+	typen	<  symadr= >
+	move	b,syment	;load real addr of symtab entry
+	sub	b,diradr	;make it displacement
+	movei	c,10		;octal
+	nout
+	  jsr	nouter
+	typem	<,  syment= >
+	hlrz	b,@syment	;pick up lh (flnm pointer)
+	movei	c,10
+	nout
+	  jsr	nouter
+	typec	comma
+	hrrz	b,@syment	;lh (fdb pointer)
+	nout
+	  jsr	nouter
+	typem	<  fdbadr= >
+	move	b,cvf		;pick up current version fdb addr (disp)
+	movei	c,10
+	nout
+	  jsr	nouter
+	typec	cr
+	popj	p,0
+verifc:	;if function not verify, then called by other 
+	;function ..dont type error stuff just set flag
+	tlne	f,verbit	;skip if not verify function
+	jrst	[skipe	dirflg		;skip if dir to print
+		popj	p,0		;return if not
+		typec	cr
+		move	b,curdir	;type directory name
+		dirst
+			err <verifc: non-existent directory no.>
+		setom	dirflg		;say dont do again (this dir)
+		popj	p,0]		;return
+	setom	badflg		;set bad directory flag
+	pop	p,a		;delete normal return
+	popj	p,0		;and return to caller-1
+	lit
+	end

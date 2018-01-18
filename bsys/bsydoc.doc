@@ -1,0 +1,1685 @@
+
+
+
+
+
+             THROW OUT THIS BLANK PAGE
+
+
+BSYS - TENEX Backup SYStem                          -  1 -
+
+
+
+                                                            
+
+
+
+
+
+
+
+
+
+
+
+
+
+             Program Name: "BSYS" Tenex Backup System
+             Date:  2-APRIL-74 
+             Author: Donald C.(Smokey) Wallace
+
+             Address Correspondence To:
+
+                Donald C.Wallace
+                Stanford Research Institute
+                333 Ravenswood Drive
+                Menlo Park Calif.
+                (415)326-6200 x4580
+                
+             Program Residence:
+
+                @SRI-ARC:
+                    <BSYS>BSYSDF.MAC
+                    <BSYS>BSYSIN.MAC
+                    <BSYS>BSYSUT.MAC
+                    <BSYS>BSYSCM.MAC
+                    <BSYS>BSYSFD.MAC
+                    <BSYS>BSYSFS.MAC
+                    <BSYS>BSYSFN.MAC
+                    <BSYS>BSYSDR.MAC
+                    <BSYS>BSYSTD.MAC
+                    <BSYS>BSYSDV.MAC
+                    <BSYS>BSYSER.MAC
+
+
+
+
+
+Abstract:
+     BSYS is a subsystem for the BBN TENEX timesharing system. It 
+   provides facilities for dumping, restoring and archiving user files. 
+   It is also a file system utility allowing a wide variety of 
+   functions for verifying, examining and fixing file system problems. 
+   In philosophy it is intended as an extension of the TENEX FILESYSTEM 
+   to magnetic tape storage, allowing file name recognition, 
+   directories etc.
+
+BSYS - TENEX Backup SYStem                          -  2 -
+
+
+
+                        INTRODUCTION
+
+The backup system (BSYS) has three main purposes:
+
+  Protection for both the user and the system against catastrophic loss 
+of data (files).
+
+  Automatic (or manual if desired) file saving and deletion of inactive 
+(not referenced ) files. In this manner, it also provides for another 
+level of file storage.
+
+  A general file system utility for verifying user directories, 
+deleting extra versions, and a wide variety of useful operations on the 
+file system.
+
+                        CONVENTIONS
+
+In writing this document, the following conventions are used:
+
+1) Instructions about things to do are enclosed in parentheses.
+   Ex: (mount dectape on unit 0)
+
+2) When describing interactions with the system, characters typed
+   by the user are capitalized,and characters typed by the system
+   are lowercase.
+
+3) Special control characters will be described with the following
+   notations:
+
+   a) <ALT> is an Altmode or Escape
+   b) <CR>  is a Carriage Return
+   c) <SP>  is a Space
+   d) <RUBOUT> is the Rubout or Del key
+   e) <^D>  is a Control D
+   f) <^C>  is a Control C, etc.
+
+4) In How-to-do-it scenarios semicolon is used to delineate
+   comments as in the TENEX EXEC comment convention and PDP10 Macro
+
+5) # - is used to signify the operator is to enter a number
+
+BSYS - TENEX Backup SYStem                          -  3 -
+OPERATORS MANUAL
+
+
+                           DUMPS
+
+General Description
+
+     BSYS dumps provide an additional level of file storage to the 
+   TENEX timesharing system. They fundamentally do a "page" copy of a 
+   file group to magentic tape storage. BSYS dumps differ from 
+   Mini-Dumper in that the tapes produced by BSYS have directories and 
+   as such "know" where a file is on the tape and can position directly 
+   to the desired file (forward or backward). The directory also allows 
+   the listing of a specific tapes contents.
+     Information about the last dump tape number plus the time and date 
+   of the last dump is maintained in the FDB of each file in the 
+   filesystem. This data is only updated for Full and Full Incremental 
+   dumps. This allows you to do as many directory dumps as you like 
+   without effecting any systematic dumping/retrieving process being 
+   done by you local operations staff. This information should aid in 
+   recovering smashed of otherwise destroyed files from dump tapes.
+
+   **  SPECIAL NOTE  **
+        You must let BSYS unload a tape before you can deselect that 
+      unit. If you do not the tape will be no good!! BSYS "rewrites" 
+      the directory on the front of each tape. The common Mini-dumper 
+      practice of deselecting the tape unit at rewind time is 
+      disasterous when using BSYS.  Due to a completion marking 
+      mechanism the files would be redumped on a subsequent dump 
+      (incremental) but the dumped data and time used is lost.
+
+BSYS - TENEX Backup SYStem                          -  4 -
+OPERATORS MANUAL
+
+
+Dumping the entire file system
+
+   What a Full Dump does
+
+        The Full Dump function of BSYS copies the entire file system 
+      onto magnetic tapes.  This process takes about 2 hours for 35,000 
+      disk pages.
+
+   How to do a Full Dump
+
+      1. Mount blank tapes on tape units and be sure they have
+         write rings in them!!!
+      2. Logon TENEX as a user with OPERATOR(WHEEL) capabilities.
+      3. Run program "BSYS" 
+         @BSYS<CR>
+         
+         tenex-bsys   n.nn   mm-dd-yy
+         
+         *F<ALT>ull dump (entire file system)<CR>
+         enter tape unit (mtan:) MTA#:<CR> 
+            ; # - type proper unit number
+         listing to file: LISTING-FILE-NAME<CR>
+            ; ie: LPT:, TTY: ..
+         "site" tape number #<CR>
+            ; # - type tape number on tape reel
+         enter tape id: TEXT...<CR>
+            ; like "FULL DUMP  SET 100"
+         ; The dump should now be running....
+         ; When BSYS has filled up the first tape, it rewinds
+         ; that tape, writes the tape directory at the front of
+         ; the tape, and instructs the operator to:
+         
+         enter tape unit  (mtan:) MTA#:<CR>  
+            ; # - next unit number  
+         "site" tape number #<CR>
+            ; # - the tape number of next tape
+         ; When the dump is completed (last tape rewinds),
+         ; You must wait for the "*".
+
+BSYS - TENEX Backup SYStem                          -  5 -
+OPERATORS MANUAL
+
+
+Dumping a User Directory(s)
+
+   What Dump Directory does
+
+        The Directory Dump function of BSYS copies an entire user 
+      directory onto magnetic tapes.  The length of time required to do 
+      this operation is a function of the system load and the total 
+      number of pages in the specific user directory. At the end of 
+      dumping each directory the operator is given the opportunity to 
+      specify another directory.
+
+   How to do a Dump Directory
+
+      1. Mount blank tapes on tape units and be sure they have
+         write rings in them!!!
+      2. Logon TENEX as a user with OPERATOR(WHEEL) capabilities.
+      3. Run program "BSYS" 
+         @BSYS<CR>
+         
+         tenex-bsys   n.nn   mm-dd-yy
+         
+         *DU<ALT>MP DIRECTORY<CR>
+         
+         Directory: FOOBAR<CR>
+         enter tape unit (mtan:) MTA#:<CR> 
+            ; # - type proper unit number
+         listing to file: LISTING-FILE-NAME<CR>
+            ; ie: LPT:, TTY: ..
+         "site" tape number #<CR>
+            ; # - type tape number on tape reel
+            ; "site" is the ident of your installation
+         enter tape id: TEXT...<CR>
+            ; like "Dump Of <FOOBAR>"
+         ; The dump should now be running...
+         ; When BSYS has filled up the first tape, it rewinds
+         ; that tape, writes the tape directory at the front of
+         ; the tape, and if it needs another tape instructs the
+         ; operator to:
+         
+         enter tape unit  (mtan:) MTA#:<CR>  
+            ;# - the tape number of the next tape
+         "site" tape number #<CR>
+            ; # - the tape number of next tape
+            
+         ; When the dump is completed (last tape rewinds),
+         ; You must wait for the "*".
+
+BSYS - TENEX Backup SYStem                          -  6 -
+OPERATORS MANUAL
+
+
+Incremental Dumps
+
+   What an Incremental Dump does
+
+        The Incremental Dump function of BSYS copies all files that 
+      have been written since either the last dump or since a specified 
+      date and time onto magnetic tapes. 
+
+   How to do an Incremental Dump of the entire filesystem
+
+      1. Mount blank tapes on tape units and be sure they have
+         write rings in them!!!
+      2. Logon TENEX as a user with OPERATOR(WHEEL) capabilities.
+      3. Run program "BSYS" 
+         @BSYS<CR>
+         
+         tenex-bsys   n.nn   mm-dd-yy
+         
+         *IN<ALT>cremental dump (changed files)<CR>
+         dump since datetime(y or n)? Yes
+                        _
+         entire filesystem? Yes<CR>
+            enter datetime: MO-DA-YR HH:MM
+                      _
+               ; or any valid IDTIM format
+               ; If NO is specified then BSYS dumps all
+               ; files changed since the last dump.
+         enter tape unit (mtan:) MTA#:<CR> 
+            ; # - type proper unit number
+         listing to file: LISTING-FILE-NAME<CR>
+            ; ie: LPT:, TTY: ..
+         new tape? Yes<CR>
+            ; answering the preceding question NO allows you to
+            ; "append" files to the end of an existing BSYS tape
+            ; the following two questions will not be
+            ; asked in the NO case.
+         "site" tape number #<CR>
+            ; # - type tape number on tape reel
+            ; "site" is the ident of your installation
+         enter tape id: TEXT...<CR>
+            (like "INCR. DUMP  SET XXX")
+         ; The dump should now be running...
+         ; When BSYS has filled up the first tape, it rewinds
+         ; that tape, writes the tape directory at the front of
+         ; the tape, and if it needs another tape instructs the
+         ; operator to:
+         
+         enter tape unit  (mtan:) MTA#:<CR>  
+            ; # - next unit number  
+         "site" tape number #<CR>
+            ; # - the tape number of next tape
+         ; When the dump is completed (last tape rewinds),
+         ; You must wait for the "*".
+
+BSYS - TENEX Backup SYStem                          -  7 -
+OPERATORS MANUAL
+
+
+   How to do an Incremental Dump of a specific directory(s)
+
+      1. Mount blank tapes on tape units and be sure they have
+         write rings in them!!!
+      2. Logon TENEX as a user with OPERATOR(WHEEL) capabilities.
+      3. Run program "BSYS" 
+
+         @BSYS<CR>
+         
+         tenex-bsys   n.nn   mm-dd-yy
+         
+         *IN<ALT>cremental dump (changed files)<CR>
+         dump since datetime(y or n)? Yes
+                        _
+               enter datetime: MO-DA-YR HH:MM
+                         _
+                       ; or any valid IDTIM format
+                       ; If NO is specified then BSYS dumps all
+                       ; files changed since the last dump.
+         entire filesystem? No<CR>
+         directory; FOOBAR<CR>
+         enter tape unit (mtan:) MTA#:<CR> 
+            ; # - type proper unit number
+         listing to file: LISTING-FILE-NAME<CR>
+            ; ie: LPT:, TTY: ..
+         new tape? Yes<CR>
+            ; answering the preceding question NO allows you to
+            ; "append" files to the end of an existing BSYS tape
+            ; the following two questions will not be
+            ; asked in the NO case.
+         "site" tape number #<CR>
+            ; # - type tape number on tape reel
+            ; "site" is the ident of your installation
+         enter tape id: TEXT...<CR>
+            (like "INCR. DUMP  SET XXX")
+         ; The dump should now be running...
+         ; When BSYS has filled up the first tape, it rewinds
+         ; that tape, writes the tape directory at the front of
+         ; the tape, and if it needs another tape instructs the
+         ; operator to:
+         
+         enter tape unit  (mtan:) MTA#:<CR>  
+            ; # - next unit number  
+         "site" tape number #<CR>
+            ; # - the tape number of next tape
+         ; When the dump is completed (last tape rewinds),
+         ; You must wait for the "*".
+
+BSYS - TENEX Backup SYStem                          -  8 -
+OPERATORS MANUAL
+
+
+Continuing Dumps
+
+   What Continue Dump does
+
+        The Continue Dump function of BSYS will restart a Full or 
+      Incemental dump that was interrupted do to any reason(crash, 
+      etc.). BSYS keeps track of the last completed dump tape # 
+      directory and dump id-text, allowing the operator to get the dump 
+      going again by suppling a minimum of data.
+        BSYS deletes the continue data upon succesfull completion of a 
+      dump. If you attempt to continue a dump that was not interrupted 
+      abnormally, BSYS will place you in "manual" mode. This means that 
+      BSYS will ask you for all the data it requires torestart a dump 
+      at a given user.
+
+   How to Continue a Dump
+
+      1. Mount blank tapes on tape units and be sure they have
+         write rings in them!!! Be careful not to use any previously 
+         completed dump tapes.
+      2. Logon TENEX as a user with OPERATOR(WHEEL) capabilities.
+      3. Run program "BSYS" 
+         @BSYS<CR>
+         
+         tenex-bsys   n.nn   mm-dd-yy
+         
+         *CO<ALT>ntinue dump<CR>
+            ; at this point you may get the message
+            ; "No continue record?? entering manual mode"
+            ; if this happens go to "manual mode"  below
+         enter tape unit (mtan:) MTA#:<CR> 
+            ; # - type proper unit number
+         listing to file: LISTING-FILE-NAME<CR>
+            ; ie: LPT:, TTY: ..
+         "site" tape number #<CR>
+            ; # - type tape number on tape reel
+            ; "site" is the ident of your installation
+         dump restarted at user username
+         
+         ; The dump should now be running...
+         ; When BSYS has filled up the first tape, it rewinds
+         ; that tape, writes the tape directory at the front of
+         ; the tape, and if it needs another tape instructs the
+         ; operator to:
+         
+         enter tape unit  (mtan:) MTA#:<CR>  
+            ; # - next unit number  
+         "site" tape number #<CR>
+            ; # - the tape number of next tape
+         ; When the dump is completed (last tape rewinds),
+         ; You must wait for the "*".
+
+BSYS - TENEX Backup SYStem                          -  9 -
+OPERATORS MANUAL
+
+
+      4. Manual mode
+         ; this is caused by one of two things
+            ; 1) you are not really continuing a dump
+            ; 2) BSYS screwed up in writing the continue data and you 
+            must now supply it. This is analogous to a normal dump 
+            (full or incremental) except you have the option of which 
+            directory to start dumping.
+
+BSYS - TENEX Backup SYStem                          - 10 -
+OPERATORS MANUAL
+
+
+                        LOAD/RESTORE
+
+General description
+
+     LOAD AND RESTORE are the commands used to copy files from magnetic 
+   tape storage to the active file system. LOAD is used if the desired 
+   resultant file is to be a new file. That is it should retain none of 
+   its original attributes except the data.(ie: creation date,archive 
+   status, etc..) RESTORE is used if the file is to reappear in the 
+   file system exactly as it was when it was dumped or archived. 
+
+Load files (from magtape)
+
+   What load does
+
+        The load command was intended to allow copying a file group 
+      from magntictape to the active file system. Due to the 
+      difficiency of GTJFN and an indicated lack of need from actual 
+      use of BSYS the load function allows only single file copies at 
+      this time. The load function was designed to allow "*"'s in both 
+      in the source and destination file names but the implimentation 
+      is incomplete at this time. 
+
+   Loading a single file
+
+      @BSYS<CR> 
+
+      tenex-bsys   n.nn   mm-dd-yy
+
+      LO<ALT>ad files (from magtape)<CR>
+      enter tape unit (mtan:) MTA#:<CR>
+         ; "#" is the number of the tape unit
+      listing to file: LISTING-FILE-NAME<CR>
+         ; ie: LPT:, TTY: ..
+        mounting tape directory
+      copy mtan: TAPE-FILE-NAME<CR>
+         ; Altmode and ctrl-f can be used to recognize both
+         ; the tape file's directory name and file name.
+       (to) DISK-FILE-NAME<CR>
+      copy mtan: <RUBOUT>
+      *E<ALT>xit<CR>
+      
+
+BSYS - TENEX Backup SYStem                          - 11 -
+OPERATORS MANUAL
+
+
+Restore files (from magtape)
+
+   What restore does
+
+        Restore brings back one file(group) from a bsys-dumped tape, 
+      and writes it on the disk with the exact characteristics of that 
+      file when it was originally on-line.  i.e., the directory, name, 
+      extention, version number, dates, and archive parameters are 
+      exactly the same.
+
+   How-to procedures
+   
+      restoring a single file
+      
+         @BSYS<CR> 
+         
+         tenex-bsys   n.nn   mm-dd-yy
+         
+         R<ALT>estore files (from tape)<CR>
+         enter tape unit (mtan:) MTA#:<CR>
+            ; "#" is the number of the tape unit
+         listing to file: LISTING-FILE-NAME<CR>
+            ; ie: LPT:, TTY: ..
+           mounting tape directory
+         restore mtan: <DIRECTORY>FILE.EXT;VE#<CR>
+            ; Altmode and ctrl-f can be used to recognize both
+            ; the tape file's directory name and file name but not
+            ; the extension.
+         restore mtan: <RUBOUT>
+         *E<ALT>xit<CR>
+         
+      restoring a single directory
+      
+         @BSYS<ALT><CR> 
+         
+         tenex-bsys   n.nn   mm-dd-yy
+         
+         R<ALT>estore files (from tape)<CR>
+         enter tape unit (mtan:) MTA#:<CR>
+            ; "#" is the number of the tape unit
+         listing to file: LISTING-FILE-NAME<CR>
+            ; ie: LPT:, TTY: ..
+           mounting tape directory
+         restore mtan: <DIRECTORY>*.*;*<CR>
+         restore mtan: <RUBOUT>
+         *E<ALT>xit<CR>
+
+BSYS - TENEX Backup SYStem                          - 12 -
+OPERATORS MANUAL
+
+
+Restoring the entire file system
+
+   Description
+
+        The RESTORE command provides for restoring the entire file 
+      system. The file system may be restored either from a full dump 
+      set of tapes or from a combination of incremental tapes and a 
+      full dump set. In the later case the facility to prevent ghosts 
+      (files deleted  is provided. The only requirement is that the 
+      first tape of the the most recent dump (either full or 
+      incremental) be loaded first. This allows BSYS to obtain the most 
+      recent copy of the file <SYSTEM>DIRECTORY;1 to check files prior 
+      to restoration as to whether they where in the "last" state of 
+      the file system.
+
+   How-to scenario
+
+      @BSYS<ALT><CR> 
+      
+      tenex-bsys   n.nn   mm-dd-yy
+      
+      R<ALT>estore files (from tape)<CR>
+      enter tape unit (mtan:) MTA#:<CR>
+         ; "#" is the number of the tape unit
+      listing to file: LISTING-FILE-NAME<CR>
+         ; ie: LPT:, TTY: ..
+        mounting tape directory
+      restore mtan: <*>*.*;*<CR>
+      create users? Yes [confirm]<CR>
+         ; If No is specified bsys assumes that users already
+         ; exists and bypasses creating them
+      *E<ALT>xit<CR>
+      @reset<CR>  
+
+BSYS - TENEX Backup SYStem                          - 13 -
+OPERATORS MANUAL
+
+
+Loading a Single file
+
+   What single does
+
+        Single also allows you to retrieve a file from a bsys-dumped 
+      tape.  however, it differs from restore, in that you can specify 
+      new file descriptors, rather than simply accept the old ones.
+
+   How-to load a single file
+
+      @BSYS<CR> 
+      
+      tenex-bsys   n.nn   mm-dd-yy
+      
+      S<ALT>ingle files<CR>
+      enter tape unit (mtan:) MTA#:<CR>
+        mounting tape directory
+      copy mtan: TAPE-FILE-NAME<CR> (to) DISK-FILE-NAME<CR><CR>
+      copy mtan: (rubout)
+      *E<ALT>xit<CR>
+      @RESET<CR>
+      (in the above, "#" is the number of the tape unit.  
+      "tape-file-name" must include the directory name, as well  as the 
+      other file descriptors.  altmode can be used to recognize both 
+      the tape file's directory name and file  however, if you use an 
+      altmode for recognition of the file name, you do not need to type 
+      the confirming cr.  also, if you use an altmode for the 
+      disk-file-name, you only need 1 (one) confirming cr.)
+
+BSYS - TENEX Backup SYStem                          - 14 -
+OPERATORS MANUAL
+
+
+                       ARCHIVE SYSTEM
+
+General Description:
+
+     The archive system uses a special form of the BSYS dump facility 
+   to process the file system and dump user files to magnetic tape.  
+   Facilities are provided for:
+
+      Specific Archive Requests
+      Automatic File Deletion (after archival)
+      Automatic Archival of Files not referenced in "n" days (30)
+      Automatic Notification of an operator for manual retrieval
+      Inquiry for specific file archive information
+
+How-to scenarios
+
+   generating a list of archivable files:
+
+      @BSYS<CR>
+      
+      tenex-bsys   n.nn   mm-dd-yy
+      
+      *A<ALT>rchive (user files)<CR>
+      
+      archival period (days) = ## [Confirm]<CR>
+      listing only? Yes [Confirm]<CR>
+      entire file system? Yes [confirm]<CR>
+      list for users? No [confirm]<CR>
+      
+   delivering a list of files to be archived to users:
+
+      note: setup files <ARCHIVE>ARCHIVE-MESSAGE.TXT and 
+      <ARCHIVE>ARCHIVE-FILES-ONLY.TXT
+      @BSYS<CR>
+
+      tenex-bsys   n.nn   mm-dd-yy
+      
+      *A<ALT>rchive (user files)<CR>
+      
+      archival period (days) = ## [Confirm]<CR>
+      listing only? Yes [confirm]<CR>
+      entire file system? Yes [confirm]<CR>
+      list for users? Yes [confirm]<CR>
+
+   archiving user files:
+
+      @BSYS<CR>
+      
+      tenex-bsys   n.nn   mm-dd-yy
+      
+      *A<ALT>rchive (user files)<CR>
+      
+      archival period (days) = ## [confirm]<CR>
+
+BSYS - TENEX Backup SYStem                          - 15 -
+OPERATORS MANUAL
+
+
+      listing only? No [confirm]<CR>
+      listing to file: LPT:<CR>
+      entire file system? Yes [confirm]<CR>
+      enter tape unit (mtan:) MTA0:<CR>        (desired magtape unit)
+      new tape? Yes [confirm]<CR>      
+         (if new tape =y es then bsys will ask)
+      sitename tape number  nnn                (sitename=bbn,arc 
+      etc...)
+         (if new tape = no then bsys says)
+      mounting tape directory
+         bsys now types a list of users and data about file archival
+         
+
+   interrogating the magtape archive:
+
+      The EXEC command INTERROGATE uses a subsystem called LOOKUP to 
+      perform the actual Archive Directory LOOKUP function.
+         @INTERROGATE <DIRNAME>FILE.EXT;VER<CR>
+            All TENEX filename conventions apply 
+            ("*'S,^F,ALTMODE..ETC.). If any groups are specified (*) 
+            then you will get a list of archived file belonging to that 
+            group. Only single file retrieval requests are permitted! 
+            If the file is found in the archive then the user is asked.
+         file is archived on tapes xxx and yyy
+         do you want it retrieved (y or n) ? Yes[confirm] <CR>
+         
+         your request has been noted you will be notified when 
+         completed
+
+BSYS - TENEX Backup SYStem                          - 16 -
+OPERATORS MANUAL
+
+
+                   FILE SYSTEM UTILITIES
+
+General Description
+
+     BSYS's ability to "run" the file system structure (tape directory 
+   too!) allows the implimentation of virtually any utility function 
+   desired.
+
+COUNT (directory file pages)
+
+   What count does
+
+        Count proccesses a single directory or the entire file system 
+      and adds up the number of disk pages in use and produces a report 
+      of counts by user. As an option it will update the working count 
+      in the directory overhead block. This option is particularly 
+      usefull when enforcing the disc allocation option in TENEX 
+      versions 130 or later.
+
+   How to run count
+
+      counting a single directory
+
+         @BSYS<CR>
+         *COU<ALT>nt (file pages)<CR>
+         listing only? Yes
+               ;if NO is specified then as a byproduct of the
+               ;count listing the working count (in the
+               ;directory overhead block) is updated.
+         entire file system? No
+         directory: DIRECTORY-NAME
+               ; BSYS now types (on the controlling tty)
+            
+         directory-name        # files    # pages(#)        disc 
+         max= #
+         *
+            ; the number following the word "pages" is The working
+            ; count and only appears if its different than the
+            ; actual count.
+
+      counting the entire file system
+
+         @BSYS<CR>
+         *COU<ALT>nt (file pages)<CR>
+         listing only? Yes
+               ;if NO is specified then as a byproduct of the
+               ;count listing the working count (in the
+               ;directory overhead block) is updated.
+         entire file system? Yes
+         listing to file: LPT:
+         *
+
+BSYS - TENEX Backup SYStem                          - 17 -
+OPERATORS MANUAL
+
+
+DISMOUNT (magtape directory)
+
+     This BSYS function is intended for fixing magtape directories and 
+   should not be used except by knowledgable systems people.
+
+LIST (magtape directory)
+
+   What list does
+
+       The listing function produces a directory listing for any bsys 
+      dump tape.
+
+   How to do a list
+
+      @BSYS<CR>
+      *L<ALT>ist (magtape directory)<CR>
+      enter tape unit (mtan:) MTA#:
+         ;"#" is the number of the tape unit
+      listing to file: LPT:<CR>
+      *
+
+MOUNT (magtape directory)
+
+     This BSYS function is intended for fixing magtape directories and 
+   should not be used except by knowledgable systems people.
+
+OCTAL PRINT (of directory)
+
+   What octal print does
+
+        OCTAL produces a formated dump of either a system directory or 
+      a magtape directory. The dump produced is ala DDT and is quite 
+      usefull in repairing smashed directories or simply verifying 
+      something about a directory. Try it you'll like it.
+
+   How to do an octal print
+
+      @BSYS<CR>
+      *O<ALT>ctal print (of directory)<CR>
+      tape? Yes
+       ; if no is specified the following in omitted
+      enter tape unit (mtan:) MTA#:
+      listing to file: LISTING-FILE-NAME (ie: LPT:, TTY:...)
+      directory: DIRECTORY-NAME
+      *
+
+TRIM (user directories)
+
+   What Trim does
+
+        Trim will process a directory (or all the directories in the 
+      file system) and delete all but the specified number of versions 
+      of each file in that directory. If "n" is greater than one BSYS 
+
+BSYS - TENEX Backup SYStem                          - 18 -
+OPERATORS MANUAL
+
+
+      reains the n-1 most recent versions and the oldest.  However, 
+      Trim does not expunge these files.  That is done in a separate 
+      operation.
+
+   How to do a trim
+
+      @BSYS<CR>
+      *T<ALT>rim (user directories)<CR>
+      enter versions to retain: n<CR>
+       really? Y<CR>
+      *E<ALT>xit<CR>
+      @RESET<CR> 
+      (In the above, "n" is the number of versions to be left 
+      undeleted.  Usually this number is 1 (one).)
+
+VERIFY (user directories)
+
+   What Verify does
+
+        Verify checks all the pointers in the FDB (File Description 
+      Block) for every file in the directory.  If these pointers are 
+      not correct, BSYS cannot correct the problem, but will print an 
+      error concerning it.  The conditions checked by BSYS are 
+      different from those checked by CHECKDSK.
+
+   How to do a verify
+
+      @BSYS<CR> 
+      *V<ALT>erify (user directories)<CR>
+      entire file system? Y<CR>
+      disc verify too? N<CR>
+      
+      (BSYS will not print all the directory names as it checks them.)
+      
+      *E<ALT>xit<CR>
+      @RESET<CR> 
+
+BSYS - TENEX Backup SYStem                          - 19 -
+OPERATORS MANUAL
+
+
+                      COMMAND SUMMARY
+
+ARCHIVE (user files)
+BUILD (archive directories)
+CONTINUE DUMP
+COUNT (file pages)
+DISMOUNT (magtape directory)
+DUMP DIRECTORY
+EXIT
+FULL DUMP (entire file system)
+HELP
+INCREMENTAL DUMP (changed files)
+LIST (tape directory)
+LOAD FILES (from magtape)
+MAP (user directory)
+MARK (or clear) BACKUP WORDS
+MOUNT (magtape directory)
+OCTAL PRINT (of directory)
+PRINT THE MAGTAPE ARCHIVE
+RESTORE FILES (from tape)
+RUN THE FILE SYSTEM (utility)
+SINGLE FILE
+TAPE COPY
+TRIM (user directories)
+VERIFY (user directories)
+
+BSYS - TENEX Backup SYStem                          - 20 -
+OPERATORS MANUAL
+
+
+                       ERRORS/ACTIONS
+
+  Following is a list of errors that may be encountered using BSYS. 
+Corrective action is supplied if applicable. Normal error format is:
+   "label: ...error text..."
+label: is the BSYS program label preceding the error and is meant to be 
+used as a debugging aid to programmers.
+(errors are listed in alphbetical order without the "label")
+
+   ATTEMPT TO EXPAND TAPE DIR BEYOND 20 PAGES
+       This is a catastrophic failure and means BSYS is really fouled 
+      (contact responible programmer).
+   BLOCK SEQUENCE ERROR 
+      This error may be ignored execpt when encountered  while actually 
+      restoring a file. It is normally caused by tape unit malfunction 
+      and you should retry the restore. If the problem persists you 
+      should contact the responsible programmer.
+   CAN'T GET EXCEPTION LIST FILE - TRIM ABORTED 
+   CAN'T OPEN EXCEPTION LIST FILE - TRIM ABORTED 
+      The above two errors are caused by BSYS's inability to get the 
+      list of directories to except from the trim operation. you should 
+      check the file <ARCHIVE>BSYS-TRIM-EXCEPTIONS.;1
+   CANT CLOSE ARCHIVE DIRECTORY FILE 
+      CLOSF jsys failure and can be ignored. If it happens regularly 
+      have someone check it out.
+   CANT CLOSE MAGTAPE 
+       a random CLOSF jsys failure - no action 
+   CANT GET USERS ARCHIVE DIRECTORY 
+   CANT OPEN ARCHIVE DIRECTORY 
+      Means that BSYS cant get access to a users archive directory. The 
+      archive run will be aborted and the BUILD function must be used 
+      to make the entries in the archive directory once the problem has 
+      been rectified. This error is usually caused by disk space 
+      (system or user) shortages.
+   CANT GET JFN FOR CONTINUE FILE??
+   CANT OPEN CONTINUE FILE?? ENTERING MANUAL MODE
+   NO CONTINUE FILE?? ENTERING MANUAL MODE 
+   NO CONTINUE RECORD?? ENTERING MANUAL MODE
+   FAILED TO CLOSE CONTINUE DUMP FILE??
+      All of the above errors signify that something is wrong with the 
+      continue dump mechanism. Simply supply the data asked for and 
+      continue. BSYS is unable to save the state of the dump while in 
+      progress. This is not serious unless the dump aborts and you wish 
+      to restart with the CONTINUE command and even then it is just 
+      inconvenient. This is usually caused by disk space problems.
+   CANT WRITE TAPE HEADER - ABORTING 
+      This is a catastrophic failure and should be looked at by the 
+      responsible programmer. Most probable cause is a bad tape.
+   CLOSF JSYS FAILURE ?? 
+       a random CLOSF jsys failure - no action 
+   DATA ERROR READING FIRST RECORD OF FILE #  
+      This error occurs when positioning a tape to the desired file and 
+      can generally be ignored. 
+
+BSYS - TENEX Backup SYStem                          - 21 -
+OPERATORS MANUAL
+
+
+   DIRECTORY NUMBER ALREADY USED ON THIS TAPE?? 
+      This is caused by reused directory number conflicts and should 
+      only be encountered when "appending" to an old tape. Any other 
+      occuance is indicative of BSYS program problems.
+   ERROR WHILE WRITING TAPE HEADER
+   ERROR WRITING TAPE DIRECTORY - PAGE #  
+       The above two errors  are indications of a bad or marginal tape. 
+      The tape should be checked for "mountability" and in the event of 
+      failure should be copied (see TAPE copy function) or if possible 
+      the data should be redumped.
+   INVALID DIRECTORY NUMBER FOR CNDIR 
+       Indicates an  invalid entry in the system index hash table. 
+      contact responsible programmer or TENEX people.
+   INVALID FILE DATA (ZERO DIRNUM) 
+      The file data record (FDB, filename, etc..) is bad. normally not 
+      a problem except when rebuilding the directory (see TAPE copy 
+      function).
+   JSYS ERROR IN ERROR ROUTINE AAAAAAAAHHHHHHHHHHHH!!!!!
+      ERSTR jsys failure in the BSYS error routine. 
+   NO ROOM FOR NAME IN TAPE INDEX!! 
+       There is no more space in the tape index. This should not happen 
+      and is symptomatic of a BSYS program problem.
+   NON-EXISTENT DIRECTORY NO. 
+      The DIRST jsys has failed on a valid directory number (tenex 
+      problem?)
+   NON-EXISTENT TAPE DIRECTORY NO. 
+      A previously identified directory cannot be found in the tape 
+      index plus the equivalent disk directory does not exist - this 
+      should not normally happen and is symptomatic of BSYS program 
+      troubles and you should contact the responsible programmer.
+   SEQ ERR:  
+       block numbers on tape records are not consecutive. This can be 
+      caused by tape unit malfunction or BSYS program toubles. In 
+      general can be ignored but if cronic should be investigated.
+   TAPE DIRECTORY DISAPPEARED?? 
+       BSYS attempt to remap a user tape directory failed - 
+      catistrophic problem and indicates BSYS program problem.
+   TAPE DIRECTORY SPACE EXHAUSTED DUE TO WRITE ERRORS 
+       Indicates a Bad tape  - no recovery - you must redump the data 
+      on this tape. ( note: in some cases TAPE copy with rebuild option 
+      will work!)
+   THIS TAPE DOES NOT CONTAIN DATA TO CREATE USERS
+       IT'S NOT THE 1ST TAPE OF A DUMP ....
+      When reloading the disc the first tape of a full dump must be 
+      used first. After that tapes may be loaded in any order.
+   TRIM FUNCTION TABLE OVERFLOW: 
+      EXPAND TABLE "EXLST" OR DECREASE NUMBER OF 
+      DIRECTORIES EXCEPTED  
+   UNDETERMINED TAPE ERROR PLEASE CHECK TAPE AND
+     TYPE ANY CHARACTER TO CONTINUE 
+   UNEXPECTED IO ERROR INTERRUPT...IGNORED
+      The above errors indicate trouble with the tape unit or 
+      controller. Continued trouble of this type means more or better 
+
+BSYS - TENEX Backup SYStem                          - 22 -
+OPERATORS MANUAL
+
+
+      maintence on hardware.
+   UNRECOVERABLE ERROR WRITTING TRAILER
+      TAPE IS GOOD(?) BUT, NOT FOR FUTURE APPENDS
+      TAPE MARKED AS FULL... 
+      Bad or marginal tape - no action
+   UNRECOVERABLE TAPE READ ERROR 
+      BSYS is unable to read the data from a tape.Retry after mounting 
+      tape on another tape unit (if available) or cleaning the read 
+      heads.
+   UNRECOVERABLE TAPE READ ERROR ATTEMPTING TO CREATE USERS
+      A read error has forced termination of the create users funtion 
+      of restore. Use the DLUSER subsystem to create the user 
+      directories and type "no" to BSYS when asked  to create users.
+   UNRECOVERABLE WRITE ERROR WRITING DIRECTORY
+   WRITE ERROR IGNORED 
+      BSYS writes detected error records until no errors occur. this 
+      means recovery is possible (beware!).  This usually indicates the 
+      tape in marginal at best and redumping is strongly advised. 
+
+BSYS - TENEX Backup SYStem                          - 23 -
+PROGRAMMERS MANUAL
+
+
+                     PROGRAMMERS MANUAL
+
+INTRODUCTION
+
+  BSYS basically runs the file system structure "calling" specific 
+function routines for each file encountered.  It does this by mapping 
+the system INDEX and copying the user hash table, It then maps each 
+user subdirectory into its space and then processes each symbol table 
+entry by following the file extension and version chains (see appendix 
+"<SYSTEM>DIRECTORY FORMAT"). This allows for multiple functions to be 
+performed on a single pass of the file system. However this facility is 
+not presently used.
+
+The flow of a typical BSYS command is as follows
+
+     A setup and initialization routine is called by the command 
+   decoder/recognizer. This setup routine sets the necessary function 
+   flag(s) for the selected command. The setup routine is responsible 
+   for getting all neccesary files:(listing device, mag tape, input 
+   files, temporary files...). It then calls the routine CNTRL. CNTRL 
+   processes the file <SYSTEM>DIRECTORY, getting the "next" directory, 
+   and then calling the routine CHECK to process that directory. CHECK 
+   processes each entry in the directory symbol table running down the 
+   extention and version FDB chains.  The functional processing 
+   routines  (selected by function flags) are called for each file in 
+   the mapped directory. In order to process a single directory the 
+   setup routine needs only map the appropriate subdirectory pages and 
+   call routine CHECK.
+
+
+                     MAKING A NEW BSYS
+
+creating a site specific version
+
+   BSYS currently consists of 11 code files:
+
+       <BSYS>BSYSDF.MAC                definitions
+       <BSYS>BSYSIN.MAC                initialization
+       <BSYS>BSYSUT.MAC                utilitys
+       <BSYS>BSYSCM.MAC                first level command
+       <BSYS>BSYSFD.MAC                filesystem processing
+       <BSYS>BSYSFS.MAC                filesystem subroutines 
+       <BSYS>BSYSFN.MAC                function execution
+       <BSYS>BSYSDR.MAC                dump/restore/archive
+       <BSYS>BSYSTD.MAC                tapedirectory
+       <BSYS>BSYSDV.MAC                device handlers
+       <BSYS>BSYSER.MAC                error handlers
+
+     You should obtain the most recent version of the macro code files  
+   You must then edit the definitions file "BSYSDF". All site specific 
+   parameters appear at the start of this file and the instructions to 
+   edit this file are also included. Please follow the convention of 
+   giving BSYS files at your site the same version numbers as the 
+
+BSYS - TENEX Backup SYStem                          - 24 -
+PROGRAMMERS MANUAL
+
+
+   originals at SRI(BBN). This allows me to quickly determine the 
+   version of the BSYS you are running. Now follow the instructions for 
+   assembling a new version of BSYS. If (when?) you encounter problems 
+   call me!!
+
+assembling a new version
+
+     A runfil is provided for loading/assembling a new bsys. The file 
+   is <BSYS>LODBSYS.RUN. This load is quite similar to the BBN 131 
+   monitor procedure in that it uses CCL and only assembles the changed 
+   files. The CCL driver file is <BSYS>ASSM.BSY.
+
+      RUNFIL <BSYS>LODBSYS.RUN
+         DAY
+         USE
+         CCL
+         LOAD @ASSM.BSY
+         save 20 377777 bsys.sav
+          
+         get bsys.sav
+         SSAVE 0 677 BSYS.SAV
+          
+         del bsys.sav
+          
+         EXP
+         USE
+         DAY
+
+      CCL driver file <BSYS>ASSM.BSY :
+         /MACRO SYS:STENEX.REL/REL
+         DSK:BSYSDF.REL=BSYSDF/COMPILE
+         BSYSIN.REL=BSYSIN
+         BSYSUT.REL=BSYSUT
+         BSYSCM.REL=BSYSCM
+         BSYSFD.REL=BSYSFD
+         BSYSFN.REL=BSYSFN
+         BSYSDR.REL=BSYSDR
+         BSYSFS.REL=BSYSFS
+         BSYSTD.REL=BSYSTD
+         BSYSDV.REL=BSYSDV
+         BSYSER.REL=BSYSER%M
+
+BSYS - TENEX Backup SYStem                          - 25 -
+PROGRAMMERS MANUAL
+
+
+                       ARCHIVE SYSTEM
+
+GENERAL DESCRIPTION
+
+     The archive command is really just a special form of incremental 
+   dump with a different criteria for "incrementalness".
+
+   ** IMPORTANT NOTE **
+
+        BSYS dumps a file on two (2) different tapes before it iS 
+      considered archived. When it has been archived an entry is made 
+      in an archived files directory file. entries are made in the form 
+      of a doubly strung list containing BACKUP DESCRIPTOR BLOCKS (BDB) 
+      plus name,extension and account strings. This has  created the 
+      illusion for new users of the archive not working. As two passes 
+      (one each on different tapes) are required before any files are 
+      really archived. A standard operational ploy is to run the 
+      archive  twice in a single evening to ensure all archivable files 
+      are really archived. This is obviously not necessary but none the 
+      less is still done.
+      
+THE ARCHIVE COMMAND
+   This command has two basic modes of operation:
+      listing mode
+           Allows for generating a list of "archivable" files for a 
+         specific user(s) or the entire file system.
+         It will alternativly concatinate the file <BSYS>ARCHIVE-TEXT 
+         and a list of files to be archived for each user and append it 
+         to his message.txt file. It provides for mapping files-only 
+         directories to "owner" directories.
+      dumping mode
+           This mode is essentially "dump" with the dumping criteria 
+         being has the file been written or referenced in the last "n" 
+         days, where n is the run-time selected archival period.
+         The additional function of making entries in the file 
+         ARCHIVE-DIRECTORY.;1 is accomplished on the marking "pass".
+
+
+MODIFICATIONS TO THE TENEX EXECUTIVE 
+
+     The following commands have been added to the TENEX EXECUTIVE to 
+   support archiving and retrieving of user files.
+
+      EXEC Command to invoke archiving of a specific file
+         @ARCHIVE filename  [,] optional comma invokes subcommands
+            *'s are allowed in all fields
+            
+         SUBCOMMANDS:   ($ means normal defaults)
+         
+            @@DEFERRED($) - archive this file at next regular archival 
+            run of BSYS
+            
+            @@IMMEDIATE -  (not implemented yet)
+
+BSYS - TENEX Backup SYStem                          - 26 -
+PROGRAMMERS MANUAL
+
+
+            copy this file to directory <archive> with a funny name and 
+            when regular archiving done archive it in original 
+            directories archive with the original name.
+            
+            @@DON'T ARCHIVE - do not archive this file 
+            (BSYS will ignore this file for all archival functions)
+            this will include deletion of the funny named file in 
+            <ARCHIVE> if one exists.
+            
+            @@DELETE($) - delete this file after it is archived
+            
+            @@DON'T DELETE - dont delete this file after it is archived
+            
+            @@RESET - resets all archival attributes of this file.
+            this does not "unarchive" a file if it has been previously 
+            been archived.
+            
+            @@STATUS - type the current "archival status" of the 
+            specified file(s)
+             
+          
+      EXEC COMMAND TO INTERROGATE THE ARCHIVE DIRECTORY FILE
+      
+         @INTERROGATE (ARCHIVE) FILENAME
+         
+            either types "THAT FILE IS NOT ARCHIVED" "
+            or "ARCHIVED ON ARC TAPES NNN AND MMM"
+                 If the file is found in the archive directory file
+               "DO YOU WANT IT RETRIEVED?" will be asked. If the answer 
+               is yes a message will be logged on a special logger. the 
+               message contains time and date, filename, tape nos., 
+               requestors name, tty, and job number
+               the tenex operator must periodically check the speCIAL 
+               Logger for retrieval requests.
+                 When the file has been retrieved  the user should be 
+               notified via the link or notify facilities if he is 
+               still on the system, otherwise the operator should use 
+               SNDMSG (the MESSAGE.TXT file in your directory) to leave 
+               a confirmation message.
+         The actual lookup portion of this command is implemented via a 
+         high segment file allowing  any subsystem to INTERROGATE the 
+         archive directory file.
+         
+
+
+                     FILES USED BY BSYS
+
+ TAPEDIRECTORY.TMP
+
+   purpose:
+
+       This file is the tape analog of <system>directory. it is built 
+      and dump(archive) time and is written on the tape after 
+
+BSYS - TENEX Backup SYStem                          - 27 -
+PROGRAMMERS MANUAL
+
+
+      completion (as file 0).
+
+   format:
+
+       It is identical in format to <SYSTEM>DIRECTORY with the 
+      following exceptions.
+         The field "FDBADR" which normally contains the disk address of 
+         the index block for a file contains the "tape address" of the 
+         first record of the file on tape. This address has the form 
+         xwd file#,block#.
+            file#  = sequential file number (directory is file 0)
+            block# = monotonically increasing tape block number
+
+<ARCHIVE>BSYS-TRIM-EXCEPTIONS.;1
+
+   purpose:
+
+       This file contains directory names that are to be excepted from 
+      the BSYS trim function. The file is used at run time to build a 
+      table of directory numbers to bypass when performing the 
+      system-wide trim function..
+
+   format:
+
+      It is a sequential text file (editable by teco). It consists of 
+      TENEX directory names. The directory names may be upper or lower 
+      case and must seperated by <EOL> or <CR><LF>,
+      (ie: WALLACE<EOL>
+           TOMLINSON<EOL>
+           ...).
+      input is terminated by detection of EOF 
+
+<ARCHIVE>ARCHIVE-FILES-ONLY.TXT
+
+   purpose:
+
+       This file is an input file by the archive "deliver messages to 
+      user" function and is used to map FILES ONLY directories to 
+      owners.for files only directoies, The list of archivable files 
+      will be delivered to the owners MESSAGE.TXT file
+
+   format:
+
+      It is a sequential text file (editable by teco). It consists of 
+      directory name pairs. the user directory name must appear first, 
+      followed by by the files only directory name , seperated by a 
+      comma end ing in cr lf
+      (ie: USER,FILES-ONLY-DIR<crlf>).
+      input is terminated by the first null entry (two crlf's in a row)
+
+<ARCHIVE>ARCHIVE-MESSAGE.TXT
+
+BSYS - TENEX Backup SYStem                          - 28 -
+PROGRAMMERS MANUAL
+
+
+   purpose:
+
+       This file contains an arbitrary message to be delivered to users 
+      who have "archivable files". It is appended to the users 
+      message.txt file along with a list of the files to be archived.
+
+   format:
+
+      Sequential text file (editable by teco). It is assumed to be an 
+      asciz string. message is terminated by the first null (o) byte.
+
+<*>]ARCHIVE-DIRECTORY[.;1
+
+   purpose:
+
+       This file is a directory of all archived files for this 
+      directory. It is built by BSYS at archive marking time and is 
+      used by the EXEC command INTERROGATE to "lookup" archived files..
+
+   format:
+
+       The file is binary and consists of two parts.
+         overhead block:
+            word 0 - next available free storage word address
+            word 1 - LH:  pointer to current last BDB
+                     RH:  pointer to first BDB
+            a reserved block ( 6 octal words)
+         free storage area:
+            contains BDB's and strings associated with archived file.
+
+         Backup (file) Directory Block(BDB) definition
+
+            block 1            ;the header (not referenced 
+            symbolically)
+            bdbctl: block 1    ;lh = control bits (see below)
+                               ;rh = pointer to file name block
+            bdbext: block 1    ;lh = pointer to extention string
+                               ;rh = pointer to next bdb
+            bdbadr: block 1    ;lh = tape # of 1st archive
+                               ;rh = tape # of 2nd archive
+            bdbprt: block 1    ;file protection word
+            bdbad1: block 1    ;time and date of 1st archive
+            bdbad2: block 1    ;time and date of 2nd archive
+            bdbver: block 1    ;lh = version number
+                               ;rh = pointer to previous bdb
+            bdbact: block 1    ;account info for charging
+                               ;+ for location of string
+                               ;- for number
+            bdbusw: block 1    ;user setable word
+            bdblen:
+
+         Bits in LH of BDBCTL (primarily for FDB compatibility)
+
+BSYS - TENEX Backup SYStem                          - 29 -
+PROGRAMMERS MANUAL
+
+
+            BDBTMP_400000             ;File is temporary
+            BDBPRM_200000             ;File is permanent
+            BDBNEX_100000             ;No extension for this bdb yet
+                                       ;(File does not exist yet)
+            BDBDEL_040000             ;File is deleted (bdb too)
+            BDBNXF_020000             ;First write not complete
+                                       ;(File does not exist yet)
+            BDBLNG_010000             ;Long file
+            BDBSHT_004000             ;Compressed page table
+            BDBFLG_002000             ;This is a backup block (BDB)
+      BDB's are doubly strung. This is done to facilitate 
+      reconstruction of archive directories.
+
+
+                 FIXING SMASHED DIRECTORIES
+
+  The need for piecing directories back together has diminished greatly 
+since RST found the garbage collection bug a while back, but it is 
+still necessary to perfom this job once in a while. The following are 
+some pointers as to how to accomplish this task for new TENEX KINGS as 
+well as some old timers. These methods are certainly TENEX version 
+dependent, but have remained stable for some time. There are two kinds 
+of smashed directories and each requies a different fix. 
+
+   Invalid Pointers, Strings, FDB'S etc..
+
+      This type of trouble can range from very minor (easy to fix) to 
+      major foulups of almost everything. A system crash while 
+      EXPUNGING a directory is a rather catastrophic event and may 
+      dictate following the Absolute Trash solution.
+      The BSYS VERIFY function will catch most problems with 
+      directories and should be used to "diagnose" the trouble. The 
+      output of this function is a list of problems and can be used to 
+      one-by-one fix them. The OCTAL PRINT function produces a  
+      formatted dump of the directory and is quite usefull in getting a 
+      global view of the directory structure as well as the specific 
+      data in the directory. To actually fix the bad data you can 
+      either use the BSYS MAP function or the MDDT mapdir method (see 
+      below).
+
+   Absolute trash
+
+      This situation is caused by a variety of glitches such as bugs, 
+      fat fingers, or flakey hardware but requires major surgery on the 
+      directory involved. The  basic scheme is to "reinitialize" the 
+      directory so that it appears as though it is empty. This means 
+      the symbol table is empty and the free storage stuff is all 
+      reinitialized.
+       In general the files in this directory will be lost or backed up 
+      to the last dump. GET into MDDT and
+
+      1. map the directory as follows
+
+BSYS - TENEX Backup SYStem                          - 30 -
+PROGRAMMERS MANUAL
+
+
+         1/ directory number
+         2/ -1
+         call mapdir$x
+
+      2. initialize directory
+
+         1/ 25         ;most common block size (FDB length)
+         2/ 777        ;one page directory
+         3/ directory number
+         call iniblk$x
+
+      At this point the directory is locked so you must set 
+      DIRORG(DIRECT in BSYS) to -1. Also all the attributes 
+      (protection, groups, disk limits,...) of this directory are set 
+      to the system defaults and must be reset with the CREATE exec 
+      command or any other suitable means. You can now reload the users 
+      files from valid dumps (be sure the disk allocation is set up!).
+
+   Some interesting data
+
+      symbol table entries must be in ascending alphabetic order
+
+      Account strings have an entry in the symbol table of the form
+         XWD string pointer,,100000
+
+      XWD 400100,,25 - FDB header word
+
+      XWD 400001,,# - filename string header word
+         (# = string length + 1)
+
+      XWD 400002,,# - extension string header word
+         (# = string length + 1)
+
+      XWD -1,,# - account string header word
+         (# = string length + 2)
+         The second word is a use count
+
+
+
+               GENERAL FILESYSTEM PROCESSING
+
+Running The Filesystem
+
+     In the course of running a TENEX system situations arise where you 
+   would like to "process" all the files in a given directory or all 
+   the directories in the system and perform a "one time" modification 
+   or fix. albeit an infrequent requirement BSYS is an excellent 
+   vehicle to perform such operations. The command "RUN" is designed to 
+   process the file system. Control is passed to the dummy routine 
+   .DORUN once for each file. .DORUN is a block of 100 POPJ's and can 
+   be used to either patch or assemble in any special functions you may 
+   desire. The state of the directory run is contained in a set of 
+   cells in BSYSDF (cvf,cef,adrfdb,...) and can be used to get 
+
+BSYS - TENEX Backup SYStem                          - 31 -
+PROGRAMMERS MANUAL
+
+
+   information about the current, next or last file processed (ie: file 
+   name, extension etc.).
+
+Mapping directories
+
+     BSYS provides an analogous function to the MDDT call mapdir method 
+   of mapping user directories and inspecting or modifying them. The 
+   MAP command has the following advantages:
+      specify the directory name (not number)
+      specify read/write access (a guard against fat fingers)
+      ability to use any BSYS subroutines or prewritten user routines 
+      to perform fixups etc..
+   If you GET BSYS.SAV and go into DDT, put a breakpoint at cell BPLOC 
+   then start BSYS (start$g). The MAP command will take the breakpoint 
+   and you can do as you wish . $P will continue BSYS and all will be 
+   cool. Much thanks to ED TAFT@PARC for contributing this BSYS 
+   function.
+
+
+                    BSYS Magtape Format
+
+  All files consist of "n" records of 514 words and are seperated by 
+EOF marks. The first two words of each record have the following 
+format.
+   
+       word 1  lh= not used
+               rh= block number
+       word 2  lh= file number
+               rh= page number
+    
+   where block number is a monotonically increasing tape block sequence 
+   number, file number is the sequence number of this file (directory = 
+   file 0) and page number is the page number of the file as it would 
+   appear on disk.
+
+There are four special cases for word 2.
+
+   word 2= -1          "unused" directory file block.
+   word 2= -2          user data record (for CRDIR)
+   word 2= file#,,-1  end of data record
+   word 2= file#,,-3  file data record (FDB + strings)
+
+Directory file:
+
+   The directory file is the only "rewritable" file on a BSYS format 
+   tape. This file consists of a header record (length= 64 words) and 
+   200 512 word "pages". Provision is made for this to be alterable as 
+   the number of directory pages is contained in the header record. 
+   This file is prewritten by BSYS by positive response to the question 
+   "NEW TAPE?". The rewritabilty of this file is accomplished by 
+   writting 12 inches of gap (blank tape) at the end of this file at 
+   initialization time and subsequently only writting 6 inches at 
+   rewrite time. This scheme has been quite successful at SRI as we 
+
+BSYS - TENEX Backup SYStem                          - 32 -
+PROGRAMMERS MANUAL
+
+
+   have not encountered any problems due to this process.
+
+   Format of header record:
+
+      tphdr:
+      tpblk:   0       ;header is block 0
+      tpnum:   0       ;arc tape number
+      nxtblk:  0       ;saved last block number used (this tape)
+      usrblk:  0       ;block # of 1st record if user data file
+      tpspac:  0       ;space left on tape
+      tpfils:  0       ;count of # of files on this tape
+      blank:   0
+      pages:   0       ;count # of pages used
+      tdpgs:   0       ;tape directory pages used
+      tpseq:   0       ;consecutive dump tape sequence count
+      dblks:   ^D200  ;200 blocks reseved for directories
+      reservd: block   7
+      tptxt:   block   20      ;id entered by operator
+       The follow data is site dependent but the length of the header 
+      record cannot exceed 64 words.
+      tpid:    asciz   /augmentation research center
+      stanford research institute
+      333 ravenswood drive
+      menlo park, california 94025
+      (415)326-6200/
+
+   Tape directory index:
+
+       Subdirectory zero is used as an analog to the tenex file 
+      <SYSTEM>INDEX and is used for mapping directory name to tape 
+      directory number and vice versa. It has a symbol table ala 
+      regular directories with entries of the form:
+
+         lh - pointer to string block containing dir name
+         rh - directory number
+
+       This allows for independance of directory numbers on tape and 
+      disk. This solves the problem of deleteing a directory and then 
+      subsequently creating another with the same name but different 
+      number.
+
+User Data Files (optional):
+
+     This file consists of "n" 514 word records each containing all of 
+   the data nessecary to create a directory (GTDIR). This file will 
+   only appear on tape created by a "full" or "full incremental" dump.
+
+Filesystem Files:
+
+     These files consists of "n+1" 514 records corresponding to the "n" 
+   pages in the as it appeared on disk plus one record containing the 
+   directory name, directory number, FDB, and all the strings 
+   associated with the file.. There is a one to one mapping between the 
+
+BSYS - TENEX Backup SYStem                          - 33 -
+PROGRAMMERS MANUAL
+
+
+   "n" pages and the pages on the disk. There is no zero compression of 
+   files ala 1050 save files.
+
+Trailer Record:
+
+     After the last file on the tape (for non-full tapes) a special 
+   record is written . This record is used for positional verification 
+   when adding files to a tape. This record is simply the first page of 
+   the "next" file that would be added with a -1 in the page number 
+   field
+
+BSYS - TENEX Backup SYStem                          - 34 -
+PROGRAMMERS MANUAL
+
+
+               KNOWN DEFICIENCIES OR GLITCHES
+
+DEFICIENCIES:
+
+1) The Trim (excess file versions) function should use the "default 
+file retention" field as its criteria in deleting files. It presently 
+asks the operator for the number to keep.
+2) The LOAD command is really only half implimented due to the 
+non-support of stars ("*") for output files in tenex. If there is a 
+real need for this function it could be accomplished in BSYS.
+3) The retrieval of files from the Magtape Archive should be completly 
+automated with automatic user notification.  The operator would only be 
+required to run BSYS and mount tapes as instructed. This command has 
+been pretty well specified and should be implimented for use of BSYS in 
+a Commercial environment.
+
+GLITCHES:
+
+1. If you plan to use BSYS and DUMPER concurrently there is a conflict 
+in the use of the word FDBBCK (FDB). You must make a mod to DUMPER and 
+run BSYS.FAI;102 or newer. The conflict only effects the incremental 
+dump function of DUMPER but if you are going to use dumper at all it is 
+strongly recomended you make the mod.
+   dumper mod:
+      page 23 at
+      dmplx1+20/ movni b,1   ** replace this instr. with
+           move b,[xwd 400000,-1] ;dont use bsys flags
+2. The "deliver to users" option of the archive command was designed 
+and implimented before the advent of SNDMSG and its resultant rigid 
+MESSAGE.TXT file format restrictions. The method used for generation of 
+the BSYS archival list makes it difficult if not impossible to supply 
+the length of the message in a SNDMSG type header. A possible solution 
+is to get MAILER to deliver the messages (since it supplies a header in 
+SNDMSG format). This would require BSYS to drop out a file of the type 
+MAILER likes and "poke mailer". This seems like a rather round about 
+way to get things done and a such nothing has been done.  Thus the 
+"deliver to users function" is rather useless in its pressent form  but 
+could be fixed if anyone comes up with a better solution or a need for 
+its use.
+3. The record size of the "user data" record has been changed from 64 
+to 514 words. This was done because of a persistent error message when 
+working with tapes containing the data to recreate users. This has the 
+effect that the restore entire file system function is incompatable 
+with "old" bsys tapes. This is thought to be a rather unlikley event 
+(to be restoring a non-current filesystem!), but if there is a need to 
+do such a thing the cell RWRCRD must be changed from IOWD ^D514,BLKNO 
+to IOWD ^D64,BLKNO. 
+ 
+
+BSYS - TENEX Backup SYStem                          - 35 -
+PROGRAMMERS MANUAL
+
+
+                           INDEX
+
+
+ARCHIVE SYSTEM . . . . . . . . . . . 14, 25
+archiving user files:  . . . . . . . 14
+
+BSYS Magtape Format  . . . . . . . . 31
+
+COMMAND SUMMARY  . . . . . . . . . . 19
+Continuing Dumps . . . . . . . . . . 8
+CONVENTIONS  . . . . . . . . . . . . 2
+COUNT (directory file pages) . . . . 16
+
+DISMOUNT (magtape directory) . . . . 17
+Dumping a User Directory(s)  . . . . 5
+Dumping the entire file system . . . 4
+DUMPS  . . . . . . . . . . . . . . . 3
+
+ENERAL FILESYSTEM PROCESSING . . . . 30
+ERRORS/ACTIONS . . . . . . . . . . . 20
+
+FILE SYSTEM UTILITIES  . . . . . . . 16
+FILES USED BY BSYS . . . . . . . . . 26
+FIXING SMASHED DIRECTORIES . . . . . 29
+
+Incremental Dumps  . . . . . . . . . 6
+interrogating the magtape archive: . 15
+INTRODUCTION . . . . . . . . . . . . 2
+
+KNOWN DEFICIENCIES OR GLITCHES . . . 34
+
+LIST (magtape directory) . . . . . . 17
+Load files (from magtape)  . . . . . 10
+LOAD/RESTORE . . . . . . . . . . . . 10
+Loading a Single file  . . . . . . . 13
+
+MAKING A NEW BSYS  . . . . . . . . . 23
+Mapping directories  . . . . . . . . 31
+MOUNT (magtape directory)  . . . . . 17
+
+OCTAL PRINT (of directory) . . . . . 17
+
+Restore files (from magtape) . . . . 11
+Restoring the entire file system . . 12
+Running The Filesystem   . . . . . . 30
+
+TRIM (user directories)  . . . . . . 17
+
+VERIFY (user directories)  . . . . . 18
+

@@ -1,0 +1,662 @@
+TITLE BSYSFD  FILE SYSTEM DIRECTORY PROCESSING ROUTINES
+
+;******************************************************
+;  linkage to other modules
+;******************************************************
+
+
+;	output to (BSYS,BSYSFD.MAC,) with (WALLACE,FILTER,)
+
+	search	stenex,bsys
+intern	check,cntrl,cntrol,gethsh,getnxt,getsys,lckdir,lookup
+intern	sk2ret,sk3ret,skpret,strcmp,setmsk,ulkdir
+extern	ansr,backup,berr,delfdb,docnt,dolist,domrka,domrkd
+extern	dorest,dorun,dotrim,doveri,error,freblk,getarc
+extern	lstfp,lstufp,map,nouter,settop,unmap,verr,domap
+
+;******************************************************
+;  "CHECK" 	this routine is the major control for processing
+;******************************************************
+
+;		file version and extention fdb's (tape and disc)
+;  at entry	a	file symbol table entry
+;		b	address of entry
+;		diradr	address of directory being processed
+;a-(extoffset)=lef,rh(a)=cef
+check:
+	hrrzm	a,cef		;set current ext. pointer 
+	movem	b,syment	;save entry address for later
+	move	c,diradr	;load address of current directory
+	subi	b,fdbext(c)	;subtract ext. pointer displ
+	movem	b,lef		;and set last ext. fdb pointer
+; cef=cvf,=lvf
+check1:
+	move	b,cef		;load current ext.pointer
+	movem	b,cvf		;set current ver. ptr
+	setzm	lvf		;set last ver. ptr = 0
+check2:
+	move	a,cvf		;set index = current fdb
+	add	a,diradr	;make it a real address
+	move	b,[xwd 400100,fdblen] ;load header word
+	came	b,0(a)		;check if really and fdb
+	jrst	[typen	<invalid symtab entry (fdb ptr)>
+		jrst	verr]		;go type good shit and return
+	movem	a,adrfdb	;save it for later
+	hrrz	b,fdbext(a)	;get next extention pointer
+	skipn	lvf		;skip if not at top of ver chain
+	hrrzm	b,nef		;set next ext. ptr
+	hrr	b,fdbver(a)	;get next version pointer
+	hrrzm	b,nvf		;set my ptr
+; check here for requested functions
+	tlne	f,lstbit	;list directory?
+	call	dolist	;go list this one
+	tlne	f,rstbit	;restoring files?
+	call	dorest	;go check for restore
+	tlne	f,fulbit+incbit+arcbit+dmpbit+conbit  ;any dump function
+	call	backup	;go check them
+	tlne	f,verbit	;verify requested?
+	call	doveri	;go check string pointers
+	tlne	f,trmbit	;trim requested?
+	call	dotrim	;go do it
+	tlne	f,cntbit	;counting pages
+	call	docnt		;go count and set
+	tlne	f,mrkbit	;archive marking stuff?
+	call	domrka
+	tlne	f,dmkbit	;dump marking stuff?
+	call	domrkd
+	tlne	f,runbit	;utility run the file system?
+	call	dorun
+	; dont allow delete now
+	;tlnn	f,delbit	;delete requested?
+	jrst	check4		;if not go update flags
+	move	b,fdbctl(a)	;check if current is deleted?
+	tlnn	b,fdbdel	;skip if delete set
+	jrst	check4		;if not go update pointers
+	move	c,diradr	;set up for address calcs
+	skipe	lvf		;are we at the top of a ver. chain?
+	jrst	[move	a,nvf		;load next version pointer
+		move	b,lvf		;load last version pointer
+		addi	b,fdbver(c)	;make it a real address
+		hrrm	a,0(b)		;bypass this fdb
+		call	delfdb	;go delete cur fdb and strings
+		jrst	check5]
+;if no then delete cvf,nvf=fdbext(lef),nef=fdbext(nvf)
+	move	b,lef		;load last ext. ptr
+	addi	b,fdbext(c)	;point to extptr(lef)
+	move	a,nvf		;load next ver. ptr
+	hrrm	a,0(b)		;and bypass this fdb
+	addi	a,fdbext(c)	;point to fdbext(nvf)
+	move	c,adrfdb	;point to current fdb
+	move	b,fdbext(c)	;get extention word
+	movem	b,0(a)		;and put it in next version
+	call	delfdb		;go delete fdb and attached strings
+	move	a,nvf		;nvf=cef(just deleted top of ver chain)
+	movem	a,cef
+check4:
+	move	a,cvf	
+	movem	a,lvf		;cvf=lvf
+check5:
+	skipe	nvf		;skip if there is no next version
+	jrst	[move	a,nvf
+		movem	a,cvf		;nvf goes to cvf
+		jrst	check2]		;go check if deleted
+	move	a,cef
+	movem	a,lef		;cef=lef
+check6:
+	skipe	nef			;skip if there is no next ext.
+	jrst	[move	a,nef
+		movem	a,cef		;set next ext to current
+		jrst	check1]		;and go look at this one
+	hrrz	a,@syment	;load rh of sym tab entry
+	skipe	a		;skip if all files deleted
+	popj	p,0		;exit
+	hlrz	a,@syment	;load pointer to file name string
+	add	a,diradr	;make it real
+	call	freblk	;put it in free list
+	move	a,symbot	;load bottom pointer
+	add	a,diradr	;make it an address
+	movem	a,symen2	;save it for compare
+	move	a,syment	;load address of entry to be deleted
+check7:
+	move	b,-1(a)		;pick up n-1th
+	movem	b,0(a)		;make nth
+	soj	a,
+	camge	a,symen2	;skip if end
+	jrst	check7		;loop until done
+	aos	symbot		;bump directory pointer
+	popj	p,0		;and return
+
+
+;******************************************************
+;  "CNTRL"	processes the system index hash table and directory
+;******************************************************
+
+;		symbol tables identifying files to be checked
+;		for backup, deletion and etc.
+; get a jfn for the system directory
+cntrl:
+	setzm	msgflg		;set to deliver message to user
+	call	gethsh		;go get index hash table
+	call	settop		;go set  "topdir" = highest dir #
+	call	getsys		;go get system directory jfn
+cntrl1:
+	call	getnxt		;get next directory number
+	popj	p,0		;if no more exit
+	move	a,curdir
+	cndir			;connect to this dir
+	 jsr	error
+	movei	aa,exlst	;setup to exclude some dir's
+	tlne	f,trmbit	;just trim for now
+	jrst	[skipn	bb,0(aa)	;skip if one to look at
+		jrst	.+1		;if not this one ok
+		camn	bb,curdir	;exclude this one?
+		jrst	cntrl1		;yes
+		addi	aa,1		;look at next one
+		jrst	.]
+	setzm	dirflg		;set 1st time only dirst flag
+;check for "listing only" of archivable files
+	tlne	f,arcbit	;archiving?
+	jrst	[skipe	uflag		;listing for users
+		jrst	.+1		;dont if for users
+		trnn	f,lonly		;listing only request?
+		jrst	.+1		;dont do if not
+		move	a,lstjfn
+		movei	b,cr
+		bout
+		move	b,curdir
+		dirst
+			err <cntrl1: no-existent directory no.>
+		aos	linect		;bump line count
+		jrst	.+1]
+	call	cntrol	;go do a directory
+	jrst	cntrl1		;go check next (if any)
+cntrol:	;map and process this directory
+	setzm	badflg		;clear bad dir flag
+	setzm	cntfdb		;clear fdb count
+	move	a,curdir	;get dir number
+	lsh	a,3		;dir#*8=page# in directory file
+	hrl	a,dirjfn	;construct source file handle
+	movei	b,direct/1000	;point to page in my space
+	hrlzi	c,100000	;read access
+	trne	f,wrtdir	;write access requested?
+	hrlzi	c,140000	;write access!!!
+	call	map		;go map proper sub directory
+	tlne	f,mapbit	;if just mapping user dir
+	jrst	domap		;go do it
+	tlne	f,mrkbit	;if marking,
+	jrst	[call	getarc		;get this guys archive directory
+		err	<cntrol: cant get users archive directory>
+		jrst	.+1]
+	tlnn	f,verbit	;skip if verify
+	jrst	cntrl5		;bypass this if not
+	move	a,dirnum	;get directory #
+	came	a,curdir	;is it what i wanted?
+	jrst	[movei	a,101
+		move	b,curdir		;type dir name 1st
+		dirst
+		 jfcl
+		typem	<  ?? dirnum ??>
+		aos errors
+		jrst	.+1]
+	movsi	b,-^d20		;check locked dir 20 times
+cntrl6:
+	move	a,dirlck	;get directory lock word
+	camn	a,[-1]		;only locked if minus one!!
+	jrst	cntrl5		;if not locked just continue
+	skipn	jobno		;job zero?
+	jrst	cntrl7		;yes, dont wait
+	movei	a,^d1000	;wait a sec.
+	disms
+	aobjn	b,cntrl6	;loop
+cntrl7:
+	typec	cr
+	movei	a,101
+	move	b,curdir	;type dir name 1st
+	dirst
+	 jfcl
+	skipn	jobno		;job zero?
+	jrst	[typem	< Locked, unlocking it!!>
+		jrst	cntrl8]
+	typem	< ,***locked***  unlock it? >
+	call	ansr		;ask him
+cntrl8:
+	jrst	[movei	a,dirlck	;unlock this directory
+		call	ulkdir		;go unlock it
+		jrst	cntrl5]		;and continue
+	typem	<directory bypassed!! >
+	popj	p,0		;exit
+cntrl5:
+	skipn	uflag		;dont lock if "delivering"
+	call	lckdir		;go lock dir and disable ^c
+	jrst	[typen	<Do you want to unlock it? >
+		call	ansr
+		skipa			;yes,
+		popj	p,0		;no, ignore it
+		movei	a,direxl	;expunge lock
+		call	ulkdir		;go do it
+		jrst	.+1]
+	setzm	usrpgs		;set user pages dumped = 0
+	setzm	flcnt		;set file count = 0
+	setzm	cntfdb		;set table null each directory
+	move	b,symtop	;load end pointer
+	addi	b,direct-1	;make it real
+	movem	b,symend	;save for compare
+	move	b,symbot	;load start of symtab
+	addi	b,direct	;make it real(point to 1st symbol)
+	movem	b,symptr	;set working pointer
+	movei	a,direct	;load disc directory address
+	movem	a,diradr	;and set current directory address
+cntrl3:
+	move	b,symptr	;load working pointer
+	camle	b,symend	;skip if not passed end of table
+	jrst	cntrl4
+	hrrz	a,@symptr	;load fdb pointer (maybe)
+	move	b,symptr	;load symbol table entry address
+	aos	symptr		;point to next entry(symtab)
+	trze	a,700000	;skip if entry type =0
+	jrst	cntrl3		;go check if done with symtab
+	call	check		;go check this file (f= request flags)
+	skipn	badflg		;skip if bad entry encountered
+	jrst	cntrl3		;and continue processing symtab
+	setzm	badflg		;clear error condition
+	typen	<bad directory - run verify>
+	skipn	uflag		;isnt locked if "delivering"
+	jrst	[movei	a,direxl	;expunge lock
+		call	ulkdir		;go unlock expunge and enable ^c
+		jrst	.+1]
+	popj	p,0		;ignore the rest and get next dir
+cntrl4:
+	skipn	uflag		;isnt locked if "delivering"
+	jrst	[movei	a,direxl	;expunge lock
+		call	ulkdir		;go unlock expunge and enable ^c
+		jrst	.+1]
+	tlne	f,cntbit	;counting?
+	jrst	[move	a,lstjfn
+		movei	b,cr		;new line
+		bout
+		call	lstufp		;go list user, files and pages
+		hrrz	b,dirdsk	;get current count
+		came	b,usrpgs	;skip if ok
+		call	[movei	b,"("	;type what system thinks
+			bout
+			hrrz	b,dirdsk	;get count
+			movei	c,^d10		;decimal
+			nout
+			 jsr 	nouter
+			movei	b,")"
+			bout
+			popj	p,0]
+		hrroi	b,[asciz /    disc max = /]
+		setz	c,
+		sout
+		hlrz	b,dirdsk	;get allocation
+		addm	b,talloc	;sum allocation pages
+		movei	c,^d10		;decimal
+		nout
+		 jsr	nouter
+		trne	f,lonly		;listing only?
+		popj	p,0		;yup
+		move	a,usrpgs	;get count this dir
+		hrrm	a,dirdsk	;set it in overhead blk
+		popj	p,0]
+	tlne	f,verbit+trmbit+mrkbit+dmkbit
+	popj	p,0		;dont do if ver,trim or marking
+	move	a,lstjfn
+	movei	b,cr
+	bout
+	call	lstfp		;just files and pages count
+	aos	linect		;bump line count
+	tlne	f,arcbit
+	jrst	[skipn	msgflg		;skip if delivering messages
+		jrst	.+1		;ignore if not
+		move	a,msgjfn	;get saved list jfn
+		exch	a,lstjfn
+		movei	b,cr
+		bout
+		closf			;close msg file
+		 jfcl
+		setzm	msgjfn
+		setzm	msgflg
+		jrst	.+1]
+	trne	f,lstty		;skip if lister not tty
+	popj	p,0
+	skipn	flcnt		;print user,files and pages (if any)
+	popj	p,0
+	movei	a,101
+	movei	b,cr
+	bout			;new line
+	call	lstufp		;go print user, files & pages
+	popj	p,0		;return
+
+
+;******************************************************
+;  "GETHSH"	gets the system subindex 0 and copies the
+;		hash table to my space
+;******************************************************
+
+gethsh:
+	hrrzi	a,idxtbl	;point to system index table
+	move	b,[xwd -1,idxstr]	;load string pointer
+	gtjfn			;get a jfn for the system index
+	  jsr	error
+	movem	a,idxjfn	;save it for later
+	move	b,[xwd 440000,203000] ;36 bit bytes and read
+	openf			;open the index
+	  jsr	error		; if jsys failed - print and exit
+; map 4k of index to my space
+	hrlz	a,idxjfn	;construct index file handle(source)
+	movei	b,direct/1000	;page # (where to put it)
+	hrlzi	c,100000	;read access
+	call	map		;go map sub index 0
+; move hash table to my space for processing
+	hrl	a,dirhto	;setup blt pointer
+	add	a,[xwd direct,0]	;make it a real address
+	hrri	a,hshtbl
+	hrrz	b,dirhtl	;load hash table length
+	movem	b,htocnt	;set working count
+	blt	a,hshtbl-1(b)	;move hash table 
+	movei	a,hshtbl	;point to start of table
+	movem	a,htoptr	;and set working pointer
+; close system index and release jfn
+	movei	b,direct/1000	;1st unmap index pages
+	call	unmap
+	move	a,idxjfn
+	closf
+	  jsr	error		;if jsys fails - print and exit
+	setzm	idxjfn		;set jfn null
+	popj	p,0		;return to caller
+
+
+;******************************************************
+;  "GETNXT"	gets the next highest directory number
+;		using the copy of the hash table (or dirtbl)
+;******************************************************
+
+getnxt:
+	tlne	f,mrkbit	;marking backup words?
+	jrst	[skipge	@dirs		;skip if not neg
+		jrst	.+1		;-1 means use hash table
+		skipn	a,@dirs		;skip if one to do
+		popj	p,0		;take no more exit
+		aos	dirs		;bump for next time
+		movem	a,curdir	;set current dir no.
+		jrst	skpret]		;return with one
+	aos	curdir		;look at next one
+	move	a,curdir	;load it
+	camle	a,topdir	;is it greater than top?
+	popj	p,0		;take no more exit
+	movei	b,hshtbl	;point to start of hash table
+	move	c,htocnt	;load count
+getnx1:
+	hrrz	d,0(b)		;only the right half
+	camn	a,d		;is this the one?
+	jrst	skpret		;take next dir found exit
+	aoj	b,		;if not look at next entry
+	sojn	c,getnx1	;if more go check them
+	jrst	getnxt		;if not ignore this one (doesnt exist)
+
+;******************************************************
+;  "GETSYS"	get system directory jfn
+;******************************************************
+
+getsys:
+	skipe	dirjfn		;skip if not one already
+	popj	p,0
+	hrrzi	a,dirtbl	;point to system directory table
+	move	b,[xwd -1,dirstr]	;load string pointer
+	gtjfn			;get a jfn for sys directory
+	  jsr	error		;if jsys failed - print and exit
+	movem	a,dirjfn	;save jfn for later
+	move	a,dirjfn	;load directory jfn
+	move	b,[xwd 440000,303000] ;36bit bytes, read and write
+	openf			;open the directory
+	  jsr	error		; if jsys failed - print and exit
+	popj	p,0
+
+
+;******************************************************
+;  "LCKDIR"	lock current mapped directory and disable ^c
+;******************************************************
+
+;	note: arc-tenex modified on 7-nov-73 to lock
+;	      directories against "deldf" jsys
+lckdir:
+	setom	ctrlc		;say no ^c's allowed
+	setom	locked		;and set global flag
+	; now lock directory against expunge
+	trnn	f,wrtdir	;skip if write access
+	jrst	[move	a,[xwd 400000,direct/1000] ;page zero of dir
+		hrlzi	b,140000	;read and write
+		spacs
+		call	lckdi0		;go lock it
+		move	a,[xwd 400000,direct/1000]	
+		hrlzi	b,100000	;back to read
+		spacs
+		popj	p,0]		;return
+	call	lckdi0		;go lock it
+	popj	p,0		;return
+lckdi0:
+	movei	b,^d20		;wait 20 secs.
+	aose	direxl		;lock directory against expunge
+	jrst	[movei	a,^d1000		;wait a sec.
+		disms
+		sosle	b		;do it "n" times
+		jrst	.-1
+		typen	<lckdir: expunge lock failure - >
+		movei	a,101
+		move	b,dirnum
+		dirst
+		 jfcl
+		jrst	.+2]		;take failed return
+	aos	-1(p)		;take ok exit (note this is magic!)
+	popj	p,0		;return
+
+
+;******************************************************
+;  "LOOKUP"	lookup of string in a directory
+;******************************************************
+
+; the routines lookup,setmsk, are
+; "borrowed" from file direct.fai[bbn]
+; this routine should not be used to lookup in actual
+; system directory (read access only by bsys...)
+; its used to process saved tape copy for restore qualification
+; call:	a	; lookup pointer
+;	b	; entry type
+;	pushj p,lookup
+; return
+;	+1	; no exact match found
+;	+2	; exact match found
+lookup:
+	push p,b		; save entry type
+	pushj p,setmsk		; set up input pointer and mask
+	move a,symtop
+	sub a,symbot		; get length of symbol table
+	jffo a,.+2		; get top 1 bit
+	movei a+1,^d35
+	movns a+1
+	movsi a,400000
+	lsh a,(a+1)		; largest power of 2 <= length
+	move b,symbot
+	sos b			; start just below symbol table
+movup:
+	jumpe a,strfnd	; and move up
+	add b,a
+	ash a,-1		; halve increment
+	camge b,symtop	; too big?
+	jrst symcmp		; no, compare strings
+movdn:
+	jumpe a,strfdd
+	sub b,a
+	ash a,-1
+	caml b,symtop
+	jrst movdn
+	camge b,symbot
+	jsr berr		; can't happen by the algorithm
+symcmp:
+	movem a,dirinc		; save increment
+	movem b,dirloc		; and symtab loc
+	move a,(p)
+	pushj p,namcm1
+	jrst [	move b,dirloc	; a<b
+		move a,dirinc
+		jrst movdn]
+	jrst [	move b,dirloc	; a>b
+		move a,dirinc
+		jrst movup]
+	jrst [	;test(oe,mtchf)	; a<b and subset
+		;test(o,ambgf)
+		move b,dirloc
+		move a,dirinc
+		jrst movdn]
+	pop p,a
+	jrst skpret
+strfnd:
+	aos b
+strfdd:
+	movem b,dirloc
+	sub p,[xwd 1,1]
+	popj p,
+namcmm:
+	movei a,0
+namcm1:
+	hrrz c,direct(b)	; get entry type
+	andi c,700000		; extract entry type
+	camge c,a		; less than that being sought?
+	jrst skpret		; yes.
+	camle c,a		; greater than entry type being sought?
+	popj p,
+	hlrz a,direct(b)	; get loc of string block for this entry
+	movn b,direct(a)	; get length of string block
+	caige c,100000
+	jrst symcm1
+	aos a			; for entries greater than 0, there
+	aos b			; is a share count which must be ignored
+symcm1:
+	hrlzi b,2(b)		; to lh of b
+	hrri b,direct+1(a)	; rh  in absolute address
+	move a,dirinp		; set up pointer to input string
+	move c,dirmsk		; set up mask
+	jrst strcmp		; and continue with string compare
+
+
+;******************************************************
+;  "STRCMP"	string compare routine
+;******************************************************
+
+; call:	lh(a)		; minus number of full words in string 1
+;	rh(a)		; loc of first word of string
+;	lh(b)		; minus number of full words in string 2
+;	rh(b)		; loc of first word of string
+;	c		; a mask of 1's for last word of string1
+;	pushj p,strcmp
+; return
+;	+1	; a < b
+;	+2	; a > b
+;	+3	; a = initial subset of b
+;	+4	; a = b
+; clobbers a,b,c,d
+strcmp:
+	push p,c
+strcm0:
+	jumpge a,strcm1	; down to last word of string a
+	jcry0 .+1		; cleap carry 0
+	move d,(b)		; get word of string b
+	move c,(a)		; and word of string a
+	andcmi c,1		; get rid of superfluous bits 35
+	andcmi d,1
+	sub	d,c		; compare the words
+	jumpe d,strcm2	; equal, step to next word
+	jcry0 .+2		; a < b
+strcm3:
+	aos -1(p)		; a > b
+	pop p,c
+	popj p,
+strcm2:
+	jumpge b,strcm3		; is b gone?
+	aobjn a,.+1		; no, step to next word
+	aobjn b,strcm0
+	jrst strcm0
+strcm1:
+	pop p,c
+	move d,(a)		; get last word of string a
+	and d,c			; get rid of garbage
+	skipl b			; if string b is also down to last word,
+	came d,(b)		; check for exact match
+	jrst strcm4		; not exact match
+	movei d,3		; exact match
+	addm d,(p)		; triple skip
+	popj p,
+strcm4:
+	and c,(b)		; truncate string b to same length as a
+	jcry0 .+1		; clear carry 0
+	sub c,d			; compare a to truncated b
+	jumpe c,sk2ret		; equal, subset
+	jcry0 cpopj		; a < b
+	jrst skpret		; a > b
+sk3ret:
+	aos	(p)
+sk2ret:
+	aos	(p)
+skpret:
+	aos	(p)
+cpopj:
+	popj	p,0
+
+;******************************************************
+;  "SETMSK"	setup mask and input pointer for directory looks
+;******************************************************
+
+; call:	a	; lookup pointer
+;	pushj p,setmsk
+; return
+;	+1	; in dirinp, a string compare pointer to input
+; in dirmsk, a mask of ones for masking last word of input string
+; clobbers a,b,c,d
+setmsk:
+	hlre d,a		; get size of the string block
+	subm a,d		; get loc of last full word
+	movsi b,774000		; 7 bit mask left justified
+	movni c,1		; mask of bits to ignore
+setms0:
+	tdnn b,1(d)		; look for the terminating null
+	jrst setms1		; there it is, c has 1's for ignoration
+	lsh b,-7		; not there, shift to next bit
+	lsh c,-7
+	jrst setms0
+setms1:
+	setcam c,dirmsk		; get mask of bits to test in last word
+	aos a
+	movem a,dirinp		; save input pointer
+	popj p,
+
+
+;******************************************************
+;  "ULKDIR"		;unlock directory (for expunge) and enable ^c
+;******************************************************
+
+; a/   address of lock word in directory (dirlck or direxl)
+ulkdir:
+	move	c,a		;move address of lock to effect
+	trnn	f,wrtdir	;skip if write access
+	jrst	[move	a,[xwd 400000,direct/1000] ;page zero of dir
+		hrlzi	b,140000	;read and write
+		spacs
+		setom	(c)		;unlock it
+		move	a,[xwd 400000,direct/1000]	
+		hrlzi	b,100000	;back to read
+		spacs
+		jrst	ulkdi0]		;go enable ^c
+	setom	(c)		;unlock it
+ulkdi0:
+	setzm	locked		;say not locked
+	skipg	ctrlc		;skip if there was a ^c
+	jrst	[setzm	ctrlc		;say, ill take them now
+		popj	p,0]		;return
+	setzm	ctrlc		;say, ill take them now
+	movei	a,100		;sti ^c to EXEC
+	movei	b,3	
+	sti
+	popj	p,0		;return
+	lit
+	end

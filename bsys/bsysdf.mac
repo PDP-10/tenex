@@ -1,0 +1,782 @@
+;( BSYS, BSYS.NLS;205, ), 2-APR-74 09:53 DCW ;
+	intern site0,site1
+UNIVERSAL BSYS ;output to (BSYS,BSYSDF.MAC,) with (WALLACE,FILTER,)
+   SUBTTL    SITE SPECIFIC STUFF
+
+;******************************************************
+; to assemble site specific version of BSYS
+; you must tailor this file to suite your installation
+; **note** site id (ie: ARC) is restricted to 4 chars. maximum
+;******************************************************
+
+
+
+;******************************************************
+; assembly flag (not normally used)
+;******************************************************
+
+arc=0			;assemble as arc version
+
+;******************************************************
+; macros to lay strings down in the right places
+;******************************************************
+
+define bsite <asciz /SUMX/>
+define bsite1 <asciz /
+Sumex-AIM Computer Project      
+Department of Genetics     
+Stanford University Medical Center
+Stanford, California 94305  
+(415)497-5141/>
+
+;******************************************************
+; misc. site specific strings
+;******************************************************
+
+site0: asciz /	SUMX tape /
+site1: asciz /SUMX tape number /
+
+   SUBTTL    DEFINITIONS AND MACROS
+
+;******************************************************
+;  AC ASSIGNMENTS
+;******************************************************
+
+search stenex
+a=1
+b=2
+c=3
+d=4
+e=5
+i=6
+g=7
+aa=11
+bb=12
+cc=13
+dd=14
+f=0
+ch=10
+p=17	;push down list pointer
+
+;******************************************************
+;  BSYS FUNCTION FLAG DEFINITIONS
+;******************************************************
+
+;lh flags
+	fulbit==400000	;full dump requested
+	incbit==200000	;incremental dump requested (changed files)
+	arcbit==100000	;archiving requested
+	lodbit==40000	;load files from magtape
+	rstbit==20000	;restore user files
+	lstbit==10000	;list tape directory
+	verbit==4000	;directory verify
+	trmbit==2000	;trim directories (of excess files)
+	conbit==1000	;continue full dump (from specific user)
+	dmpbit==400	;dump a specific directory
+	cntbit==200	;count and set file pages used
+	mrkbit==100	;archive marking function (or clear backup words)
+	delbit==40	;delete deleted files
+	runbit==20	;utility run of file system
+	dmkbit==10	;dump marking function (incr dump)
+	mapbit==4	;map a user direcoty
+;rh flags
+	lstty==400000	;lister is tty
+	lonly==200000	;listing only request
+	alldir==100000	;"*" seen for dir 
+	allfil==40000	;"*" seen for file name
+	allext==20000	;"*" seen for extension
+	allver==10000	;"*" seen for version
+	rearch==4000	;re-archive this file (written since archived)
+	clear==2000	;clear backup words flag
+	wrtdir==1000	;requested write access to <SYSTEM>DIRECTORY
+	since==400	;use date supplied
+	dmping==200	;really dumping tape dir (for recovery)
+	bildng==100	;building archive directories (from tapes)
+	cpyflg==40	;tape copy compare function
+;special flags for "lookup"
+	ambgf==400000
+	mtchf==200000		;match found
+
+
+;******************************************************
+;  MAG TAPE COMMANDS (MTOPR)
+;******************************************************
+
+nop==0
+rewlp==1	;rewind to load point
+rewul==11	;rewind and unload
+bsr==7		;back space record
+bsf==17	;back space file
+eof==3		;write end of fle
+wrt3==13	;write 3 in.of blank tape
+skr==6		;skip a record
+skf==16	;skip a file
+sple==10	;space to logical end of tape
+
+;******************************************************
+;  MISC. DEFINITIONS
+;******************************************************
+
+comma==54	;comma character
+cr==37		;carriage return character
+ctrlf==6		;control f (^f)
+ctrlr==22	;control r (^r)
+esc==33		;escape (alt mode)
+ffo==14		;form feed out
+fmtver==0	;format version number
+haltf=104000000170	;for ddt exit
+maxexl==100	;maximum exceptions to trim function
+maxlns==^d50	;lines per page
+maxp=^d2000	;page count for end of tape failure check
+rubout==177	;rubout character
+space==40	;space character
+tab==11		;tab character
+
+;******************************************************
+;  DISC VERIFY DEFINITIONS
+;******************************************************
+
+dskmsk==777774
+newfb==4
+
+;******************************************************
+;  UUO and OPDEF DEFINITIONS
+;******************************************************
+
+opdef	call [pushj p,0]
+opdef .err[1b8]		;type error string, no return
+opdef .errr[2b8]		;type error string and return
+define err (text)<
+	.err [asciz @
+text@]>
+define errr (text)<
+	.errr [asciz @
+text@]>
+
+
+;******************************************************
+;  MACROS
+;******************************************************
+
+define t(addr,string)<
+	xwd	addr,[asciz \string\]
+	extern addr>
+define type(msg)<
+	hrrzi	a,101
+	hrroi	b,msg
+	setz	c,
+	sout>
+define typec(arg)<
+	hrrzi	a,101
+	movei	b,arg
+	bout>
+define typem(msg)<
+	hrrzi	a,101
+	hrroi	b,[asciz \msg\]
+	setz	c,
+	sout>
+define typen(msg)<
+	hrrzi	a,101
+	movei	b,cr
+	bout
+	hrroi	b,[asciz \msg\]
+	setz	c,
+	sout>
+define typeb(msg)<
+	hrroi	b,[asciz \msg\]
+	movei	a,101
+	setz	c,
+	sout
+	trne	f,lstty
+	jrst	.+5
+	move	a,lstjfn
+	hrroi	b,[asciz \msg\]
+	setz	c,
+	sout>
+define msg(string)<
+	hrrzi	a,101
+	hrroi	b,[asciz \
+string
+\]
+	setz	c,
+	sout>
+
+   SUBTTL    DIRECTORY DEFINITIONS  (pages get mapped here)
+
+;******************************************************
+;  FILE DIRECTORY BLOCK(FDB) DEFINITION
+;******************************************************
+
+dsect:
+	phase 0
+	block 1		;the header (not referenced symbolically)
+fdbctl::	block 1		;lh ==> control bits (see below)
+			;rh ==> location of file name block
+fdbext::	block 1		;lh ==> location of extention block
+			;rh ==> pointer to other extentions
+fdbadr::	block 1		;the file address & class field
+fdbprt::	block 1		;file protection word
+fdbcre::	block 1		;creation date and time of version 1
+fdbuse::	block 1		;lh ==> last writer directory number
+			;rh ==> use count (+1 for each indirect pntr)
+			; and saved environment
+fdbver::	block 1		;lh ==> version number
+			;rh ==> pointer to other versions
+			;this is job number for temp files
+fdbact::	block 1		;account info for charging
+			;+ for location of string
+			;- for number
+fdbbyv::	block 1		;lh==>number of versions to retain in b0-b5
+			;byte size in b6-b11
+			;rh==> number of pages in file
+fdbsiz::	block 1		;length of fhle in bytes
+fdbcrv::	block 1		;creation date and time of this version
+fdbwrt::	block 1		;date and time of last write
+fdbref::	block 1		;date and time of last reference
+fdbcnt::	block 1		;lh ==> count of writes
+				;rh ==> count of references
+fdbbck::	block 1		;lh=flags , rh= most recent dump tape #
+	block 1		;lh=archive tape # 1,rh=archive tape # 2
+	block 1		;time and date of most recent dump
+	block 1		;time and date of first archive
+	block 1		;time and date of second archive
+fdbusw::	block 1		;user settable word
+fdblen::			;length of fdb
+		dephase
+		reloc dsect
+
+;******************************************************
+;  BITS IN LH OF FDBCTL
+;******************************************************
+
+fdbtmp==400000	;file is temporary
+fdbprm==200000	;file is permanent
+fdbnex==100000	;no extension for this fdb yet
+			;file does not really exist
+fdbdel==040000	;file is deleted
+fdbnxf==020000	;file does not exist(first write not complete)
+fdblng==010000	;long file
+fdbsht==004000	;compressed page table
+
+;******************************************************
+;  FLAGS FOR BACKUP SYSTEM
+;******************************************************
+
+; dont use bit 400000 to avoid conflicts with dumper
+fdbarc==200000	;archival requested specifically
+fdbnar==100000	;dont archive this file
+fdbdmp==40000		;file dumped, but not marked complete
+fdbmrk==20000		;file archived but not marked complete
+fdbadl==10000		;dont delete file after archiving
+fdbaar==4000		;file has been archived
+
+;******************************************************
+;  BACKUP (FILE) DIRECTORY BLOCK(BDB) DEFINITION
+;******************************************************
+
+;
+	phase	0
+	block 1	;the header (not referenced symbolically)
+bdbctl:: block 1	;lh ==> control bits (see below)
+			;rh ==> location of file name block
+bdbext:: block 1	;lh ==> location of extention block
+			;rh ==> pointer to other extentions
+bdbadr:: block 1	;lh ==> tape # of 1st archive
+			;rh ==> tape # of 2nd archive
+bdbprt:: block 1	;file protection word
+bdbad1:: block 1	;time and date of 1st archive
+bdbad2:: block 1	;time and date of 2nd archive
+bdbver:: block 1	;lh ==> version number
+			;rh ==> pointer to other versions
+			;this is job number for temp files
+bdbact:: block 1	;account info for charging
+			;+ for location of string
+			;- for number
+bdbusw:: block 1	;user settable word
+bdblen::
+	dephase
+
+;******************************************************
+;  BITS IN LF OF BDBCTL (primarily for fdb compatibility)
+;******************************************************
+
+bdbtmp==400000	;file is temporary
+bdbprm==200000	;file is permanent
+bdbnex==100000	;no extension for this bdb yet
+				;(file does not exist yet)
+bdbdel==040000	;file is deleted (bdb too)
+bdbnxf==020000	;first write not complete (file doesnt exist)
+bdblng==010000	;long file
+bdbsht==004000	;compressed page table
+bdbflg==002000	;this is a backup block (bdb)
+
+;******************************************************
+;  PAGE TABLE FOR DISC FILE VERIFY FUNCTION GOES HERE
+;******************************************************
+
+	loc	170000
+ppgtbl:	block	1000
+pgtbl:	block	1000
+
+;******************************************************
+;  DISC SUB DIRECTORY GOES HERE (must be page alligneD)
+;******************************************************
+
+	loc 200000
+direct:
+dirorg:
+dirlck: block 1	; directory lock
+diruse: block 1	; directory use indicator
+dirnum: block 1	; number of this directory
+symbot: block 1	; symbol table bottom
+symtop: block 1	; symbol table top
+dirfre: block 7	; free storage header
+fretop: block 1	; current top of free storage area
+dirdpw: block 1	; default file protection word
+dirprt: block 1	; directory protection word
+dirdbk: block 1	; default backup specification
+dirgrp: block 1	; groups having access to this directory
+dirsav: block 1
+dirdsk: block 1	; rh = count of pages used (this directory)
+	 		; lh = max pages (this directory)
+direxl:	block 1	; lock - prevents expunge on this dir
+spare:  block 1	; locations for additional variables
+dirloc: block 1	; temp used for saving location in the directory
+dirinp: block 1	; temp to save pointer to input for lookup
+dirinc: block 1	; temp to hold increment for searching
+dirmsk: block 1	; temp to hold mask for lookups
+dirscn: block 1	; temp to save pointer to pointer
+difree: block 0	; beginning of free area
+
+;******************************************************
+;  VARIABLES IN SUBINDEX DIRECTORY BLOCK 0
+;******************************************************
+
+dirhto==dirdpw	; directory number hash table origin
+dirhtl==dirprt	; directory number hash table length
+.fdadr==dirdbk	; disc address of fd ib
+
+;******************************************************
+;  MAP FILE PAGES HERE (funny allignment for block and page nos.)
+;******************************************************
+
+	loc	230776
+blkno:	block 1		;tape block number
+pageno:	block 1		;lh=file number, rh=file page number
+page:	block 40	;page goes here
+page1:	block 730	;puts label here
+page2=page+100
+	loc	232776
+cpyblk:	block 1002	;for copy compare
+
+;******************************************************
+;  TAPE DIRECTORY GOES HERE (must be page alligned)
+;******************************************************
+
+	loc 240000
+tdrect:
+tdrlck: block 1	; directory lock
+tdruse: block 1	; directory use indicator
+tdrnum: block 1	; number of this directory
+tsymbt: block 1	; symbol table bottom
+tsymtp: block 1	; symbol table top
+tdrfre: block 7	; free storage header
+tfretp: block 1	; current top of free storage area
+tdrdpw: block 1	; default file protection word
+tdrprt: block 1	; directory protection word
+tdrdbk: block 1	; default backup specification
+tdrgrp: block 1	; groups having access to this directory
+tspare:	block 4		; locations for additional variables
+	block 5		;temp for testing
+tdfree:	block 0		; beginning of free area
+loc 300000		;for ddt symtab 
+
+   SUBTTL    CONSTANTS,VARIABLES AND JUNK
+
+;******************************************************
+;  constants and stuff for interrupt routine
+;******************************************************
+
+intac:	block 20	;saved ac's
+intstk:	block 30	;interrupt pdl
+savdir:	0		;saved connected dir for ^c
+ret:	block 1		;saved interrupt pc
+dskern:	block 1		;saved disc error #
+shandl:	block 1		;saved file handle
+patch:	block 100
+
+;******************************************************
+;  job file numbers (jfn's)
+;******************************************************
+
+idxjfn:	block 1		;jfn for system index
+dirjfn:	block 1		;jfn for system directory
+arcjfn:	block 1		;jfn for archive directory file
+tdrjfn:	block 1		;jfn for tape directory
+dmpjfn:	block 1		;jfn of file to dump
+mtajfn:	block 1		;jfn for mag tape unit
+listjf:	block 1
+lstjfn:	101		;jfn for listing device (normally lpt)
+msgjfn:	0		;message.txt jfn (for archive info delivery)
+frmjfn:	0		;"from" jfn for tape copy function
+tojfn:	0		;"to" jfn for tape copy function
+lukjfn:	0		;jfn for interrogate routine file
+conjfn:	0		;jfn for continue dump data file
+
+;******************************************************
+;  directory and hash table pointers
+;******************************************************
+
+htoptr:	block 1		;hash table pointer
+htocnt:	block 1		;hash entry counter
+symptr:	block 1		;working pointer to process symtab
+symend:	block 1
+symen2:	block 1
+
+;******************************************************
+;  flags
+;******************************************************
+
+badflg:	0		;bad directory flag
+bypass:	0		;bypass restore checks flag
+compar:	0		;flag to say compare tapes after copy
+confrm:	0		;confirmation flag
+ctrlc:	0		;flag -1 says ctrl-c happened
+dmprtp:	0		;flag to say "dumper tape copy"
+first:	0		;first header (dont type cont.)
+locked:	0		;non-zero says there's a locked dir
+msgflg:	0		;flag says delivering archive info
+rebuild:	0		;flag to say rebuild tape directory
+sblkno:	0		;saved tape block no
+uflag:	0		;listing is for users flag
+write:	0		;flag to catch bad operators
+
+;******************************************************
+;  misc. counters and stuff
+;******************************************************
+
+adays:	0		;archival period in days
+apage:	0		;flag print specific page number total
+iowrd1:	0		;ioword for tape copy function
+iowrd2:	0		;ioword for tape compare function
+cfnum:	0		;current file number (tape)
+cntfdb:	0		;counter
+comerr:	0		;count of compare errors (tape copy)
+condir:	0		;dir number connected to at entry time
+curdir:	0		;current directory number (cntrl)
+tcurno:	0		;current magtape directory number
+dirflg:	0		;print dir name on 1st error only flag
+dirs:	0		;pointer for directories processed
+endtp:	0		;pseudo tape end flag (ran off end!!)
+errors:	0		;verify errors
+erbits:	0		;error bits returned by "gdsts"
+ercode:	0		;error code returned by jsys failure
+filead:	0		;tape file address
+				;  lh=block # (1st page) , rh= file #
+flcnt:	0		;count of files per directory
+flpgs:	0		;page count (per file)
+hline:	0		;header line text pointer
+inst:	0		;instruction to execute
+jobno:	0		;my job #
+linect:	0		;line counter
+longf:	0		;long file flag
+maxpgs:	0		;maximum pages in a file (long or short)
+mountd:	0		;tape directory mounted flag
+msgdir:	0		;directory to send archive message to
+pagect:	0		;page number (listing)
+pdl:	block	101
+pdp:	iowd	100,pdl
+pginc:	0		;minor file dump loop aobj counter
+ppginc:	0		;major   ditto
+printl:	block	40
+	0
+psichn:	0		;standard psi channel word
+realp:	0		;real page count (from fdb)
+recog:	0		;recognize flag
+retrys:	0		;retry count for writting tapedirectory
+sdate:	0		;"since" date for restore and incr dumps
+stbits:	0		;current MTA status bits (modify these!)
+stblk:	-1		;place to build tape index string blocks
+	block	10
+sysnum:	0		;system directory number(get with stdir)
+talloc:	0		;total system file allocation (pages)
+temp1:	block 100	;misc. string go here
+temp2:	0		;temporary cell
+temp3:	0
+temp4:	0
+temp:	0		;temporary cell
+ctuuo:	0		;temp cell for uuo dispatch
+tflcnt:	0		;total file count
+tod:	0		;semi-current time
+topdir:	0		;highest directory number in hash table
+tpgcnt:	0		;total page count
+trmcnt:	0		;retain count
+usrpgs:	0		;page count (per user)
+vcnt:	0		;working retain count
+vershn:	0
+
+;******************************************************
+;  tape dir lookup function variables
+;******************************************************
+
+tmptbl:
+	point 7,tmpdir
+	point 7,tmpfil
+	point 7,tmpext
+	point 7,tmpver
+	point 7,tmpdum
+	point 7,tmpdum
+tmpdir:	block 10
+	0
+tmpfil:	block 10
+	0
+tmpext:	block 10
+tmpver:	block 10
+tmpdum:	block 10
+tmpend:	0
+
+;******************************************************
+;  table and strings for fixing fdb after restore
+;******************************************************
+
+fdflds:	byte(5)	1,5,6,11,12,13,14,15,16,17,20,21,22,23,24,0
+msktbl:	0
+	xwd	600001,0
+	0
+	0
+	0
+	-1
+	xwd	-1,0
+	0
+	0
+	xwd	777700,0
+	-1
+	-1
+	-1
+	-1
+	-1
+	-1
+	-1
+	-1
+	-1
+	-1
+	-1
+
+;******************************************************
+;  prototype table for gtdir" get directory data jfn
+;******************************************************
+
+eee:
+	xwd	-1,page1	;directory string pointer
+	xwd	-1,page1+^d9		;password string pointer
+	block 100		;zeros for table and strings
+
+;******************************************************
+;  prototype backup descripor block
+;******************************************************
+
+bdbblk:
+	xwd 400100,bdblen		;header
+	block	11
+
+;******************************************************
+;  continue dump record (for restarting dump functions)
+;******************************************************
+
+conrec:
+	0		;saved lh of flags
+	0		;directory number to restart dump at
+	0		;dump tape sequence number
+	block 20	;saved tape id
+
+;******************************************************
+;  labels for octal directory print
+;******************************************************
+
+labels:
+	point 7,[asciz /dirlck[ /]
+	point 7,[asciz /diruse[ /]
+	point 7,[asciz /dirnum[ /]
+	point 7,[asciz /symbot[ /]
+	point 7,[asciz /symtop[ /]
+	point 7,[asciz /dirfre[ /]
+	point 7,[asciz /dirfre+1[ /]
+	point 7,[asciz /dirfre+2[ /]
+	point 7,[asciz /dirfre+3[ /]
+	point 7,[asciz /dirfre+4[ /]
+	point 7,[asciz /dirfre+5[ /]
+	point 7,[asciz /dirfre+6[ /]
+	point 7,[asciz /fretop[ /]
+	point 7,[asciz /dirdpw[ /]
+	point 7,[asciz /dirprt[ /]
+	point 7,[asciz /dirdbk[ /]
+	point 7,[asciz /dirgrp[ /]
+	point 7,[asciz /dirdsk[ /]
+	point 7,[asciz /spare[ /]
+	point 7,[asciz /spare+1[ /]
+	point 7,[asciz /spare+2[ /]
+	point 7,[asciz /dirloc[ /]
+	point 7,[asciz /dirinp[ /]
+	point 7,[asciz /dirinc[ /]
+	point 7,[asciz /dirmsk[ /]
+	point 7,[asciz /dirscn[ /]
+	0	;end of table
+
+;******************************************************
+;  file name strings and tables
+;******************************************************
+
+idxstr:	asciz	/<SYSTEM>INDEX/
+dirstr:	asciz	/<SYSTEM>DIRECTORY/
+tdrstr:	asciz	/TAPEDIRECTORY.TMP/
+dmpdir:	block	10	;store directory string here
+dmpdev:	asciz	/DSK/
+idxtbl:	xwd	100000,0
+	xwd	377777,101
+	block 7
+dirtbl:	xwd	100000,0
+	xwd	377777,101
+	block 7
+tdrtbl:	xwd	400000,0
+	xwd	377777,101
+	block	7
+mtatbl:	xwd	100000,0
+	xwd	100,101
+	block 7
+rsttbl:	xwd	460000,0
+	xwd	100,101
+	dmpdev		;default is disc
+dirdsp:	0		;directory dsp
+flndsp:	0		;file name dsp
+extdsp:	0		;extention dsp
+	0
+actdsp:	0		;account dsp
+	block	5
+dmptbl:	xwd	101000,0
+	xwd	377777,377777
+	dmpdev		;device dsp (dsk)
+	dmpdir		;directory dsp
+dmpfle:	0		;files name dsp(to be supplied)
+dmpext:	0		;extension dsp (to be supplied)
+dmpprt:	0		;protection word (to be supplied)
+dmpact:	0		;account dsp (to be supplied)
+	block  6
+dummy:	xwd	400777,2	;dummy header
+	0			;dummy use count(if acct)
+
+;******************************************************
+;  pointers for scanning fdb ext. and ver. strings
+;******************************************************
+
+; disc
+	lef:	0	;last extent fdb pointer
+	cef:	0	;current extent fdb pointer
+	nef:	0	;next extent fdb pointer
+	lvf:	0	;last version fdb pointer
+	cvf:	0	;current version fdb pointer
+	nvf:	0	;next version fdb pointer
+	syment:	0	;address of symbol table entry
+	adrfdb:	0	;current fdb real address (for delete)
+	diradr:	block 1		;address of directory being processed
+; tape
+	tlef:	0	;last extent fdb pointer
+	tcef:	0	;current extent fdb pointer
+	tnef:	0	;next extent fdb pointer
+	tlvf:	0	;last version fdb pointer
+	tcvf:	0	;current version fdb pointer
+	tnvf:	0	;next version fdb pointer
+	tcfp:	0	;current file name string pointer
+	tcep:	0	;current extent string pointer
+	fnmstr:	0	;file name string pointer (tape)
+	exnstr:	0	;extension string ptr
+	afdb:	0	;pointer to fdb being added
+	adfdbt:	0	;current fdb real address(tape directory)
+
+;******************************************************
+;  disc verify stuff
+;******************************************************
+
+dskerr:	0	;saved disc error bit (dskop)
+class:	0	;disc class field
+disk:	0	;disk ferify request flag
+
+;******************************************************
+;  some defs for dumper tapes (tape copy function)
+;******************************************************
+
+tphdx==1
+flhdx==2
+fltrx==3
+tptrx==4
+usrx==5
+
+;******************************************************
+;  mag tape i/o command lists
+;******************************************************
+
+rwhdr:	iowd	100,tphdr
+	0
+rwrcrd:	iowd	^d514,blkno
+	0
+rcrcrd:	iowd	^d514,cpyblk	;for copy function
+	0
+rwpage:	iowd	^d514,blkno
+	0
+rcpage:	iowd	^d514,cpyblk	;for copy function
+	0
+
+;******************************************************
+;  mag tape header record (*** do not alter order ***)
+;******************************************************
+
+tphdr:
+tpblk:	0	;header is block 0
+tpnum:	0	;arc tape number
+nxtblk:	0	;saved last block number used (this tape)
+usrblk:	0	;block # of 1st record if user data file
+tpspac:	0	;space left on tape
+tpfils:	0	;count of # of files this tape
+site:	bsite	;expands to site name  (4 char max)
+pages:	0	;count # of pages used
+tdpgs:	0	;tape directory pages used
+tpseq:	0	;consecutive dump tape sequence count
+dblks:	^d200	;200 blocks reseved for directories
+tapver:	fmtver	;format version number (bbn)
+reservd:	block	6
+tptxt:	block	20	;id entered by operator
+tpid:	bsite1		;expands into site name and address
+
+;******************************************************
+;  my copy of the index hash table (and string areas)
+;******************************************************
+
+instr:		;use this area for input string (restore function)
+fdbtbl:	block 3000	;saved fdb pointers  (verify)
+hshtbl:	block 2000
+distbl:	block 2000	;table of directory numbers processed
+
+;******************************************************
+;  this is table contains an exception list for the trim function
+;******************************************************
+
+; it is built at runtime from file <archive>bsys-trim-exceptions
+exlst:	block maxexl
+	0		;end of table
+
+;******************************************************
+; these moved here for test only must be put back.......
+;******************************************************
+
+tdrloc:	block 1	; temp used for saving location in the directory
+tdrinp:	block 1	; temp to save pointer to input for lookup
+tdrinc:	block 1	; temp to hold increment for searching
+tdrmsk:	block 1	; temp to hold mask for lookups
+tdrscn:	block 1	; temp to save pointer to pointer
+
+;******************************************************
+; literals go here
+;******************************************************
+
+literal:
+	lit
+	end

@@ -1,0 +1,2236 @@
+;<ARCHIVE>LOOKUP.NLS;13, 6-NOV-73 08:15 DCW ;  <ARCHIVE>LOOKUP.MAC
+
+title lookup
+search stenex
+
+arc==0		;indicate assemble a journal type interrogate
+logtty==377777	;line number for retrieval requests
+jrnldir==36	;directory number of the journal
+
+; DOCUMENTATION
+	repeat 0,<
+		entries
+			entry vector + 0  --  normal subsystem
+				accepts
+					nothing
+				i/o
+					all i/o is done through primary i/o files
+			entry vector + 1  --  reenter address
+				this entry does an immediate haltf
+			entry vector + 2  --  interrogate only entry
+				accepts
+					1)  flag,,outjfn
+						where flag has the following meanings
+							B0-B1
+								0 - interrogate undeleted files only
+								1 - interrogate deleted files only
+								2 - interrogate all files
+								3 - interrogate all files
+							B2 - print interrogate list in reverse order
+							B3
+								0 - don't print protection
+								1 - print protection
+							B4-B5
+								0 - don't print times and dates
+								1 - print dates only
+								2 - print times and dates
+								3 - print times and dates
+							B6
+								0 - print heading
+								1 - don't print heading
+							B7
+								0 - no double spacing
+								1 - double spacing
+							B8 - since date is in R3
+							B9 - before date is in R4
+					2) byte pointer to asciz strin for file name
+						the file name string should be in page 200
+					3) since date if B8 is on in R1
+					4) before date if B9 is on in R1
+				i/o
+					results of interrogate are written on outjfn
+			entry vector + 3  --  retreive entry
+				accepts
+					2) byte pointer to asciz strin for file name
+						the file name string should be in page 200
+				i/o
+					there is no i/o to be performed for this type of entry
+			entry vector + 4  --  delete file subsystem entry
+				accepts
+					nothing
+				i/o
+					all i/o is done through primary i/o files
+			entry vector + 5  --  delete file alternate entry entry
+				accepts
+					1)  0,,outjfn
+					2) byte pointer to asciz strin for file name
+						the file name string should be in page 200
+				i/o
+					deleted file list is written on outjfn
+			entry vector + 6  --  undelete file subsystem entry
+				accepts
+					nothing
+				i/o
+					all i/o is done through primary i/o files
+			entry vector + 7  --  undelete file alternate entry entry
+				accepts
+					1)  0,,outjfn
+					2) byte pointer to asciz strin for file name
+						the file name string should be in page 200
+				i/o
+					undeleted file list is written on outjfn
+			entry vector + 8  --  return user settable word entry
+				accepts
+					2) byte pointer to asciz strin for file name
+						the file name string should be in page 200
+				i/o
+					there is no i/o to be performed for this type of entry
+		returns
+			all returns are via a HALTF,  however terminating conditions are indicated by the contents of register 1 as follows:
+				1 .E. 0  --  successful return
+				1 .G. 0  --  1 contains a jsys error number
+				1 .L. 0  --  registers 2-17 contain an asciz error string
+			the user settable word is returned in register 0 (zero) for the appropriate entry
+		> ;end of repeat 0
+
+; REGISTER DEFINITIONS
+	f==0
+	a==1
+	b==2
+	c==3
+	d==4
+	i==16
+	p==17
+
+; CHARACTER DEFINITIONS
+	bell=="G"-100
+	ctrlf=="F"-100
+	cr==37
+	esc==33
+	rubout==177
+
+; MACROs and OPDEFs
+	opdef call [pushj p,0]
+	opdef ret [popj p,0]
+	define chrin<
+		call charin >
+	define typec(chr)<
+		call [
+			movei b,chr
+			jrst typchr ] >
+	define typem(msg)<
+		call [
+			hrroi b,[asciz #msg#]
+			jrst typmsg ] >
+	define types<
+		call typmsg >
+	define itypc(chr)<
+		call [
+			movei b,chr
+			jrst itypchr ] >
+	define itypm(msg)<
+		call [
+			hrroi b,[asciz #msg#]
+			jrst itypmsg ] >
+	define ityps<
+		call itypmsg >
+	define errout(num,str)<
+		call [
+			ifidn <num><>,<setzm errnum>
+			ifdif <num><>,<movem a,errnum>
+			skipge enttyp
+			 jrst [
+				ifdif <str><>,<
+					typec cr
+					typec " "
+					typec " "
+					typem str >
+				seto 1,
+				closf
+				 jfcl
+				seto 1,
+				rljfn
+				 jfcl
+				move a,errnum
+				haltf ]
+			ifdif <str><>,<
+				move 1,[xwd [asciz \str\],2]
+				blt 1,17
+				seto 1,
+				closf
+				 jfcl
+				seto 1,
+				rljfn
+				 jfcl
+				seto 1,
+				haltf >
+			ifidn <str><>,<
+				seto 1,
+				closf
+				 jfcl
+				seto 1,
+				rljfn
+				 jfcl
+				move a,errnum
+				haltf > ] >
+
+; ENTRY VECTOR and ENTRY POINTS
+	start:
+	entvec:
+		jrst entry0	;normal entry
+		haltf		;reenter address
+		jrst entry1	;interrogate entry
+		jrst entry2	;retreive entry
+		jrst entry3	;delete entry
+		jrst entry4	;delete alternate entry
+		jrst entry5	;undelete entry
+		jrst entry6	;undelete alternate entry
+		jrst entry7	;return user settable word entry
+	entry0:	;normal entry
+		setzm delflg
+		seto 1,
+	ent0a:
+		movem 1,enttyp
+		setzm protect
+		setzm timdat
+		setzm double
+		setzm sdate
+		setzm reverse
+		setom heading
+		move 1,[377777,,777777]
+		movem 1,bdate
+		movei 1,101
+		movem 1,msgjfn
+		movem 1,intjfn
+		rfmod		;set wakeup on all
+		tro 2,770000
+		sfmod
+		jrst go
+	entry1:	;interrogate (alternate) entry
+		hrrzm 1,intjfn
+		setzm delflg
+		tlnn 1,(1b0)
+		 jrst [
+			tlne 1,(1b1)
+			 sos delflg
+			jrst .+2 ]
+		aos delflg
+		setzm protect
+		tlne 1,(1b3)
+		setom protect
+		setzm timdat
+		tlnn 1,(1b4)
+		 jrst [
+			tlne 1,(1b5)
+			 hllos timdat
+			jrst .+2 ]
+		setom timdat
+		setzm heading
+		tlne 1,(1b6)
+		 setom heading
+		setzm double
+		tlne 1,(1b7)
+		 setom double
+		setzm reverse
+		tlne 1,(1b2)
+		 setom reverse
+		setzm sdate
+		tlne 1,(1b8)
+		 movem 3,sdate
+		tlnn 1,(1b9)
+		 move 4,[377777,,777777]
+		movem 4,bdate
+		setz 1,
+		movem 1,enttyp
+		jrst ent2a
+	entry2:	;retreive (alternate) entry
+		setzm intjfn
+		movei 1,1
+		movem 1,delflg
+	ent2b:
+		movem 1,enttyp
+		setzm protect
+		setzm timdat
+		setzm double
+		setzm sdate
+		setom heading
+		move 1,[377777,,777777]
+		movem 1,bdate
+	ent2a:
+		setzm msgjfn
+		movem 2,bytinp
+		jrst go
+	entry3:	;delete (normal) entry
+		movei 1,1
+		movem 1,delflg
+		movni 1,2
+		jrst ent0a
+	entry4:	;delete (alternate) entry
+		hrrzm 1,intjfn
+		movei 1,1
+		movem 1,delflg
+		movei 1,2
+		jrst ent2b
+	entry5:	;undelete (normal) entry
+		movei 1,1
+		movem 1,delflg
+		movni 1,3
+		jrst ent0a
+	entry6:	;undelete (alternate) entry
+		hrrzm 1,intjfn
+		movei 1,1
+		movem 1,delflg
+		movei 1,3
+		jrst ent2b
+	entry7:	;retreive user settable word entry
+		setzm intjfn
+		movei 1,1
+		movem 1,delflg
+		movei 1,4
+		jrst ent2b
+
+; MAIN BODY OF THE PROGRAM
+	go:
+		move p,[iowd stackl,stack]
+		setzm comflg
+		setzm eolflg
+		setzb i,f
+		call alukup		;get input from user
+		move 1,enttyp		;continue depending on type of call
+		addi 1,3
+		setom icount		;indicate nothing printed yet
+		jrst .+1(1)
+		 jrst en5
+		 jrst en3
+		 jrst en0
+		 jrst en1
+		 jrst en2
+		 jrst en4
+		 jrst en6
+		 jrst en7
+	en0:
+		trne f,alldir+allfil+allext+allver
+		 jrst en0a		;for group types
+		call chkdel		;check proper deletion status
+		 errout(,<that file not deleted>)
+		typec cr
+		call pntbdb		;print where the file is
+	en00:
+		move a,intjfn		;interrogate list went to primary ?
+		caie a,100
+		cain a,101
+		 caia			;yes
+		errout(,)		;no, then all done
+		typem <  do you want it retreived? (Y or N)  >
+		call answ		;find out
+		 jrst [			;yes
+			call rtmsg		;notify operator
+			 errout(,<you will be notified when your file is returned>)
+			errout(,<your request cannot be made now - try again later>) ]
+		errout(,)		;done
+	en0a:
+		itypc cr
+		call ifndf		;find the first one
+		call pntbdb		;print it
+		trne f,journl		;journal file ?
+		trne f,allfil		;  and not * for file name ?
+		 caia			;no
+		jrst en00		;kludge to make journal quicker
+		push p,current
+		call ifndn		;find the next one
+		 jrst [			;no more
+			skipl enttyp		;done if type 0
+			 errout(,)
+			skipn icount		;only one file ?
+			 jrst [		;yes
+				pop p,b
+				call getbdb
+				 errout(,<bad file>)
+				jrst en00 ]
+			errout(,) ]		;no ]
+		call pntbdb		;print it
+		jrst .-3			;loop to get all
+	en1:
+		trne f,alldir+allfil+allext+allver
+		 jrst en0a
+		itypc cr
+		call pntbdb
+		errout(,)
+	en2:
+		trne f,alldir+allfil+allext+allver
+		 jrst en2b
+	en2a:
+		call rtmsg
+		 errout(,)
+		errout(,<your request cannot be made now - try again later>)
+	en2b:
+		call ifndf		;find the first one
+		aos icount
+		push p,current
+		hrroi a,cmstring		;kludge to only get most recent
+		hrrz b,curdir		;  version for retreive requests
+		movei 3,^d8
+		nout
+		 errout(c,)
+		hrrz b,bdbctl
+		add b,diradr
+		hrli b,(point 7,)
+		setz c,
+		sout
+		hlrz b,bdbext
+		add b,diradr
+		hrli b,(point 7,)
+		sout
+		call ifndn		;find the next one
+		 jrst [			;no more
+			pop p,b
+			call getbdb
+			 errout(,<bad file>)
+			jrst en2a ]
+		errout(,<can't retreive file groups>)
+	en3:
+	en5:
+		trne f,alldir+allfil+allext+allver
+		 jrst en3a		;for group types
+		typec cr
+		call delbdb		;delete the file
+		errout(,)		;done
+	en3a:
+		itypc cr
+		call ifndf		;find the first one
+		call delbdb		;delete the file and
+		call pntbdb		;print it
+		trne f,journl		;journal file ?
+		trne f,allfil		;  and not * for file name ?
+		 caia			;no
+		errout(,)		;kludge to make journal quicker
+		push p,current
+		call ifndn		;find the next one
+		 errout(,)		;no more
+		itypc cr
+		call delbdb		;delete the file and
+		call pntbdb		;print it
+		jrst .-5			;loop to get all
+	en4:
+	en6:
+		trne f,alldir+allfil+allext+allver
+		 jrst en3a		;for group types
+		itypc cr
+		call delbdb		;delete the file
+		errout(,)		;done
+	en7:
+		trne f,alldir+allfil+allext+allver
+		 jrst en7b
+	en7a:
+		call getusw
+		errout(,)
+	en7b:
+		call ifndf		;find the first one
+		aos icount
+		push p,current
+		hrroi a,cmstring		;kludge to only get most recent
+		hrrz b,curdir		;  version for retreive requests
+		movei 3,^d8
+		nout
+		 errout(c,)
+		hrrz b,bdbctl
+		add b,diradr
+		hrli b,(point 7,)
+		setz c,
+		sout
+		hlrz b,bdbext
+		add b,diradr
+		hrli b,(point 7,)
+		sout
+		call ifndn		;find the next one
+		 jrst [			;no more
+			pop p,b
+			call getbdb
+			 errout(,<bad file>)
+			jrst en7a ]
+		errout(,<can't retreive file groups>)
+
+	answ:
+		caia
+	answ1:
+		typem <  ?  (Y or N)  >
+		chrin
+		caie b,"Y"
+		cain b,"y"
+		 jrst [
+			typem <es [Confirm]>
+			chrin
+			caie b,cr
+			 jrst answ1
+			ret ]
+		caie b,"N"
+		cain b,"n"
+		 jrst [
+			typec "o"
+			aos 0(p)
+			ret ]
+		jrst answ1
+
+; GET INPUT FILE NAME/GROUP FROM USER
+	; INITIALIZE
+		alukup:
+			move a,[xwd 010700,instr-1] ;initialize all pointers
+			movem a,temp
+			movem a,temp1
+			movem a,temp2
+			setz i,		;initialize all flags
+			setz f,
+			move a,[xwd instr,instr+1]	;zero all string fields
+			setzm -1(a)
+			blt a,instr+7
+			move a,[xwd tmpdir,tmpdir+1]
+			setzm -1(a)
+			blt a,tmpend
+
+	; COLLECT DIRECTORY NAME
+		coldir:
+			setz i,
+			setzm curdir
+			move a,temp2		;append to here
+			move b,temp		;backup allowed to here
+			call colstr		;collect string with editing
+			movem a,temp2		;update end of field pointer
+			ildb c,temp1		;get first character
+			caie c,"<"		;start of directory ?
+			 jrst [		;no, use current directroy
+				movei b,">"	;terminator = > ?
+				camn b,trmchr	;yes, give error
+				 errout (,<illegal file name>)
+				move a,temp	;backup current pointer
+				movem a,temp1
+				gjinf
+				hrrzs b		;connected directory
+				movem b,curdir
+				ifdef arc,<
+					cain b,jrnldir
+					tro f,journl
+					>
+				move a,tmptbl(i)
+				dirst
+				 errout(a,)
+				call chkdir	;anything archived in this directory ?
+				 errout (,<no files archived in this directory>)
+				jrst colfn1 ]	;go get file name
+			movei d,"."		;see if . in directory name
+			camn d,trmchr
+			 errout (,<illegal directory name>)
+			ildb b,temp1		;first meaningful char
+			caie b,0		;null field input ?
+			camn b,trmchr
+			 jrst [		;yes
+				move d,trmchr	;terminated by > is error for null field
+				cain d,">"
+				 errout (,<illegal directory name>)
+				gjinf		;get connected directory number
+				hrrzm b,curdir
+				ifdef arc,<
+					cain b,jrnldir
+					tro f,journl
+					>
+				move a,tmptbl+0
+				dirst
+				 errout(a,)
+				move b,tmptbl+0
+				types
+				typec ">"
+				move a,temp2
+				move b,tmptbl+0
+				setz c,
+				sout
+				movei b,">"
+				bout
+				movem a,temp2
+				call chkdir
+				 errout(,<no files archived this directory>)
+				aos i
+				move d,trmchr
+				cain d,esc
+				 jrst fnwast
+				jrst colfln ]
+			cain b,"*"		;asterick ?
+			 jrst [		;yes, treat appropriately
+				tdo f,alltbl(i)	;turn on * seen flag
+				ildb b,temp1	;make sure next char is terminator
+				skipn b
+				 move b,trmchr
+				came b,trmchr
+				 errout (,<bad use of *>)
+				cain b,">"		;proper terminator ?
+				 jrst colfln	;yes, now collect filename
+				movei b,">"	;update strings for editting, echoing
+				idpb b,temp2
+				typec ">"
+				aos i
+				move d,trmchr	;terminating char = ^F ?
+				cain d,ctrlf
+				 jrst [		;yes, setup to collect filename
+					typec bell
+					jrst colfln ]
+				jrst fnwast ]	;no, assume altmode and treat properly
+			move c,tmptbl(i)	;pointer to where to store directory
+			caia
+			ildb b,temp1		;get next input byte
+			jumpe b,.+3
+			came b,trmchr		;this the terminator
+			 jrst [		;no, store away the byte
+				cain b,"*"		;* in middle of field is error
+				 errout(,<bad use of *>)
+				idpb b,c
+				jrst .-3 ]
+			move a,temp1		;position temp1 properly
+			bkjfn			;  to point to terminator
+			 errout(a,)
+			movem a,temp1
+			push p,c		;save current location for echoing
+			move b,tmptbl(i)
+			movsi 1,400000
+			movei d,">"		;no recognition if field terminated
+			camn d,trmchr		;  with an >
+			setz 1,
+			stdir
+			 errout(,<no such directory>)
+			 jrst [
+				typec bell
+				pop p,c
+				move a,temp
+				movem a,temp1
+				jrst coldir ]
+			hrrzs 1
+			movem 1,curdir
+			ifdef arc,<
+				cain 1,jrnldir
+				tro f,journl
+				>
+			call chkdir
+			 errout(,<no files archived in this directory>)
+			pop p,c
+			move d,trmchr
+			cain d,">"		;nothing more to do if terminated by >
+			 jrst colfln
+			push p,c		;echo rest of dir name
+			move b,c
+			types
+			typec ">"
+			pop p,a		;now update useer input string
+			ildb b,a
+			jumpe b,.+3
+			idpb b,temp1
+			jrst .-3
+			movei b,">"
+			idpb b,temp1
+			move b,temp1
+			movem b,temp2
+			move d,trmchr		;terminated with ^F ?
+			aos i
+			cain d,ctrlf
+			 jrst [		;yes
+				typec bell
+				jrst colfln ]
+			jrst fnwast		;no, must be altmode
+
+	; COLLECT FILE NAME
+		colfln:
+			move a,temp2		;keep pointers in step
+			movem a,temp
+			movem a,temp1
+			move b,a
+			call colstr		;get file name
+			movem a,temp2
+		colfn1:
+			movei i,1
+			ildb a,temp1		;null field input ?
+			caie a,0
+			camn a,trmchr
+			 jrst [		;yes
+				move d,trmchr	;terminated by . is error for null field
+				cain d,"."
+				 errout (,<illegal file name>)
+				cain d,esc		;terminated by altmode ?
+				 jrst fnwast	;yes
+				cain d,","		;terminated by comma ?
+				 jrst [		;yes
+					tro f,allfil+allext+allver
+					setom comflg
+					jrst havall ]
+				tdo f,alltbl(i)	;turn on * flag
+				move 1,temp2	;finish user input string
+				hrroi 2,[asciz /*./]
+				setz 3,
+				sout		;update user input string
+				movem a,temp2
+				typem <*.>		;echo
+				typec bell
+				jrst colext ]
+			cain a,"*"		;* as first char ?
+			 jrst [		;yes
+				tdo f,alltbl(i)	;turn on * flag
+				ildb b,temp1
+				skipn b		;anything other than terminator after *
+				 move b,trmchr	;  is an error
+				came b,trmchr
+				 errout(,<illegal use of *>)
+				cain b,"."		;done with filename if terminated by .
+				 jrst colext
+				cain b,","		;terminated by comma ?
+				 jrst [		;yes
+					tro f,allfil+allext+allver
+					setom comflg
+					jrst havall ]
+				movei a,"."	;update user input string
+				idpb a,temp2
+				typec "."		;bring echo up to date
+				aos i		;update current state
+				move b,trmchr
+				cain b,esc		;terminated by altmode ?
+				 jrst fnwast	;yes
+				typec bell		;no, type bell and then get extension
+				jrst colext ]
+			move b,tmptbl(i)	;store away filename
+			move d,trmchr
+			caia
+			ildb a,temp1
+			jumpe a,.+3
+			came a,d
+			 jrst [
+				cain a,"*"		;* in middle of field is error
+				 errout(,<bad use of *>)
+				idpb a,b
+				jrst .-3 ]
+			cain d,"."		;terminated by . ?
+			 jrst colext		;yes, uollect extension
+			cain d,","		;terminated by comma ?
+			 jrst [		;yes
+				tro f,allext+allver
+				setom comflg
+				jrst havall ]
+			trne f,alldir		;any prvious * ?
+			 jrst [		;yes
+				aos i		;update state
+				movei a,"."	;finish user string
+				idpb a,temp2
+				typec "."		;bring echo up to date
+				cain d,esc		;terminated by *
+				 jrst fnwast	;yes
+				typec bell		;type bell and collect extension
+				jrst colext ]
+			call find		;see if this file archived
+			 errout(,<that file not archived>)
+			move d,tmptbl(i)	;get rest of filename
+			move c,a		;  in holding buffer
+			ildb b,c		;  and bring user string and echoing
+			ildb a,d		;  up to date
+			camn b,a
+			 jrst [
+				jumpn b,.-3
+				jrst .+1 ]
+			dpb b,d
+			caia
+			idpb b,d
+			jumpe b,.+5
+			idpb b,temp2
+			typec 0(b)
+			ildb b,c
+			jrst .-5
+			movei b,"."
+			idpb b,temp2
+			typec 0(b)
+			aos i			;update state
+			move d,trmchr
+			cain d,esc		;terminated by altmode ?
+			jrst fnwast		;yes
+			jrst colext		;no
+
+	; COLLECT EXTENSION NAME
+		colext:
+			movei i,2
+			move a,temp2		;keep pointers in step
+			movem a,temp
+			movem a,temp1
+			move b,a
+			call colstr		;get extension name
+			movem a,temp2
+			ildb a,temp1		;null field input ?
+			caie a,0
+			camn a,trmchr
+			 jrst [		;yes
+				move d,trmchr	;terminated by ; ?
+				cain d,";"
+				 jrst colver	;yes, go collect version
+				cain d,esc		;terminated by altmode ?
+				 jrst fnwast	;yes
+				cain d,","		;terminated by a comma ?
+				 jrst [		;yes
+					tro f,allext+allver	;turn on right * flags
+					setom comflg
+					jrst havall ]
+				tdo f,alltbl(i)	;turn on * flag
+				move 1,temp2	;finish user input string
+				hrroi 2,[asciz /*;/]
+				setz 3,
+				sout		;update user input string
+				movem a,temp2
+				typem <*;>		;echo
+				typec bell
+				jrst colver ]
+			cain a,"*"		;* as first char ?
+			 jrst [		;yes
+				tdo f,alltbl(i)	;turn on * flag
+				ildb b,temp1
+				skipn b		;anything other than terminator after *
+				 move b,trmchr	;  is an error
+				came b,trmchr
+				 errout(,<illegal use of *>)
+				cain b,";"		;done with extension if terminated by ;
+				 jrst colver
+				cain b,","		;terminated by comma ?
+				 jrst [		;yes
+					tro f,allver
+					setom comflg
+					jrst havall ]
+				movei a,";"	;update user input string
+				idpb a,temp2
+				typec 0(a)		;bring echo up to date
+				aos i		;update current state
+				move b,trmchr
+				cain b,esc		;terminated by altmode ?
+				 jrst fnwast	;yes
+				typec bell		;no, type bell and then get version
+				jrst colver ]
+			move b,tmptbl(i)	;store away extension
+			move d,trmchr
+			caia
+			ildb a,temp1
+			jumpe a,.+3
+			came a,d
+			 jrst [
+				cain a,"*"		;* in middle of field is error
+				 errout(,<bad use of *>)
+				idpb a,b
+				jrst .-3 ]
+			cain d,";"		;terminated by ; ?
+			 jrst colver		;yes,  collect version
+			cain d,","		;terminated by comma ?
+			 jrst [		;yes
+				tro f,allver
+				setom comflg
+				jrst havall ]
+			trne f,alldir+allfil	;any prvious * ?
+			 jrst [		;yes
+				aos i		;update state
+				movei a,";"	;finish user string
+				idpb a,temp2
+				typec 0(a)		;bring echo up to date
+				cain d,esc		;terminated by *
+				 jrst fnwast	;yes
+				typec bell		;type bell and collect version
+				jrst colver ]
+			call find		;see if this file archived
+			 errout(,<that file not archived>)
+			move d,tmptbl(i)	;get rest of extension
+			move c,b		;  in holding buffer
+			ildb b,c		;  and bring user string and echoing
+			ildb a,d		;  up to date
+			camn b,a
+			 jrst [
+				jumpn b,.-3
+				jrst .+1 ]
+			dpb b,d
+			caia
+			idpb b,d
+			jumpe b,.+5
+			idpb b,temp2
+			typec 0(b)
+			ildb b,c
+			jrst .-5
+			movei b,";"
+			idpb b,temp2
+			typec 0(b)
+			aos i			;update state
+			move d,trmchr
+			cain d,esc		;terminated by altmode ?
+			jrst fnwast		;yes
+			jrst colver		;no
+
+	; COLLECT VERSION NUMBER
+		colver:
+			movei i,3
+			move a,temp2		;keep pointers in step
+			movem a,temp
+			movem a,temp1
+			move b,a
+			call colstr		;get extension name
+			movem a,temp2
+			ildb a,temp1		;null field input ?
+			caie a,0
+			camn a,trmchr
+			 jrst [		;yes
+				tdo f,alltbl(i)	;turn on * flag
+				move d,trmchr
+				cain d," "		;terminated by space ?
+				 jrst havall	;yes
+				cain d,","		;terminated by comma ?
+				 jrst [		;yes
+					setom comflg	;indicate comma seen
+					jrst havall ]
+				jrst fnwast ]	;go finish up
+			cain a,"*"		;* as first char ?
+			 jrst [		;yes
+				tdo f,alltbl(i)	;turn on * flag
+				ildb b,temp1
+				skipn b		;anything other than terminator after *
+				move b,trmchr	;  is an error
+				came b,trmchr
+				 errout(,<illegal use of *>)
+				cain b," "		;done with version if terminated by sp
+				 jrst havall
+				cain b,","		;  or comma
+				 jrst [
+					setom comflg
+					jrst havall ]
+				movei a," "	;update user input string
+				idpb a,temp2
+				typec " "		;bring echo up to date
+				aos i		;update current state
+				move b,trmchr
+				cain b,esc		;terminated by altmode ?
+				 jrst fnwast	;yes
+				jrst havall ]	;no
+			move b,tmptbl(i)	;store away version
+			move d,trmchr
+			caia
+			ildb a,temp1
+			jumpe a,.+3
+			came a,d
+			 jrst [
+				cain a,"*"		;* in middle of field is error
+				 errout(,<bad use of *>)
+				cail a,"0"		;numbers only at this point
+				caile a,"9"
+				 errout(,<illegal version number>)
+				idpb a,b
+				jrst .-3 ]
+			cain d," "		;terminated by space ?
+			 jrst havall		;yes, then done
+			cain d,","		;terminated by comma ?
+			 jrst [		;yes
+				setom comflg
+				jrst havall ]
+			trne f,alldir+allfil+allext ;any prvious * ?
+			 jrst [		;yes
+				movei a," "	;finish user string
+				idpb a,temp2
+				typec " "		;bring echo up to date
+				aos i		;update state
+				cain d,esc		;terminated by *
+				 jrst fnwast	;yes
+				jrst havall ]
+			call find		;see if this file archived
+			 errout(,<that file not archived>)
+			move d,tmptbl(i)	;get rest of version
+			ildb b,c		;  in holding buffer
+			ildb a,d		;  and bring user string and echoing
+			camn b,a		;  up to date
+			 jrst [
+				jumpn b,.-3
+				jrst .+1 ]
+			dpb b,d
+			caia
+			idpb b,d
+			jumpe b,.+5
+			idpb b,temp2
+			typec 0(b)
+			ildb b,c
+			jrst .-5
+			movei b," "
+			idpb b,temp2
+			typec 0(b)
+			aos i			;update state
+			move d,trmchr
+			cain d,esc		;terminated by altmode ?
+			 jrst fnwast		;yes
+			jrst havall		;no
+
+	; FINISH USER STRING WITH ASTERICKS
+		fnwast:
+			move a,temp2		;where to append string
+			move b,ast(i)		;appropriate string
+			setz c,
+			sout			;update the user input string
+			movem a,temp2		;keep pointer up to date
+			move b,ast(i)
+			types			;echo it to the user
+			tdo f,alltbl(i)	;turn on the right flags
+			aos i			;update state
+			caige i,4		;done ?
+			 jrst .-3		;no
+			jrst havall		;yes
+		ast:
+			point 7,[asciz /*>*.*;* /]
+			point 7,[asciz /*.*;* /]
+			point 7,[asciz /*;* /]
+			point 7,[asciz /* /]
+			point 7,[asciz / /]
+
+	; GET CONFIRMATION FROM USER NOW THAT WE HAVE ENTIRE INPUT
+		havall:
+			movei i,4
+			move b,enttyp		;we are done if not type 0 entry
+			came b,[-1]
+			 jrst havalr
+			skipge comflg		;have we seen a comma yet ?
+			 jrst haval0		;yes
+			call getup
+			cain b,"R"-100
+			 jrst [
+				typec cr
+				move b,[point 7,instr]
+				types
+				jrst havall ]
+			cain b,"?"		;help ?
+			 jrst [		;yes
+				typem <  CONFIRM WITH CARRIAGE RETURN OR COMMA >
+				jrst havall ]
+			cain b,","		;comma ?
+			 jrst [		;yes
+				setom comflg
+				jrst haval0 ]
+			caie b,"L"-100		;allow ^L also
+			cain b,cr		;eol ?
+			 jrst havalr		;yes
+			errout(,<  ???>)	;anything else is error at this time
+		haval0:
+			movei a,400000
+			rpcap
+			trne c,1b18+1b19	;enable wheel or operator ?
+			 jrst [		;yes
+				typem <
+!!>
+				jrst .+2 ]
+			typem <
+@@>
+			call getup		;get upper case input
+			cain b,"?"		;help ?
+			 jrst [		;yes
+				typem <
+  ALL
+  DELETED ONLY
+  UNDELETED ONLY
+  VERBOSE
+  EVERYTHING
+  DATES
+  TIMES AND DATES
+  PROTECTION>
+				TYPEM <
+  BEFORE
+  SINCE
+  DOUBLE SPACE
+  NO HEADING
+  REVERSE ORDER
+  OUTPUT TO FILE
+  LPT
+  CARRIAGE RETURN TO GO>
+				jrst haval0 ]
+			cain b,"A"		;all ?
+			 jrst [		;yes
+				typem <LL>
+				movei a,1	;set delflg appropriately
+				movem a,delflg
+				jrst haval0 ]
+			cain b,"B"		;before ?
+			 jrst [			;yes
+				typem <EFORE (DATE)  >
+				call getdat
+				jrst [
+					typem <  ???>
+					jrst haval0 ]
+				movem 2,bdate
+				jrst haval0 ]
+			cain b,"D"		;deleted, dates, or double space ?
+			 jrst [		;yes
+				call getup
+				cain b,"A"
+				 jrst [		;DATES
+					typem <TES>
+					hllos timdat
+					jrst haval0 ]
+				cain b,"E"
+				 jrst [		;DELETED ONLY
+					typem <LETED ONLY>
+					setom delflg	;set delflg appropriately
+					jrst haval0 ]
+				cain b,"O"
+				 jrst [		;DOUBLE SPACE
+					typem <UBLE SPACE>
+					setom double
+					jrst haval0 ]
+				errout(,<  ???>) ]
+			cain b,"E"
+			 jrst [		;EVERYTHING
+				typem <VERYTHING>
+				setom protect
+				setom timdat
+				jrst haval0 ]
+			cain b,"L"
+			 jrst [		;LPT
+				typem <PT>
+				movsi 1,(1b0+1b17)
+				hrroi 2,[asciz /LPT:/]
+				jrst havalp ]
+			cain b,"N"
+			 jrst [		;NO HEADING
+				typem <O HEADING>
+				setom heading
+				jrst haval0 ]
+			cain b,"P"
+			 jrst [		;PROTECTION
+				typem <ROTECTION>
+				setom protect
+				jrst haval0 ]
+			cain b,"R"		;reverse ?
+			 jrst [			;yes
+				typem <ERVERSE ORDER>
+				setom reverse
+				jrst haval0 ]
+			cain b,"S"		;since ?
+			 jrst [			;yes
+				typem <INCE (DATE)  >
+				call getdat
+				jrst [
+					typem <  ???>
+					jrst haval0 ]
+				movem 2,sdate
+				jrst haval0 ]
+			cain b,"T"
+			 jrst [		;TIMES AND DATES
+				typem <IMES AND DATES>
+				setom timdat
+				jrst haval0 ]
+			cain b,"U"
+			 jrst [		;UNDELETED ONLY
+				typem <NDELETED ONLY>
+				setzm delflg	;set delflg appropriately
+				jrst haval0 ]
+			cain b,"V"		;verbose ?
+			 jrst [			;yes
+				typem <ERBOSE>
+				setom protect
+				hllos timdat
+				hrrzs timdat
+				jrst haval0 ]
+			cain b,"O"
+			 jrst havalo		;OUTPUT TO FILE
+			caie b,"L"-100
+			cain b,cr		;eol or ^L ?
+			 jrst havalr		;yes
+			typem <  ???>
+			jrst haval0
+		getdat:
+			movei 1,100
+			movsi 2,(1b6)
+			idtnc
+			 ret
+			setz 4,
+			idcnv
+			 ret
+			aos 0(p)
+			ret
+		havalr:
+			move a,enttyp		;require confirmation for (un)delete
+			came a,[-2]
+			camn a,[-3]
+			 jrst [
+				typem <  [CONFIRM] >
+				chrin
+				cain b,37
+				 jrst .+1		;got it
+				errout(,<  ???>) ]
+			trne f,alldir+allfil+allext+allver
+			 ret
+			call find
+			 errout (,<that file not archived>)
+			ret
+		havalo:
+			typem <UTPUT TO FILE:  >
+			movsi 1,(1b0+1b3+1b4+3b17)
+			move 2,[100,,101]
+		havalp:
+			gtjfn
+			 jrst [
+				typem < ??? >
+				jrst haval0 ]
+			push p,1
+			move 2,[7b5+1b20]
+			openf
+			 jrst [
+				typem <  can't open the file>
+				pop p,1
+				jrst haval0 ]
+			pop p,intjfn
+			jrst haval0
+		getup:		;get upper case input
+			chrin
+			cail b,140
+			caile b,172
+			 ret
+			subi b,40
+			ret
+
+	; COLLECT STRING WITH EDITTING
+		repeat 0,<
+			accepts
+				a) append byte pointer
+				b) backup byte pointer
+					(dont backup past this pointer)
+				i)  current state
+			notes
+				will raise input
+				converts eol to one of the following two strings depending on whether or not the eol is the first significant character in the current field being colledted
+					first char - altmode
+					otherwise  - terminator altmode
+			returns
+				doesnt if rubout input
+				+1 otherwise with the following:
+					a) updated append pointer
+					trmchr) terminating character
+			terminating conditions
+				will always terminate on ^F or ALTMODE or a COMMA
+					neither of these characters are placed in the input string
+				other terminators depend on contents of i
+					i.E.0  -- right angle bracket or period
+					i.E.1  -- period
+					i.E.2  -- semi-colon
+					i.GE.3 -- space or comma
+			edittin characters
+				^A and/or ^H - backspace character
+				^R - retype entire input string
+				^W - backspace current field
+				^Q - backspace entire input string
+				rubout - abort
+			> ;end of repeat 0
+		colstr:
+			move c,a		;put where we can use it
+			push p,b		;save backup for later
+		colst1:
+			chrin			;get a character
+			cail b,140		;raise it
+			caile b,172
+			 caia
+			 subi b,40
+			cain b,cr		;convert eol to altmode
+			 jrst coleol
+			caie b,"A"-100	;^A or ^H ?
+			cain b,"H"-100
+			 jrst colbuc		;yes
+			cain b,rubout		;rubout
+			 errout(,<  XXX>)
+			cain b,"Q"-100	;^Q ?
+			 jrst [		;yes
+				typem <___ >
+				pop p,a		;cleanup stack
+				pop p,a
+				jrst alukup ]	;start over from the top
+			cain b,"W"-100	;^W ?
+			 jrst colbuw		;yes
+			cain b,"R"-100	;^R ?
+			 jrst [		;yes
+				typec cr		;get a new line
+				push p,c
+				move b,[point 7,instr]
+				types		;retype the line
+				pop p,c
+				jrst colst1 ]	;get next char
+			cain b,","		;comma ?
+			 jrst [		;yes
+				move 1,enttyp
+				camn 1,[-1]		;comma only valid for type -1
+				 jrst colret
+				errout (,<illegal use of comma>) ]
+			caie b,ctrlf		;^F or ALTMODE ?
+			cain b,esc
+			 jrst colret		;yes
+		coldpb:
+			idpb b,c		;put byte in string
+			jrst .+1(i)		;this a terminating char ?
+			 jrst [
+				caie b,">"		; > or . for i=0
+				cain b,"."
+				 jrst colret
+				jrst colst1 ]
+			 jrst [
+				cain b,"."		; . for i=1
+				 jrst colret
+				jrst colst1 ]
+			 jrst [
+				cain b,";"		; ; for i=2
+				 jrst colret
+				jrst colst1 ]
+			 jrst [
+				cain b," "		; space for i=3
+				 jrst colret
+				jrst colst1 ]
+			jrst colst1		;get next char
+		colret:
+			movem b,trmchr
+			pop p,a
+			move a,c
+			ret
+		coleol:
+			skipg eolflg		;this generated eol ?
+			 jrst [		;yes
+				movei b,esc
+				jrst colret ]
+			camn c,0(p)		;first char in field ?
+			 jrst [		;yes
+				movei b,esc
+				jrst colret ]
+			setom eolflg		;indicate we want generated eol next
+			jrst .+1(i)
+			 jrst colel2
+			 jrst [
+				movei b,"."
+				typec 0(b)
+				jrst coldpb ]
+			 jrst [
+				movei b,";"
+				typec 0(b)
+				jrst coldpb ]
+			 jrst [
+				aos eolflg
+				movei b," "
+				typec 0(b)
+				jrst coldpb ]
+		colel2:
+			ildb b,0(p)		;first char = < ?
+			caie b,"<"
+			 jrst [		;no, then pretend i=1
+				movei b,"."
+				typec 0(b)
+				jrst coldpb ]
+			ildb b,0(p)		;more chars after < ?
+			jumpe b,[		;no, then treat like esc
+				movei b,esc
+				jrst colret ]
+			movei b,">"		;yes, then terminate with >
+			typec 0(b)
+			jrst coldpb
+		colbuc:
+			hrrz a,c		;find out if anything to backup
+			hrrz b,0(p)
+			camle a,b
+			 jrst colbc1
+			ldb a,[point 6,c,5]
+			ldb b,[point 6,0(p),5]
+			caml a,b
+			 jrst [
+				typec bell
+				jrst colst1 ]
+		colbc1:
+			typec "\"
+			ldb b,c
+			typec 0(b)
+			setz b,
+			dpb b,c
+			move a,c
+			bkjfn
+			 errout(a,)
+			move c,a
+			jrst colst1
+		colbuw:
+			typec "_"
+			setz a,
+			move b,0(p)
+			idpb a,b
+			camge b,c
+			 jrst .-2
+			move c,0(p)
+			jrst colst1
+
+	; FIND FILE IN ARCHIVE DIRECTORY FOR NAME RECOGNITION PURPOSES
+		repeat 0,<
+			accepts
+				i) current state
+				tmptbl(0)-tmptbl(i) ) collected string byte pointers
+			returns
+				+1) file not found in archive directory
+				+2) file found and results as follows
+					a) string pointer to file name
+					b) string pointer to extension name
+					c) string pointer to version name
+					found bdb left mapped in
+			notes
+				will find first hit
+			> ;end of repeat 0
+		find:
+			move b,top		;point to start of chain
+			setzm jtemp		;not journal yet
+			trnn f,journl		;is it journal
+			 jrst find1		;nope
+			movei a,jtbl		;yup
+			movem a,jtemp		;set dir table pointer
+		find0:
+			skipe jtemp		;skip if not a journal dir
+			 jrst [
+				move a,@jtemp	;get a dir #
+				movem a,curdir
+				aos jtemp		;for next time
+				skipe a		;skip if not one there
+				 jrst [		;process this one
+					call chkdir	;go check and setup
+					 jrst find0
+					move b,top	;point to start of chain
+					jrst find1 ]
+				setzm jtemp	;turn off flag
+				ret ]		;take not found return
+		find1:
+			skipn	b		;skip if one to look at
+			 jrst [		;keep looking if journal
+				trne f,journl
+				 jrst find0
+				ret ]		;take not found return
+			call getbdb
+			 jrst [		;bad fdb, get next one
+				hrrz b,bdbext
+				jrst find1 ]
+		findf:			;check file name
+			move a,tmptbl+1	;point to collected filename
+			hrrz b,bdbctl		;point to bdb filename
+			add b,diradr
+			hrli b,(point 7,)
+			call strcmp		;compare the two strings
+			 jrst finde		;equal, go check extension
+			 jrst [		;not equal
+				hrrz b,bdbext	;go look at the next one
+				jrst find1 ]
+			 jrst .+1		;a is subset of b, check for recognition
+			caie i,1		;are we collecting filename now ?
+			 jrst [		;no, then subset is no good
+				hrrz b,bdbext	;go look at next one
+				jrst find1 ]
+		findr:			;success return
+			hrroi a,vstring	;convert version number to string
+			hlrz b,bdbver
+			movei c,^d10
+			nout
+			 errout(c,)
+			hrrz a,bdbctl		;return filename string pointer in a
+			add a,diradr
+			hrli a,(point 7,)
+			hlrz b,bdbext		;return extension name strng pnter in b
+			add b,diradr
+			hrli b,(point 7,)
+			move c,[point 7,vstring] ;return version name strng pntr in c
+			aos 0(p)		;skip return
+			ret
+		finde:			;check extension name
+			caig i,1		;got to extension yet ?
+			 jrst findr		;no, return this file
+			move a,tmptbl+2	;point to collected extension name
+			hlrz b,bdbext		;point to bdb extension name
+			add b,diradr
+			hrli b,(point 7,)
+			call strcmp		;compare the two strings
+			 jrst findv		;equal, go check version
+			 jrst [		;not equal
+				hrrz b,bdbext	;go look at the next one
+				jrst find1 ]
+			 jrst .+1		;a is subset of b, check for recognition
+			caie i,2		;are we collecting extension name now ?
+			 jrst [		;no, then subset is no good
+				hrrz b,bdbext	;go look at next one
+				jrst find1 ]
+			jrst findr		;yes, then we are done for now
+		findv:			;check version name
+			caig i,2		;got to version yet ?
+			 jrst findr		;no, return this file
+			hrroi a,vstring	;convert version number to string
+			hlrz b,bdbver
+			movei c,^d10
+			nout
+			 errout(c,)
+			move a,tmptbl+3	;point to collected version name
+			move b,[point 7,vstring] ;point to bdb version name
+			call strcmp		;compare the two strings
+			 jrst findr		;equal, give success return
+			 jrst [		;not equal
+				hrrz b,bdbext	;go look at the next one
+				jrst find1 ]
+			 jrst .+1		;a is subset of b, check for recognition
+			caie i,3		;are we collecting version name now ?
+			 jrst [		;no, then subset is no good
+				hrrz b,bdbext	;go look at next one
+				jrst find1 ]
+			jrst findr		;yes, then we are done for now
+		getbdb:			;get a bdb
+			move a,arcjfn
+			movem b,current
+			sfptr			;point to a bdb
+			 errout(a,)
+			movns c,b		;compute offset
+			addi b,page+1
+			movem b,diradr
+			move a,arcjfn
+			move b,[point 36,page]
+			movni c,13		;read bdb and string header
+			sin			;read a bdb and strings
+			hrrz c,0(b)		;pick up string length
+			movni c,0(c)		;make it neg
+			jumpe c,[ret]
+			sin
+			hrrz c,0(b)		;ext string now
+			movni c,-1(c)	
+			jumpe c,[ret]
+			sin
+			aos 0(p)
+			ret
+		strcmp:		;string compare routine
+			repeat 0,<
+				accepts
+					1) byte pointe
+					2) byte pointer
+				returns
+					+1 strings are identical
+					+2 strings are unequal
+					+3 string 1 is a subset of string 2
+				>
+			ildb 3,1
+			ildb 4,2
+			camn 3,4
+			 jrst [
+				jumpn 3,.-3
+				ret ]
+			aos 0(p)
+			jumpn 3,[ret]
+			aos 0(p)
+			ret
+
+	; CHECK IF ANY FILES ARCHIVED THIS DIRECTORY
+		chkdir:
+			skipn a,arcjfn
+			 closf
+			  jfcl
+			setzm arcjfn
+			hrroi 1,tstring	;this directory exists ?
+			movei 2,"<"
+			bout
+			hrrz 2,curdir
+		cdirst:
+			dirst
+			 ret			;no
+			movei 2,">"
+			bout
+			move 3,[point 7,[asciz /[archive-directory].;1/]]
+			ildb 2,3
+			idpb 2,1
+			jumpn 2,.-2
+			movsi 1,(1b2+1b17)	;get the archive directory
+			hrroi 2,tstring
+			gtjfn
+			 ret			;doesnt exist
+			movm 3,enttyp
+			movem 1,arcjfn
+			move 2,[xwd 440000,201000] ;read, thawed
+			caie 3,2
+			cain 3,3		;read, write for (un)delete entries
+			 move 2,[xwd 440000,300000]
+			openf
+			 errout(a,)
+			move a,arcjfn
+			bin			;bypass free storage pointer
+			bin			;get chain pointer
+			skipn b		;skip if any this dir
+			 ret			;take none exit
+			hlrzm b,bottom		;save for reverse order lists
+			hrrz b,b
+			movem b,top		;save as top of chain
+			move a,arcjfn
+			sfptr			;set file pointer
+			 errout(a,)
+			aos 0(p)
+			ret
+
+; PRINT A BDB
+	pntbdb:
+		aos icount		;count number of bdb printed
+		skipn timdat		;printing times and/or dates ?
+		 jrst pntbd1		;no, then no heading
+		skipe heading		;print heading ?
+		 jrst pntbd1		;no
+		itypm <     >		;this is the heading
+		skipge timdat		;times and dates
+		 itypm <          TAPE 1                        TAPE 2>
+		skipl timdat		;dates
+		 itypm <      TAPE 1               TAPE 2>
+		itypc cr		;finish heading
+		skipge double		;extra cr if double spacing
+		 itypc cr
+	pntbd1:
+		setom heading		;indicate heading already typed
+		itypm <  >		;2 blanks
+		hrroi a,tstring
+		hrrz b,curdir
+		dirst
+		 errout(a,)
+		itypc "<"
+		hrroi b,tstring
+		ityps			;directory
+		itypc ">"
+		hrrz b,bdbctl
+		add b,diradr
+		hrli b,(point 7,)
+		ityps			;filename
+		itypc "."
+		hlrz b,bdbext
+		add b,diradr
+		hrli b,(point 7,)
+		ityps			;extension name
+		movei b,";"
+		itypc 0(b)
+		hlrz b,bdbver
+		movei c,^d10
+		call pntnum
+		movm a,enttyp		;stop here for (un)delete and
+		caile a,1		;  return usw requests
+		 ret
+		skipl protect		;print protection ?
+		 jrst pntbd2		;no
+		movei b,";"
+		itypc 0(b)
+		itypc "P"
+		hlrz 2,bdbprt		;get protection
+		cain 2,500000		;string protection ?
+		 jrst [			;no
+			hrrz 2,bdbprt
+			movei 3,^d8
+			call pntnum
+			jrst pntbd2 ]
+		itypm <FANCY PROTECTION>
+	pntbd2:
+	pntbd3:
+		skipe timdat	;if times and/or dates then start fresh line
+		 itypc cr
+		skipe timdat
+		 itypm <     >
+		skipn timdat	;otherwise print proper message
+		 itypm <  archived on tapes  >
+		hlrz b,bdbadr		;print first tape number
+		call pntadr
+		skipn timdat
+		 itypm <  and  >
+		move b,bdbad1		;maybe print time and date of 1 tape
+		call pnttim
+		skipe timdat
+		 itypm <    >
+		hrrz b,bdbadr		;print second tape number
+		call pntadr
+		move b,bdbad2		;maybe print time and date of 2 tape
+		call pnttim
+		itypc cr
+		skipe double		;2 CRs if double spacing
+		 itypc cr
+		ret
+
+	pntadr:
+		movei c,^d10
+		skipe timdat
+		 hrli c,(1b2+1b4+1b5+6b17)
+		call pntnum
+		ret
+
+	pntnum:
+		hrroi a,tstring
+		nout
+		 errout(c,)
+		hrroi b,tstring
+		ityps
+		ret
+
+	pnttim:
+		skipn timdat
+		 ret
+		push p,b
+		itypm <  >
+		pop p,b
+		hrroi a,tstring
+		movsi c,(1b9)
+		skipge timdat
+		 setz c,
+		odtim
+		hrroi b,tstring
+		ityps
+		ret
+
+; (UN)DELETE A BDB
+	delbdb:
+		move a,arcjfn
+		move b,current
+		aos b			;point to bdbctl word
+		sfptr
+		 errout(a,)
+		movm 3,enttyp
+		move b,bdbctl		;get bdbctl word
+		tlz b,bdbdel		;undelete the file
+		cain 3,2
+		 tlo b,bdbdel		;now delete it if so requested
+		bout			;update the file
+		ret
+
+
+; GET USER SETTABLE WORD
+	getusw:
+		move 0,bdbusw
+		ret
+
+; MAKE RETREIVE REQUEST
+	rtmsg:
+		hrroi	a,reqstr	;build string for output
+		movei	b,cr		;new line
+		bout
+		seto	b,		;current time and date
+		setz	c,		;use standard form
+		odtim
+		hrroi	b,[asciz /
+    archive retrieval request for file:</]
+		setz	c,
+		sout
+		move	b,curdir	;use dir selected
+		dirst
+		 errout(a,)
+		movei	b,">"
+		bout
+		hrro	b,bdbctl	;get fil name ptr
+		add	b,diradr
+		setz	c,
+		sout
+		movei	b,"."
+		bout
+		hlro	b,bdbext	;get ext ptr
+		add	b,diradr
+		sout
+		movei	b,";"
+		bout
+		hlrz	b,bdbver	;get version #
+		movei	c,^d10
+		nout
+		 errout(c,)
+		hrroi	b,[asciz /
+    file is archived on arc tape nos. /]
+		setz	c,
+		sout
+		hlrz	b,bdbadr	;get 1st tape #
+		movei	c,^d10
+		nout
+		 errout(c,)
+		hrroi	b,[asciz / & /]
+		setz	c,
+		sout
+		hrrz	b,bdbadr	;get 2nd tape#
+		movei	c,^d10
+		nout
+		 errout(c,)
+		hrroi	b,[asciz /
+    by user </]
+		setz	c,
+		sout
+		push	p,a		;save string pointer
+		gjinf			;get job information
+		move	b,a		;move login dir
+		pop	p,a
+		push	p,4		;save tty #
+		push	p,c		;save job #
+		dirst	
+		 errout(a,)
+		hrroi	b,[asciz />  tss job# /]
+		setz	c,
+		sout
+		pop	p,b		;get job # back
+		movei	c,^d10		;decimal
+		nout	
+		 errout(c,)
+		hrroi	b,[asciz /, tty /]
+		setz	c,
+		sout
+		pop	p,b		;get tty back
+		movei	c,10		;octal
+		nout
+		 errout(c,)
+		movei	b,37		;new line
+		bout
+		setzm reqflg		;request not made yet
+		movsi	a,400001
+		hrroi	b,[asciz /<archive>retrieve-requests.txt;1/]
+		gtjfn
+		 jrst rtmsg0		;ignore error
+		movem	a,buljfn
+		move	b,[xwd 070000,123000] ;7 bits write,append,thawed & wait
+		openf
+		 jrst [
+			move a,buljfn		;release jfn and exit
+			rljfn
+			 errout(a,)
+			jrst rtmsg0 ]
+		hrroi	b,reqstr	;string
+		setz	c,
+		sout
+		move	a,buljfn
+		closf
+		 errout(a,)
+		aos reqflg		;indicate request made
+	rtmsg0:
+		setom asnflg		;flag to try 3 times
+		movei a,logtty		;output to logger
+		asnd			;try to get logtty
+		 jrst [
+			skiple asnflg
+			 jrst noasn
+			aos asnflg
+			movei 1,^d2000		;try again in 2 seconds
+			disms
+			jrst .-2 ]
+		hrroi	b,reqstr	;string
+		setz	c,
+		sout
+		movei a,logtty		;now deassign logtty
+		reld
+		 errout(a,)
+		aos reqflg		;indicate request made
+	noasn:
+		skipn reqflg		;request made ?
+		 aos 0(p)
+		ret
+
+; FIND BDBs FOR GROUP INTERROGATES
+
+		repeat 0,<
+			accepts
+				tmptbl(0)-tmptbl(i) ) collected string byte pointers
+			returns
+				+1) file not found in archive directory
+				+2) file found and results as follows
+					found bdb left mapped in
+			ifndf finds the first file for interrogates
+				it does not return if no file found
+			ifndn finds successive files and returns +1 or +2 as above
+			> ;end of repeat 0
+		ifndf:
+			skipe reverse
+			 jrst .+3
+			trnn f,alldir+allfil+allext+allver
+			 ret			;no stars, bdb already mapped then
+			move b,top		;point to start of chain
+			skipe reverse
+			 move b,bottom
+			trne f,alldir
+			 jrst [
+				 call ifind0
+				  errout(,<that file not archived>)
+				ret ]
+			trnn f,journl
+			 jrst [
+				move b,top
+				skipe reverse
+				 move b,bottom
+				call ifind1
+				  errout(,<that file not archived>)
+				ret ]
+			movei a,jtbl
+			movem a,jtemp
+			call ifind0
+			  errout(,<that file not archived>)
+			ret
+		ifndn:
+			hrrz b,bdbext
+			skipe reverse
+			 hrrz b,bdbver
+			jrst ifind1
+		ifind0:
+			skipe jtemp		;skip if not a journal dir
+			 jrst [
+				move a,@jtemp	;get a dir #
+				movem a,curdir
+				aos jtemp		;for next time
+				skipe a		;skip if not one there
+				 jrst [		;process this one
+					call chkdir	;go check and setup
+					 jrst ifind0
+					move b,top	;point to start of chain
+					skipe reverse
+					 move b,bottom
+					jrst ifind1 ]
+				setzm jtemp	;turn off flag
+				ret ]		;take not found return
+			trnn f,alldir		;* for directory ?
+			 ret			;no
+			aos a,curdir		;look at next directory
+			cail a,1000		;  if it exists
+			 ret
+			call chkdir
+			 jrst ifind0
+			move b,top
+			skipe reverse
+			 move b,bottom
+		ifind1:
+			skipn	b		;skip if one to look at
+			 jrst [		;keep looking if journal
+				trne f,journl+alldir
+				 jrst ifind0
+				ret ]		;take not found return
+			call getbdb
+			 jrst [		;bad fdb, get next one
+				hrrz b,bdbext
+				skipe reverse
+				 hrrz b,bdbver
+				jrst ifind1 ]
+		ifindf:			;check file name
+			call chkdel		;this file have proper deletion state ?
+			 jrst [		;no, go get next one
+				hrrz b,bdbext
+				skipe reverse
+				 hrrz b,bdbver
+				jrst ifind1 ]
+			trne f,allfil		;* for file name ?
+			 jrst ifinde		;yes
+			move a,tmptbl+1	;point to collected filename
+			hrrz b,bdbctl		;point to bdb filename
+			add b,diradr
+			hrli b,(point 7,)
+			call strcmp		;compare the two strings
+			 jrst ifinde		;equal, go check extension
+			 jfcl			;not equal
+			 jrst [		;  or a subset,  then
+				hrrz b,bdbext	;go look at the next one
+				skipe reverse
+				 hrrz b,bdbver
+				jrst ifind1 ]
+		ifinde:			;check extension name
+			trne f,allext		;* for extension name ?
+			 jrst ifindv		;yes
+			move a,tmptbl+2	;point to collected extension name
+			hlrz b,bdbext		;point to bdb extension name
+			add b,diradr
+			hrli b,(point 7,)
+			call strcmp		;compare the two strings
+			 jrst ifindv		;equal, go check version
+			 jfcl			;not equal
+			 jrst [		;  or a subset,  then
+				hrrz b,bdbext	;go look at the next one
+				skipe reverse
+				 hrrz b,bdbver
+				jrst ifind1 ]
+		ifindv:			;check version name
+			trne f,allver		;* for version number ?
+			 jrst ifindr		;yes
+			hrroi a,vstring	;convert version number to string
+			hlrz b,bdbver
+			movei c,^d10
+			nout
+			 errout(c,)
+			move a,tmptbl+3	;point to collected version name
+			move b,[point 7,vstring] ;point to bdb version name
+			call strcmp		;compare the two strings
+			 jrst ifindr		;equal, give success return
+			 jfcl			;not equal
+			 jrst [		;  or a subset,  then
+				hrrz b,bdbext	;go look at the next one
+				skipe reverse
+				 hrrz b,bdbver
+				jrst ifind1 ]
+		ifindr:			;success return
+			move a,enttyp
+			caie a,1		;retreive request ?
+			cain a,4		;return usw request ?
+			 jrst .+3		;no
+			aos 0(p)		;yes, skip return
+			ret
+			hrroi a,trstring	;kludge to only get most recent
+			hrrz b,curdir		;  version for retreive requests
+			movei 3,^d8		;  and return usw requests
+			nout
+			 errout(c,)
+			hrrz b,bdbctl
+			add b,diradr
+			hrli b,(point 7,)
+			setz c,
+			sout
+			hlrz b,bdbext
+			add b,diradr
+			hrli b,(point 7,)
+			sout
+			move 1,[point 7,trstring]
+			move 2,[point 7,cmstring]
+			call strcmp
+			 jrst [
+				hrrz b,bdbext
+				jrst ifind1 ]
+			 jfcl
+			aos 0(p)
+			ret
+		chkdel:			;check for proper deletion status
+			move 1,delflg
+			jrst .+2(1)
+			 jrst [		;should be deleted
+				hlrz a,bdbctl
+				trne a,bdbdel
+				 jrst chkdl1
+				ret ]
+			 jrst [		;should not be deleted
+				hlrz a,bdbctl
+				trnn a,bdbdel
+				jrst chkdl1
+				ret ]
+		chkdl1:
+			move a,bdbad2		;time and date of second archive
+			camge a,sdate		;make sure in right range
+			 ret
+			camle a,bdate
+			 ret
+			aos 0(p)		;everything is cool
+			ret
+
+; I/O UTILITY ROUTINES
+	typchr:		;type character in b
+		skipn a,msgjfn
+		 ret
+		bout
+		ret
+	typmsg:		;type string in b
+		skipn a,msgjfn
+		 ret
+		setz c,
+		sout
+		ret
+	itypchr:		;interrogate type char in b
+		skipn a,intjfn
+		 ret
+		bout
+		ret
+	itypmsg:		;interrogate type string in b
+		skipn a,intjfn
+		 ret
+		setz c,
+		sout
+		ret
+	charin:		;read a char
+		aosg eolflg	;should we generate artificial eol ?
+		 jrst [		;yes
+			movei b,cr
+			ret ]
+		skipge enttyp
+		 jrst [
+			push p,3
+			movei 1,100
+			rfcoc
+			push p,2
+			push p,3
+			setzb 2,3
+			sfcoc
+			bin
+			movem 2,tempc
+			pop p,3
+			pop p,2
+			sfcoc
+			pop p,3
+			move 2,tempc
+			ret ]
+		skipn 2,bytinp
+		 caia
+		ildb 2,bytinp
+		jumpn 2,[ret]
+		setzm bytinp
+		movei 2,cr
+		ret
+
+; KLUDGE TO TURN OFF ALL DELETED BITS IN BDBs (BSYS BUG)
+	zero:
+		move p,[iowd stackl,stack]
+		movsi 1,1		;get the archive directory
+		hrroi 2,[asciz /<archive>archive-directory./]
+		gtjfn
+		 errout(a,)
+		movem 1,arcjfn
+		move 2,[xwd 440000,301000] ;read, write, thawed
+		openf
+		 errout(a,)
+		move 1,[jfcl]		;make chkdir work for us
+		movem 1,cdirst
+		movem 1,cdirst+1
+		setzm curdir
+	zloop:
+		aos 1,curdir
+		cail 1,1000
+		 jrst [
+			seto 1,
+			closf
+			 jfcl
+			seto 1,
+			rljfn
+			 jfcl
+			haltf ]
+		call chkdir
+		 jrst zloop
+		move b,top
+	zloop1:
+		skipn b
+		 jrst zloop
+		push p,b
+		call getbdb
+		 jfcl
+		pop p,b
+		addi b,1
+		move a,arcjfn
+		sfptr
+		 jfcl
+		move b,bdbctl
+		tlz b,bdbdel
+		bout
+		hrrz b,bdbext
+		jrst zloop1
+; CONSTANTS, VARIABLES AND JUNK
+	; MISC TEMPS AND STUFF
+		TMPTBL:
+			POINT 7,TMPDIR
+			POINT 7,TMPFIL
+			POINT 7,TMPEXT
+			POINT 7,TMPVER
+			POINT 7,TRASH
+			POINT 7,TRASH
+			TRASH:	BLOCK 10
+			TMPDIR:	BLOCK 10
+			TMPFIL:	BLOCK 10
+			TMPEXT:	BLOCK 10
+			TMPVER:	BLOCK 10
+			TMPEND:	0
+		ALLDIR==100000	;"*" SEEN FOR DIR 
+		ALLFIL==40000	;"*" SEEN FOR FILE NAME
+		ALLEXT==20000	;"*" SEEN FOR EXTENSION
+		ALLVER==10000	;"*" SEEN FOR VERSION
+		JOURNL==1000	;this is a journal directory flag
+		ALLTBL:
+			ALLDIR
+			ALLFIL
+			ALLEXT
+			ALLVER
+			0
+			0
+			0
+		arcjfn:	block 1
+		asnflg:	block 1
+		cmstring:	block 30
+		trstring:	block 30
+		buljfn:	block 1
+		eolflg:	block 1
+		bytinp:	block 1
+		comflg:	block 1
+		curdir:	block 1
+		current:	block 1
+		reverse:	block 1
+		sdate:	block 1	;since date
+		bdate:	block 1	;before date
+		protect:	block 1	;print protection if -1
+		double:	block 1	;double space if -1
+		heading:	block 1	;print heading if 0 and timdat # 0
+		timdat:	block 1	;print times and dates if -1
+			;		print dates only if 0,,-1
+		delflg:	block 1
+			; -1 for deleted files only
+			;  0 for undeleted files only
+			;  1 for both deleted and undeleted files
+		diradr:	block 1
+		enttyp:	block 1
+			; -3 for undelete normal entry
+			; -2 for delete normal entry
+			; -1 for normal entry
+			;  0 for interrogate entry
+			;  1 for retrieve entry
+			;  2 for delete alternate entry
+			;  3 for undelete alternate entry
+			;  4 for return user settable word entry
+		errnum:	block 1
+		icount:	block 1
+		ifstrng:	block 20
+		intjfn:	block 1
+		jtemp:	block 1
+		msgjfn:	block 1
+		reqflg:	block 1
+		stackl==100
+		stack:	block stackl
+		temp:	block 1
+		temp1:	block 1
+		temp2:	block 1
+		tempc:	block 1
+		vstring:	block 10
+		tstring:	block 20
+		instr:	block 20
+		reqstr:	block 100
+		top:	block 1
+		bottom:	block 1
+		trmchr:	block 1
+
+	; TABLE OF JOURNAL DIRECTORY NUMBERS
+		JTBL:
+			36	;JOURNAL
+			226	;MJOURNAL
+			211	;LJOURNAL
+			205	;KJOURNAL
+			173	;JJOURNAL
+			167	;IJOURNAL
+			163	;HJOURNAL
+			156	;GJOURNAL
+			60	;FJOURNAL
+			137	;EJOURNAL
+			134	;DJOURNAL
+			123	;CJOURNAL
+			71	;BJOURNAL
+			65	;AJOURNAL
+			0
+			BLOCK	10	;PATCH SPACE FOR MORE DIR #'S
+
+	; do not alter order of stuff from here on (or you'll be sorry) 
+		page:			;bdb and strings go here
+	; description of archive directory
+		repeat 0,<
+			purpose:
+				 This file is a directory of all archived files. It is built by BSYS at archive marking time and is used by the EXEC command INTERROGATE to "lookup" archived files..
+			format:
+				 The file is binary and consists of three parts.
+					a reserved block (100 decimal words)
+					string pointers:
+						1000 octal words used as pointers to the start and end of each BDB (backup descriptor block) chain.
+					free storage area:
+						contains BDB's and strings assosiated with archived file.
+			>
+		; Backup (file) Directory Block(BDB) definition
+			BLOCK 1		;The header (not referenced symbolically)
+			BDBCTL: BLOCK 1	;LH = Control bits (see below)
+							;RH = Pointer to file name block
+			BDBEXT: BLOCK 1	;LH = Pointer to extention string
+							;RH = Pointer to next bdb
+			BDBADR: BLOCK 1	;LH = Tape # of 1st archive
+							;RH = Tape # of 2nd archive
+			BDBPRT: BLOCK 1	;File protection word
+			BDBAD1: BLOCK 1	;Time and date of 1st archive
+			BDBAD2: BLOCK 1	;Time and date of 2nd archive
+			BDBVER: BLOCK 1	;LH = Version number
+							;RH = Pointer to previous bdb
+			BDBACT: BLOCK 1	;Account info for charging
+							;+ For location of string
+							;- For number
+			BDBUSW:: BLOCK 1	;User settable word
+			BDBLEN:
+				BLOCK 100	;directory strings go here
+		; Bits in LH of BDBCTL (primarily for FDB compatibility)
+			BDBTMP==400000		;File is temporary
+			BDBPRM==200000		;File is permanent
+			BDBNEX==100000		;No extension for this bdb yet
+							;(File does not exist yet)
+			BDBDEL==040000		;File is deleted (bdb too)
+			BDBNXF==020000		;First write not complete
+							;(File does not exist yet)
+			BDBLNG==010000		;Long file
+			BDBSHT==004000		;Compressed page table
+
+end start

@@ -1,0 +1,286 @@
+	TITLE	CHGACC	change old num accounts to default str accounts
+	SEARCH	STENEX,BSYS
+
+;	fits into BSYS, uses UNIVERSAL BSYS for symbols
+
+	OPDEF RET [POPJ P,]
+
+;	local storage
+UACFRK:	0		;UACHK fork handle goes here
+
+UACACT:			;AC's to pass to UACHK
+ACDRST:	BLOCK 10	;Directory name kept here, as first UACHK parameter
+ACCSTR:	BLOCK 10	;file account put here, as second UACHK parameter
+
+UACACS:	BLOCK 20	;UACHK AC's returned here
+
+ACCDFA:	BLOCK 10	;Directory default account goes here
+
+EVER:	BLOCK 1		;Long GTJFN E block, version goes here
+	XWD 377777,377777 ;no input/output JFN
+	0		;DSK: device
+EDIR:	BLOCK 1		;directory
+ENAM:	BLOCK 1		;name
+EEXT:	BLOCK 1		;extent
+	BLOCK 3		;rest of E block
+
+THSJFN:	BLOCK 1		;current file JFN goes here
+	SUBTTL	ACCDIR - new directory time stuff
+
+;	called when the scan changes to a new directory, use following code:
+;	MOVE 1,SYMBOT
+;	ADDI 1,DIRECT+1		;(CHECK called after SYMPTR aos'd)
+;	CAMN 1,SYMPTR		;is this the first file of a directory?
+;	 CALL CHGDIR		;yes, do directory initialization stuff
+
+ACCDIR:	HRROI 1,ACDRST		;get directory name string for this directory
+	MOVE 2,CURDIR
+	DIRST
+	 ERR <ACCDIR: no-existent directory no.>
+
+	MOVE 1,LSTJFN		;tell world about new dir
+	HRROI 2,ACDRST
+	SETZ 3,
+	SOUT
+
+	MOVEI 2,0		;say get default account
+	CALL RUNUAC		;run UACHK
+
+	LDB 1,[POINT 3,UACACS+2,2] ;check for numeric account
+	CAIN 1,5
+	 ERR <ACCDIR: default numeric account>
+
+	HRLI 2,(POINT 7,0)	;set up pointer to default account string
+	HRR 2,UACACS+2		;pointer in UACHK's AC2
+	ADDI 2,UACACS		;make a pointer to our copy of UACHK's AC's
+
+	MOVE 1,[POINT 7,ACCDFA]	;set up pointer to where we will keep default
+				;account string
+
+	ILDB 3,2		;transfer string there
+	IDPB 3,1
+	JUMPN 3,.-2
+
+	MOVE 1,LSTJFN		;tell world about default account
+	HRROI 2,[ASCIZ /, default accout is /]
+	SETZ 3,
+	SOUT
+
+	HRROI 2,ACCDFA
+	SETZ 3,
+	SOUT
+
+	MOVEI 2,37
+	BOUT
+
+	RET			;through
+	SUBTTL	ACCFIL - check account of file
+
+;	checks the account of a file, if numeric or not acceptable
+;	string account, sets to default account for that directory
+
+DOACC:	SKIPN CNTFDB		;new directory?
+	 CALL ACCDIR
+	AOS CNTFDB		;count all fdb's
+
+	MOVE 4,CVF		;current FDB pointer
+	ADD 4,DIRADR		;make real
+
+	MOVE 2,FDBCTL(4)	;get file FDB bits
+	TLNE 2,(1B2+1B4)	;ignore no-ext or non-existant files
+	 RET
+
+	MOVE 2,FDBACT(4)	;get account word
+	JUMPLE 2,DOACC1		;if numeric, go set to default
+
+	ADD 2,DIRADR		;make address real
+	HLRZ 1,(2)		;get block type
+	CAIE 1,-1		;account string type?
+	 ERR <DOACC: illegal account string>
+	ADDI 2,2		;increment to point to string
+	HRLI 2,(POINT 7,0)	;make into pointer
+
+	MOVE 1,[POINT 7,ACCSTR] ;set up pointer to UACHK parameter area
+
+	ILDB 3,2		;transfer string there
+	IDPB 3,1
+	JUMPN 3,.-2
+
+	MOVEI 2,2		;say verify string account
+	CALL RUNUAC		;go run UACHK
+	SKIPN UACACS+1		;account ok?
+	 RET			;yes
+
+DOACC1:	MOVE 1,[POINT 7,ACDRST]	;set up directory name for GTJFN
+	MOVEM 1,EDIR
+
+	HRR 2,FDBCTL(4)		;set up file name for GTJFN
+	ADD 2,DIRADR		;make real
+	HLRZ 1,(2)		;check block type
+	CAIE 1,400001		;name block?
+	 ERR <DOACC: illegal name string>
+	AOJ 2,			;increment to point  to string
+	HRLI 2,(POINT 7,0)	;make into ildb pointer
+	MOVEM 2,ENAM		;save for GTJFN
+	
+	HLR 2,FDBEXT(4)		;set up extension for GTJFN
+	ADD 2,DIRADR		;make real
+	HLRZ 1,(2)		;check block type
+	CAIE 1,400002		;extent block?
+	 ERR <DOACC: illegal extent string>
+	AOJ 2,			;increment to point to string
+	HRLI 2,(POINT 7,0)	;make into ILDB pointer
+	MOVEM 2,EEXT		;save for GTJFN
+
+	HLR 1,FDBVER(4)		;set up version #
+	HRLI 1,(1B2+1B8)	;old files only, deleted ok
+	MOVEM 1,EVER
+
+	MOVEI 1,EVER		;set up for GTJFN
+	SETZ 2,
+	GTJFN			;GTJFN for CVF, current file
+	 JRST DOACC9		;go process  GTJFN error
+
+	MOVEM 1,THSJFN		;save jfn for this file
+
+	MOVE 1,LSTJFN		;tell people which files we're changing
+	HRROI 2,[ASCIZ /     /]
+	SETZ 3,
+	SOUT
+
+	MOVE 2,THSJFN
+	MOVE 3,[XWD 001110,100001] ;full name with account
+	JFNS
+	
+	HRROI 2,[ASCIZ / to ;A/]
+	SETZ 3,
+	SOUT
+
+	MOVE 1,THSJFN
+	HRROI 2,ACCDFA		;set up default account string pointer
+	SACTF			;set account string
+	 ERR <DOACC: SACTF failure>
+
+	RLJFN			;close the get
+	 ERR <DOACC: RLJFN failure>
+
+	MOVE 1,LSTJFN		;finish telling people about the change
+	HRROI 2,ACCDFA
+	SETZ 3,
+	SOUT
+
+	MOVEI 2,37		;and start a new line for the next one
+	BOUT
+
+	AOS FLCNT		;count number of changed files
+
+	RET
+	SUBTTL	DOACC GTJFN error reporter
+
+DOACC9:	MOVE 1,LSTJFN		;tell world about bad file 
+	HRLO 2,400000		;last error in this fork
+	ERSTR
+	 JRST	[ERRR <ERSTR: undefined error #, continuing>
+		JRST DOACC8]
+	 JRST	[ERRR <ERSTR: illegal parameter, continuing>
+		JRST DOACC8]
+
+DOACC8:	MOVE 1,LSTJFN
+	HRROI 2,[ASCIZ / on file: </]
+	SETZ 3,
+	SOUT
+
+	MOVE 2,EDIR		;type dir  name
+	SETZ 3,
+	SOUT
+		
+	MOVEI 2,">"
+	BOUT
+
+	MOVE 2,ENAM		;type file name
+	SETZ 3,
+	SOUT
+
+	MOVEI 2,"."
+	BOUT
+
+	MOVE 2,EEXT		;type extent name
+	SETZ 3,
+	SOUT
+
+	MOVEI 2,";"
+	BOUT
+
+	HRRZ 2,EVER
+	MOVEI 3,^D10
+	NOUT
+	 ERR <DOACC: NOUT error>
+
+	HRROI 2,[ASCIZ /;A/]
+	SETZ 3,
+	SOUT			;type account string
+
+	HRROI 2,ACCSTR
+	SETZ 3,
+	SOUT
+
+	HRROI 2,[ASCIZ /, continuing
+/]
+	SETZ 3,
+	SOUT
+
+	RET
+	SUBTTL	GETUAC - set up UACHK fork
+
+GETUAC:	MOVSI 1,1		;set up for UACHK JFN
+	HRROI 2,[ASCIZ /<SYSTEM>UACHK.SAV/]
+	GTJFN		
+	 ERR <GETUAC: GTJFN on UACHK.SAV on SYSTEM failed>
+	PUSH P,1
+
+	MOVSI 1,(1B1)		;set up for UACHK fork, give same capabilities
+	CFORK
+	 ERR <GETUAC: CFORK failed>
+	MOVEM 1,UACFRK		;save fork handle
+
+	MOVSS 1			;set up to GET UACHK
+	HRR 1,(P)		;get JFN from stack
+	GET
+
+	POP P,1			;restore PDL
+	CLOSF			;release JFN
+	 ERR <GETUAC: CLOSF failed>
+
+	MOVE 1,UACFRK		;return fork handle
+	RET
+	SUBTTL	RUNUAC - runs UACHK to get default account, check accounts
+
+;	entry vector in AC2, 0 means get default account, 1 means check
+;	string account
+
+RUNUAC:	PUSH P,2		;save the entry vector
+
+	SKIPN 1,UACFRK		;do we have a UACHK fork?
+	 CALL GETUAC		;no, go get one
+
+	HRRZI 2,UACACT		;account string for this directory
+	SFACS	
+
+	POP P,2			;get the entry vector
+	SFRKV			;start the fork
+
+	WFORK			;wait for fork to finish
+
+	HRRZI 2,UACACS		;get return arguments from check fork
+	RFACS
+
+	RFSTS			;get fork termination status
+	TLZ 1,(1B0)		;ignore frozen bitt
+	CAME 1,[XWD 2,0]	;termination ok?
+	 ERR <ACCDIR: bad UACHK termination>
+
+	SKIPLE UACACS+1		;check AC1 for UACHK errors
+	 ERR <ACCDIR: UACHK errors>
+
+	RET			;through
+	END

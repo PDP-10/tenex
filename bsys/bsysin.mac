@@ -1,0 +1,267 @@
+TITLE BSYSIN  INITIALIZATION AND COMMAND INPUT/DECODE
+
+;******************************************************
+;  linkage to other modules
+;******************************************************
+
+
+;	output to (BSYS,BSYSIN.MAC,) with (WALLACE,FILTER,)
+
+	search	stenex,bsys
+intern	entry,entry0,entry2,clenup,klenup,listen,getcmd,cmdtbl
+extern	cuuo,ulkdir,unmap,error,edit,cntrl
+extern	chntab,levtab
+
+;******************************************************
+;  "ENTRY"	do program initialization
+;******************************************************
+
+start:			;start is ok too
+entry:
+	gtad			;check if system TOD set, if not set it
+	aojn	a,entry0	;if set go on
+	typen	<Enter Date and Time as MM/DD/YY HH:MM: >
+	move	a,[point 7,instr]
+	call	edit
+		jrst	entry
+	hrroi	a,instr
+	setz	b,
+	idtim
+	 jrst	[typem < ?>
+		jrst	entry]
+	move	a,2
+	stad
+	 jrst	[typem < ?>
+		jrst	entry]
+entry0:
+	reset			;clear the world
+entry1:
+	setzm	page		;bull shit to make pages private
+	setzm	tphdr		;so tape i/o can read into it@*#%$&'"*
+	setzm	blkno
+	setzm	mountd		;clear mounted dir flag
+	hrrzi	a,101		;primary output
+	rfmod
+	ori	b,070000	;ensure byte wakeup
+	sfmod
+	; setup interrupt system for disc errors
+	movei	a,400000	;this fork
+	move	b,[xwd levtab,chntab]
+	sir			;set dispatches
+	setzm	ctrlc		;set flag also
+	movsi	a,^d23		;set ^w on channel 0
+	ati
+	movsi	b,(1b0+1b11)	;set to activate channel(s)
+	movem	b,psichn	;save for ^c stuff
+	aic
+	eir			;enable interrupts
+entry2:
+	move	p,pdp		;load push down pointer
+	move	a,[call cuuo]	;setup uuo dispatch
+	movem	a,41
+	move	a,[sixbit /BSYS/]
+	setnm			;set name to "bsys"
+	gjinf			;get connected directory
+	movem	b,condir	;save it
+	movem	c,jobno		;save job number too
+	skipn	jobno		;job zero?
+	jrst	[typen	<File System Verify In Progress>
+		movsi	f,verbit	;yes, setup and do a verify
+		setzm	disk
+		setzm	errors
+		setzm	curdir		;start with "system"
+		call	cntrl		;go run the maze
+		call	klenup
+		typen	<Verify Complete>
+		movsi	a,(1B2)
+		movsi	b,(1B2)
+		skipe	errors
+		smon
+		move	a,condir
+		cndir
+			jsr	error
+		jrst	.exit]		;get out and quit
+herald:
+	typen	<TENEX-BSYS   2.06  3-APR-74>	;tell him he has bsys
+	typec	cr
+	jrst	listen		;go accept commands
+
+
+;******************************************************
+;  "CLENUP"	clean up routine 
+;******************************************************
+
+clenup:
+	call 	klenup
+	jrst	listen
+klenup:
+	skipe	locked		;if directory locked,
+	jrst	[movei	a,direxl	;expunge lock
+		call	ulkdir		;go unlock it!!
+		jrst	.+1]
+	movei	b,direct/1000	;set to unmap "direct"
+	call	unmap		;go do it
+	seto	a,
+	movei	b,page/1000	;unmap "page"
+	hrli	b,400000	;this fork
+	pmap
+	skipe	mountd		;skip if no tape mounted
+	popj	p,0		;exit if yes
+	movei	b,tdrect/1000	;set to unmap "tdrect"
+	call	unmap
+	move	a,tdrjfn	;1st close file
+	jumpe	a,klenu2	;quit if gone already
+	hrli	a,400000	;don't release jfn
+	closf
+	  jsr 	error
+	move	a,tdrjfn	;load tape directory jfn
+	delf			;delete this temporary file
+	  jsr	error
+klenu2:
+	popj	p,0		;return
+
+
+;******************************************************
+;  "LISTEN"	output id and accept bsys commands
+;******************************************************
+
+listen:
+	skipe	mountd		;skip if tape not mounted
+	jrst	listn1
+	seto	a,		;set to close all files and rel jfn's
+	closf
+	  jsr	error
+	setzm	tdrjfn
+	setzm	frmjfn
+	setzm	tojfn
+	setzm	mtajfn
+	setzm	conjfn
+listn1:
+	move	a,condir	;get "original directory"
+	cndir			;put him back where he was (i hope)
+	jsr	error
+	gtad			;get time and date
+	movem	1,tod		;save it for later
+	aosn	1		;will skip if if time is set
+	jrst	[typen	<enter date and time (mm/dd/yy hh:mm): >
+		 movei	a,101		;get it from user
+		idtim
+		jrst	.
+		move	1,2
+		stad			;set it
+		jrst	.+1]
+	setom	bypass		;default is bypass restore check
+	setzm	endtp		;reset pseudo end-of-tape flag
+	setzm	tpgcnt
+	setzm	tflcnt
+	setzm	linect		;set lines to zero
+	setzm	pagect		;and pages
+	setzm	idxjfn		;ensure jfn's not assigned
+	setzm	arcjfn
+	setzm	dirjfn
+	setzm	dmpjfn
+	setzm	lstjfn
+	setzm	disk
+	setzm	badflg
+	setzm	first
+	setzm	uflag
+	setzm	fdbcnt
+	movei	a,distbl	;init dirs processed pointer
+	movem	a,dirs
+	setom	distbl		;set table null
+	setzm	tpseq
+	setz	f,		;clear flag
+	setzm	tptxt		;set id text null
+	typen	<*>		;type id
+	move	a,[point 7,instr]	;put it here
+	call	edit		;go get string (with editing)
+	jrst	listen		;type id again
+	movei	a,cmdtbl	;point to command table
+	call	getcmd		;go lookup and dispatch if found
+	jrst	listen		;non-confirm return
+	jrst	clenup		;go clenup
+
+
+;******************************************************
+;  "GETCMD"	command lookup and dispatch routine
+;******************************************************
+
+getcmd:
+	move	aa,a		;point to start of command table
+getcm1:
+	move	bb,[point 7,instr]	;point to start of input string
+	ildb	a,bb		;get a byte
+	move	cc,0(aa)	;pickup a command table entry
+	skipn	cc		;skip id not end of table
+	jrst	getcmq		;not found go type ?
+	hrli	cc,440700	;construct a byte pointer
+getcm2:
+	ildb	b,cc		;get a char from command string
+	camge	a,b		;must asscend or equal
+	jrst	getcmq		;not found type ?
+	came	a,b		;is it equal so far so good
+	jrst	[aoj	aa,		;if not look at next command
+		jrst	getcm1]
+	ildb	a,bb		;get next byte
+	cain	a,cr		;end of input?
+	jrst	getcm5		;go enter routine
+	caie	a,esc		;altmode (recognize)
+	jrst	getcm2		;keep looking
+getcm3:	;altmode..recognize and type the rest
+	hrrzi	a,101		;get next byte
+	ildb	b,cc		;get next in commabd string
+	jumpe	b,getcm4	;if end then wait for confirm
+	bout			;type next char
+	jrst	getcm3
+getcm4:
+	hrrzi	a,100		;primary input
+	bin			;get confirmation char
+	caie	b,cr		;cr ?
+	jrst	getcmq		;take not confirmed exit
+getcm5:
+	typec	cr
+	hlrz	a,0(aa)		;pickup routine address
+	call	0(a)		;enter it
+	aos	(p)		;take ok exit
+	popj	p,0		;and return to caller
+getcmq:
+	hrrzi	a,101
+	hrroi	b,[asciz / ? /]
+	setz	c,
+	sout
+	popj	p,0
+
+
+;******************************************************
+;  "CMDTBL"	command text and dispatch table
+;******************************************************
+
+;entries must be in strict ascending alpha  sequence (string half)
+cmdtbl:
+	T .HELP,? (type command summary)
+	T .ARCH,ARCHIVE (user files)
+	T .BUILD,BUILD (archive directories)
+	T .CONT,CONTINUE DUMP
+	T .COUNT,COUNT (file pages)
+	T .DISMT,DISMOUNT (magtape directory)
+	T .UDUMP,DUMP DIRECTORY
+	T .EXIT,EXIT
+	T .FULL,FULL DUMP (entire file system)
+	T .HELP,HELP
+	T .INCR,INCREMENTAL DUMP (changed files)
+	T .LIST,LIST (tape directory)
+	T .LOAD,LOAD FILES (from magtape)
+	T .MAPDR,MAP (user directory)
+	T .MARK,MARK (or clear) BACKUP WORDS
+	T .MOUNT,MOUNT (magtape directory)
+	T .OCTAL,OCTAL PRINT (of directory)
+	T .PRINT,PRINT (the magtape archive)
+	T .STRST,RESTORE FILES (from tape)
+	T .RUN,RUN THE FILE SYSTEM (utility)
+	T .COPY,SINGLE FILE
+	T .TAPEC,TAPE COPY
+	T .TRIM,TRIM (user directories)
+	T .SETVR,VERIFY (user directories)
+	0	;END OF TABLE
+lit
+end entry

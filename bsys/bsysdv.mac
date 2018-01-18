@@ -1,0 +1,907 @@
+TITLE BSYSDV  TAPE HANDLING ROUTINES
+
+;******************************************************
+;  linkage to other modules
+;******************************************************
+
+
+;	output to (BSYS,BSYSDV.MAC,) with (WALLACE,FILTER,)
+
+extern	site0,site1	;here because of UNIVERSAL glitch
+	search	stenex,bsys
+intern	tapei,tapeo,ptfile,setiow,wrblnk
+intern	wrtdum,wrtdmb,wrtdm1,wrtend 
+intern	dskchk,getnpg,getpt
+intern	clearp,listfl,listln,lstfil,lstufp,lstuf0,lstfp
+intern	lsthdr,lsthd1,print
+extern	ansr,clenup,edit,erret,error,gettdr,memerb
+extern	nouter,sk2ret,sk3ret,skpret,site1
+
+;******************************************************
+;  "TAPEI"	tape input routine (also checks block count)
+;******************************************************
+
+;  at entry
+;	a	block # of record to  read
+;	b	command  list pointer
+;  4 returns
+;	+1	unrecoverable read error
+;	+2	can't find record (block or file)
+;	+3	eof
+;	+4	ok record in  core
+tapei:
+	movem	b,temp		; save command for retry
+	movem	a,temp2		; save block #
+tapei0:
+	movei	dd,^d10		; set to try 10 times
+tapei1:
+	move	a,mtajfn	; load mag tape jfn
+	movei	b,nop		; clear any error status just in case
+	mtopr
+	movei	a,400000	; this fork
+	move	b,psichn	; get current channels
+	dic			; disable pseudo interrupts
+	move	a,mtajfn	; load magtape jfn
+	move	b,temp		; restore command pointer
+	dumpi			; read it
+	 jrst tapier
+	movei	a,400000	; this fork
+	move	b,psichn	; get current channels
+	aic			; activate interrupts again
+	skipge	temp2
+	jrst	sk3ret		; take ok return (if bypassing check)
+	move	a,blkno		; get read block number
+	trne	f,cpyflg	; skip if not reading copied tape
+	move	a,cpyblk	; if yes then copied block #
+	camn	a,temp2		; skip if not the same
+	jrst	sk3ret		; take record ok return
+	camg	a,temp2		; skip if too far
+	jrst	tapei1		; if not far enough read next
+	move	a,mtajfn	; load jfn
+	movei	b,bsr		; back over just read
+	mtopr
+	movei	b,bsr		; one more
+	mtopr
+	sojg	dd,tapei1	; if not there in ten trys quit
+	msg	<block sequence error>
+	jrst	skpret		; take right exit
+tapier:
+	movem	a,ercode	; save error
+	cain a,iox4
+	 jrst tapief		; eof
+	move	a,mtajfn
+	gdsts			; get error status
+	movem	b,erbits	; save error bits
+	move	a,mtajfn
+	movei	b,nop		; clear error flags
+	mtopr
+	movei	a,400000	; this fork
+	move	b,psichn	; get current channels
+	aic			; turn interrupts back on
+	move	c,erbits	; get error bits back
+	setz	b,
+	trne	c,400000	; write ring problem?
+	hrroi	b,[asciz /
+please put write ring in mounted tape/]
+	trne	c,200000	; tape not ready?
+	hrroi	b,[asciz /
+please make mounted tape ready (or mount a new one)/]
+	skipn	b
+	jrst tapei2		; garden variety error, try recovery
+	movei a,100
+	cfibf
+	movei	a,101
+	setz	c,
+	sout
+	typen	<type any character to continue>
+	hrrzi	a,100		; primary input
+	bin
+	jrst	tapei0		; go try again
+tapei2:
+	move a,mtajfn
+	movei b,bsr
+	mtopr			; backspace over the error
+	sojg dd,tapei1		; and try again
+	;read block(s) and check to see if same file and page number
+	push	p,pageno	;save current file and page
+	movei	a,400000	; this fork
+	move	b,psichn	; get current channels
+	dic			; disable pseudo interrupts
+tapei3:
+	move	a,mtajfn	; load magtape jfn
+	movei	b,nop		; clear any error status just in case
+	mtopr
+	move	b,temp		; restore command pointer
+	dumpi			; read it
+	jrst [cain	a,iox4		;eof??
+		jrst	.+1		;yes, proceed
+		jrst	tapei3]		;read until no error
+	movei	a,400000	; this fork
+	move	b,psichn	; get current channels
+	aic			; activate interrupts again
+	pop	p,a		;get saved file and page
+	camn	a,pageno	;same??
+	jrst	sk3ret		;yes, looks like we won!!
+	move	a,mtajfn
+	movei	b,bsr		; no, back over record just read
+	mtopr
+	msg	<unrecoverable tape read error>
+	popj p,
+tapief:
+	aos cfnum
+	jrst sk2ret
+
+
+;******************************************************
+;  "TAPEO"	do magtape output
+;******************************************************
+
+;	at entry:	b=command table address
+; 2 exits
+;	+1	error	status in b
+;	+2	ok
+tapeo:
+	movem	b,temp		; save cmdptr for possible retry
+	skipe	endtp		; skip if not pseudo end of tape
+	jrst	tapeo4		; cause simulation of eot
+	movei	a,400000	; this fork
+	move	b,psichn	; get current channels
+	dic			; disable pseudo interrupts
+	movei	dd,^d10		; load retry count
+tapeo1:
+	setzm	erbits
+	move	a,mtajfn
+	setz	b,		; nop
+	mtopr			; clear any possible errors
+	move	b,temp		; get cmdptr back
+	dumpo
+	skipa
+	jrst	tapeo3		; ok go exit
+	movem	a,ercode	; save error code
+	move	a,mtajfn
+	gdsts			; get error status
+	movem	b,erbits	; save error bits
+	setz	b,		; clear error flags
+	mtopr
+	move	c,erbits	; get error bits back
+	trne	c,400000	; write ring problem?
+	call	[skipn	write		; see if he lied!!
+		popj	p,0		; nope
+		typen	<you creep!! you told me there was a write ring -- aborting >
+		jrst	clenup]		; no more chances
+	trne	c,400000	; write ring problem?
+	hrroi	b,[asciz /
+please put write ring in mounted tape/]
+	trne	c,200000	; tape not ready?
+	jrst	[sojg	dd,tapeo1	; retry for momentary drops
+		move	a,blkno		; get block number
+		caige	a,^d200		; skip if really got started
+		jrst	[hrroi	b,[asciz /
+please make mounted tape ready(or mount new one)/]
+			jrst	.+1]
+		typen <Did the tape run off the end? >
+		call	ansr
+		jrst	tapeo2		; yes go simulate end of tape
+		typem <Please ensure tape is mounted and ready
+>
+		jrst	tapeo1]		; go try again
+	skipn	b
+	jrst	tapeo5	; if not above error let user handle
+	movei	a,101
+	setz	c,
+	sout
+	typen	Type any character to continue
+	hrrzi	a,100		; primary input
+	bin
+	jrst	tapeo1		; try again
+tapeo2:
+	typem	<Please remount tape, rewind and>
+	typen	<type any character to continue>
+	pbin
+tapeo4:
+	move	b,erbits	; get error bits
+	tro	b,2000		; set end of tape
+	movem	b,erbits	; and save it
+	setom	endtp		; set flag so we dont miss it!!
+	popj	p,0		; take error exit
+tapeo3:
+	aos	0(p)
+tapeo5:
+	movei	a,400000	; this fork
+	move	b,psichn	; get current channels
+	aic			; activate pseudo interrupts
+	move	b,erbits	;return error bits (if any)
+	popj	p,0		; return
+
+
+;******************************************************
+;  "PTFILE"	position tape to start of file(n)
+;******************************************************
+
+;	a	file number
+ptfile:
+	movem a,temp2		; save arg
+	move a,mtajfn
+	gdsts
+	iori b,40000
+	sdsts			; suppress system correction procedure
+ptfl0:
+	move d,temp2
+	sub d,cfnum		; how far we need to go
+	jumpge d,ptfl2		; forward
+	move a,cfnum
+	ash a,-2		; time to rewind (approx)
+	add a,temp2		; + time to space fwd
+	movm b,d		; time to space bckwd
+	caml b,a
+	 jrst ptrew		; faster to rewind
+	addm d,cfnum
+	move a,mtajfn
+	movei b,bsf
+ptfl1:
+	mtopr
+	aojle d,ptfl1
+	movei b,skf
+	mtopr
+ptfl2:
+	call ptred1
+	 jrst pterr		; error or eof
+	came d,cfnum		; correct position?
+	 jrst ptpe		; position error
+ptfl3:
+	caml d,temp2		; gone far enough?
+	 jrst ptfl4		; yes
+ptfl5:
+	move a,mtajfn
+	movei b,skf
+	mtopr
+	aos cfnum
+	jrst ptfl2
+ptfl4:
+	move a,mtajfn
+	movei b,bsr
+	mtopr
+	move a,temp2
+	jrst skpret
+pterr:
+	cain a,iox4		; eof?
+	 jrst pteof		; possible end of tape
+	typem <data error reading first record of file # >
+	move b,cfnum
+	movei c,10
+	nout
+	 jsr nouter
+	typen <>
+	jrst pterr1
+ptpe:
+	typen <seq err: >
+	move b,cfnum
+	movei c,10
+	nout
+	 jsr nouter
+	typem < on tape as >
+	move b,d
+	movei c,10
+	nout
+	 jsr nouter
+	typen <>
+	caig d,1000		; unreasonable number
+	camg d,cfnum		; or reverse order
+	 jrst pterr1		; yes, go look for a reasonable file no
+ptpe1:
+	movem d,cfnum		; assume this is correct
+	camg d,temp2		; did we pass the one we wanted?
+	 jrst ptfl3		; no. things are ok
+	typem <sequence numbers have passed the desired file. continue? >
+	call ansr
+	 jrst ptfl0
+	popj p,
+pterr1:
+	move a,mtajfn
+	movei b,skf
+	mtopr
+	call ptred1		; get the position
+	 jrst pterr1		; error, try to find a good one
+	cail d,1000
+	 jrst pterr1
+	typem <next readable file is #>
+	move b,d
+	movei c,10
+	nout
+	 jsr nouter
+	typen <>
+	jrst ptpe1
+ptrew:
+	move a,mtajfn
+	movei b,rewlp
+	setzm cfnum
+	mtopr
+	jrst ptfl5
+pteof:
+	typem <logical end of tape. continue search? >
+	call ansr
+	skipa
+	 jrst clenup
+	movei d,777777
+	jrst ptpe
+ptred1:
+	move a,mtajfn
+	movei b,nop
+	mtopr
+	movei b,rwpage
+	dumpi
+	 popj p,
+	aos 0(p)
+	hlrz d,pageno
+	popj p,
+
+
+;******************************************************
+;  "SETIOW"	;setup iowd per format word
+;******************************************************
+
+setiow:
+	popj	p,0		;return for now
+
+;******************************************************
+;  "WRTDUM"	write dummy header and tape directory on tape
+;******************************************************
+
+wrtdum:
+	call	gettdr	; go get tdr and open it
+wrtdm0:
+	movei	a,101
+	hrroi	b,site1		;site specific string
+	setz	c,
+	sout
+wrtdma:
+	move	a,[point 7,instr]; put string there
+	call	edit
+	 jrst	wrtdma		; try again on ^q
+	move	a,[point 7,instr]
+	hrrzi	c,^d10	
+	nin
+	  jrst	[call	erret
+		jrst	wrtdma]	; give him another try
+	movem	b,tpnum		; store tape number in header
+	skipe	tptxt		; id text entered yet?
+	jrst	wrtdmc		; dont ask if already there
+	tlne	f,arcbit	; archiving?
+	jrst	[move	a,[point 7,tptxt]	; yup
+		hrroi	b,[asciz /archived files	/]
+		setz	c,
+		sout
+		jrst	wrtdms]
+wrtdmt:
+	typem <enter tape id: >
+	move	a,[point 7,tptxt]	; put all in headder
+	call	edit		; get string
+	 jrst	wrtdmt		; try again on ^q
+wrtdms:
+	hrroi	b,[asciz /    /]
+	setz	c,
+	sout
+	move	b,tod		; use uniform tod
+	hrlzi	c,302201	; format control flags
+	odtim			; put it in id string
+	trne	f,lstty		; skip if lister not tty
+	jrst	wrtdmc		; if yes then ignore following
+	typec	ffo		; new page for tty log
+	movei	a,101
+	call	lsthd1		; just id stuff on tty
+wrtdmc:
+	movei a,fmtver
+	movem a,tapver		; set tape format version number
+	call setiow		; and init iowd's accordingly
+	setzm	tpblk		; ensure block 0
+	setzm	blkno		; ditto
+	setzm	tdpgs		; set directory page count = 0
+	setzm	tpfils		; set tape file count = 0
+	setzm	usrblk		; set user block # null
+	setzm	pages		; set files pages count = 0
+	move	a,[^d2880000]	; inches of tape =28800.00 (in 2400 ft)
+	movem	a,tpspac	; set space
+wrtdmb:
+	movei	b,rwhdr		; point to read/write hdr command
+	call	tapeo
+	jrst	[trne	b,100000	; data error?
+		jrst	wrtdm3		; go tell him bad tape
+		move	c,b		; move error code
+		typen <undetermined tape error please check tape and>
+		typen	type any character to continue
+		hrrzi	a,100		; primary input
+		bin
+		jrst	wrtdmb]		; and try again
+	setom	pageno		; set not really a page flag
+	movei	d,^d200		; set to write 200 pages
+	call	wrtdm1		; this to reuse code elewhere
+	jrst	wrtdm2-1	; write 2 more gaps
+wrtdm1:
+	aos	blkno		; bump block count
+	move	a,mtajfn
+	movei	b,rwpage	; point to read/write page command
+	call	tapeo		; write a page
+	  jrst	[trnn	f,dmping	; padding real directory?
+		jrst	wrtdm3		; no, go get another tape
+		jrst	.+1]		; just in padding, ignore it!
+	sojn	d,wrtdm1	; loop 200 times
+wrblnk:
+	movei	d,3		; write 3 of them
+wrtdm2:
+	move	a,mtajfn	; load mag tape jfn
+	movei	b,wrt3		; write 3 in. of blank tape
+	mtopr	
+	sojn	d,wrtdm2	; loop
+	trz	f,dmping	; turn off padding real directory flag
+	popj	p,0
+wrtdm3:
+	move	a,mtajfn	; load mag tape jfn
+	movei	b,nop		; clear error condition
+	mtopr
+	msg	unrecoverable write error writing directory
+	typem	<please mount another tape
+	>
+	jrst	wrtdm0		; go get tape number
+
+
+;******************************************************
+;  "WRTEND"	write special end of tape record
+;******************************************************
+
+wrtend:
+	push	p,blkno		;save current blkno
+	push	p,tpfils	;save current tpfils
+	movei	dd,10		;set retry count
+	movsi	aa,-4		;write four of them
+wrten0:
+	aos	blkno		;point to next block number
+	aos	a,tpfils		;make current file +1
+	hrlom	a,pageno	;set xwd next-file-no,-1
+	setzm	page		;make page exist so i can dump it
+	movei	b,rwpage	;write a page
+	call	tapeo		;output it
+	jrst	wrten1		;error go find out why
+	move	a,mtajfn
+	movei	b,eof		;write eof between
+	mtopr
+	aobjn	aa,wrten0	;do it again
+	jrst	wrtext		;alls well exit
+wrten1:
+	trne	b,2000		;end of tape?
+	jrst	[setom	tpspac		;say tape full
+		jrst	wrtext]		;and exit
+	move	a,mtajfn	;all others just retry
+	movei	b,bsr		;1st backup
+	mtopr
+	sojg	dd,wrtend+2	;retry n times
+	typen	<unrecoverable error writting trailer
+tape is good(?) but, not for future appends
+tape marked as FULL...>
+	setom	tpspac		;say no more space on this tape
+wrtext:
+	pop	p,tpfils	;get current one back
+	pop	p,blkno		;get current one back
+	popj	p,0
+
+   SUBTTL    DISC HANDLING ROUTINES
+
+;******************************************************
+;  "DSKCHK"	check if index block is good
+;******************************************************
+
+dskchk:
+	movsi	2,-1000		;a pages worth
+	hrrm	a,dskch1		;address modification (ugh)
+dskch1:
+	move	c,0(2)		;get an address
+	jumpe	c,dskch2	;jump if = 0
+	tlc	c,50		;must have access and disk bits
+	tlne	c,777770-160000
+	popj	p,0		;file no good exit
+dskch2:
+	aobjn	b,dskch1	;kp looking if more
+	aos	(p)		;if end take good exit
+	popj	p,0
+
+;******************************************************
+;  "DSKRD"	read disk block routine
+;******************************************************
+
+dskrd:
+	push	p,a		;save disc address
+	move	c,b		;set for jsys (dskop)
+	tlne	a,newfb		;new index block?
+	tdza	b,b		;????
+	move	b,class
+	lsh	b,^d11
+	addi	b,1000
+	tlo	b,(1b15)
+	tlz	a,dskmsk
+	tlo	a,(1b0)
+	dskop
+	skipn	a		;skip if error
+	aos	-1(p)		;skip exit
+	movem	a,dskerr	;save possible disc error
+	pop	p,a		;get disk address back
+	move	b,c		;restore b
+	popj	p,0		;return to caller
+
+
+;******************************************************
+;  "GETNPG"	get next page from disk
+;******************************************************
+
+;	return	+1	bad index block
+;		+2	no more pages
+;		+3	ok
+getnpg:
+	move	e,pginc		;get minor count
+	move	g,ppginc	;get major count
+	skipge	e		;skip if this pt exhausted
+	jrst	getnp3		;if not get a page
+getnp1:
+	skipn	longf		;is it a long file?
+	jrst	skpret		;if not, done exit
+	skiple	g		;major count exhusted?
+	jrst	skpret		;yup exit
+getnp2:
+	move	a,ppgtbl(g)	;get next page tbl address
+	skipn	a		;skip if this is one
+	jrst	[aobjn	g,getnp2	;point to next one
+		jrst	skpret]		;if end exit
+	add	g,[xwd 1,1]	;account for this one
+	setom	shandl		;page =-1 means index 
+	movei	b,pgtbl		;get a page table
+	call	dskrd
+	jrst	[call	memerb	;type error data
+		popj	p,0]
+	MOVEI	A,PGTBL
+	call	dskchk	;go check this page table
+	jrst	getpt3		;bad index
+	movsi	e,-1000		;set minor count again
+getnp3:
+	move	a,pgtbl(e)	;now get a data page
+	skipn	a		;skip if really one
+	jrst	[aobjn	e,getnp3	;loop if more
+		jrst	getnp1]		;if not check major loop
+	setom	shandl
+	hrrm	e,shandl	;xwd -1,page# is special
+	add	e,[xwd 1,1]	;account for this page
+	movem	e,pginc		;save iowd pointers
+	movem	g,ppginc
+	movei	b,page		;put it in page slot
+	call	dskrd		;go get it
+	call	memerb		;go type error data
+	hrrz	a,pginc		;compute page just gotten(long file!)
+	subi	a,1		;dec for incr above
+	hrrz	b,ppginc
+	skipn	longf		;is it a long file?
+	jrst	sk2ret		;no, just exit
+	subi	b,1		;dec for incr above
+	lsh	b,^d9		;make it a "big" page
+	add	a,b		;add page and page within page
+	jrst	sk2ret		;and take ok exit anyway
+
+;******************************************************
+;  "GETPT"	get file page table (or page table of page tables)
+;******************************************************
+
+;	return	+1	bad index
+;		+2	no index
+;		+3	ok
+getpt:
+	setzm	longf		;set not along file to start
+	move	aa,cvf		;;load current ver. fdb pointer
+	add	aa,diradr	;make it real
+	move	c,fdbctl(aa)	;load flags
+	tlne	c,fdblng	;skip if not a long file
+	setom	longf		;set long file flag
+	hrrz	d,fdbbyv(aa)	;load page count
+	movem	d,realp		;set real page count
+	ldb	b,[point 9,aa,13]	;extract class
+	movem	b,class		;and set for read
+	move	a,fdbadr(aa)	;get disk address(maybe)
+	skipn	a		;skip if there is one
+	jrst	getpt4		;take no return if none
+	setz	g,		;set major count zero to start
+	movsi	e,-1000		;set minor count to a pages worth
+	skipn	longf		;skip if its a long file
+	jrst	getpt2		;if not get "the"page table
+	movsi	g,-1000		;set major count to a pages worth
+	movei	b,ppgtbl	;put table table here
+	call	dskrd		;read it
+	jrst	getpt3		;take bad index return
+	movei	a,ppgtbl	;check ppgtbl
+	call	dskchk	;check all addresses
+	jrst	getpt3		;bad index
+getpt1:
+	move	a,ppgtbl(g)	;get a page table address
+	skipn	a		;skip if really one
+	jrst	[aobjn	g,getpt1	;branch if more
+		jrst	getpt4]		;take no index exit
+	add	g,[xwd 1,1]	;account for this one
+getpt2:
+	movei	b,pgtbl		;set to read "a" page table
+	call	dskrd		;read it
+	jrst	getpt3		;bad index
+	movei	a,pgtbl		;check pgtbl
+	call	dskchk	;go check all addresses
+	jrst	getpt3		;bad index
+	movem	e,pginc		;save minor count
+	movem	g,ppginc	;save major count
+	jrst	sk2ret		;take double skip exit
+getpt3:
+	hrroi	b,[asciz /  bad index,/]
+	popj	p,0
+getpt4:
+	hrroi	b,[asciz /            /]
+	jrst	skpret		;take no index return
+
+   SUBTTL    LISTING SUBROUTINES
+
+;******************************************************
+;  "LISTFL"	use fdb to list file name,ext,ver & etc.
+;******************************************************
+
+listfl:
+	movem	a,listjf	;save jfn to use
+	call	lstfile		;go do name.ext;ver
+	skipe	apage		;a specific page requested?
+	jrst	[hrroi	b,[asciz /  page  /]
+		call	lister+2		;go list
+		hrrz	b,pageno		;load page number
+		movei	c,10			;octal
+		nout
+		  jsr nouter
+		setzm	apage			;reset  flag
+		call	print
+		popj	p,0]			;return
+	move	c,printl+5	;load portion of string
+	call	listln	;go check for column o'flow
+	move	a,[point 7,printl+5] ;load byte pointer
+	move	b,fdbact(d)	;load account # (or string)
+	tlzn	b,500000	;skip if number
+	jrst	[aoj	b,		;step over use count
+		jrst	listf1]		;if string pointer go add it
+	movei	c,^d10		;signify decimal
+	nout			;add it to line
+	  jsr	nouter
+	skipa			;skip string output
+listf1:
+	call	lister	;go put it in line
+	movei	b,space
+	idpb	b,a		;store space over null
+	move	c,printl+7	;next column
+	call	listln		;go check for o'flow
+	move	a,[point 7,printl+7] ;next postion
+	hrrz	b,flpgs		;load "dumped" count
+	trnn	f,lonly		;use fdb on list only
+	tlnn	f,fulbit+dmpbit+arcbit	;if not dump,
+	hrrz	b,fdbbyv(d)	;load page count (fdb)
+	move	c,[xwd 500007,12]
+	nout			;put page count in line
+	  jsr	nouter
+	hrroi	b,[asciz / page  /]
+	hrrz	c,flpgs		;load "dumped" count
+	trnn	f,lonly		;use fdb on list only
+	tlnn	f,fulbit+dmpbit+arcbit	;if not dump,
+	hrrz	c,fdbbyv(d)	;load page count (fdb)
+	caie	c,1		;skip if singular
+	hrroi	b,[asciz / pages /]
+	call	lister+2	;put it in line also
+	call	print		;go print it
+	popj	p,0		;return to caller
+;list file.ext;ver
+lstfile:
+	call	clearp	;clear print line
+	move	d,cvf		;load current fdb pointer
+	add	d,diradr	;make it real
+	hrroi	a,printl	;load destination pointer
+	hrrz	b,fdbctl(d)	;load pointer to file name
+	call	lister	;go put it in print line
+	movei	b,"."		;extentsion follows
+	bout			;put it in print line
+	hlrz	b,fdbext(d)	;load pointer to extent string
+	call	lister	;go put it in print line
+	movei	b,";"		;version follows
+	bout			;put semi in line
+	hlrz	b,fdbver(d)	;load version number
+	movei	c,^d10		;signify decimal
+	nout			;put it in print line
+	  jsr nouter
+	movei	b,space		;load space
+	idpb	b,a		;store over null
+	popj	p,0
+; check for column over flow
+listln:
+	camn	c,[ascii /     /] ;anything stored here
+	popj	p,0		;return if not
+	movei	b,cr		;new line
+	bout
+	setz	b,
+	idpb	b,a		;null for  end
+	call	print		;go print it
+	call	clearp	;go clear print line to spaces
+	move	b,[ascii /	    /]
+	movem	b,printl
+	aos	linect
+	popj	p,0
+; add strings to print line
+lister:
+	aoj	b,		;step over header
+	add	b,diradr	;make it real
+	hrli	b,-1		;make it a byte pointer
+	setz	c,		;signify asciz
+	sout
+	popj	p,0		;return to caller
+; clear print line to spaces
+clearp:
+	move	a,[ascii /     /] ;load spaces
+	movem	a,printl	;set 1st word
+	move	a,[xwd printl,printl+1] ;load blt pointer
+	blt	a,printl+37	;clear it
+	popj	p,0		;and return
+; print a line
+print:
+	move	a,listjf	;load listing jfn
+	hrroi	b,printl	;point to print line
+	setz	c,		;signify asciz
+	sout
+	aos	linect		;bump line count
+	popj	p,0
+
+
+;******************************************************
+;  "LSTUFP"	list user,files and pages
+;******************************************************
+
+lstufp:
+	push	p,a		;save output jfn
+	aos	b,linect	;bump line count
+	cail	b,maxlns	;over flow 
+	call	lsthdr		;go put new header out
+lstuf3:
+	call	clearp		;clear print line
+	hrroi	a,printl	;put string in print line
+	move	b,dirnum	;load directory number
+	dirst
+	  jsr	error
+	movei	b,space		;load space char
+	idpb	b,a		;remove null
+lstuf1:
+	hrroi	a,printl+3	;file count goes here
+	skipn	flcnt		;skip if file count non-zero
+	jrst	[hrroi	b,[asciz /     no files/]
+		jrst	lstuf2]		 ;go type it
+	move	b,flcnt		;load file count
+	move	c,[xwd 500007,12]  ;see nout jsys
+	nout
+	  jsr nouter
+	hrroi	b,[asciz / files /]
+	move	c,flcnt		;load file count
+	cain	c,1		;check if singular
+	hrroi	b,[asciz / file  /]
+	setz	c,		;signify asciz string
+	sout
+	move	b,usrpgs	;load pages dumped (this user)
+	move	c,[xwd 500007,12]
+	nout
+	  jsr	nouter
+	hrroi	b,[asciz / page/]
+	move	c,usrpgs	;load page count
+	caie	c,1		;skip if 1 page
+	hrroi	b,[asciz / pages/]
+lstuf2:
+	setz	c,		;asciz
+	sout
+	pop	p,a		;get output jfn back
+	hrroi	b,printl	;print line
+	setz	c,
+	sout
+	popj	p,0		;return
+lstfp:
+	push	p,a
+	call	clearp		;clear the print line
+	trnn	f,lonly
+	skipe	flcnt
+	jrst	lstuf1
+	jrst	lstufp+2	;print user name
+
+lstuf0:
+	push p,a
+	jrst	lstuf3
+
+;******************************************************
+;  "LSTHDR"	put header on listing
+;******************************************************
+
+lsthdr:
+	aos	pagect		;bump page count
+	setzm	linect		;set lines to zot..
+	move	a,lstjfn	;load listing jfn
+	movei	b,ffo		;new page
+	bout
+	movei	b,cr		;new line
+	bout
+	move	b,tod
+	setz	c,
+	odtim			;put time and date in header
+	hrroi	b,[asciz /					  Page  /]
+	setz	c,
+	sout
+	move	b,pagect
+	movei	c,^d10
+	nout
+	  jsr	nouter
+	movei	b,cr
+	bout
+	tlne	f,lstbit	;are we listing?
+	jrst	[hrroi	b,[asciz /		Tape Directory Listing/]
+		setz	c,
+		sout
+		jrst	.+1]
+	skiple	tpseq		;ignore if no sequence
+	tlnn	f,fulbit+dmpbit+lstbit+conbit
+	jrst	lsthd2
+	hrroi	b,[asciz/
+BSYS Dump Tape # /]
+	setz	c,
+	sout
+	move	b,tpseq
+	movei	c,^d10		;decimal
+	nout
+	 jsr nouter
+lsthd2:
+	call	lsthd1		;list common stuff
+	tlne	f,cntbit	;skip if not count
+	popj	p,0
+	hrroi	b,[asciz /
+	  File		     Account		Pages
+
+/]
+	sout
+	aose	first		;if 1st dont type dir name
+	skipn	b,curdir	;skip if there is a dir
+	popj	p,0		;exit if not
+	dirst			;put it in listing
+	popj	p,0		;forget the reset if error
+	hrroi	b,[asciz /  (cont.)/]
+	setz	c,
+	sout
+	aos	linect
+	popj	p,0		;return
+lsthd1:
+	tlnn	f,cntbit	;just plain header
+	trne	f,lonly		;list only?
+	jrst	lsthd3		;yup
+	movei	b,cr
+	bout
+	bout
+	hrroi	b,site		;type site name (this tape)
+	setz	c,		;asciz
+	sout
+	hrroi	b,[asciz / tape number /]
+	setz	c,		;asciz
+	sout
+	move	b,tpnum		;load tape number
+	movei	c,^d10		;decimal
+	nout
+	  jsr	nouter
+	hrroi	b,[asciz /    /]
+	setz	c,
+	sout
+	hrroi	b,tptxt		;user typed id
+lsthd4:
+	setz	c,
+	sout
+	movei	b,cr
+	bout
+	popj	p,0
+lsthd3:
+	movei	b,tab
+	bout
+	bout			;couple of tabs
+	hrro	b,hline		;get pointer to text
+	jrst	lsthd4
+	lit
+	end

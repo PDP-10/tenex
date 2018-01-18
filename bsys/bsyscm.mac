@@ -1,0 +1,1633 @@
+TITLE BSYSCM  FIRST LEVEL COMMAND DISPATCH/SETUP ROUTINES
+
+;******************************************************
+;  linkage to other modules
+;******************************************************
+
+
+;	output to (BSYS,BSYSCM.MAC,) with (WALLACE,FILTER,)
+
+EXTERN	SITE0,SITE1
+	search	stenex,bsys
+intern	.arch,.build,.cont,.copy,.count,.dismt,.exit,.full,.help
+intern	.incr,.list,.load,.mapdr,.mark,.mount,.nim,.octal
+intern	.print,.run,.setvr,.strst,.tapec,.trim,.udump
+extern	addfdb,allfls,allflt,allflu,allrs1,allrst,ansr
+extern	check,chkprv,clearp,clenup,cmdtbl,cntrl
+extern	cntrol,dirdmp,edit,entry0,entry2,error,fixfdb,getap1
+extern	getape,getarc,getlst,getsys,gettdr,halfo,klenup,listln
+extern	lstfil,lstfp,lsthd1,lsthdr,maptdr,nouter,print,ptfile
+extern	rstfil,scan,setdmp,tapei,tapeo,todisc,tplkup,ulkdir
+extern	unmap,user,wrtdmb,wrtend,dmpusr,map,term,skpret,lstuf0
+
+;******************************************************
+;  ".ARCH"	archive user files
+;******************************************************
+
+.arch:
+	tlo	f,arcbit	;set to archive
+	call	chkprv		;see if one of us
+	popj	p,0		;nope
+	typem	<Archival Period (days) = >
+	movei	a,100
+	movei	c,^d10
+	nin
+	 jrst	[typem	< ? >
+		jrst	.-3]
+	movem	b,adays		;save for later
+	setzm	pagect		;zero page count
+	typem <Listing Only? >
+	setom	confrm
+	call	ansr
+	troa	f,lonly		;set listing only flag
+	hrroi	b,[asciz /	Archived Files/]
+	trne	f,lonly
+	jrst	[setom	tpnum		;ensure tape no. compare failure
+		hrroi	b,[asciz /	Archivable Files List/]
+		jrst	.+1]
+	movem	b,hline		;save for header routine
+	call	getlst		;get listing device
+	setom	first		;say 1st time
+	typem <Entire File System? >
+	setom	confrm
+	call	ansr
+	jrst	[trnn	f,lonly		;skip if list only
+		call	setdmp		;if not setup for dump
+		trne	f,lonly		;listing only ?
+		call	[typem	<List for Users ? >
+			setom	confrm
+			call	ansr
+			setom	uflag		;set flag
+			popj	p,0]
+		movei	a,2		;dont "system,pmfdir0"
+		movem	a,curdir
+		skipe	uflag
+		call	arch2		;go get files only stuff
+		skipl	uflag		;dont do if for users
+		call	lsthdr		;go output header
+		call	cntrl		;go run the maze
+		jrst	arch1]
+	call	getsys		;get system directory jfn
+	call	user		;get dir #
+	trne	f,lonly		;skip if  not list only
+	jrst	[typem <list to user? >
+		call	ansr		;get his answer
+		setom	uflag		;yes
+		jrst	.+3]		;and bypass setup routine
+	call	setdmp		;go setup for dump
+	call	lsthdr		;and list header
+	caia
+arch0:
+	call	user
+	move	a,lstjfn	;print user name on listing
+	move	b,curdir
+	dirst
+		err <arch0: non-existent directory no.>
+	move	a,curdir
+	cndir			;connect to this dir
+	 jsr	error
+	call	cntrol		;go do a directory
+	typen	<More Users? >
+	call	ansr
+	jrst	arch0		;go do another
+arch1:
+	trnn	f,lonly		;skip if listing only
+	jrst	[skipn	tdpgs		;any files dumped?
+		popj	p,p		;no, exit
+		call	wrtend		;go write special END OF TAPE
+		call	dirdmp		;go dump directory on tape
+		move	a,mtajfn	;rewind and unload
+		movei	b,rewul
+		mtopr
+		tlz	f,arcbit
+		tlo	f,mrkbit	;set to mark complete
+		movei	a,distbl	;point to start of directory tbl
+		movem	a,dirs		;set working pointer
+		setzm	curdir		;just in case doing all
+		call	cntrl
+		jrst	.+1]		;and exit
+	movei	a,101		;if sending use tty:
+	movei	b,cr
+	bout
+	bout
+	hrroi	b,[asciz /Total Archivable Files = /]
+	trnn	f,lonly		;skip if listing only
+	hrroi	b,[asciz /Total Archived Files = /]
+	setz	c,
+	sout
+	move	b,tflcnt	;get total count
+	movei	c,^d10
+	nout
+	 jsr	nouter
+	movei	b,cr
+	bout
+	hrroi	b,[asciz /Total Archivable Pages = /]
+	trnn	f,lonly		;skip if listing only
+	hrroi	b,[asciz /Total Archived Pages = /]
+	setz	c,
+	sout
+	move	b,tpgcnt	;get total pages
+	movei	c,^d10
+	nout
+	 jsr	nouter
+	popj	p,0		;and return to command level
+arch2:
+	setzm	distbl
+	move	a,[xwd distbl,distbl+1]
+	blt	a,distbl+777
+	setzm	instr
+	movsi	a,100001
+	hrroi	b,[asciz /<ARCHIVE>ARCHIVE-FILES-ONLY.TXT/]
+	gtjfn
+	popj	p,0		;if error ignore
+	movem	a,temp
+	move	b,[xwd 070000,200000]
+	openf
+	 jrst	[move	a,temp		;release jfn and exit
+		rljfn
+		jfcl
+		popj	p,0]
+	setz	aa,		;intialize index
+arch2a:
+	movei	d,","
+	call	arch3
+	hrlm	a,instr(aa)	;set dir "to use"
+	movei	d,15
+	call	arch3
+	hrrm	a,instr(aa)	;set files only dir #
+	addi	aa,1
+	jrst	arch2a		;loop through all
+arch3:
+	move	a,temp
+	hrroi	b,temp1
+	movei	c,100
+	sin			;get a dir name
+	cain	d,15		;was term "cr"
+	jrst	[push	p,b
+		bin		;suck "lf" too
+		pop	p,b
+		jrst	.+1]
+	setz	a,
+	dpb	a,b		;make string asciz
+	hrroi	b,temp1		;point to dir string
+	stdir
+	 jfcl
+	 jrst	[setzm	instr(aa)	;make this one null
+		pop	p,a		;dump local return
+		popj	p,0]		;and take real return
+	popj	p,0
+	
+
+;******************************************************
+;  ".BUILD"	build archive directories from archive tapes
+;******************************************************
+
+.build:
+	tlo	f,mrkbit	;set mark flag
+	tro	f,bildng	;say building archive directories
+	movei	a,101		;make lister null
+	movem	a,lstjfn
+	typen	<Entire File System? >
+	call	ansr
+	jrst	build1		;yes go do all
+build0:
+	call	user		;go get user number(list allowed later)
+	call	getape		;go get tape and open it
+	call	todisc		;go build temp disc file (directory)
+	move	a,mtajfn	;now get rid of tape
+	movei	b,rewul		;rewind and unload tape
+	mtopr
+	move	a,curdir
+	call	maptdr		;go map proper dir
+	jrst	[typen  <That Directory is not on mounted tape>
+		jrst	build0]
+	call	allflu		;process this directory
+	move	a,mtajfn	;now get rid of tape
+	closf
+	  errr <build0: cant close magtape>
+	setzm	mtajfn
+	typen	<More Tapes? >
+	call	ansr
+	jrst	build0		;keep on keepin on
+	popj	p,0
+build1:
+	call	chkprv		;go see if he can do this
+	 popj	p,0		;nope
+build2:
+	call	getape		;go get tape and open it
+	call	todisc		;go build temp disc (directory)
+	move	a,mtajfn	;now get rid of tape
+	movei	b,rewul		;rewind and unload tape
+	mtopr
+	move	a,[pushj  p,allflu] ;load instruction
+	movem	a,inst
+	call	scan		;go do it all
+	move	a,mtajfn	;now get rid of tape
+	closf
+	  errr <build0: cant close magtape>
+	setzm	mtajfn
+	typen	<More Tapes? >
+	call	ansr
+	jrst	build2		;keep on keepin on
+	popj	p,0		;return
+	
+
+;******************************************************
+;  ".CONT"	setup for and continue dump
+;******************************************************
+
+.cont:
+	call	chkprv	;go check must be wheel or oper
+	popj	p,0		;hes not
+	movsi	a,100001	;see if continue file exists
+	hrroi	b,[asciz /<SYSTEM>CONTINUE-DUMP-RECORD.;1/]
+	gtjfn
+	jrst	[typen <No continue file?? >
+		jrst	cont0]
+	movem	a,conjfn	;save the jfn
+	move	b,[xwd 440000,303000]	;36 bits, read and write
+	openf
+	jrst	[typen <Cant open continue file?? >
+		jrst	cont0]
+	move	b,[point 36,conrec]
+	hrrei	c,-23		;read whole block
+	sin
+	closf
+		err <.cont: failed to close continue dump file??>
+	skipn	conrec+1	;skip if there is a dir #
+	jrst	[errr <No continue record?? >
+		jrst	cont0]		;go to manual mode if not
+	hll	f,conrec	;restore flags
+	move	a,conrec+1	;get dir no.
+	subi	a,1		;back up one for "control"
+	movem	a,curdir	;set current dir
+	move	a,conrec+2	;get tape seq. no.
+	movem	a,tpseq
+	move	a,[xwd conrec+3,tptxt]
+	blt	a,tptxt+17	;restore text
+	jrst	cont3
+cont0:
+	typem	<entering manual mode >
+	typen	<Incremental Dump? >
+	call	ansr		;go get his answer
+	jrst	[tlo	f,incbit	;set for continue incremental
+		call	incr0		;go find out if normal
+		jrst	.+2]
+	tlo	f,fulbit	;set dump flag
+conta:
+	call	setdmp		;go do normal dump setup
+	typem	<Restart Dump at >
+	call	user		;get dir no.
+	soj	a,		;back up one
+	movem	a,curdir	;and set for start
+	jrst	cont4		;go do it
+cont3:
+	call	setdmp		;go do normal dump setup
+	typen <Dump Restarted at User >
+	move	b,curdir	;load current directory-1
+	addi	b,1		;make  it the right one
+	dirst			;type it
+		err <cont3: non-existent directory no.>
+	movei	b,cr		;do a cr
+	bout
+cont4:
+	call	cntrl		;go run the maze
+	jrst	full2
+	
+
+;******************************************************
+;  ".COPY"	copy single file from mag tape to disc
+;******************************************************
+
+.copy:
+	tlo	f,lodbit	;say we're loading files
+	movei	a,460000	;lh flags for gtjfn table
+	hrlzm	a,rsttbl
+	move	a,[xwd 100,101]
+	movem	a,rsttbl+1
+	movei	a,101		;listing is tty
+	movem	a,lstjfn
+	call	getape		;go get tape and open it
+	move	a,mtajfn
+	movei	b,rewlp		;rewind magtape
+	mtopr
+	skipn	mountd		;skip if tape already mounted
+	call	todisc		;mount on if not
+copy0:
+	call	tplkup		;go get file name and lookup in tdr
+	trne	f,alldir+allfil+allext+allver	;no "*" allowed
+copy2:
+	jrst	[typem	< ? >
+		jrst	copy0]		;try again
+	movem	a,filead	;save address
+	tlne	f,rstbit	;skip if not restoring
+	jrst	[call copy3
+		jrst	copy2	;error try again
+		jrst	copy0]
+	typem < (to) >
+	setzm	dirdsp		;say no default dir (may be diff.)
+; load/restore joins here in single file case
+copy3:
+	movei	a,rsttbl	;point to gtjfn table
+	setz	b,		;no string
+	gtjfn
+	 popj	p,0		;take error return
+	movem	a,dmpjfn	;save jfn
+	hrrz	a,filead	;get file address
+	call	ptfile		;go position tape
+	 jrst	[typem <Cannot position tape to that file>
+		popj	p,0]
+	move	a,dmpjfn
+	move	b,[xwd 440000,100000] ; 36 bits & write
+	openf
+		jrst	[typen <Cant open output file >
+		move	a,dmpjfn	;release the jfn
+		rljfn
+		 jfcl
+		popj	p,0]		;take error return
+	hlrz	b,filead	;get starting block #
+	soj	b,
+	movem	b,blkno		;save for restore
+	move	a,adfdbt	;load fdb address
+	hrrz	aa,fdbbyv(a)	;get page count
+	call	rstfil		;go copy to disk
+;fix fdb based on load/restore
+	tlne	f,rstbit	;skip if not restore
+	jrst	[move	a,adfdbt	;get tape fdb address
+		movem	a,adrfdb	;set in normal "disk" slot
+		call	fixfdb		;go set all same as on tape
+		jrst	copy4]
+;now fix byte size and count
+	hrli	a,fdbbyv
+	hrr	a,dmpjfn	;word,,jfn
+	hrlzi	b,777700	;bits to change
+	move	d,adfdbt	;point to fdb (tape)
+	move	c,fdbbyv(d)	;get byte size
+	chfdb			;set in new one
+	seto	b,		;change them all
+	hrli	a,fdbsiz	;word,,jfn
+	move	c,fdbsiz(d)	;get old size (in bytes)
+	chfdb			;and set in new one
+copy4:
+	move	a,dmpjfn	;close that file
+	closf
+	 errr	<copy4: closf jsys failure ??>
+	jrst	skpret		;take ok return
+
+;******************************************************
+;  ".COUNT"	count and set pages used count in directory
+;******************************************************
+
+.count:
+	tlo	f,cntbit	;set to count
+	call	chkprv		;see if one of us
+	popj	p,0		;nope
+	setzm	talloc
+	typem <Listing Only? >
+	call	ansr
+	troa	f,lonly		;set listing only flag
+	tro	f,wrtdir	;request write access to sys dir
+	call	getsys		;get system directory jfn
+	typem <Entire File System? >
+	setzm	curdir		;start with first dir
+	call	ansr
+	jrst	[call	getlst		;go get a listing device
+		hrroi	b,[asciz /Disk Usage Information/]
+		movem	b,hline
+		setzm	pagect		;start with page one
+		call	lsthdr		;go put header on page
+		call	cntrl		;go run the maze
+		jrst	count1]
+		
+	movei	a,101		;set listing to tty
+	movem	a,lstjfn
+	call	user
+	call	cntrol		;go do a directory
+	typec	cr
+	popj	p,0		;return
+count1:
+	move	a,lstjfn
+	movei	b,cr
+	bout
+	bout
+	hrroi	b,[asciz /Total Files = /]
+	setz	c,
+	sout
+	move	b,tflcnt	;get total count
+	movei	c,^d10
+	nout
+	 jsr	nouter
+	movei	b,cr
+	bout
+	hrroi	b,[asciz /Total Pages = /]
+	setz	c,
+	sout
+	move	b,tpgcnt	;get total pages
+	movei	c,^d10
+	nout
+	 jsr	nouter
+	movei	b,cr
+	bout
+	hrroi	b,[asciz /Total Allocated Pages = /]
+	setz	c,
+	sout
+	move	b,talloc
+	movei	c,^d10
+	nout
+	 jsr	nouter
+	popj	p,0		;and return to command level
+	
+
+;******************************************************
+;  ".EXIT"	exit bsys
+;******************************************************
+
+.exit:
+	hrrzi	a,100		;primary input
+	rfcoc
+	tlo	b,40000		;^a ok now
+	hrr	c,65300		;and esc
+	sfcoc
+	reset			;reset the world
+	haltf			;quit
+	
+
+;******************************************************
+;  ".FULL"	setup for full dump
+;******************************************************
+
+.full:
+	tlo	f,fulbit	;set full dump flag
+	call	chkprv		;check privilages
+	popj	p,0		;sorry hes not one of us
+	movsi	a,400001
+	hrroi	b,[asciz /<SYSTEM>CONTINUE-DUMP-RECORD.;1/]
+	gtjfn
+	 jrst	[errr <setdmp: cant get jfn for continue file??>
+		jrst	full1]
+	movem	a,conjfn	;save the jfn
+	move	b,[xwd 440000,303000]	;36 bits, read and write
+	openf
+	 jrst	[errr <setdmp: cant open continue file??>
+		jrst	full1]
+	setzm	conrec		;clear continuation record
+	move	a,[xwd conrec,conrec+1]
+	blt	a,conrec+22
+	move	a,conjfn
+	move	b,[point 36,conrec]
+	hrrei	c,-23		;write whole block
+	sout
+	closf
+		errr <.full: failed to close continue dump file??>
+full1:
+	setzm	conjfn
+	call	setdmp		;go setup for dump
+	call	dmpusr		;go dump user data for restore
+	setzm	curdir		;start at 1st directory
+	call	lsthdr		;put header in listing
+	call	cntrl		;go run the maze
+full2:	;directory dump joins here
+	call	wrtend		;go write special end of tape
+	call	dirdmp		;go dump the dir on last tape
+	move	a,mtajfn	;rewind and unload tape
+	movei	b,rewul
+	mtopr
+	tlne	f,fulbit	;was it full and
+	tlnn	f,incbit	;an incr dmp?
+	popj	p,0		;no, return
+	tlz	f,incbit+fulbit+dmpbit+conbit
+	tlo	f,dmkbit	;yes, setup and do marking
+	movei	a,distbl
+	movem	a,dirs
+	setzm	curdir
+	call	cntrl		;go run the maze
+	popj	p,0
+	
+
+;******************************************************
+;  ".HELP"	type command summary
+;******************************************************
+
+.help:
+	msg <commands are:>
+	movei	e,cmdtbl	;point to command string pointers
+help1:
+	typec	tab
+	hrro	b,(e)			;construct string pointer
+	setz	c,
+	sout
+	typec	cr
+	aos	e
+	skipe	0(e)	;end of table?
+	jrst	help1		;continue if not
+	popj	p,0
+
+;******************************************************
+;  ".INCR"	setup for incremental dump
+;******************************************************
+
+.incr:
+	tlo	f,incbit	;set incremental flag
+	call	incr0		;go see if "since"
+	typem	<entire file system? >
+	call	ansr
+	jrst	.full
+	jrst	.udump
+incr0:
+	typem	<dump since date&time(y or n) ? >
+	call	ansr
+	jrst	[tro	f,since		;say using supplied date
+		typem	<   enter date&time: >
+		movei	a,100
+		setz	b,		;take any form
+		idtim
+		jrst	[typem < ? >
+			jrst	.]		;and try again
+		movem	b,sdate		;set since date
+		jrst	.+1]
+	popj	p,0		;return
+	
+
+;******************************************************
+;  ".LIST"	setup to list tape directory
+;******************************************************
+
+.list:
+	tlo	f,lstbit	;set list flag
+	call	getape		;go get tape and open it
+	move	a,lstjfn
+	call	todisc		;go build temp disc file (directory)
+	setzm	curdir		;for listing stuff
+	call	lsthdr		;go output header
+	move	a,[pushj  p,allflt]	;load instruction
+	jrst	allrs1+1		;same as allrst from here
+
+;******************************************************
+;  ".MAPDR"	map user directory
+;******************************************************
+
+.mapdr:
+	tlo	f,mapbit
+	jrst	.run
+	
+
+;******************************************************
+;  ".MARK"	mark or clear backup words
+;******************************************************
+
+.mark:
+	call	chkprv		;see if one of us
+	popj	p,0		;nope
+	tlo	f,mrkbit	; say marking
+	typem	<clear backup words? >
+	call	ansr
+	jrst	[typem	<really?? >
+		call	ansr
+		jrst	[tro	f,clear+wrtdir	;set flags
+			jrst	.+2]
+		typem	<are you sure you know what the hell your doing???>
+		popj	p,0]
+	call	getsys		;go get jfn for sys dir
+	typem <do you wish to trim archived files? >
+	setom	confrm
+	call	ansr
+	skipa
+	jrst	[setom	adays	;say no trim
+		jrst	mark0]
+	typem <enter time period (days): >
+	movei	a,101
+	movei	c,^d10
+	nin
+	jrst	[typem < ? >
+		jrst	.-3]
+	movem	b,adays		;save period
+mark0:
+	typem <entire file system? >
+	setzm	curdir		;start with first dir
+	setom	confrm
+	call	ansr
+	jrst	[call	cntrl		;go run the maze
+		typec	cr
+		popj	p,0]		;done, exit
+	movei	a,101		;set listing to tty
+	movem	a,lstjfn
+	call	user
+	call	cntrol		;go do a directory
+	popj	p,0		;return
+
+;******************************************************
+;  ".MOUNT"	mount a magtape directory
+;******************************************************
+
+.mount:
+	skipe	mountd		;if not one mounted already
+	jrst	[call	klenup
+		seto	a,		;close all files
+		closf
+		 jfcl
+		jrst	.+1]
+	skipn	lstjfn		;skip already a lister
+	jrst	[movei	a,101
+		movem	a,lstjfn	;set tty: if none
+		tro	f,lstty		;set flag also
+		jrst	.+1]
+	call	getape		;go get magtape jfn
+	call	todisc		;go copy tape dir to disk
+	setom	mountd		;set mounted flag
+	popj	p,0
+.dismt:
+	typen 	<rewrite directory on tape? >
+	setom	confrm
+	call	ansr
+	call	todisc		;go rewrite dir on tape
+	setzm	mountd		;reset mounted flag
+	call	klenup		;go un map as nessec.
+	jrst	entry0
+	
+
+;******************************************************
+;  ".NIM"	tell him "not implemented yet"
+;******************************************************
+
+.nim:
+	msg not implemented yet!
+	popj	p,0
+
+;******************************************************
+;  ".OCTAL"	octal print of entire directory
+;******************************************************
+
+.octal:
+	ifdef bbn,<
+tro	f,lstty		;for narrow paper **(BBN specific)**
+>
+	typem	<tape ? >
+	call	ansr
+	jrst	[call	getape		;get magtape unit
+		call	todisc		;go mount tape dir
+		move	a,tdrjfn	;get tape dir jfn
+		movem	a,dirjfn	;fool "octal"
+		call	octal0		;go do as though disk
+		setzm	dirjfn		;make it right again
+		popj	p,0]		;back to command level
+	call	chkprv		;check privilages
+	popj	p,0		;sorry hes not one of us
+	call	getsys		;get system directory
+octal0:
+	call	user		;get dir to dump
+	movem	a,curdir	;save dir num.
+	lsh	a,3		;dir # *8 =1st page of dir
+	hrl	a,dirjfn	;construct file handle
+	movei	b,direct/1000
+	hrlzi	c,100000	;read access
+	call	map
+	call	getlst		;get output device
+	move	a,lstjfn
+	movem	a,listjf	;set for formated lister
+	movei	b,ffo		;do a form feed
+	bout
+	hrroi	b,[asciz /
+
+Octal Dump of Directory </]
+	setz	c,
+	sout
+	move	b,curdir	;get directory #
+	dirst
+		err <octal0: non-existent directory no.>
+	hrroi	b,[asciz />		/]
+	setz	c,
+	sout
+	move	b,tod		;get "current" time and date
+	odtim
+	movei	b,cr
+	bout
+	bout
+	movei	aa,direct	;point to start of dir
+	movei	bb,labels	;point to text table
+octal1:
+	move	b,0(bb)		;get a string pointer
+	skipn	b		;skip if there is one
+	jrst	octal2		;if not go do the rest
+	move	a,lstjfn
+	setz	c,
+	sout
+	move	b,0(aa)		;get a word
+	call	halfo		;output in "lh,rh" form
+	movei	b,cr
+	bout
+	addi	aa,1
+	addi	bb,1
+	jrst	octal1		;loop
+octal2:		;now print symtab
+	movei	b,cr
+	bout
+	call	clearp	;clear prnt line
+	move	bb,symbot
+	caile	bb,20000	;valid entry?
+	jrst	octl3b		;nope
+	camg	bb,fretop	;must not overlap free area
+	jrst	octl3b		;bypass symtab stuff
+octal3:
+	move	a,lstjfn
+	move	b,bb		;load symtab address
+	movei	c,10
+	nout		;output address
+	 jsr	nouter
+	hrroi	b,[asciz /[ /]
+	setz	c,
+	sout
+	move	b,direct(bb)	;pick up entry
+	call	halfo		;output lh,rh
+	movei	b,tab
+	bout
+	hlrz	c,direct(bb)	;point to string header
+	hlrz	d,direct(c)	;pickup header
+	hrroi	b,[asciz /??????/] ;default
+	cain	d,400001	;name string?
+	hrroi	b,direct+1(c)	;point to string
+	cain	d,-1		;account string ?
+	hrroi	b,direct+2(c)	;point to string
+octl3a:
+	setz	c,
+	sout
+	movei	b,cr
+	bout
+	addi	bb,1		;point to next
+	camge	bb,symtop
+	jrst	octal3		;loop until done
+	movei	b,cr
+	bout
+octl3b:
+	hrroi	b,[asciz /fdb's
+
+/]
+	setz	c,
+	sout
+	movei	aa,direct	;point to start of directory
+octal4:
+	movsi	cc,-10
+	move	b,(aa)		;load a word
+	came	b,[xwd 400100,25]	;is it an fdb
+	jrst	[addi	aa,1		;nope
+		caige	aa,direct+17777
+		jrst	octal4+1	;keep looking
+		jrst	octal5]		;done
+	move	b,aa		;move "found address"
+	andi	b,37777		;save only disp
+	move	a,lstjfn
+	movei	c,10		;octal
+	nout
+	 jsr	nouter
+	movei	b,tab		;tab between numbers
+	bout
+	addi	aa,1		;bump pointer
+	aobjn	cc,octal4+1	;keep looking if not end
+	movei	b,cr		;cr every 8 numbers
+	bout
+	jrst	octal4
+octal5:
+	hrroi	b,[asciz /
+
+strings
+
+/]
+	setz	c,
+	sout
+	movei	aa,difree	;point to start of dir free area
+octl5a:
+	movsi	cc,-3		;3 for tty listing
+	trnn	f,lstty		;skip if lister = tty
+	movsi	cc,-4
+octl5b:
+	move	a,lpos2(cc)	;load line position
+	hlrz	b,(aa)		;pickup possible string header
+	cain	b,400001	;file name?
+	jrst	octal6	;yes
+	cain	b,400002	;extesion?
+	jrst	octal6	;yes
+	cain	b,-1		;account ?
+	jrst	octl5c
+	addi	aa,1		;bump pointer
+	caige	aa,direct+17777	;end?
+	jrst	octl5b		;keep looking
+	jrst	octal7		;dump the world
+octl5c:
+	move	b,aa
+	andi	b,37777
+	movei	c,10
+	nout
+	 jsr	nouter
+	hrroi	b,[asciz @+2$t/ @]
+	setz	c,
+	sout
+	hrroi	b,2(aa)		;point to string
+	jrst	octl6a
+octal6:
+	move	b,aa		;move address
+	andi	b,37777
+	movei	c,10
+	nout
+	 jsr	nouter
+	hrroi	b,[asciz @+1$t/ @]
+	setz	c,
+	sout
+	hrroi	b,1(aa)		;point to string
+octl6a:
+	setz	c,
+	sout
+	movei	b,space
+	bout
+	addi	aa,1		;point to next word
+	aobjn	cc,octl5b	;keep looking 
+	call	listln		;new line every n strings
+	jrst	octl5a		;and continue
+octal7:
+	call	listln		;print remnant
+	move	a,lstjfn
+	movei	b,cr
+	bout
+	movei	aa,difree	;point to star of storage
+octl7a:
+	movsi	cc,-5		;4 per line for tty
+	trnn	f,lstty		;skip if lister = tty:
+	movsi	cc,-10		;8 per line
+	skipn	(aa)		;skip if next is non-zero
+	jrst	[addi	aa,1		;pass zero words
+		caile	aa,direct+17777
+		jrst	octal9		;exit if end
+		jrst	octl7a+1]	;keep looking
+	move	a,lpos(cc)
+	move	b,aa		;get current address
+	andi	b,37777		;only dislacement
+	movei	c,10
+	nout
+	 jsr	nouter	
+	hrroi	b,[asciz /[ /]
+	setz	c,
+	sout
+	movei	b," "
+	bout
+	add	cc,[xwd 1,1]
+octal8:
+	move	a,lpos(cc)	;get position
+	move	b,0(aa)		;get a word
+	call	halfo		;output as lh,rh
+	addi	aa,1
+	caile	aa,direct+17777
+	jrst	octal9		;done
+	aobjn	cc,octal8
+	call	listln		;go list line
+	jrst	octl7a
+octal9:
+	call	listln		;go list remnant
+	movei	b,ffo		;and form feed
+	bout
+	typen	<Another? >
+	call	ansr
+	jrst	octal0		;yes go do more
+	popj	p,0
+lpos:
+	point 7,printl
+	point 7,printl+2
+	point 7,printl+5
+	point 7,printl+^d8
+	point 7,printl+^d11
+	point 7,printl+^d14
+	point 7,printl+^d17
+	point 7,printl+^d20
+	point 7,printl+^d23
+	point 7,printl+^d26
+lpos2:
+	point 7,printl
+	point 7,printl+5
+	point 7,printl+^d10
+	point 7,printl+^d15
+	
+
+;******************************************************
+; ,".PRINT"	print the archive
+;******************************************************
+
+.print:
+	tlo	f,cntbit	;header stuff is same as count
+	tro	f,lonly		;also for printout
+	call	getlst		;go get lister
+	hrroi	b,[asciz /The Magtape Archive/]
+	movem	b,hline		;set listing header line
+	typem <Entire Directory ? >
+	call	ansr
+	jrst	print1		;go do all dirs
+printa:
+	setzm	curdir		;for listing stuff
+	call	user		;get user dir #
+	setom	first
+	call	lsthdr		;go put header on listing
+	call	print0		;go do this dir
+	typen	<more? >
+	call	ansr
+	jrst	printa		;go do another
+	popj	p,0
+print1:
+	setzm	curdir
+	call	lsthdr		;put header out
+	move	a,lstjfn
+	aos	b,curdir	;bump to next dir
+	cail	b,^d1000		;less than max?
+	popj	p,0		;done
+	dirst
+	 jrst	print1+2	;go do next (tis one non-existant)
+	call	print0		;go do a user
+	jrst	print1+1
+print0:
+	setzm	flcnt		;zero file count
+	move	a,curdir
+	cndir			;connect to proper dir
+	  err <print0: invalid directory number for cndir>
+	call	getarc		;get archive directory jfn
+	  jrst prnt00
+	move	a,arcjfn
+	movei	c,1		;point to chain pointer
+	rin			;get chain pointer
+	skipn	b		;skip if any this dir
+prnt00:
+	jrst	[move	a,lstjfn
+		hrroi	b,[asciz /	no archived files - this user/]
+		setz	c,
+		sout
+		trne	f,lstty		;skip if lister not tty
+		popj	p,0
+		typen	<	no archived files - this user>
+		popj	p,0]
+	hrrz	b,b
+prnt01:
+	move	a,linect	;check for page overflow
+	movem	b,cvf		;set for listing guy
+	cail	a,maxlns	;skip if less than max
+	call	lsthdr		;new header
+	move	a,arcjfn
+	move	b,cvf
+	sfptr			;set file byte pointer
+	 jsr	error
+	aos	flcnt		;bump files count
+	movns	c,b
+	addi	b,page		;comput offset
+	movem	b,diradr	;save  it
+	move	b,[point 36,page]
+	movni	c,^d25
+	sin
+	move	a,lstjfn
+	movem	a,listjf
+	call	lstfile		;go list file name
+	hlrz	a,bdbadr+page	;get 1st tape #
+	move	b,bdbad1+page	;get t&d
+	call	prnt02
+	call	clearp
+	hrrz	a,bdbadr+page	;get 2nd tape #
+	move	b,bdbad2+page	;and t&d
+	call	prnt02
+	hrrz	b,page+bdbext	;get next in chain (if any)
+	skipn	b		;skip if one to do
+	popj	p,0
+	jrst	prnt01		;go print next one
+prnt02:
+	push	p,a		;save tape #
+	push	p,b		;save t&d
+	move	a,lstjfn
+	movei	b,cr
+	bout
+	movei	b,tab
+	bout
+	hrroi	a,printl+5
+	pop	p,b		;get t&d back
+	setz	c,
+	odtim			;output t&d of archive
+	hrroi	b,site0
+	sout
+	pop	p,b		;get tape #
+	movei	c,^d10
+	nout
+	 jsr	nouter
+	setz	c,
+	idpb	c,a		;make it asciz
+	call	print
+	popj	p,0
+	
+
+;******************************************************
+;  ".RUN"	utility run the file system
+;******************************************************
+
+.run:
+	call	chkprv		;see if one of us
+	popj	p,0		;nope
+	tlo	f,runbit		;say we are running the file system
+	typem	<write access to <SYSTEM>DIRECTORY? >
+	call	ansr
+	jrst	[typem	<really?? >
+		call	ansr
+		jrst	[tro	f,wrtdir		;set flag
+			jrst	.+1]
+		typem	<are you sure you know what the hell your doing???>
+		popj	p,0]
+	call	getsys		;go get jfn for sys dir
+	tlne	f,mapbit
+	jrst	run1
+	typem <entire file system? >
+	setzm	curdir		;start with first dir
+	call	ansr
+	jrst	[call	cntrl		;go run the maze
+		typec	cr
+		popj	p,0]		;done, exit
+run1:
+	movei	a,101		;set listing to tty
+	movem	a,lstjfn
+	call	getsys		;get system directory jfn
+	call	user
+	call	cntrol		;go do a directory
+	popj	p,0		;return to command level
+	
+
+;******************************************************
+;  ".SETVR"	setup to verify a user directory
+;******************************************************
+
+;	checks for valid symtab entries and string headers
+.setvr:
+	hrlzi	f,verbit	;say verify function
+	setzm	disk		;clear disk verify flag
+	call	chkprv	;go check privilages
+	popj	p,0		;not one of us
+	typen	<entire file system? >
+	call	ansr
+	jrst	[call	setvr3	;check if disk too
+		setzm	curdir		;set to start at dir #1
+		call	cntrl		;go run the mase
+		typen <verify complete>
+			popj	p,0]			;return to listen
+	setzm	cntfdb		;set fdb table count = 0
+	call	getsys	;go get system directory
+	call	user		;get directory no.
+	call	setvr3	;check if disk too
+	move	a,curdir	;get dir no. back
+; map this user directory (disc) to my space labeled 'direct'
+	lsh	a,3		;dir#*8=page# in directory file
+	hrl	a,dirjfn	;construct source file handle
+	movei	b,direct/1000	;point to page in my space
+	hrlzi	c,100000	;read access
+	call	map		;go map proper sub directory
+	movsi	b,-^d20		;check locked dir 20 times
+	skipge	dirlck	;skip if locked
+	jrst	setvr1		;if not locked just continue
+	movei	a,^d1000	;wait a sec.
+	disms
+	aobjn	b,.-4		;loop
+	typen	< ,***locked***  unlock it? >
+	setom	confrm		;say "confirm"
+	call	ansr		;ask him
+	jrst	[movei	a,dirlck	;real directory lock
+		call	ulkdir		;go unlock it
+		jrst	setvr1]		;and continue
+	move	a,dirnum	;get directory #
+	came	a,curdir	;is it what i wanted?
+	jrst	[movei	a,101
+		move	b,curdir		;type dir name 1st
+		dirst
+		 jfcl
+		typem	<  ?? incorrect directory number (dirnum) ??>
+		jrst	.+1]
+setvr1:
+	setzm	usrpgs		;set user pages dumped = 0
+	setzm	flcnt		;set file count = 0
+	move	b,symtop	;load end pointer
+	addi	b,direct-1	;make it real
+	movem	b,symend	;save for compare
+	move	b,symbot	;load start of symtab
+	addi	b,direct	;make it real(point to 1st symbol)
+	movem	b,symptr	;set working pointer
+	movei	a,direct	;load disc directory address
+	movem	a,diradr	;and set current directory address
+;type out pertinate directory parameters
+	movsi	d,-14		;do 12 (decimal)
+setvr4:
+	movei	a,101		;on tty:
+	movei	b,cr		;new line
+	bout
+	move	b,labels(d)	;get a byte pointer
+	setz	c,
+	sout
+	move	b,direct(d)	;get a overhead word
+	call	halfo		;output as lh,rh
+	aobjn	d,setvr4	;loop until done
+	msg
+setvr2:
+	move	b,symptr	;load working pointer
+	camle	b,symend	;skip if not passed end of table
+	jrst	[typen	<verify complete>
+		popj	p,0]
+	hrrz	a,@symptr	;load fdb pointer (maybe)
+	move	b,symptr	;load symbol table entry address
+	aos	symptr		;point to next entry(symtab)
+	trze	a,700000	;skip if entry type =0
+	jrst	setvr2		;go check if done with symtab
+	call	check		;go check this file (f= request flags)
+	jrst	setvr2		;and continue processing symtab
+setvr3:
+	typem	<disc verify too? >
+	call	ansr
+	setom	disk		;set disk verify flag
+	popj	p,0		;return to caller
+	
+
+;******************************************************
+;  ".STRST"/".LOAD"	setup for restoration/load function 
+;******************************************************
+
+.load:
+	tlo	f,lodbit	;set loading flag
+	movei	a,460000	;lh gtjfn flags
+	hrlm	a,rsttbl	;set in gtjfn table
+	move	a,[xwd 100,101]
+	movem	a,rsttbl+1	;primary input/output
+	jrst	setrs0
+.strst:
+	tlo	f,rstbit	;set restore flag
+	call	chkprv		;see if hes one of us
+	popj	p,0		;nope
+	hrrzi	a,400000	;set gtjfn flags to output use
+	hrlzm	a,rsttbl
+	move	a,[xwd 377777,377777]
+	movem	a,rsttbl+1
+setrs0:
+	trz	f,alldir+allfil+allext+allver	;reset "*" flags
+	setzm	dirjfn		;ensure directory null
+	movei	a,1		;use entire string
+	hrroi	b,[asciz /SYSTEM/]	;system directory
+	stdir			;get directory number
+	  jsr	error
+	  jsr	error		;ambiguous is no good
+	hrrzm	a,sysnum	;save it for restore tests
+	setzm	pagect
+setrsa:
+	call	getape		;go get mag tape unit and open it
+	hrroi	b,[asciz /	restored files/]
+	movem	b,hline		;set for header routine
+	move	a,mtajfn	;load mag tape jfn
+	movei	b,rewlp		;rewind to load point
+	mtopr
+	call	todisc		;go map tape dir. to disc
+setrs1:
+	trnn	f,alldir	;dont if full before
+	call	tplkup		;go get file to restore (allow "*")
+	movem	a,filead	;save possible file address
+	tlnn	f,lodbit	;skip if loading
+	jrst	setrs4		;bypass second jfn
+	typem < (to) >
+	move	a,[point 7,instr]
+	call	edit		;get file to copy to
+	jrst	.-2		;^q return
+	setz	i,		;set state =0
+	move	a,[point 7,instr]
+	movem	a,dirdsp+1	;just in case file 1st
+	ildb	b,a
+	cain	b," "
+	jrst	.-2		;pass leading spaces
+	caie	b,"<"		;start of dir ?
+	jrst	[addi	i,1
+		jrst	.+3]
+setrs2:
+	movem	a,dirdsp(i)	;save string pointer
+setrs3:
+	ildb	b,a
+	cain	b,"*"		;all (this field)
+	setzm	dirdsp(i)	;say no default
+	jumpe	b,setrs4	;exit if no more
+	came	b,term(i)	;end of field
+	jrst	setrs3		;nope
+	addi	i,1
+	jrst	setrs2
+setrs4:
+	trnn	f,alldir+allfil+allext+allver	;skip if any "*"'s
+	jrst	[call copy3		;same as single	
+		jrst	[typem <?>	;error return
+			jrst	setrs1]		;try again
+		jrst	setrs1]		;go get next one
+	setom	first
+	call	lsthdr		;output header
+	trne	f,alldir	;all directories ?
+	jrst	[call	allrst	;go restore entire tape to disc
+		jrst	setrs8]		;go see if any more
+	trne	f,allfil+allext	;all of some group? (file or ext)
+	jrst	[call	allfls	;go restore all files(this dir)
+		jrst	setrs9]		;go find start of next string
+	popj	p,0		;return if none of above
+; close and release jfn's for mag tape &tape directory (delete tdr)
+setrs8:
+	move	a,mtajfn	;load mag tape jfn
+	movei	b,rewul		;rewind and unload
+	mtopr
+	closf			;close and release jfn
+	  jsr	error
+	setzm	mtajfn		;set jfn null
+	movei	b,tdrect/1000
+	call	unmap		;make sure all pages out
+	move	a,tdrjfn	;load tape directory jfn
+	hrli	a,400000	;dont release jfn
+	closf
+	  jsr	error
+	move	a,tdrjfn	;load it again
+	delf			;delete this file
+	  jsr	error
+	setzm	tdrjfn		;set jfn to null
+	movei	b,direct/1000
+	call	unmap		;make sure all pages out
+	typen	<more tapes ? >
+	call	ansr		;go get an answer
+	  jrst	setrsa		;go process them
+	skipn	dirjfn		;jfn assigned for temp directory?
+	popj	p,0		;no exit
+	move	a,dirjfn	;load sys directory copy jfn
+	hrli	a,400000	;dont release jfn
+	closf
+	  jsr	error
+	move	a,dirjfn	; load it again
+	delf			;delete this file
+	  jsr	error
+	setzm	dirjfn		;set jfn to null
+	popj	p,0		;return to caller
+setrs9:
+	typen	<more files (this tape) ? >
+	call	ansr		;go get his answer
+		jrst [trz f,alldir+allfil+allext+allver	;reset "*" flags
+		jrst	setrs1]	;if yes go get more files
+	move	a,mtajfn	;load mag tape jfn
+	movei	b,rewul		;rewind and unload
+	mtopr
+	jrst	setrs8		;go see if more tapes
+	
+
+;******************************************************
+;  ".TAPEC"	copy bsys and dumper tapes
+;******************************************************
+
+.tapec:
+	setzm	flcnt
+	setzm	usrpgs
+	movei	a,1		;get 1st block
+	movem	a,sblkno
+	jrst	[typem <rebuild directory ? >
+		setzm	rebuild
+		call	ansr
+		skipa
+		jrst	.+1
+		movei	a,^d201	;1st block after dir is 201
+		movem	a,sblkno
+		setom	rebuild		;yes
+		jrst	.+1]
+	call	getlst		;go get lister
+	typem	<Enter "from" tape (mtan:):>
+	call	getap1		;bypass normal typeout
+	move	a,mtajfn	;save "from" jfn
+	movem	a,frmjfn
+	movei	b,40000		;say, ill handle errors
+	sdsts
+	typem	<Enter "to" tape (mtan:):>
+	call	getap1		;bypass normal typeout
+	move	a,mtajfn	;save "to" jfn
+	movem	a,tojfn
+	movei	b,rewlp		;rewind tapes
+	mtopr
+	move	a,frmjfn
+	movei	b,rewlp
+	mtopr
+	typen	<Compare tapes after copy? >
+	call	ansr
+	setom	compar		;yup
+	move	a,frmjfn
+	movem	a,mtajfn
+	setzm	blkno		;set blkno null
+	setz	a,		;get block "0"
+	movei	b,rwhdr	;point to read header command
+	call	tapei		;go read a record
+		jrst	[msg can't read tape header
+			jrst	entry2]	;start at the top
+		jrst	[msg  illegal bsys tape format (no header record)
+			jrst	entry2]		;start at the top
+		jrst	[msg eof encountered while reading tape header
+			jrst	entry2]		;go start all over
+	movei	a,101		;on tty:
+	call	lsthd1		;type arc tape # and id text
+	move	a,tojfn
+	movem	a,mtajfn
+	skipn	rebuild		;skip if rebuilding tape directory
+	jrst	[movei	b,rwhdr		;write header
+		call	tapeo
+		  err <cant write tape header - aborting>
+		jrst	tapec1]
+	call	gettdr		;get disk-tape directory jfn
+	call	wrtdmb		;go write dummy directory
+	setzm	tdpgs		;zip dir page count
+	move	a,frmjfn
+	movei	b,skf		;skip over directory file
+	mtopr
+tapec1:		;tape copy loop
+	move	a,frmjfn
+	movem	a,mtajfn
+	move	a,sblkno	;get saved block no.
+	movei	b,rwpage	;get command list address
+	call	tapei		;read it
+		jrst	[typem < (Ignored)>
+		 move	a,frmjfn	;space over bad guy
+		 movei	b,skr
+		 mtopr
+		 jrst	.+3]
+	   jrst	[typen	<cant find a tape block??>
+		 jrst	.+2]
+	 jrst	tapec2		;eof go write one too
+	move	a,tojfn		;set to write
+	movem	a,mtajfn
+	movei	b,rwpage	;get command list address
+	call	tapeo		;go write it
+	jrst	[typen <write error ignored>
+		jrst	.+1]
+	move	a,blkno		;save block no.
+	movem	a,sblkno
+	aos	sblkno		;bump for next file
+	hrrz	a,pageno	;check if end of tape
+	cain	a,-1		;skip if not
+	jrst	[skipl	pageno		;skip if dummy directory block
+		jrst	tapec3		;go to end
+		jrst	tapec1]		;keep copying
+	skipn	rebuild		;skip if rebuild ing directory
+	jrst	tapec1		;keep going
+	hrrz	a,pageno	;get page number
+	caie	a,-3		;if file data make entry in directory
+	jrst	tapec1		;keep going
+	setzm	tcfp		;make addfdb do it the hard way
+	setzm	tcep
+	movei	a,page		;make it appear as an fdb
+	movem	a,adrfdb
+	hrlz	a,blkno		;construct file address (blkno,,fileno)
+	hlr	a,pageno
+	movem	a,filead	;set for "addfdb"
+	hrrz	a,page+fdbbyv	;get page count
+	movem	a,flpgs
+	addm	a,usrpgs	;count pages
+	movei	a,page		;ensure dir address is "page"
+	movem	a,diradr
+	skipn	a,page+100	;get directory number of this file
+	err <tapec1: invalid file data (zero dirnum)>
+	skipe	curdir		;skip if 1st dir
+	jrst	[camn	a,curdir	;this one different than last?
+		jrst	.+1
+		movei	a,101		;primary tty
+		movei	b,cr
+		bout
+		call	lstuf0		;user, files and pages count
+		setzm	flcnt		;clear files count
+		setzm	usrpgs		;clear pages count
+		move	a,page+100	;get directory number
+		jrst	.+1]	
+	movem	a,curdir
+	movem	a,dirnum
+	call	addfdb		;and put it in the tape dir
+		jfcl		;for now fix later
+	aos	flcnt		;bump file count
+	jrst	tapec1		;keep going
+tapec2:
+	move	a,tojfn
+	movei	b,eof		;write an eof
+	mtopr
+	jrst	tapec1		;and keep going
+tapec3:
+	move	a,tojfn		;now write eof on copied guy
+	movem	a,mtajfn
+	movei	b,eof
+	mtopr
+	skipe	rebuild		;skip if we didn't rebuild dir
+	call	dirdmp		;go dump dir
+tapec4:
+	move	a,frmjfn	;rewind both tapes
+	movei	b,rewlp
+	skipn	compar		;skip if comparing
+	movei	b,rewul
+	mtopr
+	move	a,tojfn
+	mtopr
+	movei	b,40000		;say ill handle errors
+	sdsts
+	typen <copy completed>
+	skipn	compar		;skip if comparing tapes
+	popj	p,0
+	typen	<comparing tapes>
+	setzm	sblkno		;start with block "0"
+	move	a,frmjfn
+	movem	a,mtajfn
+	move	a,sblkno
+	movei	b,rwrcrd
+	trz	f,cpyflg	;say normal read
+	call	tapei		;go read header
+		jrst	[msg can't read tape header
+			jrst	entry2]	;start at the top
+		jrst	[msg  illegal bsys tape format (no header record)
+			jrst	entry2]		;start at the top
+		jrst	[msg eof encountered while reading tape header
+			jrst	entry2]		;go start all over
+	move	a,tojfn		;now read copied header
+	movem	a,mtajfn
+	move	a,sblkno
+	movei	b,rcrcrd
+	tro	f,cpyflg	;say copy read
+	call	tapei		;go read a record
+		jrst	[msg can't read tape header
+			jrst	entry2]	;start at the top
+		jrst	[msg  illegal bsys tape format (no header record)
+			jrst	entry2]		;start at the top
+		jrst	[msg eof encountered while reading tape header
+			jrst	entry2]		;go start all over
+	skipe	rebuild		;skip if no rebuild
+	jrst	[move	a,frmjfn	;bypass tape dirs
+		movei	b,skf
+		mtopr
+		move	a,tojfn
+		mtopr
+		move	a,dblks		;first block after dir is ^d201
+		movem	a,sblkno
+		typem	< - bypassing compare of directory blocks>
+		jrst	.+1]
+tapec5:
+	aos	sblkno		;bump block number
+	move	a,frmjfn
+	movem	a,mtajfn
+	move	a,sblkno
+	movei	b,rwpage	;read original
+	trz	f,cpyflg	;say normal read
+	call	tapei		;read a record
+		  jrst	[typem < (ignored)>
+			jrst	.+3]
+		 jrst	[ typen <cant find a tape block - aborting>
+			jrst	clenup]
+		jfcl		;ignore eof
+	move	a,tojfn
+	movem	a,mtajfn
+	move	a,sblkno
+	movei	b,rcpage	;read copy
+	tro	f,cpyflg	;say copy read
+	call	tapei		;read a record
+		  jrst	[typem < (ignored)>
+			jrst	.+3]
+		 jrst	[ typen <cant find a tape block - aborting>
+			jrst	clenup]
+		jfcl		;ignore eof
+	movsi	a,-1002	
+tapec6:
+	move	c,blkno(a)	;get original word
+	came	c,cpyblk(a)	;skip if ok
+	aos	comerr		;count errors for now
+	aobjn	a,tapec6	;check all
+	hrrz	a,pageno	;check if end of tape
+	cain	a,-1		;skip if not
+	jrst	[skipl	pageno		;skip if dummy directory block
+		jrst	tapec7		;go to end
+		jrst	.+1]
+	jrst	tapec5		;read another
+tapec7:
+	move	a,frmjfn	;rewind and unload both tapes
+	movei	b,rewul
+	mtopr
+	move	a,tojfn
+	mtopr
+	typen	<************************************>
+	typen	<There were >
+	movei	a,101
+	move	b,comerr
+	movei	c,^d10
+	nout
+	  jfcl
+	typem	< compare errors >
+	typen	<************************************>
+	popj	p,0
+	
+
+;******************************************************
+;  ".TRIM"	setup to delete extra versions of files
+;******************************************************
+
+.trim:
+	call	chkprv		;go check privilages
+	popj	p,0		;nope
+	typem <
+enter versions to retain: >
+	movei	a,100		;primary input
+	movei	c,^d10		;decimal
+	nin
+	 jsr	nouter		;take nout error
+	subi	b,1		;save n-1
+	movem	b,trmcnt	;save count
+	caige	b,1		;check for min
+	jrst	[typem <  really? >
+		call ansr
+		jrst .+1
+		popj	p,0]		;return to command level
+	tlo	f,trmbit	;set for trim function
+	typem	<entire file system? >
+	call	ansr
+	jrst	[call	trim2		;go get exception list
+		movei	a,1
+		movem	a,curdir	;set to start at dir #2
+		call	cntrl		;go run the mase
+		jrst	trim1]		;tell em complete
+	call	user		;get user to process
+	call	getsys		;get system dir
+	call	cntrol		;go do a directory
+trim1:
+	typem	<
+trim completed>
+	popj	p,0
+trim2:
+	movsi	a,100001	;old and short form
+	hrroi	b,[asciz /<archive>bsys-trim-exceptions/]
+	gtjfn
+	 err	<trim2: Can't get exception list file - TRIM ABORTED>
+	move	b,[xwd 070000,203000]
+	openf
+	 err	<trim2: Can't open exception list file - TRIM ABORTED>
+	movsi	aa,-maxexl	;allow max dirs
+	hrri	aa,exlst	;put them in this table
+	push	p,a
+	setzm	temp		;set error count null
+trim3:
+	move	a,0(p)		;get file jfn back
+	hrroi	b,temp1
+	movei	c,^d40
+	movei	d,12		;assuming teco file
+	sin
+	push	p,b
+	gtsts			;check if end of file seen
+	tlne	b,1000		;skip if no end of file
+	jrst	trim5
+	pop	p,a
+	bkjfn
+	 jfcl
+	setz	b,
+	dpb	b,a		;make string asciz
+	movei	a,1		;ask for exact match
+	hrroi	b,temp1
+	stdir			;convert to dir number
+	 jfcl
+	jrst	[aos temp		;bump error count
+		jrst	trim4]		;and continue
+	hrrzm	a,(aa)		;put it in table
+trim4:
+	aobjn	aa,trim3	;keep going
+	errr	<trim4: trim function table overflow:>
+	errr	< expand table "EXLST" or decrease number of directories excepted>>
+	err	<  TRIM ABORTED >
+trim5:
+	pop	p,a		;dump saved byte pointer
+	pop	p,a		;close the file
+	closf
+	 jfcl
+	setzm	0(aa)		;set "end of table"
+	skipn	temp		;skip if any conversion errors
+	popj	p,0		;nope
+	typen	<There were >
+	movei	a,101
+	move	b,temp
+	movei	c,^d10
+	nout
+	  jfcl
+	typem	< invalid entries in the exception file>
+	typen	<  Do you Wish to continue? >
+	call	ansr
+	popj	p,0
+	jrst	clenup		;go exit to command level
+	
+
+;******************************************************
+;  ".UDUMP"	setup to dump a specific user
+;******************************************************
+
+.udump:
+	tlo	f,dmpbit	;set to do a directory
+	call	chkprv		;see if hes the right kind
+	popj	p,0		;nope
+	call	getsys		;go get system directory
+	call	user
+	call	setdmp		;setup for dump
+	setom	first		;say 1st time
+	call	lsthdr		;go output a header
+	caia
+udump1:
+	call	user		;go get user directory #
+	call	cntrol		;go process just this one
+	skipn	usrpgs		;skip if any dumped
+	jrst	[tlnn	f,incbit		;incrimental
+		jrst	.+1
+		typem	< no files needed dumping>
+		jrst	.+1]
+	typen	<more users? >
+	call	ansr
+	jrst	udump1		;go do another
+	jrst	full2		;go dump dir to tape
+	lit
+	end

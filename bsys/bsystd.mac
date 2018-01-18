@@ -1,0 +1,1824 @@
+TITLE BSYSTD  TAPE DIRECTORY PROCESSING ROUTINES
+
+;******************************************************
+;  linkage to other modules
+;******************************************************
+
+
+;	output to (BSYS,BSYSTD.MAC,) with (WALLACE,FILTER,)
+
+	search	stenex,bsys
+intern	$lookup,$setms,addfdb,allfls,allflt,allflu,allrst,allrs1
+intern	bldjfn,bldumy,dirdmp,dmpdat,dmpfil
+intern	gettdr,inittd,maptdr,maptd1,term
+intern	putfre,scan,tdirst,todisc,tplkup,tstdir
+extern	ansr,berr,break,chdwrd,check,clenup,edit,edstr,entry2
+extern	error,getarc,getdir,getnpg,getpt,listfl,lsthd1,lsthdr
+extern	lstufp,map,mapsys,nouter,rstusr,sk2ret,skpret,strcmp
+extern	tapei,tapeo,unmap,wrtdm1
+
+;******************************************************
+;  "$LOOKUP"	same as lookup only for the tape directory 
+;******************************************************
+
+$lookup:
+	push p,b		; save entry type
+	pushj p,$setms		; set up input pointer and mask
+	move a,tsymtp
+	sub a,tsymbt		; get length of symbol table
+	jffo a,.+2		; get top 1 bit
+	movei a+1,^d35
+	movns a+1
+	movsi a,400000
+	lsh a,(a+1)		; largest power of 2 <= length
+	move b,tsymbt
+	sos b			; start just below symbol table
+$movup:
+	jumpe a,$strfn	; and move up
+	add b,a
+	ash a,-1		; halve increment
+	camge b,tsymtp	; too big?
+	jrst $symcm		; no, compare strings
+$movdn:
+	jumpe a,$strfd
+	sub b,a
+	ash a,-1
+	caml b,tsymtp
+	jrst $movdn
+	camge b,tsymbt
+	jsr berr		; can't happen by the algorithm
+$symcm:
+	movem a,tdrinc		; save increment
+	movem b,tdrloc		; and symtab loc
+	move a,(p)
+	pushj p,$namc1
+	jrst [	move b,tdrloc	; a<b
+		move a,tdrinc
+		jrst $movdn]
+	jrst [	move b,tdrloc	; a>b
+		move a,tdrinc
+		jrst $movup]
+	jrst [	;test(oe,mtchf)	; a<b and subset
+		;test(o,ambgf)
+		tloe e,mtchf	;set match found
+		tlo e,ambgf	;set ambiguous if more than one match
+		move b,tdrloc
+		move a,tdrinc
+		jrst $movdn]
+	pop p,a
+	jrst skpret
+
+$strfn:
+	aos b
+$strfd:
+	movem b,tdrloc
+	sub p,[xwd 1,1]
+	popj p,
+$namcm:
+	movei a,0
+$namc1:
+	hrrz c,tdrect(b)	; get entry type
+	andi c,700000		; extract entry type
+	camge c,a		; less than that being sought?
+	jrst skpret		; yes.
+	camle c,a		; greater than entry type being sought?
+	popj p,
+	hlrz a,tdrect(b)	; get loc of string block for this entry
+	movn b,tdrect(a)	; get length of string block
+	caige c,100000
+	jrst $symc1
+	aos a			; for entries greater than 0, there
+	aos b			; is a share count which must be ignored
+$symc1:
+	hrlzi b,2(b)		; to lh of b
+	hrri b,tdrect+1(a)	; rh  in absolute address
+	move a,tdrinp		; set up pointer to input string
+	move c,tdrmsk		; set up mask
+	jrst strcmp		; and continue with string compare
+
+;******************************************************
+;  "$SETMS"	same as setmsk only for tape directory
+;******************************************************
+
+; setup mask and input pointer for directory looks
+; call:	a	; lookup pointer
+;	pushj p,$setms
+; return
+;	+1	; in dirinp, a string compare pointer to input
+; in dirmsk, a mask of ones for masking last word of input string
+; clobbers a,b,c,d
+$setms:
+	hlre d,a		; get size of the string block
+	subm a,d		; get loc of last full word
+	movsi b,774000		; 7 bit mask left justified
+	movni c,1		; mask of bits to ignore
+$setm0:
+	tdnn b,1(d)		; look for the terminating null
+	jrst $setm1		; there it is, c has 1's for ignoration
+	lsh b,-7		; not there, shift to next bit
+	lsh c,-7
+	jrst $setm0
+$setm1:
+	setcam c,tdrmsk		; get mask of bits to test in last word
+	aos a
+	movem a,tdrinp		; save input pointer
+	popj p,
+
+
+;******************************************************
+;  "ADDFDB"	add fdb and associated strings to the tape directory
+;******************************************************
+
+addfdb:
+	move	a,dirnum	;load sub directory # to map
+	call	maptdr		;go map it(if ness.)
+	call	inittd		;go initalize (same # as disc)
+	move	a,tcvf		;tcvf=tlvf
+	movem	a,tlvf
+	move	a,adrfdb	;point to fdb to be moved
+	move	b,fdbctl(a)	;load file string pointer
+	jumpe	b,addfd6	;type error and exit
+	hrrz	c,fdbbyv(a)	;load page count
+	addm	c,pages		;add to total
+	movei	b,fdblen	;load fdb length
+	call	putfre+1	;go move it
+	jrst	[hrroi	b,[asciz / no room/]
+		popj	p,0]		;and take return
+	hrrzm	a,afdb		;save new tape fdb address
+	addi	a,tdrect	;make it an address
+	hrrzm	a,adfdbt	;save real addr of fdb to be added
+	move	b,flpgs		;load dumped pages count
+	hrrm	b,fdbbyv(a)	;store actual in fdb
+	setz	b,
+	movem	b,fdbext(a)	;make ext pointer null
+	hrrm	b,fdbver(a)	;same for ver
+	move	b,filead	;load file address for this file
+	movem	b,fdbadr(a)	;set file # as address
+	tlne	f,arcbit	;if archiving mark tape fdb as archived
+	jrst	[move	b,fdbbck(a)	;get backup flags
+		tlz	b,-1		;clear all backup flags
+		tlo	b,fdbaar	;say already archived
+		movem	b,fdbbck(a)	;and put flags back
+		jrst	.+1]		;the rest is same
+	move	b,adrfdb	;build string pointer this file
+	hrrz	a,fdbctl(b)	;load pointer to file string
+	camn	a,tcfp		;skip if pointers not equal
+	jrst	addfd2		;pointers equal(strings also)
+	setzm	tlef		;set to clear ponters
+	move	b,[xwd tlef,tlef+1]
+	blt	b,exnstr	;clear all but "new" one
+	movem	a,tcfp		;set "new" file name ptr
+;lookup file name in tape directory
+	add	a,diradr	;make it real
+	movn	b,0(a)		;load neg word count
+	hrli	a,2(b)		;make it a lookup pointer
+	setz	b,		;entry type 0
+	call	$lookup		;lookup in tape dir
+	jrst	[move	b,adrfdb	;get fdb address
+		move	a,fdbctl(b)	;get string ptr to move
+		jrst	addfd1]		;go move it
+	move	a,tdrloc	;get symtab loc
+	hlrz	b,tdrect(a)	;get name string ptr
+	movem	b,fnmstr	;set for  putting in fdb
+	jrst	addfd2		;its there go look at ext
+; move file name string and make new entry in symtab
+addfd1:
+	add	a,diradr	;make address
+	call	putfre		;move it to tape directory
+	jrst	[hrroi	b,[asciz / no room/] ;no room in tape dir.
+		popj	p,0]		;take error return
+	hrrzm	a,fnmstr	;save for later
+	hrlz	a,a		;move name pointer to lh
+	hrr	a,afdb		;rh= fdb(tape) address
+	push	p,a		;save a
+addf1a:
+	hrrz	a,tfretp	;load top of free area
+	hrrz	b,tsymbt	;and symtab bottom
+	caige	a,-1(b)		;check for over lap
+	jrst	addf1b		;ok, enough room
+	hlrz	c,tdrfre	;get pointer to free count
+	addi	c,tdrect	;make it real
+	move	d,0(c)		;pick up count
+	subi	d,10		;expand symtab area
+	jumpl	d,[call	putfr1		;if no room then expand dir
+		jrst	addfd1+2	;say no room
+		jrst	addf1a]
+	movem	d,0(c)		;update free count
+	hrrz	d,tfretp	;get top of free area
+	subi	d,10		;dec by above amount
+	hrrm	d,tfretp	;and put it back
+addf1b:
+	addi	b,tdrect-1
+	hrli	b,1(b)		;construct blt pointer
+	move	c,tdrloc	;load curent symtab position
+	addi	c,tdrect-1	;really points one past
+	blt	b,0(c)		;move it all down
+	pop 	p,a		;get entry again
+	movem	a,0(c)		;store pointer (lh=file name ,rh=fdb)
+	sos	tsymbt		;dec bottom pointer
+	sos	tdrloc		;tdrloc now points to entry
+	setzm	tcef		;set pointer for new file
+addfd2:
+	move	a,fnmstr	;load file name string pointer
+	move	b,afdb		;point to be added fdb(tape)
+	addi	b,tdrect	;make it an address
+	hrrm	a,fdbctl(b)	;set file name pointer
+	move	b,cef		;load current ext fdb ptr(disc)
+	add	b,diradr
+	hlrz	a,fdbext(b)	;load extent pointer
+	camn	a,tcep		;skip if ext string not equal
+	jrst	addf80		;go scan version chain
+	movem	a,tcep		;set current ext string pointer
+	tlne	f,fulbit	;is it full dump?
+	jrst	[move	b,tcef		;get current ext fdb ptr
+		movem	b,tlef		;make it "last"
+		jrst	addfda]		;go move ext string
+;lookup for this ext in tape directory
+	move	b,adrfdb	;load fdb address(real)
+	hlrz	a,fdbver(b)	;get version number
+	movem	a,temp4		;save it for compare
+	hlrz	a,fdbext(b)	;pick up ext string pointer
+	add	a,diradr	;make it real
+	movn	c,0(a)		;load length (-)
+	hrli	a,2(c)		;set in lh of a
+	call	$setms		;go get mask for string compare
+	move	a,tdrloc	;load pointer to symtab entry
+	hrrz	b,tdrect(a)	;load fdb pointer
+	camn	b,afdb		;is this the one being added?
+	jrst	addfd9		;yup go move ext string
+	setzm	tcef		;no current for now
+	skipa			;and jump in
+addfd7:
+	move	b,tnef		;load pointer to next fdb
+	exch	b,tcef		;make this current ext
+	movem	b,tlef		;and current be last
+	move	b,tcef		;and load new current
+	skipn	b		;skip if an entry
+	jrst	addfd9		;take not found in tape dir exit
+	hrrzi	a,tdrect(b)	;get fdb address
+	movem	a,temp3		;save real fdb address
+	hrrz	b,fdbext(a)	;get next fdb address(for next)
+	movem	b,tnef		;save next ext ptr (tape)
+	hlrz	b,fdbext(a)	;get extension string pointer
+	movem	b,exnstr	;save ext string ptr (tape)
+	addi	b,tdrect+1	;make it real
+	movn	a,-1(b)		;load neg string length
+	hrli	b,2(a)		;make it string length -1
+	move	a,tdrinp	;load tape string pointer
+	move	c,tdrmsk	;load mask
+	call	strcmp		;go check if the same
+	  jrst	addfd7		;a<b look at next
+	  jrst	addfd7		;a>b look at next
+	  jrst	addfd7		;a=subset of b look at next
+	move	c,adfdbt	;get fdb address (tape)
+	move	b,tnef
+	hrrm	b,fdbext(c)	;set "next" ext pointer
+addf80:
+	move	c,adrfdb
+	hlrz	c,fdbver(c)	;get ver # (disk)
+	move	b,tcef		;get current ext fdb
+	movem	b,tnvf		;set for 1st time
+	setzm	tlvf		;set last and current null
+	setzm	tcvf
+addfd8:
+	skipn	b,tnvf		;skip if there is a next one
+	jrst	[move	b,tcvf		;get current (last)
+		addi	b,tdrect
+		move	a,afdb		;one to add
+		hrrm	a,fdbver(b)	;link it
+		hlrz	a,fdbext(b)	;load ext ptr
+		move	b,afdb
+		movem	b,tcvf		;and make it current
+		jrst addfd3]
+	exch	b,tcvf		;make it current
+	movem	b,tlvf		;and current = last
+	move	b,tcvf
+	addi	b,tdrect	;make it real
+	hrrz	a,fdbver(b)	;get next version
+	movem	a,tnvf		;save as next
+	hlrz	a,fdbver(b)	;get ver # (tape)
+	camge	c,a		;skip if it goes here
+	jrst	addfd8		;keep looking if not
+	camg	c,a		;skip if insertion
+	jrst	[move	c,afdb		;get fdb ptr
+		addi	c,tdrect
+		move	a,fdbadr(c)	;get new file adr
+		movem	a,fdbadr(b)	;use this one
+		move	a,fdbbyv(c)
+		movem	a,fdbbyv(b)	;new page count
+		jrst	addfd3+2]
+	skipe	a,tlvf		;skip if at top of ver chain
+	jrst	addf10		;if not go link in this chain
+	skipn	a,tlef		;skip if a preceeding ext fdb
+	jrst	[move	a,tdrloc	;get symtab location
+		subi	a,fdbext	;fake to point to symtab extry
+		jrst	.+1]
+	addi	a,tdrect
+	hrrz	b,fdbext(a)	;get "next" ext
+	move	c,adfdbt	;get fdb to be added addr
+	hrrm	b,fdbver(c)	;link it
+	move	b,afdb
+	hrrm	b,fdbext(a)
+	movem	b,tcvf		;set this as current
+	move	a,exnstr	;get extension string ptr
+	jrst	addfd3
+addf10:
+	addi	a,tdrect
+	move	b,afdb		;get pointer to one adding
+	movem	b,tcvf		;make it current
+	addi	b,tdrect	;make it real
+	hrrz	c,fdbver(a)	;get next
+	hrrm	c,fdbver(b)	;set in current
+	move	c,tcvf		; get current
+	hrrm	c,fdbver(a)	;make last pont to current
+	move	a,exnstr	;get current ext ptr
+	jrst	addfd3+1	;go store in current fdb
+addfd9:
+	move	b,cef		;get current ext fdb ptr
+	add	b,diradr	; make it real
+	hlrz	a,fdbext(b)	;get ext string ptr
+addfda:		; move extent string and update pointers
+	add	a,diradr
+	call	putfre		;move ext string to tape directory
+	jrst	[hrroi	b,[asciz / no room/] ;no room in tape dir.
+		popj	p,0]		;take error return
+	movem	a,exnstr	;save ext string ptr
+	move	b,afdb		;get one being added
+	movem	b,tcef		;and make it current ext fdb
+	skipe	b,tlef		;skip if last ext fdb is null
+	jrst	[addi	b,tdrect
+		move	c,afdb		;load new fdb addr(disp)
+		hrrm	c,fdbext(b)	;and set pointer
+		jrst	.+1]		;return to main line
+	move	b,afdb		;load to be added fdb(tape)
+addfd3:
+	addi	b,tdrect
+	hrlm	a,fdbext(b)	;set ext string pointer in fdb
+	move	b,adrfdb
+	skipg	fdbact(b)	;skip if account string
+	jrst	skpret		;return to caller
+	move	a,fdbact(b)	;load string pointer
+	add	a,diradr
+	addi	a,1		;step over use count
+	movn	b,-1(a)		;load -string length
+	hrli	a,3(b)		;set - length in lh
+	movei	b,100000	;load entry type
+	push	p,tdrloc	;save current file loc in symtab
+	call	$lookup		;go look up in symtab
+	  jrst	addfd5		;not in symtab return
+; bump use count and set string address in fdb
+addfd4:
+	move	b,tdrloc	;load entry address pointer(disp)
+	hlrz	b,tdrect(b)	;load string address
+	aos	tdrect+1(b)	;bump use count
+	move	a,adfdbt	;load current tape fdb address
+	movem	b,fdbact(a)	;store account string address(disp)
+	pop	p,tdrloc	;restore file symtab location
+	jrst	skpret		;return to caller
+addfd5:
+	move	a,adrfdb	;load disc fdb address
+	move	a,fdbact(a)	;pick up account string address(disp)
+	add	a,diradr	;
+	call	putfre	;go move it to tape directory
+	jrst	[setz	b,
+		jrst	addfd4+3]	;go zero acct word
+	push	p,a		;save string address
+; put new entry in symtab
+	hrrz	a,tfretp	;load free top
+	hrrz	b,tsymbt	;and sym bottom
+	cail	a,-1(b)		;check for over lap
+	jsr	berr		;if yes error for now
+	addi	b,tdrect-1
+	hrli	b,1(b)		;construct blt pointer
+	move	c,tdrloc	;load present pos
+	addi	c,tdrect-1	;point to end of blt
+	blt	b,0(c)		;move them down one position
+	pop	p,a		;get string pointer
+	hrl	a,a
+	hrri	a,100000	;set entry type
+	movem	a,0(c)		;put entry in symtab
+	sos	tsymbt		;move bottom down
+	sos	tdrloc		;set up to store string pointer
+	sos	0(p)		;update saved "tdrloc"
+	jrst	addfd4
+addfd6:
+	typem	<screwed up fdb (string pointers =0)
+>
+	jrst	skpret
+
+
+;******************************************************
+;  "ALLFLS"	process all files in currently mapped tape subdirectory
+;******************************************************
+
+allfls:
+	skipe	bypass		;skip if get directory
+	jrst	allflt		;if not bypass
+	call	mapsys		;go map corresponding sys dir
+	  jrst	[movei	a,101
+		hrroi	b,[asciz /user </]
+		setz	c,
+		sout
+		move	b,tdrnum	;load directory number
+		call	tdirst		;type string
+			err <allfls: non-existent tape directory no.>
+		movei	a,101
+		hrroi	b,[asciz /> is not in the tape copy of the system directory ??
+/]
+		setz	c,
+		sout
+		popj	p,0]
+; 1st type directory name
+allflt:
+	move	b,linect	;get line count
+	cail	b,maxlns-6	;check for iminent over flow
+	jrst	[call lsthdr	;new page
+		setzm	linect	;reset count
+		jrst	.+1]
+	aos	linect		;bump line count
+	move	a,lstjfn	;load listing jfn
+	movei	b,cr
+	bout
+	move	b,tdrnum	;load directory number
+	call	tdirst		;type string
+		err <allflt: non-existent tape directory no.>
+allflu:
+	trne	f,bildng	;are we building archive directories?
+	jrst	[movem	a,curdir	;save directory number for getarc
+		move	a,tdrnum	;get current directory#
+		cndir			;connect to it!!
+		jrst	[typen <directory no. >
+			movei	a,101
+			move	b,tdrnum
+			movei	c,10
+			nout
+			  jfcl
+			typem	< is on tape but does not exist in system!!>
+			typen	<processing of directory bypassed>
+			popj	p,0]
+		call	getarc		;then get the archive directory
+		 err	<allflu: cant open archive directory>
+		jrst	.+1]
+	move	b,tsymtp	;load top of symtab
+	addi	b,tdrect	;make it real
+	movem	b,symend	;save for end compare
+	move	b,tsymbt	;load bottom pointer
+	addi	b,tdrect	;make it real
+	movem	b,symptr	;set working pointer
+	movei	a,tdrect	;load tape directory location
+	movem	a,diradr	;set current working address
+allfl1:
+	move	b,symptr	;load working pointer
+	caml	b,symend	;skip if not passed end
+	popj	p,0		;exit if done
+	hrrz	a,@symptr	;load symtab entry
+	move	b,symptr	;load symtab entry address
+	aos	symptr		;bump pointer for next time
+	trze	a,700000	;skip if entry type = 0
+	jrst	allfl1		;if not go check next (if any)
+	call	check		;go process this file(ver & ext)
+	jrst	allfl1		;and continue processing symtab
+
+
+;******************************************************
+;  "ALLRST"	restore entire tape to disc
+;******************************************************
+
+allrst:
+	skipn	a,tpseq		;skip if there is a sequence number
+allrs0:
+	jrst	[setom bypass		;if not bypass this
+		jrst	allrs1]
+	caie	a,1		;skip if 1st tape
+	jrst	allrs1		;if not bypass checks
+	skipe	dirjfn		;skip if we need dir (from tape)
+	jrst	allrs1		;if not bypass this
+	call	rstusr		;restore users per dump tape
+	call	getdir		;go get tape copy of sys directory
+	popj	p,0		;ignore if error
+allrs1:
+	move	a,[pushj  p,allfls]	;load instuction to execute
+	movem	a,inst		;store it
+	call	scan		;go scan the tape dir file
+	popj	p,0		;exit
+
+;******************************************************
+;  "BLDJFN"	build's jfn table for file to be dumped/restored
+;******************************************************
+
+bldjfn:
+	hrroi	a,dmpdir
+	move	b,diradr	;get directory address
+	move	b,2(b)		;load directory number
+	tlne	f,rstbit	;is it restore?
+	jrst	[call	tdirst		;yes, get it from tape index
+		err <bldjfn: non-existent directory no.>
+		movsi	a,400000	;now set flags for restore
+		movem	a,dmptbl
+		jrst	bldjfa]
+	dirst
+		err <bldjfn: non-existent directory no.>
+	movsi	a,101000	;ow set flags for dump
+	movem	a,dmptbl
+bldjfa:
+	move	a,cvf		;load current version fdb pointer
+	add	a,diradr	;make it real
+	hlrz	b,fdbver(a)	;get version #
+	hrrm	b,dmptbl	;set ver# in jfn table
+	hrrz	b,fdbctl(a)	;get file name string
+	add	b,diradr	;make it real
+	aoj	b,		;step over header word
+	movem	b,dmpfle	;store file name dsp
+	move	a,cef		;load current extension fdb pointer
+	add	a,diradr	;make it real
+	hlrz	b,fdbext(a)	;get extension string pointer
+	add	b,diradr	;make it real
+	aoj	b,		;step over header word
+	movem	b,dmpext	;set extension dsp
+	move	b,adrfdb	;load current fdb address
+	move	a,fdbprt(b)	;load protection word
+	movem	a,dmpprt	;set in table
+	move	a,fdbact(b)	;load account word
+	skipl	a		;skip if number (not string pointer)
+	jrst	[add	a,diradr	;make it real if string
+		addi	a,2			;step over header and count
+		jrst	.+1]
+	movem	a,dmpact	;store in jfn table
+	movei	a,dmptbl	;load pointer to jfn table
+	setz	b,		;no string
+	gtjfn	
+	  popj	p,0		;take no jfn exit
+	movem	a,dmpjfn	;save jfn
+	move	b,[xwd 440000,200400] ;36 bits and read (for dump)
+	tlne	f,rstbit	;skip if not restore
+	move	b,[xwd 440000,100400] ;36 bits and write (for restore)
+	openf
+	  jrst	bldjf1		;if failed try other open type
+	jrst	skpret		;if ok exit
+bldjf1:
+	move	a,dmpjfn	;load dump jfn
+	move	b,[xwd	440000,202400] ;36 bits,read,thawed
+	tlne	f,rstbit	;skip if not restore
+	move	b,[xwd 440000,102400] ;36 bits, write & thawed
+	openf
+	jrst	[move	a,dmpjfn
+		rljfn			;release this jfn
+		  jsr	error
+		popj	p,0]		;and take dont dump return
+	jrst	skpret		;take second return if ok
+
+;******************************************************
+;  "BLDUMY"	supply dummy directory "y" for testing 
+;******************************************************
+
+bldumy:
+	move	a,[asciz /y/]
+	movem	a,dmpdir	;set in dsp
+	jrst	bldjfa		;go do the rest like bldjfn
+
+
+;******************************************************
+;  "DIRDMP"	dump tape directory to tape
+;******************************************************
+
+dirdmp:
+	skipn	tdpgs		;skip if any directories
+	jrst	[typen <no files on this tape >
+		popj	p,0]
+	movei	b,10
+	movem	b,retrys	;set rewrite dir count
+	movei	b,tdrect/1000	;point to subdirectory pgs
+	call	unmap		;go unmap them
+	move	a,mtajfn	;while doing magtape dir
+	movei	b,40000		;say i'll handle errors
+	sdsts
+	tro	f,dmping	;say "padding real directory"
+	move	a,blkno		;save block count
+	movem	a,nxtblk	;in tape header
+dirdm0:
+	setzm	blkno		;set block count = 0
+	move	a,mtajfn	;load mag tape jfn
+	movei	b,rewlp		;rewind to load point
+	mtopr
+	move	a,mtajfn	;load mag tape jfn
+	movei	b,rwhdr		;point to header r/w command
+	call	tapeo
+	  jrst	[typen error while writing tape header
+		jrst	dirdm9]		;go clear error
+	move	aa,tdpgs	;load page count for tdr
+	setzm	pageno		;set file#,pageno=0
+	movei	d,^d200		;load max page count
+	hrlz	e,tdrjfn
+dirdm1:
+	move	a,e		;move file handle
+	rpacs			;get status of this page
+	tlnn	b,10000		;does this one exist
+	jrst	dirdm2		;if not go bump and try next
+; if page exists map and dump to tape
+	move	a,e		;move file handle
+	movem	a,shandl	;save for possible disc error
+	movei	b,page/1000	;point to where it goes
+	hrli	b,400000	;this fork
+	hrlzi	c,100000	;read access
+	pmap
+	hrrm	e,pageno	;set page number
+dird1a:
+	aos	blkno		;bump block count
+	move	a,mtajfn	;load mag tape jfn
+	movei	b,rwpage	;point to page r/w command
+	call	tapeo	
+	jrst	[typen <error writing tape directory - page >
+		movei	a,101		;primary output
+		hrrz	b,pageno	;type page no.
+		movei	c,10
+		nout
+			jfcl
+		jrst	dirdm8]
+	hrroi	a,-1		;set unmap flag
+	move	b,[xwd 400000,page/1000] ; make "page" private
+	pmap			;get it out of my map
+	sojl	d,dirdm7	;count down dir blocks
+	sose	aa		;count down pages in directory
+dirdm2:
+	aoja	e,dirdm1	;bump page number and continue
+	move	aa,tdpgs	;load page count for tdr
+	movei	d,^d200		;load max page count
+	hrlz	e,tdrjfn
+dirdm3:
+	move	a,e		;move file handle
+	rpacs			;get status of this page
+	tlnn	b,10000		;does this one exist
+	jrst	dird3a		;if not go bump and try next
+; if page exists delete it
+	move	b,e		;file handle
+	movem	a,shandl	;save for possible disc error
+	seto	a,		;set to delete this tdr page
+	movei	c,1		;get rid of it now
+	pmap
+	soj	d,		;count down dir blocks
+	sose	aa		;count down pages in directory
+dird3a:
+	aoja	e,dirdm3	;bump page number and continue
+	tlne	f,fulbit+arcbit	;if full or archive reuse this one
+	jrst	dirdm4
+	move	a,tdrjfn	;1st close file
+	hrli	a,400000	;don't release jfn
+	closf
+	  jsr 	error
+	move	a,tdrjfn	;load tape directory jfn
+	delf			;delete this temporary file
+	  jsr	error
+	setzm	tdrjfn		;set jfn null
+dirdm4:
+	setom	pageno		;set non-existant page flag
+	skiple	d		;skip if dir space exhausted
+	jrst	wrtdm1		;go write dummies for the rest(200)
+	skipl	d		;if equal then done and exit
+	move	a,mtajfn	;load magtape jfn
+	movei	b,rewul		;rewind and unload
+	mtopr
+	popj	p,0		;exit
+dirdm7:
+	typen	<tape directory space exhausted due to write errors>
+	jrst	dirdm9		;go see if retry
+dirdm8:
+	tlnn	f,arcbit	;skip if archiving
+	jrst	[sojl	d,dirdm7	;count down dir blocks used
+		typem	<  ** rewritten ** >
+		jrst	dird1a]		;and go rewrite the page
+dirdm9:
+	sosle	retrys		;skip if retry count exhausted
+	jrst	[typem 	<  ** retrying ** >
+		jrst	dirdm0]		;go retry
+	typen	<type r or q (retry or quit) >
+	move	a,mtajfn	;load mag tape jfn
+	movei	b,nop		;clear error condition
+	mtopr
+	hrrzi	a,100
+	bin			;get answer
+	caie	b,"r"
+	cain	b,"R"		;retry ?
+	jrst	[typem <etry
+>
+		jrst	dirdm0]		;go rewrite all again
+	caie	b,"q"
+	cain	b,"Q"		;quit ?
+	skipa
+	jrst	dirdm9		;try again
+	typem	<uit
+the tape will be no good!!
+are you sure you really want do do this? >
+	call	ansr
+	skipa			;yup he really does
+	jrst	[typen <I didnt think so 
+ its late but lets wake up, Retry is the right answer!!>
+		jrst dirdm9]
+	typen	<*** The tape just dumped is no good ***
+    directory not written successfully>
+	jrst	clenup		;go cleanup and go to comand level
+
+
+;******************************************************
+;  "DMPDAT"	dump file data (fdb & strings) on tape
+;******************************************************
+
+;returns: +1 - error return (EOT)
+;	 +2 - ok
+dmpdat:
+	;1st move fdb
+	move	a,cvf		;get current fdb pointer
+	add	a,diradr	;make it real
+	hrlz	b,a		;make a blt pointer
+	hrri	b,page		;put in page buffer
+	blt	b,page+fdblen-1
+	; now filename string
+	hrrz	b,fdbctl(a)	;get file name string ptr
+	add	b,diradr	;make it real
+	hrrz	c,0(b)		;get length of string
+	movss	b
+	hrri	b,page+fdblen	;make a blt ptr
+	addi	c,page+fdblen	;add start+ length
+	blt	b,0(c)		;move it to "page"
+	; now ext string
+	hlrz	b,fdbext(a)	;get extension string ptr
+	add	b,diradr	;make it real
+	hrrz	c,0(b)		;get length of string
+	movss	b
+	hrri	b,page+fdblen+20 ;make a blt ptr
+	addi	c,page+fdblen+20 ;add start+length+offset
+	blt	b,-1(c)		;move it to "page"
+	skipg	b,fdbact(a)	;skip if an account string
+	jrst	dmpdt1		;if not go fix fdb and write
+	;now move account string
+	add	b,diradr	;make it real
+	hrrz	c,0(b)		;get length of string
+	movss	b
+	hrri	b,page+fdblen+40 ;make a blt ptr
+	addi	c,page+fdblen+40 ;add start+length+offset
+	blt	b,-1(c)		;move it to "page"
+	movei	b,fdblen+40	;relative string address
+	movei	a,page
+	movem	b,fdbact(a)	;set in fdb copy
+dmpdt1:		;fix fdb copy and write to tape
+	movei	a,page
+	movei	b,fdblen	;relative string address
+	movem	b,fdbctl(a)	;set in fdb copy
+	movei	b,fdblen+20	;relative string address
+	hrlzm	b,fdbext(a)	;set in fdb copy
+	move	b,dirnum	;get directory number
+	movem	b,page+100	;save directory number
+	hrroi	a,page+101	;save string also
+	dirst
+		jfcl		;ignore if error
+	movei	a,-3		;set as special record(file data)
+	hrrm	a,pageno
+	aos	blkno		;bump block count
+	movei	b,rwpage	;now write on tape
+	call	tapeo
+	jrst	[trnn	b,2000		;end of tape?
+		jrst	.-3		;write it again if error
+		popj	p,0]		;let dmpfil catch it!!
+	jrst	skpret		;take ok return
+
+
+;******************************************************
+;  "DMPFIL"	dump file to tape routine
+;******************************************************
+
+dmpfil:
+	move	a,mtajfn	;turn on tenex error correction stuff
+	setz	b,
+	sdsts
+	aos	flcnt		;bump file count
+	setzm	flpgs		;set page count = 0
+	move	a,cvf		;load current ver. fdb pointer
+	add	a,diradr	;make it real
+	movei	b,^d511		;load normal max page count-1
+	move	c,fdbctl(a)	;load flags
+	tlne	c,fdblng	;skip if not a long file
+	hrrzi	b,-1		;load 777777 max long file count-1
+	movem	b,maxpgs	;set end compare word
+	hrrz	d,fdbbyv(a)	;load page count
+	move	a,blkno		;load block number
+	aoj	a,		;make it 1st of this file
+	hrlm	a,filead	;set in file address
+	aos	tpfils		;bump file count (for next time)
+	move	a,tpfils	;load this file number
+	hrrm	a,filead	;set in file address
+	hrlm	a,pageno	;lh=file#,rh=page#
+	call	dmpdat		;go dump file data
+	jrst	dmpflc	;error, EOT!
+	call	getpt		;go get page table(s)
+	  jrst dmpfl9		;BAD INDEX BLOCK RETURN
+	 jrst dmpfl3		;NO INDEX BLOCK RETURN
+dmpfl1:
+	call	getnpg		;go get next page
+	  jrst dmpfl9		;bad index block return
+	 jrst	dmpfl3		;end of file
+	hrrm	a,pageno	;set page no. word
+dmpfla:
+	aos	blkno		;bump tape block count
+	move	a,mtajfn	;load mag tape jfn
+	movei	b,rwpage	;point to read/write page cmnd
+	call	tapeo		;go write on tape
+	  jrst	dmpflc		;go check error condition
+	aos	usrpgs		;bump user pages count
+	aos	flpgs		;bump page count this file
+	soja	d,dmpfl1	;count down page count
+dmpfl2:
+	hrrz	a,e		;move page number
+	aoj	e,		;point to next page
+	camge	a,maxpgs	;see if the end (skip if yes)
+	jrst	dmpfl1		;go check next page
+dmpfl3:
+	skipe	d		;skip if file count agrees
+	jrst	[move	a,lstjfn
+		hrroi	b,[asciz /
+file page count error?? (next file)/]
+		setz	c,
+		sout
+		aos	linect		;account for message above
+		jrst	.+1]
+	move	a,mtajfn	;load mag tape jfn
+	movei	b,eof		;tell him to write eof
+	mtopr
+	seto	a,
+	move	b,[xwd 400000,page/1000]  ; make "page" private
+	pmap
+; make proper entries in backup words (fdb)
+	tlne	f,fulbit+conbit	;skip if not a "dump"
+	jrst	[hrlzi	a,fdbbck	;word to change
+		movei	b,-1		;only change tape #
+		hrrz	c,tpnum		;"current" tape number
+		tlne	f,incbit	;if incremental
+		call	[tlo	b,fdbdmp	;set for marking pass
+			tlo	c,fdbdmp	;set for marking pass
+			popj	p,0]
+		; the following instr. should be nop'd
+		; if you wish to avoid a conflict with
+; DUMPERs incremental dump function.
+; there is a companion mod to DUMPER on page 23
+; at DMPLX1+20(8) movni b,a = move b,[xwd 400000,,-1]
+		call	chdwrd		;change word in fdb
+		movei	d,2		;"date" field to change
+		jrst	dmpfl7]		;go update date
+	tlnn	f,arcbit	;skip if archive
+	jrst	dmpfl8		;go close if not
+;if re-archive then clear all achive words first
+	trne	f,rearch	;skip if not re-archive
+	jrst	[hrlzi	a,fdbbck	;clear flags
+		hrlzi	b,fdbmrk	;mark flag
+		setz	c,
+		call	chdwrd		;change word in fdb
+		hrlzi	a,fdbbck+3	;t&d of 1st archive
+		seto	b,		;all bits
+		setz	c,		;zero
+		call	chdwrd		;change word in fdb
+		hrlzi	a,fdbbck+4	;t&d of 2nd
+		call	chdwrd		;change word in fdb
+		jrst	.+1]
+	move	d,adrfdb	;load real fdb address
+	move	b,fdbbck(d)	;get flags
+	tlne	b,fdbmrk	;last archive completed?
+	jrst	[skipe	fdbbck+4(d)	;skip if incomplete 1st
+		jrst	dmpfl5		;use 2nd slot
+		jrst	dmpfl4]		;use 1st slot
+	skipe	fdbbck+3(d)	;skip if this is 1st archive
+	jrst	dmpfl5		;this is 2nd
+dmpfl4:	;mark this as 1st archive
+	hrlzi	a,fdbbck+1	;word to change
+	hrlzi	b,-1		;only left half
+	hrlz	c,tpnum		;put tape # in lh
+	call	chdwrd		;change word in fdb
+	movei	d,3		;put tod in word "3"
+	jrst	dmpfl6		;and mark as "not complete"
+dmpfl5:	;mark as 2nd archive
+	hrlzi	a,fdbbck+1
+	hrrzi	b,-1		;only rh
+	hrrz	c,tpnum	;put tape num in rh
+	call	chdwrd		;change word in fdb
+	movei	d,4		;set tod in word "4"
+dmpfl6: 	; set incomplete flag and tod in proper word
+	hrlzi	a,fdbbck
+	hrlzi	b,fdbmrk	;incomplete flag
+	move	c,b
+	call	chdwrd		;change word in fdb
+dmpfl7:
+	hrli	a,fdbbck(d)
+	seto	b,		;whole word
+	move	c,tod
+	call	chdwrd		;change word in fdb
+dmpfl8:
+	jrst	skpret		;return
+dmpfl9:
+	move	a,mtajfn
+	movei	b,eof
+	mtopr
+	hrroi	b,[asciz / bad index/]
+	popj	p,0		;take bad return
+dmpflc:	; check error stauts
+	move	a,ercode	;reload error code
+	move	b,erbits	;get status word
+	trnn	b,-1		;skip if any bits
+	jsr	error		;take normal error(rewrite later)
+	trnn	b,2000		;check for end of tape
+	jrst	[move	a,lstjfn
+		movei	b,cr		;load carraige return
+		bout
+		hrroi	b,[asciz /  write error file: /]
+		setz	c,
+		sout
+		setom	apage		;set a page flag
+		move	a,lstjfn
+		call	listfl	;go list file name using fdb
+		hrroi	b,[asciz /, status word: /]
+		setz	c,
+		sout
+		move	b,erbits		;get error bits
+		move	c,[xwd 500014,10]  ;load puncuation mask
+		nout			;display error
+		  jsr	nouter
+		jrst	dmpfla]
+; gets here if end of tape detected
+	move	a,mtajfn	;load mag tape jfn
+	movei	b,bsr		;back space one record
+	mtopr
+	move	a,mtajfn	;mag tape jfn again
+	movei	b,eof		;write eof
+	mtopr
+;	call	addfdb		;go add this one to directory(tape)
+;	move	a,adfdbt	;load current tape fdb address(real)
+;	hrrzi	b,400000	;load contiinue flag
+;	orm	b,fdbadr(a)	;signify file not complete
+	move	a,lstjfn	;load listing device jfn
+;	hrroi	b,[asciz /
+;    this file is continued on the next dump tape/]
+;	setz	c,		;signify asciz string
+;	sout
+	movei	b,cr
+	bout
+	typec	cr		;new line and load "a"
+	call	lstufp	;go type user, files & pages
+;	typem	<
+;  one file continued to next tape>
+	call	break		;clean up unload tape & get new one
+	typec	cr		;new line
+	move	b,dirnum	;load directory number
+	dirst			;type it
+		err <dmpflc non-existent directory no,>
+	setzm	flcnt		;set count (files ) =0
+;	aos	flcnt		;account for portion of this one
+;	jrst	dmpfla		;go rewrite last page
+	jrst	dmpfil		;start all over didnt fit
+
+
+;******************************************************
+;  "GETTDR"	get a jfn for the tape directory (temp file)
+;******************************************************
+
+gettdr:
+	skipe	tdrjfn		;skip if no jfn
+	jrst	gettd0		;if already one, clean it up
+	movsi	a,400001	;short, string
+	hrroi	b,[asciz /TAPEDIRECTORY.BSYS;T/]
+	gtjfn
+	  jsr	error		;if error print and exit
+	movem	a,tdrjfn	;save for later
+	move	b,[xwd 440000,303000] ;36 bit bytes and write
+	openf
+	  jsr	error
+gettd0:
+	movei	b,tdrect/1000	;1st unmap current dir
+	call	unmap
+	hrlz	a,tdrjfn	;get jfn
+gettd1:	;now delete all pages in file
+	ffufp			;find 1st (or next) file page
+	  jrst	[caie	a,ffufx3	;skip if no more pages
+		jsr	error		;if not then error
+		popj	p,0]		;exit
+	move	b,a		;move file handle for pmap
+	seto	a,		;say delete page
+	pmap
+	move	a,b	;move handle again
+	jrst	gettd1		;look for next one
+
+
+;******************************************************
+;  "INITTD"	initialize new tape directory
+;******************************************************
+
+inittd:
+	push	p,a		;save dir no.
+	move	b,tdpgs		;load current count of tape dir pgs
+	caile	b,^d192		;must be at least 8 left
+	call	break		;get new tape & etc.
+	; 1st make entry in tape index (really dir # 0)
+	skipg	a		;skip if not index
+	jrst	initt3		;bypass if index
+	seto	a,		;map the index
+	call maptd1
+	call	inittd		;create it if its not there
+	setzm	stblk+1		;clear string block
+	move	a,[xwd stblk+1,stblk+2]
+	blt	a,stblk+10
+	;make a lookup pointer for current (disk) dir
+	hrroi	a,stblk+1	;point to string area 
+	move	b,curdir	;current disk dir
+	dirst			;put it there
+		err <inittd: non-existent directory no.>
+	ibp	a		;account for zero terminator
+	subi	a,stblk-1	;compute length
+	hrrm	a,stblk		;store in header
+	movn	a,a
+	hrli	a,2(a)
+	hrri	a,stblk
+	setz	b,		;entry type zero
+	call	$lookup		;go lookup in tape index
+	skipa			;shouldnt be there
+	err <directory number already used on this tape??>
+	;1st move string blk to free area
+	movei	a,stblk		;point to string block
+	call	putfre		;go move it
+	 jsr	error		;cant happen (if does punt)
+	hrlz	a,a		;move to lh
+	hrr	a,curdir	;dir # to rh
+	push	p,a		;save it
+	hrrz	a,tfretp	;load top of free area
+	hrrz	b,tsymbt	;and symtab bottom
+	caige	a,-1(b)		;check for over lap
+	jrst	initt2		;ok, enough room
+initt1:
+	hlrz	c,tdrfre	;get pointer to free count
+	addi	c,tdrect	;make it real
+	move	d,0(c)		;pick up count
+	subi	d,10		;expand symtab area
+	jumpl	d,[call	putfr1		;if no room then expand dir
+		err <inittd: no room for name in tape index!!>
+		jrst	initt1]
+	movem	d,0(c)		;update free count
+	hrrz	d,tfretp	;get top of free area
+	subi	d,10		;dec by above amouunt
+	hrrm	d,tfretp	;and put it back
+initt2:
+	addi	b,tdrect-1
+	hrli	b,1(b)		;construct blt pointer
+	move	c,tdrloc	;load curent symtab position
+	addi	c,tdrect-1	;really points one past
+	blt	b,0(c)		;move it all down
+	pop 	p,a		;get entry again
+	movem	a,0(c)		;store pointer (lh=file name ,rh=fdb)
+	sos	tsymbt		;dec bottom pointer
+	sos	tdrloc		;tdrloc now points to entry
+	move	a,0(p)		;reclaim dir no. (from long ago)
+	call	maptd1		;go map it again
+	skipa			;must fail
+	jrst	[typen <tape directory exists: during intialization ??>
+		jrst	clenup]		;ignore for now
+initt3:
+	move	a,[xwd tdrect,tdrect+1]
+	setzm	tdrect
+	blt	a,tdrect+^d511	;zero page for directory
+	pop	p,a
+	movem	a,tdrnum	;set dir no.
+	setzm	tdrlck
+	movei	a,-1
+	movem	a,tdrdpw	;default access=all
+	movem	a,tdrprt	;directory prot
+	movei	a,777
+	movem	a,tsymbt	;points to end to start
+	movem	a,tsymtp	; ditto
+	movei	a,tdfree-tdrect	;load displacement to start of free
+	hrlzm	a,tdrfre	;and set pointer
+	movei	b,600		;600 words to start
+	movem	b,tdfree	;set length in free block(1st word)
+	movem	b,tdrfre+2
+	addi	b,tdfree-tdrect	;compute end of free area
+	movem	b,tfretp	;and save
+	setom	tdrfre+1	
+	aos	tdpgs		;bump pages used count
+	popj	p,0		;return to caller
+
+
+;******************************************************
+;  "MAPTDR"	map proper tape sub directory
+;******************************************************
+
+; at entry	a=subdirectory to map
+maptdr:
+	camn	a,tdrnum	;skip if tape dirnum not=
+	jrst	skpret		;take ok exit if same
+	push	p,a		;save directory to map
+	tlne	f,arcbit+fulbit	;skip if not archive or full dump
+	jrst	[movem	a,@dirs		;put this one in dirs proc. tbl
+		aos	dirs		;bump for next one
+		setzm	@dirs		;set current end
+		jrst	.+1]
+maptd2:	; list directory name
+	move	a,lstjfn	;load listing jfn
+	movei	b,cr		;two cr's
+	bout
+	movei	b,cr
+	bout
+	move	b,0(p)		;load directory number
+	dirst			;type string (note: uses disk)
+		err <maptd2: non-existant directory number>
+	aos	linect
+	aos	linect
+	jrst	maptd3		;go map it
+maptd1:	; second entry point (bypasses printing user name)
+	camn	a,tdrnum	;skip if not there
+	jrst	skpret		;if already mapped exit
+	push	p,a		;save dir #
+maptd3:	; map tape sub directory
+	skipg	a,0(p)		;load dir number(skip if not index)
+	movei	a,0		;index is really dir zero
+	lsh	a,3		;dir#*8=page# in directory file
+	hrl	a,tdrjfn	;construct source file handle
+	movei	b,tdrect/1000	;load tape directory page address
+	hrli	b,400000	;this fork
+	hrlzi	c,140000	;read and write access
+	call	map		;go map this dir (only existing pages)
+	setzm	tcvf		;initailize pointers
+	setzm	tcef
+	setzm	tcfp
+	setzm	tcep
+	pop	p,a		;get directory # again
+	camn	a,tdrnum	;skip if not equal again
+	jrst	skpret		;take ok exit
+	popj	p,0		;take non-existant return
+
+
+;******************************************************
+;  "PUTFRE"	moves a string from the disk (user) directory
+;		free area to the tape directory free area
+;******************************************************
+
+;  at entry	a	address of string to be moved
+;			(string must be in normal format)
+;  at exit	a	address(disp) of where string is in free area
+;  returns	+1 no room in tape directory
+;		+2 ok
+putfre:
+	hrrz	b,(a)		;load string length
+	hlrz	c,tdrfre	;load start of free area (disp)
+	push	p,c		;save fdb address(disp)
+	addi	c,tdrect	;make it an address
+	camg	b,(c)		;see if room for this string
+	jrst	putfr0		;yes
+	call	putfr1		;if not get another page
+	 jrst	[sub p,[xwd 1,1]	;dump entry on stack
+		push	p,b		;save string length
+		move	b,tsymbt	;no more see if,
+		sub	b,c		;room between fretop& symtab?
+		camge	b,(p)		;room for string or fdb?
+		 jrst	[pop	p,b		;dump string length
+			popj	p,0]			;there aint none
+		addm	b,(c)		;add on to free area
+		pop	p,b		;get block length back
+		jrst	putfre+1]		;and start all over
+putfr0:
+	hrl	a,a		;construct blt pointer
+	hrr	a,c
+	subm	b,(a)		;compute new free length
+	movms	0(a)		;make it +
+	move	c,(a)		;pick it up
+	push	p,d		;save d
+	hlrz	d,tdrfre	;load pointer to free block
+	add	d,b		;point to new start of free
+	hrlm	d,tdrfre	;update to new start of free
+	addi	d,tdrect
+	movem	c,(d)		;and set new free lenght there
+	blt	a,-1(d)		;move string to free
+	pop	p,d		;restore d
+	pop	p,a		;get fdb address (displacement)
+	jrst	skpret		;take ok exit
+putfr1:		;expand tape directory by a page
+	push	p,a		;save a,b&c
+	push	p,b
+	push	p,c
+	;1st map a new page
+	move	a,tsymtp	;get symtab top
+	addi	a,1000
+	lsh	a,-9		;get the page no.
+	move	b,a		;save it
+	caile	a,17		;skip if not too big
+	jrst	[errr <putfr1: attempt to expand tape dir beyond 20 pages>
+		jrst	putfr2]
+	caile	a,7		;lower half?
+	addi	a,10000-10	;no. add offset
+	move	c,tdrnum	;get dir no.
+	lsh	c,3		;get starting page no.
+	add	a,c		;get this page no.
+	hrl	a,tdrjfn	;make a file handle
+	addi	b,tdrect/1000	;where to put it
+	hrli	b,400000	;this fork
+	hrlzi	c,140000	;read and write
+	movem	a,shandl	;save for possible disk error
+	pmap			;fix up the map
+	aos	tdpgs		;bump the pages count
+	;now expand the directory
+	move	b,tsymtp	;load top pointer
+	addi	b,tdrect+1000	;make it real +512
+	move	a,tsymbt	;load bottom pointer
+	hrl	a,a		;construct blt pointer
+	add	a,[xwd tdrect,tdrect+1000]
+	blt	a,-1(b)		;move symbol table up
+	movei	a,1000
+	addm	a,tsymbt	;update pointers
+	addm	a,tsymtp
+	addm	a,tdrloc	;bump pointer to symtab entry
+	addm	a,tfretp	;bump top of free are
+	hlrz	b,tdrfre	;load pointer to start of free
+	addi	b,tdrect	;make it real
+	addm	a,0(b)		;add on new page
+	aos	-3(p)		;take ok exit
+putfr2:
+	pop	p,c		;restore a,b&c
+	pop	p,b
+	pop	p,a
+	popj	p,0		;return
+
+
+;******************************************************
+;  "SCAN"	scan tape directory file on disc
+;******************************************************
+
+scan:
+	hrlz	e,tdrjfn	;construct file handle
+	move	d,tdpgs		;load tape directory page count
+scan1:
+	move	a,e		;setup for  rpacs
+	rpacs			;read page access
+	tlnn	b,40000		;skip if page exists
+	jrst	scan2		;go bump and check if end
+	move	a,e		;setup for mapping
+	hrri	b,tdrect/1000	;page # wher to put file pages
+	hrlzi	c,140000	;read and write access
+	push	p,d		;save d
+	call	map		;go map all pages (existing)
+	skipl	tdrnum		;dont process the index
+	xct	inst		;execute pushj to right routine
+	pop	p,d		;restore d
+	addi	e,^d8		;point to next directory
+	move	a,tsymtp	;get top pointer
+	lsh	a,-^d9		;get pages in this dir
+	addi	a,1
+	sub	d,a		;dec count
+	jumpg	d,scan1		;if positive continue
+	popj	p,0		;return to caller
+scan2:
+	addi	e,^d8		;point to 1st page next directory
+	jrst	scan1		;continue looking
+
+
+;******************************************************
+;  "TDIRST"	tape dir no. to string
+;******************************************************
+
+;  a  -  tenex designator
+;  b  -  dir no.
+tdirst:
+	push	p,tdrnum	;save current tape dirnum
+	push	p,a
+	push	p,b
+	seto	a,		;map tape index (really dir 0)
+	call	maptd1
+tdirs0:
+	jrst	[pop	p,b		;doesnt exist, use disk
+		pop	p,a
+		dirst
+		 jrst	tdirsx
+		jrst	tdirsx-1]
+	move	aa,tsymbt		;get 1st pointer
+	movei	aa,tdrect(aa)		;make it real
+	pop	p,b		;get dir no. back
+tdirs1:
+	hrrz	a,0(aa)		;get a dir no. (from index)
+	skipn	a		;skip if one to test
+	jrst	[push	p,b
+		jrst	tdirs0]		;exit not there
+	came	a,b		;skip if this is it
+	jrst	[addi	aa,1		;point to next
+		jrst	tdirs1]		;and check it
+	pop	p,a		;get designator back
+	hlr	b,0(aa)		;get string block pointer
+	movei	b,tdrect+1(b)	;step over header
+	hrli	b,440700	;7bit asciz
+	setz	c,
+	sout
+	aos	-1(p)		;take ok exit
+tdirsx:
+	pop	p,a		;get tape dir num back
+	skipn	a		;skip if one to map
+	popj	p,0
+	call	maptd1		;go get it back
+	errr	<tape directory disappeared??>
+	popj	p,0
+
+
+;******************************************************
+;  "TODISC"	 read header and map directory to disc
+;******************************************************
+
+todisc:
+	skipe	mountd		;skip if not already mounted
+	popj	p,0		;exit if already got it
+	typem	<  mounting tape directory>
+	move	a,mtajfn	;load mag tape jfn
+	movei	b,rewlp		;rewind to load point
+	mtopr
+todsc0:
+	setzm	blkno		;the header is always block 0
+	setz	a,		;block = 0
+	movei	b,rwhdr	;point to read header command
+	call	tapei		;go read a record
+	jrst	[msg can't read tape header
+		jrst	entry2]	;start at the top
+	jrst	[msg  illegal bsys tape format (no header record)
+		jrst	entry2]		;start at the top
+	jrst	[msg eof encountered while reading tape header
+		jrst	entry2]		;go start all over
+	tlne	f,fulbit+conbit+dmpbit+arcbit ;skip if no "dumps"
+	jrst	[skipl	tpspac		;skip if no room on tape
+		jrst	.+1	;continue if some
+		typen	no room on mounted tape
+		typen	please mount another and type any char to continue
+		movei	a,100
+		bin
+		jrst	todsc0]
+	movei	a,101		;on tty:
+	trnn	f,lstty		;dont if list=tty
+	call	lsthd1		;type arc tape # and id text
+	call	gettdr		;go get jfn for tdr
+	movei	d,^d200		;load max page count
+todsc1:
+	move	a,blkno		;load current block number
+	aoj	a,		;bump to next
+	movei	b,rwpage	;point to read/write page command
+	call	tapei		;go read a page
+	  jrst	todsc3		;go see if he wants to continue
+	  jrst	clenup		;go clean up and get next command
+	  jrst	todsc2		;if eof go set file # and exit
+	skipl	pageno		;skip mapping if not a real page
+	jrst	[movei	a,page/1000		;load page address
+		hrli	a,400000	;current fork
+		hrrz	b,pageno	;load page number (from tape)
+		hrl	b,tdrjfn	;construct file handle
+		movem	b,shandl	;save for pos disc error
+		hrlzi	c,140000	;read and write access
+		pmap			;map page to file
+		seto	a,		;set dimiss page flag
+		movei	b,page/1000	;load page number
+		hrli	b,400000	;this fork
+		pmap			;get rid of it
+		sojn	d,todsc1	;loop for entire direcory
+		jrst	.+1]
+	move	a,mtajfn	;load mag tape jfn
+	movei	b,skf		;skip to end of directory file
+	mtopr
+	movei	b,nop		;reset possible eof indicator
+	mtopr
+todsc2:
+	movei	a,1		;set for file 1
+	movem	a,cfnum		;set current file number
+	popj	p,0		;,0		;return to caller
+todsc3:
+	typem	(while reading tape directory)
+	typen	do you wish to continue ? >
+	call	ansr		;go get an answer
+	jrst	todsc1		;continue if yes
+	jrst	clenup		;go clean up and get next cmd
+
+
+;******************************************************
+;  "TPLKUP"	get file string and lookup in tape directory
+;******************************************************
+
+tplkup:
+	tlne	f,rstbit	;is it restore
+	jrst	[typen	<restore >
+		jrst	.+1]
+	tlne	f,lodbit	;is it load?
+	jrst	[typen	<copy >
+		jrst	.+1]
+	movei	a,101
+	move	b,mtajfn
+	move	c,[xwd 100000,1]	;just device
+	jfns
+	move	a,[point 7,instr] ;put there
+	movem	a,edstr		;set for ^r retype
+	movem	a,temp		;save for restart
+	movem	a,temp2		;kick off 1st field
+	setz	i,		;set index to zero
+	setzm	recog
+	setzm	tmpdir		;set defaults null
+	move	b,[xwd tmpdir,tmpdir+1]
+	blt	b,tmpend	;clear them
+	setzm	instr		;set string area null
+	move	b,[xwd instr,instr+1]
+	blt	b,instr+17	;clear them
+	trz	f,alldir+allfil+allext+allver ;clear "*" flags
+tplku0:
+	call	edit+1		;get string (with editing)
+	jrst	.-2		;^q return
+tplku1:
+	move	a,temp2		;restart this field
+	jumpn	i,tplku2	;pass dir stuff if have already
+	ildb	c,a		;get a byte
+	cain	c," "		;space?
+	jrst	.-2		;pass leading
+	caie	c,"<"		;dir specified?
+	jrst	[gjinf		;no, use connected
+		movem	b,tcurno	;set as current tape dir
+		move	a,b
+		call	maptd1		;go get sub dir
+		jrst	tplkux		;cant find dir???
+		move	a,[point 7,instr] ;start over
+		addi	i,1		;and say looking at file name
+		setzm	dirdsp	;and set dir default null
+		jrst	.+1]
+tplku2:
+	setz	d,
+	move	b,tmptbl(i)	;get temp string loc (this field)
+	movem	b,dirdsp(i)	;save default string ptr
+	movem	a,temp2		;save start of field(main string)
+tplku3:
+	movem	a,temp		;save byte ptr for possible restart
+	movem	b,temp3		;save b for recognition
+	ildb	c,a		;collect  string
+	cain	c,"*"		;all?
+	tdo	f,alltbl(i)	;set flag
+	caie	c,ctrlf		;recognize (^f)
+	cain	c,esc		;recognize?
+	jrst	[movem	c,recog		;save char as flag
+		setz	c,
+		dpb	c,a		;make asciz
+		jrst	.+2]
+	camn	c,term(i)	;end of field?
+	setz	c,		;make it asciz
+	idpb	c,b		;put char in string
+	addi	d,1		;bump byte count (this field)
+	jumpn	c,tplku3	;and continue(if not null)
+	trne	f,alldir+allfil+allext+allver	;any "*"'s?
+	jrst	[movem	a,temp	;save current string pointer
+		caie	i,4		;passed all interesting fields?
+		jrst	tplku4		;no, go look at next field
+		setz	a,		;return a null address
+		popj	p,0]		;yes, return
+	idivi	d,5		;compute word count
+	skipe	d+1		;skip if no partial word
+	addi	d,1		;bump if part
+	call	@lukrtn(i)	;go look up field
+	  jrst	tplkub		;type bell and cont input
+	 jrst	tplkuq		;type "?" and start again
+tplku4:
+	addi	i,1		;point to next field
+	setz	d,		;set count = 0 (new field)
+	move	a,temp		;start next field
+	jrst	tplku2		;look for next field
+tplkub:
+	move	a,recog		;get recognize char
+	cain	a,ctrlf		;if ^f dont ring bell
+	jrst	tplkb1
+	typem <>		;type bell
+tplkb1:
+	setzm	recog		;clear recognize flag
+	move	a,temp		;get string ptr back
+	jrst	tplku0		;and get more
+tplkuq:
+	skipn	i		;skip if not dir field
+	jrst	tplkux		;if yes then tell em
+	typem	< ? >
+	jrst	tplkup		;and start from top
+tplkux:
+	typen	<that directory is not on mounted tape>
+	jrst	tplkup		;start from the top again
+;tape dir lookup data
+	lukrtn:	; field lookup routine table
+		lukdir
+		luknam
+		lukext
+		lukver
+		luknop
+	term:	;field terminators
+		">"
+		"."
+		";"
+		cr
+		0
+	alltbl:	;"*" flags
+		alldir
+		allfil
+		allext
+		allver
+		0
+		0
+		0
+lukdir:	;check directory string
+	hrlzi	a,400000	;default to recognize
+	skipn	recog		;skip if recognizing
+	setz	a,		;no recognize
+	move	b,dirdsp	;use default string
+	call	tstdir
+	  jrst	skpret		;type ? and restart input
+	 popj	p,0		;type bell and continue input
+	push	p,a		;save dir number
+	skipe	recog		;skip if no recognition
+	jrst	[move	a,temp		;1st complete main string
+		move	b,temp3		;point to recognized part
+		setz	c,
+		sout
+		movei	b,">"	;finish dir field
+		bout
+		movei	a,101
+		move	b,temp		;get saved pointer
+		movei	c,100		;100 max
+		movei	d,">"		;stop at end of field
+		sout
+		movem	b,temp		;update string ptr
+		movem	b,temp2		;update current field pointer
+		jrst	.+2]
+	ibp	temp		;step over terminator
+	pop	p,a		;get dir num back
+	andi	a,-1
+	movem	a,tcurno	;and save as current tape dir
+	call	maptd1		;go get this tape directory
+	jrst	skpret		;not found error
+	skipn	recog		;skip if recognized
+	jrst	sk2ret		;take found ok exit
+	addi	i,1		;look for name next
+	popj	p,0		;go type bell and get more input
+luknam:	;lookup file name routine
+	movn	b,d		;negate length of string (words)
+	hrlzi	a,1(b)		;load length -1
+	hrri	a,tmpfil-1	;address of string-1
+	movem	a,tmpfil-1	;save lookup pointer
+	setz	b,		;entry type zero
+	setz	e,		;clear flags
+	call	$lookup		;go see if in directory
+	jrst	[tlne	e,ambgf		;skip if not ambiguous
+		popj	p,0		;go ring the bell
+		tlnn	e,mtchf		;skip if unique subset
+		jrst	skpret		;not found
+		skipn	recog		;skip if recognizing
+		jrst	skpret		;if not error
+		jrst	luknm3		;go recognize the reset
+		jrst	.+2]		;now lookup the rest
+luknm0:
+	ibp	temp		;step over terminator
+	move	a,temp		;set "current" field to next
+	movem	a,temp2
+	skipn	recog		;skip if recognition
+	jrst	sk2ret		;return if not
+	move	a,temp
+	movei	b,"."		;end name fild
+	bout
+	movei	a,101
+	move	b,temp		;type to user and update ptr
+	movei	c,100
+	movei	d,"."		;to period
+	sout
+	movem	b,temp
+	movem	b,temp2
+	setz	a,
+	idpb	a,b		;make it asciz
+luknm1:	;check for single extension
+	addi	i,1		;set state to extension
+	move	a,recog		;get recognize char
+	cain	a,ctrlf		;if ^f then just this field
+	popj	p,0
+	hrrz	b,tdrloc	;get symtab addr
+	hrrz	b,tdrect(b)	;get fdb addr
+	addi	b,tdrect	;make it real
+	movem	b,adfdbt	;save real fdb address
+	hrrz	a,fdbext(b)	;get "next" ext ptr (if any)
+	skipe	a		;skip if none
+	popj	p,0		;go get more data
+	hlrz	a,fdbext(b)	;get ext string pointer
+	addi	a,tdrect+1	;make it real string addr
+	hrro	b,a		;make a byte pointer
+	move	a,temp		;1st to main string
+	setz	c,
+	sout
+	push	p,a		;save byte pointer
+	move	a,tmptbl+2	;get string ptr
+	movem	a,extdsp	;set default for later
+	move	b,temp
+	sout			;and move string to default
+	pop	p,a		;now put ";" in string
+luknm2:
+	movei	b,";"
+	bout
+	movei	a,101		;now type to user
+	move	b,temp
+	movei	c,100
+	movei	d,";"		;stop on ";"
+	sout
+	movem	b,temp
+	movem	b,temp2		;update filed ptr
+;now  check for only one version
+	addi	i,1		;set to version state
+	move	a,recog		;get recognize char
+	cain	a,ctrlf		;if ^f then just this field
+	popj	p,0
+	move	b,adfdbt	;get real fdb address
+	hrrz	a,fdbver(b)	;see if mult ver's
+	skipe	a		;skip if not
+	popj	p,0		;go get version field
+	hlrz	b,fdbver(b)	;get this ver
+	movei	a,101		;type to user
+	movei	c,^d10		;decimal
+	nout
+	 jsr	nouter
+lukxit:
+	tlnn	f,rstbit	;skip if "restore"
+	setz	b,		;normal if not restore
+	hrrm	b,rsttbl	;set default version #
+	typem	< [Confirm]>
+	pbin
+	caie	a,cr
+	jrst	skpret		;type ? and return
+	pop	p,a		;set to take file found return
+	move	a,fdbact(b)	;setup default account string ptr
+	skipl	a
+	addi	a,tdrect+2	;if string make it real
+	movem	a,actdsp
+	move	b,adfdbt	;get fdb address
+	move	a,fdbadr(b)	;get file address
+	popj	p,0		;and return
+luknm3:
+	hrrz	b,tdrloc	;get syment addr
+	hlrz	b,tdrect(b)	;get file name string ptr
+	movei	b,tdrect+1(b)	;make it real
+	hrli	b,440700	;and a byte pointer
+	move	a,temp2		;get start of name field
+	ildb	c,a
+	ildb	d,b
+	camn	d,c		;skip if not equal
+	jrst	.-3		;look for difference
+	dpb	d,a		;add the rest to main string
+	ildb	c,b		;get next byte
+	jumpe	c,.+3
+	idpb	c,a		;save in string
+	jrst	.-3
+	push	p,a		;save byte pointer
+	idpb	c,a		;make it asciz
+	movei	a,101
+	move	b,temp
+	setz	c,
+	sout			;type to user
+	hrroi	a,tmpfil	;setup default string
+	move	b,temp2
+	setz	c,
+	sout
+	pop	p,temp
+	jrst	luknm0		;and continue
+lukext:	; lookup extension
+	movn	b,d		;negate length
+	hrlzi	a,1(b)		;move  to lh
+	hrri	a,tmpext-1	;point to string-1
+	movem	a,tmpext-1	;save lookup pointer
+	call	$setms		;go set up mask for last word
+	hrrz	a,tdrloc	;get symtab ptr
+	hrrz	b,tdrect(a)	;get fdb ptr
+lukex1:
+	movei	a,tdrect(b)	;make it real
+	movem	a,temp4		;and save it
+	hlrz	b,fdbext(a)	;get extension string pointer
+	addi	b,tdrect+1	;make it real
+	movn	a,-1(b)		;load neg string length
+	hrli	b,2(a)		;make it string length -1
+	move	a,tdrinp	;load tape string pointer
+	move	c,tdrmsk	;load mask
+	call	strcmp		;go check if the same
+	  jrst	lukex2		;go check next a<b
+	 jrst	lukex2		;go check next a>b
+	jrst	[skipn	tmpext		;skip if not null ext
+		jrst	lukex2		;keep looking if is
+		popj	p,0]		;a=subset- should recognize
+	move	b,temp4		;get fdb address
+	movem	b,adfdbt	;put in current
+	move	a,temp		;set current pointer
+	skipe	recog		;skip if terminator ";"
+	jrst	luknm2		;and go check version
+	ibp	temp		;step over terminator
+	jrst	sk2ret		;go get more to process
+lukex2:
+	move	a,temp4		;get fdb addr
+	hrrz	b,fdbext(a)	;get next ptr
+	skipn	b		;skip if there is one
+	jrst	skpret		;no match or subset start again
+	jrst 	lukex1		;go look at next fdb
+lukver:	;  now look for version
+	setzm	extdsp+1	;set protect dsp null
+	hrroi	a,tmpver	;point to version string
+	movei	c,^d10		;decimal
+	nin			;convert to binary
+	jrst	lukvr2		;go see if recog
+	movem	a,vershn	;save ver num
+	move	c,b		;save it
+	move	a,adfdbt	;get fdb address
+	movem	a,temp4
+lukvr1:
+	skipn	a		;skip if fdb
+	jrst	skpret		;if not then take not found exit
+	hrrz	b,fdbver(a)	;get next ver fdb pointer
+	movem	b,temp3		;save it for next
+	hlrz	b,fdbver(a)	;get version number
+	camn	b,c		;skip if this isn't it
+	jrst	[movem	a,adfdbt	;make this current one
+		jrst	lukxit]			;and give him this file #
+	move	a,temp3		;get next fdb (maybe)
+	skipn	a		;skip if one
+	jrst	lukvr2		;check for default
+	addi	a,tdrect	;make it real
+	jrst	lukvr1
+lukvr2:
+	skipn	recog		;skip if recognizing
+	jrst	skpret		;if not exit
+	move	a,adfdbt	;get highest fdb
+	hlrz	b,fdbver(a)
+	movei	a,101
+	movei	c,^d10
+	nout			;type highest version
+	 jsr	nouter
+lukvr3:
+	jrst	lukxit
+luknop:	;end of string input
+	trnn	f,alldir+allfil+allext+allver
+	jrst	skpret		;go type "?"
+	pop	p,a		;dump sub return
+	popj	p,0		;and retun to real caller
+
+
+;******************************************************
+;  "TSTDIR"	tape string to dir no.
+;******************************************************
+
+;  a  -  + must match, - recognize
+;  b  -  string pointer(must be word alligned)
+tstdir:
+	push	p,tdrnum	;save current tape dirnum
+	push	p,a
+	push	p,b
+	seto	a,		;map tape index (really dir 0)
+	call	maptd1
+tstdi0:
+	jrst	[pop	p,b		;doesnt exist, use disk
+		pop	p,a
+		stdir
+		  jrst	tstdix
+		 jrst	tstdi3
+		jrst	tstdi4]
+	; now make a "lookup" pointer
+	move	b,0(p)		;get string pointer
+	ildb	a,b		;find the end
+	skipe	a		;found it?
+	jrst	.-2		;keep lookung
+	sub	b,0(p)		;compute the words
+	hrr	a,0(p)		;move address to a
+	subi	a,1		;lookup wants addr-1
+	hrrz	b,b		;zero lh
+	movn	b,b
+	hrli	a,0(b)
+	setz	b,		;entry type zero
+	call	$lookup		;go lookup in index
+	jrst	[tlnn	e,mtchf		;skip if a match found
+		jrst	tstdi0		;nope, exit
+		jrst	tstdi1]		;yes, go check recognize
+	pop	p,b		;dump string ptr
+	pop	p,a		;and flag
+	jrst	tstdi2		;found, take double skip return
+tstdi1:
+	pop	p,a		;get string pointer
+	pop	p,b		;get flag word
+	tlne	e,ambgf		;skip if not ambiguous
+	jrst	tstdi3		;take ambiguous return
+	skipl	b		;skip if recognize
+	jrst	tstdix		;subset but no recog say no match
+	move	b,tdrloc	;get symtab pointer
+	movei	b,tdrect(b)	;make it real
+	hlrz	b,0(b)		;get string pointer (from symtab)
+	movei	b,tdrect+1(b)	;make it real andstep over header
+	hrli	b,440700	;make it a byte ptr
+	setz	c,
+	sout
+tstdi2:
+	move	b,tdrloc	;get symtab pointer
+	movei	b,tdrect(b)	;make it real
+	hrrz	a,0(b)		;get dir no.
+tstdi4:
+	movem	a,tcurno	;save as current tape dir no.
+	aos	-1(p)		;double skip return
+tstdi3:
+	aos	-1(p)		;skip return
+tstdix:
+	pop	p,a		;get tape dir num back
+	skipn	a		;skip if one to map
+	jrst	.+3		;return dir no.
+	call	maptd1		;go get it back
+	errr	<tape directory disappeared??>
+	move	a,tcurno	;get directory number back
+	popj	p,0
+	lit
+	end

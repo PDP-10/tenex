@@ -1,0 +1,425 @@
+TITLE BSYSUT  UTILITY SUBROUTINES
+
+;******************************************************
+;  linkage to other modules
+;******************************************************
+
+
+;	output to (BSYS,BSYSUT.MAC,) with (WALLACE,FILTER,)
+
+	search	stenex,bsys
+
+intern	ansr,chkprv,compar,dmpusr,edit,edstr,getlst,getape
+intern	getap1,halfo,rstusr,user,cuuo,strcom
+extern	clenup,error,gethsh,getnxt,nouter,settop
+extern	tapei,tapeo
+extern	skpret,sk2ret,sk3ret
+
+;******************************************************
+;  "ANSR"	gets "y" or "n" from primary input and returns (2)
+;******************************************************
+
+;	return+1 yes
+;	return+2 no
+ansr:
+	pbin			;get response
+	caie	a,"y"
+	cain	a,"Y"		;yes?
+	jrst	[typem <es>
+		call	ansr1		;go confirm
+		jrst	ansr0		;no confirmation
+		popj	p,0]		;return
+	caie	a,"n"
+	cain	a,"N"		; no ?
+	jrst	[typem <o>
+		call	ansr1		;go confirm
+		jrst	ansr0		;no confirmation
+		aos	0(p)		;set to take no exit
+		popj	p,0]		;return
+ansr0:
+	typem	< ? >	;tell him you dont understand
+	jrst	ansr		;and try again
+ansr1:
+	skipn	confrm		;does he want it typed?
+	jrst	ansr2		;nope
+	typem	< [Confirm]>
+ansr2:
+	pbin
+	cain	a,cr		;confirmed?
+	aos	0(p)		;take confirmed exit
+	setzm	confrm		;clear flag
+	popj	p,0		;return
+
+;******************************************************
+;  "CHKPRV"	check user privilages
+;******************************************************
+
+;	return+1	no privilages
+;	return+2	wheel or operator
+chkprv:
+	movei	a,400000	;this fork
+	rpcap
+	trne	b,600000	;must be wheel or operator
+	jrst	[hrroi	c,700000	;getab an priv pages
+		epcap
+		movei	a,400000	;this fork
+		movei	b,102		;go from que 2 to 1
+		spriw			;ensure no que 4 suspend
+		move	a,[xwd 3,1]
+		ati			;say, ill handle ^c
+		move	a,[xwd 20,2]
+		ati			;^p enables ^c for super panic
+		movei	a,400000	;this fork
+		move	b,psichn	;save for ^c stuff
+		tlo	b,300000	;channel 1 is ^c ,2 is ^p
+		aic
+		aos	0(p)		;take ok exit
+		popj	p,0]
+	typem	<sorry only wheel's and operators
+>
+	popj	p,0		;take not ok exit
+
+
+;******************************************************
+;  "DMPUSR"	gets user data and dumps a file
+;		in order to recreate users in full load
+;******************************************************
+
+dmpusr:
+	call	gethsh		;go get index hash table
+	call	settop		;now get top directory number
+	move	a,blkno		;get current blk #
+	aoj	a,		;make it 1st of user file
+	movem	a,usrblk	;and save in header
+dmpus1:
+	move	a,[xwd 1,-2]	;file 1 page (special)
+	movem	a,pageno	;set page number
+	aos	blkno		;bump block number
+	move	a,[xwd eee,page]  ;load blt pointer
+	blt	a,page2-1	;move prototype table to i/o
+	call	getnxt	;get next directory number
+	  jrst	dmpus2		;go write eof and exit
+	push	p,a		;save dir #
+	move	b,a		;move dir # to a
+	move	a,page		;load string pointer
+	dirst			;directory to string
+		err <dmpus2: non-existent direcotry no.>
+	pop	p,a		;get dir # back
+	movei	b,page		;point to parameter block
+	move	c,page+1	;load password string pointer
+	gtdir			;get directory data
+	movei	b,rwrcrd	;point to io list
+	call	tapeo
+	  jsr	error
+	jrst	dmpus1		;go get next user data
+dmpus2:
+	move	a,mtajfn	;load mag tape jfn
+	movei	b,eof
+	mtopr			;write eof
+	aos	tpfils		;bump file number
+	popj	p,0		;and exit
+
+
+;******************************************************
+;  "EDIT"	inputs and checks for edit characaters
+;******************************************************
+
+;	enter with byte pointer in a
+;returns:	+1  control-q return(dump line)
+;		+2 ok string input
+;	exit with updated pointer in a
+edit:
+	movem	a,edstr		;save for pssible ^r
+	move	aa,a		;set byte pointer from caller
+	hrrzi	a,100		;primary input
+	rfcoc
+	tdz	b,[xwd 140060,3]	;^a, ^f and ^q off for now
+	tlz	c,600000	;and ^r too
+	hrri	c,53000		;dont echo esc(altmode)
+	hrrzi	a,100
+	sfcoc
+	setz	e,
+edita:
+	hrrzi	a,100		;primary input
+	bin			;get a character
+	cain	b,1		;is it ^a
+	jrst	edit1		;go process ^a
+	cain	b,21		;is it ^q (flush line)
+	jrst	[typec	"="
+		movei	b,tab
+		bout
+		popj	p,0]
+	cain	b,rubout	;if rubout ,clenup and go to cmd level
+	jrst	[typem < xxx>
+		jrst	clenup]
+	cain	b,ctrlr		;if control-r retype all
+	jrst	[push	p,aa	;save pointer
+		setz	c,
+		idpb	c,aa	;make it asciz
+		typec	cr	;cr 1st
+		move	b,edstr	;get save string pointer
+		sout
+		pop	p,aa	;get pointer back
+		jrst	edita]	;and continue
+	aoj	e,		;keep track of char count
+	cain	b,ctrlf		;ctrlf	exit also
+	jrst	editb
+	caie	b,cr		;exit on cr
+	cain	b,esc		;escape also
+	jrst	editb
+	caile	b,140		;skip if not lower case
+	subi	b,40		;raise for internal
+	idpb	b,aa		;save byte in string
+	jrst	edita		;get next char
+editb:
+	move	a,aa		;save byte pointer for exit
+	idpb	b,aa		;store terminating char
+	setz	b,		;make it asciz also
+	idpb	c,aa
+	aos	(p)
+	popj	p,0		;return to caller
+edit1:
+	skipg	e		;skip if any to delete
+	jrst	edit2		;go type bell and exit
+	typec	"\"		;type back slash
+	ldb	b,aa		;get last char
+	hrrzi	a,101		;primary output
+	bout			;echo it
+	soj	e,		;dec count
+	add	aa,[7b5]
+	tlne	aa,40b23		;this fails for b-1
+	sub	aa,[43b5+1]
+	jrst	edita		;go get next byte
+edit2:
+	typec	""		;type bell
+	jrst	edita		;and return
+edstr:
+	0	;temp string pointer for ^r function
+
+
+;******************************************************
+;  "GETAPE"	get mag tape unit and open it
+;******************************************************
+
+getape:
+	skipe	mtajfn		;skip if one to get
+	jrst	getlst		;go check lister if one already
+	typem	<enter tape unit (mtan:) >
+getap1:
+	hrrzi	a,mtatbl	;point to jfn table
+	setz	b,		;no string
+	gtjfn	
+	jrst	[typem	< ? >		;tell him ???
+		jrst	getap1]		;and try again
+	movem	a,mtajfn	;save mag ta@e jfn
+	move	b,[xwd  447400,303000] ;36 bit,dump,read and write
+	openf
+		jsr	error
+	tlnn	f,rstbit+lodbit	;if reading
+	jrst	getlst
+	movei	b,40000		;say i'll handle recovery (eof!!)
+	sdsts
+getlst:
+	skipe	lstjfn		;skip if no lister yet
+	popj	p,0		;return
+	typem	<listing to file: >
+getls1:
+	move	a,[point 7,instr]	;put string here
+	call	edit		;get it with editing
+	jrst	getlst		;^q means try again
+	move	a,instr
+	and	a,[xwd -1,777400]	;only 4 chars
+	camn	a,[asciz /TTY:/]	;is it tty: ?
+	tro	f,lstty		;set flag lstdev .eq. tty
+	movsi	a,440001	;short, string
+	hrroi	b,instr		;point to string
+	gtjfn
+	  jrst	[typem	<  ?  >		;tell him you dont understand
+		jrst	getls1]	;and try again
+	movem	a,lstjfn	;save for the world
+	move	b,[xwd 070000,100000]
+	openf
+	  jsr	error
+	popj	p,0		;return
+
+
+;******************************************************
+;  "HALFO"	output a word as rh,lhh
+;******************************************************
+
+halfo:
+	push	p,b		;save it
+	hlrz	b,b
+	movei	c,10		;octal
+	nout
+	 jsr	nouter
+	movei	b,","
+	bout
+	pop	p,b
+	andi	b,-1		;rh now
+	movei	c,10
+	nout
+	 jsr	nouter
+	movei	b," "
+	bout
+	popj	p,0
+
+
+;******************************************************
+;  "RSTUSR"	create user directories
+;******************************************************
+
+rstusr:
+	typen	<create users? >
+	call	ansr
+	skipa
+	popj	p,0		;bypass all this
+	skipn	usrblk		;skip if user data is on this tape
+	jrst	[typen <	this tape does not contain data to create users
+	it's not the 1st tape of a dump ....>
+		popj p,0]
+	msg	<	creating user directories>
+	typec	cr
+	move	a,usrblk	;get 1st blk # 
+	soj	a,		;dec for loop
+	movem	a,blkno		;set in slot
+rstus1:
+	aos	a,blkno		;bump block number
+	move	a,blkno		;get it
+	movei	b,rwrcrd	;load pointer to cmd list
+	call	tapei		;go get a record
+	  jrst	rstuse		;punt
+	  jrst	rstuse		;punt
+	  popj	p,0		;exit on eof
+;and check if already exists
+	movei	a,1		;use whole string
+	move	b,page		;load name string pointer
+	stdir
+	  jrst	rstus2		;create if ambiguous
+	  jrst	rstus2		;create if none
+	movei	a,(a)
+	soje	a,rstus2		;create if "SYSTEM"
+;type user name if already there
+	typec	cr
+	movei	a,101		;primary output
+	move	b,page		;load pointer to user name
+	setz	c,
+	sout
+	typem	<  already exists>
+	jrst	rstus1		;ignore if already one there
+rstus2:	;now create one
+	move	a,page		;load name string pointer
+	movei	b,page		;point to params table
+	hrli	b,377540	;set all from table
+	crdir
+	jrst	rstus1		;loop through all
+rstuse:
+	typem	<attempting to create users>
+	jrst	clenup		;punt
+
+
+;******************************************************
+;  "STRCOM"	compares two strings
+;******************************************************
+
+; not efficient but, easy to use!!
+; accepts: a/ byte pointer to string "A"
+;	  b/ byte pointer to string "B"
+; returns: +1, A < B
+;	  +2, A > B
+;	  +3, A = initial subset of B
+;	  +4, A = B
+strcom:
+	ildb	c,a		;load a byte from  string A
+	ildb	d,b		;load a byte from string B
+	jumpe	c,strcm0	;string A done before B
+	jumpe	d,strcm1	;B finished, is C finished?
+	camn	c,d		;byte from A and B equal?
+	 jrst	strcom		;yes, go check next pair
+	caml	c,d		;A less than B?
+	 jrst	skpret		;no, A greater than B
+	popj	p,0		;yes, A less than B
+strcm0:
+	jumpe	d,sk3ret	;both A and B finished, A = B
+	 jrst	sk2ret		;B not finished, A subset of B
+strcm1:
+	jumpe	c,sk3ret	;both A and B finishd, A = B
+	 popj	p,0		;A not finished, A greater than B
+
+
+;******************************************************
+;  "USER"	input string and get directory number
+;******************************************************
+
+user:
+	typen	<Directory: >
+user1:
+	move	a,[point 7,instr]	;put the string there
+user2:
+	call	edit		;get input string
+	jrst	user		;try again
+	movem	a,temp		;save byte pointer for possible recog.
+	ildb	b,a		;get aterminating char
+	cain	b,esc		;was it  escape (recognize)
+	setom	recog		;set recognize flag
+	setz	b,
+	dpb	b,a		;make string asciz
+	setz	a,
+	skipe	recog		;skip if not recognize
+	movsi	a,400000	;try recognize
+	hrroi	b,instr		;string pointer
+	stdir
+	  jrst	[typem	< ? >
+		jrst user1]	
+	  jrst	[typem	<>		;type bell
+		move	a,temp		;get byte pointer back
+		jrst user2]	
+	andi	a,-1		;just save dir #
+	movem	a,curdir
+	skipe	recog		;was recognize requested?
+	jrst	[movei	a,101		;yes type rest of string
+		move	b,temp		;get saved byte pointer
+		setz	c,
+		sout
+		setzm	recog		;reset flag
+		pbin
+		caie	a,cr		;cr if confirmation
+		jrst	user		;all else starts again
+		jrst	.+1]		;and continue
+	move	a,curdir	;return dir # in 1
+	popj	p,0		;return 
+
+
+;******************************************************
+;  "UUORTN"	uuo dipatch routine, tables and routines
+;******************************************************
+
+; uuo dispatcher
+cuuo:
+	movem	a,ctuuo		;save reg a
+	hlrz	a,40		;get uuo op
+	lsh	a,-^d9		;right justify
+	hrrz	a,cuuot(a)	;get routine address
+	exch	a,ctuuo		;restore a
+	jrst	@ctuuo
+; uuo dispatch table
+cuuot:
+	0
+	uerr		;type error and go to commnd level
+	uerrr		;type error and return
+; "uerr"
+uerr:
+	hrrz	a,40		;get string address
+	hrli	a,440700	;make it a byte pointer
+	psout
+	jrst	clenup
+; "uerrr"
+uerrr:
+	push	p,a
+	hrrz	a,40		;get string address
+	hrli	a,440700	;make it a byte pointer
+	psout
+	pop	p,a
+	popj	p,0		;return
+	lit
+	end

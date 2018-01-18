@@ -1,0 +1,244 @@
+TITLE BSYSER  ERROR ROUTINES
+
+;******************************************************
+;  linkage to other modules
+;******************************************************
+
+
+;	output to (BSYS,BSYSER.MAC,) with (WALLACE,FILTER,)
+
+	search	stenex,bsys
+intern	berr,memerb,nouter,erret
+intern	error,memerr,tellem,cntrlc,cntrlp,chntab,levtab
+extern	clenup,listfl,lstfil,print
+
+;******************************************************
+;  "ERROR"	issues jsys to type error message and calls exit
+;******************************************************
+
+; 	enter with error code in "a"
+error:
+	0			;address of error dispatch
+	movem	a,ercode	;save error
+	typen	<pc = >
+	hrrzi	a,101		;primary output
+	hrrz	b,error		;load saved pc
+	movei	c,^d8		;signify octal
+	nout
+	  jrst	typea		;punt if error here
+	typem	< code = >
+	hrrzi	a,101
+	hrrz	b,ercode	;load error number
+	movei	c,^d8		;octal
+	nout
+	  jrst	typea		;punt if error here
+	typem	<
+>
+	move	b,ercode	;move error code
+	hrli	b,400000	;this fork
+	hrrzi	a,101		;primary output device
+	setz	c,		;just type string
+	erstr
+	  jrst	typea		;undefined error # return
+	  jrst	typea		;illegal dest or length
+	jrst	clenup		;go back to start
+typea:
+	msg	jsys error in error routine aaaaaaaahhhhhhhhhhhh!!!!!
+	jrst	clenup	
+erret:
+	typem	<  ?  >
+	popj	p,0
+berr:
+	0
+	0
+nouter:		; nout errors return error code in 3
+	0
+	move	a,c		;move error code to a for "error"
+	move	c,nouter
+	movem	c,error		;set jsr address
+	jrst	error+1		;and join error code
+	
+
+;******************************************************
+;  "MEMERR"	disc error interrupt routine
+;******************************************************
+
+memerr:
+	movem	17,intac+17	;save ac 17
+	movei	17,intac	;set for blt
+	blt	17,intac+16	;save ac's
+	move	p,[xwd -30,intstk] ;load interrupt pdl pointer
+	push	p,40		;save saved uuo
+	call	memerb	;go type error stuff
+memxit:
+	pop	p,40		;restore saved uuo
+	movsi	17,intac	;set for blt
+	blt	17,17		;restore ac's
+	debrk			;debreak from interrupt
+memerb: 		; type error data
+	typeb	<
+	**disc error in file:   >
+	aos	linect		;bump lines
+	skipge	shandl		;skip if jfn for error
+	jrst	[call	lstfile	;go list file.ext;ver
+		setz	b,
+		idpb	b,a		;ensure asciz
+		movei	a,101		;tty 1st
+		call	print+1	;actually print
+		trne	f,lstty		;skip if lister not tty
+		jrst	memera		;dont do it 2nd time
+		move	a,lstjfn	;do on lister too
+		call	print+1
+		jrst	memera]			;and continue
+	hlrz	b,shandl	;get currnt jfn from saved handle
+	movei	a,101		;primary output
+	movei	c,0		
+	jfns			;print file name
+	  jfcl
+	trne	f,lstty		;skip if lister not tty:
+	jrst	memera		;dont type 2nd time if yes
+	move	a,lstjfn	;now on lister
+	jfns
+		jfcl
+memera:
+	typeb	<, page >
+	hrrz	b,shandl	;load page number (from saved handle)
+	movei	a,101		;primary output
+	movei	c,10		;octal output
+	nout
+	  jfcl
+	trne	f,lstty		;skip if tty not lister
+	jrst	.+4		;bypass 2nd time on tty
+	move	a,lstjfn	;now lister
+	nout
+	  jfcl
+	trne	f,lstty		;skip if tty not lister
+	aos	linect		;bump line count for tty
+	typem <
+	  disc address = >
+	move a,[sixbit /dskerr/]
+	sysgt
+	hrrzm	b,dskern	;save disc err number
+	move	a,dskern	;load in a
+	hrli	a,1		;??
+	getab
+	  jfcl
+	tlz	a,700000
+	call	memer1
+	typem	<, class & count = >
+	move	a,dskern	;load disc error #
+	hrli	a,2		;table #2
+	getab
+	  jfcl
+	call	memer1
+	trne	f,lstty		;skip if tty not lister
+	aos	linect		;bump line count for tty
+	typem	<
+	  core address = >
+	move	a,dskern
+	hrli	a,3
+	getab
+	  jfcl
+	call	memer1	;go print word
+	typem	<, error status = >
+	move	a,dskern
+	hrli	a,4
+	getab
+	  jfcl
+	call	memer1	;go print word
+	popj	p,0
+memer1:
+	move	b,a
+	movei	a,101
+	move	c,[1B0+10]	;octal print(magnetude)
+	nout
+	  jfcl
+	popj	p,0
+baderr:
+	typem	<unexpected io error interrupt...ignored
+	>
+	jrst	memxit		;go exit
+	
+
+;******************************************************
+;  "TELLEM"	type file name when ^W is struck
+;******************************************************
+
+tellem:
+	movem	17,intac+17	;save ac 17
+	movei	17,intac	;set for blt
+	blt	17,intac+16	;save ac's
+	move	p,[xwd -30,intstk] ;load interrupt pdl pointer
+	push	p,40		;save saved uuo
+	skipe	dirnum		;skip if no directory
+	tlnn	f,fulbit+arcbit+delbit+rstbit+verbit+trmbit+mrkbit
+	jrst	memxit		;if none then ignore
+	typen	<  working on >
+	movei	b,"<"
+	bout
+	move	b,dirnum	;get directory #
+	dirst
+	 jrst	memxit		;exit if error
+	movei	a,101
+	movei	b,">"
+	bout
+	setom	apage		;set " a page" flag
+	movei	a,101		;on tty
+	call	listfl		;go list file.ext;ver  page n
+	jrst	memxit
+
+;******************************************************
+;  "CNTRLC/CNTRLP"	routine to handle ^c and ^p
+;******************************************************
+
+cntrlc:
+	skipe	ctrlc		;skip if we're taking ^c
+	jrst	[setzm	ctrlc
+		aos	ctrlc		;say we saw one
+		debrk]
+	movem	17,intac+17	;save ac 17
+	movei	17,intac	;set for blt
+	blt	17,intac+16	;save ac's
+	move	p,[xwd -30,intstk] ;load interrupt pdl pointer
+	gjinf			;get connected dir no.
+	movem	b,savdir	;save it
+	move	a,condir	;get original connected dir
+	cndir
+	 errr	<cntrlc: reconnect to directory failed??>
+	seto	a,		;superior fork
+	movsi	b,(1b1)		;channel 1
+	iic
+	movei	a,^d2000		;wait 2sec. (to be safe)
+	disms
+	; if we get back here reconnect and continue
+	skipe	a,savdir	;go back to one working on
+	jrst	[cndir			;connect to it (if one)
+		err <cntrlc: attempt to conntect to bad dir no.??>
+		jrst	.+1]
+	movsi	17,intac	;set for blt
+	blt	17,17		;restore ac's
+	debrk
+cntrlp:
+	setzm	ctrlc		;enable ^c stuff
+	debrk
+
+;******************************************************
+;  pseudo interrupt tables
+;******************************************************
+
+levtab:
+	pc1
+	pc2
+	pc3
+pc1:	0
+pc2:	0
+pc3:	0
+chntab:
+	xwd	1,tellem
+	xwd	1,cntrlc
+	xwd	1,cntrlp
+	repeat ^d8,<0>
+	xwd	1,memerr
+	repeat ^d35-^d11,<0>
+lit
+end

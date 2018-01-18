@@ -1,0 +1,237 @@
+TITLE BSYSFS  FILE SYSTEM PROCESSING SUBROUTINES
+
+;******************************************************
+;  linkage to other modules
+;******************************************************
+
+
+;	output to (BSYS,BSYSFS.MAC,) with (WALLACE,FILTER,)
+
+	search	stenex,bsys
+intern	chdwrd,delfdb,fixfdb,freblk,map,mapsys,settop,unmap
+extern	ansr,berr,break,check,clenup,edit,edstr
+extern	entry2,error,getarc,getdir
+extern	getnpg,getpt,listfl,lsthdr,lstufp,nouter
+extern	rstusr,sk2ret,skpret,strcmp,tapei,tapeo,wrtdm1
+
+;******************************************************
+;  "CHDWRD"	change word in mapped sub-directory
+;		(like CHFDB only for locked directory)
+;******************************************************
+
+;  a/ displacement(fdb),,0
+;  b/ mask indicating bits to be changed
+;  c/ changed bits
+chdwrd:
+	push	p,d
+	hlrz	a,a		;get displacement to rh
+	add	a,adrfdb	;compute real address
+	push	p,a		;save it
+	push	p,b		;and mask
+	lsh	a,-^d9		;extract page no.
+	hrli	a,400000	;this fork
+	hrlzi	b,140000	;get write access to proper page
+	spacs
+	pop	p,b		;get mask back
+	exch	a,0(p)		;and address
+	move	d,0(a)		;get word to change
+	and	c,b		;save masked new bits
+	andcm	d,b		;flush bits to be replaced
+	ior	d,c
+	movem	d,0(a)		;update word
+	pop	p,a		;get page handle back
+	hrlzi	b,100000	;read only
+	spacs
+	pop	p,d
+	popj	p,0		;and return
+
+;******************************************************
+;  "DELFDB"	delete a file  directory block
+;		and associated strings
+;******************************************************
+
+delfdb:
+	move	b,cvf		;load fdb to be deleted
+	came	b,cef		;is it top of version chain?
+	jrst	delfd1		;if not then leave ext string alone
+	skipe	nvf		;is there another version?
+	jrst	delfd1		;if yes then leave alone also
+;if i get here then this is only fdb for this ext 
+	move	b,adrfdb	;load (real) address of fdb
+	hlrz	a,fdbext(b)	;load address of ext(disp)
+	addi	a,direct	;make it real
+	call	freblk	;put it in free list
+delfd1:
+	move	b,adrfdb		;load fdb address(real)
+	move	a,fdbact(b)	;load acct word
+	skipg	a		;skip if it's a string pointer
+	jrst	delfd2		;go put fdb blk hn free list
+	addi	a,direct	;make it a real addr.
+	sosg	1(a)		;dec use count (skip if not +)
+	call	freblk	;go put acct string in free list
+delfd2:
+	move	a,adrfdb		;load address of fdb
+	move	b,fdblen(a)	;load fdb length
+	movem	b,0(a)		;setup for freblk
+	call	freblk	;
+	popj	p,0		;return to caller
+
+
+;******************************************************
+;  "FIXFDB"	make new fdb look like one on tape
+;******************************************************
+
+fixfdb:
+	push	p,d		;save d
+	move	d,[point 5,fdflds]  ; load byte pointer
+fixfd1:
+	ildb	a,d	;load word displacement byte
+	skipn	a		;skip if not end
+	jrst	[gtad
+		move	c,a
+		seto	b,
+		hrli	a,fdbref	;change reference date to today
+		hrr	a,dmpjfn
+		chfdb
+		pop	p,d		;restore d
+		popj	p,0]		;if end exit
+	move	b,msktbl(a)	;load mask of bits to change
+	move	c,adrfdb	;load address of fdb
+	add	c,a		;add word displacement
+	move	c,0(c)		;load it for chfdb jsys
+	hrl	a,a		;move displacement to lh
+	hrr	a,dmpjfn	;jfn to rh
+	chfdb
+	jrst	fixfd1		;continue
+
+
+;******************************************************
+;  "FREBLK"	put a block in the directory free list
+;******************************************************
+
+;	a= address (real) of block
+freblk:
+	move	b,dirfre		;load address of top of free
+	hrlm	b,0(a)		;put it in lh of new block
+	subi	a,direct	;make fdb address a displ
+	movem	a,dirfre	;make free top point to new block
+	popj	p,0		;and return to caller
+
+;******************************************************
+;  "MAP"	map a directory to my space
+;******************************************************
+
+;  at entry	a	file handle
+;		b	rh=page # where to put 1st page(my space)
+;		c	access required (see pmap jsys)
+map:
+	push	p,d		;save d
+	hrli	b,400000	;this fork
+	movem	a,shandl	;save for possible disc error
+	pmap			;map the 1st page
+	hrrz	d,b		;get page #
+	lsh	d,^d9		;make it an address
+	skipn	d,4(d)		;skip if not null(symtop)
+	jrst	map2		;if null exit
+	subi	d,1		;account for possible new(v 1.29) top
+	lsh	d,-^d9		;get pages to map-1
+	addi	d,1		;account for mapped page
+	movn	d,d		;set count
+	caml	d,[-10]		;skip if "big" directory
+	jrst	map1+1		;just do it if "small
+	addi	d,10		;account for 1st section
+	camge	d,[-10]		;too big?
+	jrst	[errr	<map: directory size too large!>
+		movni	d,[-10]		;force it to be max
+		jrst	.+1]
+	push	p,d		;and save remainder
+	movei	d,map0		;setup return
+	exch	d,0(p)
+	push	p,d
+	movni	d,10		;set count for 1st section
+	jrst	map1+1		;go do other 7 pages in 1st section
+map0:
+	addi	a,10000-10	;account for 2nd part offset
+map1:
+	pmap			;map a page
+	aoj	a,		;point to next page
+	aoj	b,		;ditto
+	aojl	d,map1		;jump if not done
+map2:
+	pop	p,d		;restore d
+	popj	p,0		;return to caller
+
+
+;******************************************************
+;  "MAPSYS"	map appropriate system dir for tape directory
+;		(not really sys dir but last copy from tape)
+;******************************************************
+
+mapsys:
+	move	a,tdrnum	;load tape directory number mapped
+	lsh	a,3		;point to proper page#
+	hrl	a,dirjfn	;construct file handle
+	movei	b,direct/1000	;page # where to put it
+	hrlzi	c,140000	;read and write access
+	call	map		;go map it all
+	move	a,tdrnum	;now check it really exists
+	came	a,dirnum	;skip if the same
+	popj	p,0		;take non-exitant exit
+	jrst	skpret		;take ok exit
+
+;******************************************************
+;  "SETTOP"	sets "topdir" equal to the highest numbered 
+;		directory presently defined in the system
+;******************************************************
+
+; play king of the mountain to get highest directory number
+settop:
+	setzm	topdir		;initialize to zero
+	movei	a,hshtbl	;start at bottom
+	move	d,htocnt	;load count (length)
+settp1:
+	hrrz	b,0(a)		;pick up an entry
+	cain	b,-1		;special deleted entry?
+	setz	b,		;yes, same as none
+	caile	b,1000		;skip if a valid entry
+	jrst	[push	p,a		;save address
+		typen <invalid hash table entry
+  entry= >
+		move	a,0(p)		;get entry addr
+		move	b,0(a)		;get entry
+		movei	a,101		;primary output
+		movei	c,10
+		nout
+		  jsr	error
+		typem < addr= >
+		move	2,0(p)		;get address of bad entry
+		subi	2,hshtbl	;make it relative
+		movei	c,10
+		nout
+		 jsr error
+		pop	p,a		;get address back
+		jrst	.+3]		;and bypass this one
+	camle	b,topdir	;skip if not greater
+	movem	b,topdir	;if greater this is new top
+	aoj	a,		;bump pointer
+	sojn	d,settp1	;jump if not done
+	popj	p,0		;return to caller
+
+
+;******************************************************
+;  "UNMAP"	unmaps 16 pages
+;******************************************************
+
+;	b	where to start (page number)
+unmap:
+	push	p,d		;save d
+	movei	d,^d16		;do 16 of them
+	seto	a,		;set unmap flag
+	hrli	b,400000	;this fork
+	pmap
+	aoj	b,		;point to next page
+	sojn	d,unmap+2	;loop until done
+	pop	p,d		;restore d
+	popj	p,0		;return
+	lit
+	end
