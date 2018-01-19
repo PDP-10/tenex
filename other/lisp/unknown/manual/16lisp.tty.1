@@ -1,0 +1,1017 @@
+
+
+
+
+
+
+
+
+
+
+
+                                  SECTION 16
+
+                                ERROR HANDLING
+
+
+
+
+
+ 16.1  Unbound Atoms and Undefined Functions
+
+
+
+Whenever the interpreter encounters an atomic form with no binding on the
+                                                             1
+push-down list, and whose value  contains the atom NOBIND,  the
+interpreter calls the function  faulteval.  Similarly,  faulteval is called
+when a list is encountered,  car of which is not the name of a function or a
+                2
+function object.  The value returned by  faulteval is used by the
+interpreter exactly as though it were the value of the form.
+
+
+
+ faulteval is defined to print either U.B.A., for  un bound  atom, or
+U.D.F., for  un defined  function, and then to call  break1 giving
+                                     3
+it the offending form as  brkexp.  Once inside the break, the user can set
+the atom, define the function, return a specified value for the form using the
+RETURN command, etc., or abort the break using the ^ command.  If the
+break is exited with a value, the computation will proceed exactly as
+
+
+
+
+**FOOTNOTES**
+1
+    All atoms are initialized (when they are created by the  read program) with
+    their value cells ( car of the atom) NOBIND, their function cells
+    NIL, and their property lists ( cdr of the atom) NIL.
+
+
+2
+    See Appendix 2 for complete description of INTERLISP interpreter.
+
+
+3
+    If DWIM is enabled (and a break is going to occur),  faulteval also
+    prints the offending form (in the case of a U.B.A., the parent form) and
+    the name of the function which contains the form.  For example, if FOO
+    contains (CONS X FIE) and FIE is unbound,  faulteval prints:
+    U.B.A. FIE [in FOO] in (CONS X FIE).  Note that if DWIM is not enabled, the
+    user can obtain this information after he is inside the break via the 
+    IN?  command.
+
+
+
+
+
+                                     16.1
+
+
+
+                             4
+though no error had occurred.
+
+
+
+The decision over whether or not to induce a break depends on the depth of
+computation, and the amount of time invested in the computation.  The actual
+algorithm is described in detail below in the section on  breakcheck.
+Suffice it to say that the parameters affecting this decision have been
+adjusted empirically so that trivial type-in errors do not cause breaks, but
+deep errors do.
+
+
+
+
+ 16.2  Terminal Initiated Breaks
+
+
+
+ Control-H
+
+
+
+Section 15 on the break package described how the user could cause a break when
+a specified function was entered.  The user can also indicate his desire to go
+                                                                            5
+into a break at any time while a program is running by typing control-H.
+At the next point a function is about to be entered, the function
+ interrupt is called instead.   interrupt types INTERRUPTED BEFORE
+followed by the function name, constructs an appropriate break expression, and
+then calls  break1.  The user can then examine the state of the
+computation, and continue by typing OK, GO or EVAL, and/or  retfrom
+back to some previous point, exactly as with a user break.  Control-H
+breaks are thus always 'safe'.  Note that control-H breaks are not affected by
+the depth or time of the computation.  However, they only occur when a function
+is called, since it is only at this time that the system is in a "clean" enough
+state to allow the user to interact.  Thus, if a compiled program is looping
+
+
+
+**FOOTNOTES**
+4
+    A similar procedure is followed whenever  apply or  apply* are
+    called with an undefined function, i.e. one whose  fntyp is NIL.  In this
+    case,  faultapply is called giving it the function as its first
+    argument and the list of arguments to the function as its second argument.
+    The value returned by  faultapply is used as the value of  apply or
+     apply*.   faultapply is defined to print U.D.F. and then call
+     break1 giving it (APPLY (QUOTE fn) QUOTE args)) as  brkexp.  Once
+    inside the break, the user can define the function, return a specified
+    value, etc.  If the break is exited with a value, the computation will
+    proceed exactly as though no error had occurred.   faultapply is also
+    called for undefined function calls from compiled code.
+
+
+5
+    As soon as control-H is typed, INTERLISP clears and saves the input
+    buffer, and then rings the bell, indicating that it is now safe to
+    type ahead to the upcoming break.  If the break returns a value, i.e., is
+    not aborted via ^ or control-D, the contents of the input buffer
+    before the control-H was typed will be restored.
+
+
+
+
+
+                                     16.2
+
+
+
+without calling any functions, or is in a I/O wait, control-H will not affect
+it.  Control-B, however, will.
+
+
+
+
+ Control-B
+
+
+
+Control-B is a stronger interruption than control-H.  It effectively generates
+an immediate error.  This error is treated like any other error except that it
+                                                                          6
+always causes a break, regardless of the depth or time of the computation.
+Thus if the function FOO is looping internally, typing control-B will cause
+the computation to be stopped, the stack unwound to the point at which FOO was
+called, and then cause a break.  Note that the internal variables of FOO are
+not available in this break, and similarly, FOO may have already produced some
+changes in the environment before the control-B was typed.  Therefore whenever
+possible, it is better to use control-H instead of control-B.
+
+
+
+
+ Control-E
+
+
+
+If the user wishes to abort a computation, without causing a break, he should
+type control-E.  Control-E does not go through the normal error machinery
+of scanning the stack, calling  breakcheck, printing a message, etc. as
+described below, but simply types a carriage-return and unwinds.
+
+
+
+
+ 16.3  Other Types of Errors
+
+
+
+In addition to U.B.A. and U.D.F. errors, there are currently 28 other
+error types in INTERLISP, e.g.  P-STACK OVERFLOW, NON-
+NUMERIC ARG, FILE NOT OPEN, etc.  A complete list is given later in this
+section.  When an error occurs, the decision about whether or not to break is
+handled by  breakcheck and is the same as with U.B.A.  and U.D.F. errors.
+If a break is to occur, the exact action that follows depends on the type of
+error.  For example, if a break is to occur following evaluation of
+(RPLACA NIL (ADD1 5)) (which causes an ATTEMPT TO RPLAC NIL error), the message
+printed will be (RPLACA BROKEN),  brkexp will be (RPLACA U V W), U will be
+bound to NIL, V to 6, and W to NIL, and the stack will look like the user had
+broken on  rplaca himself.  Following a NON-NUMERIC ARG error, the system
+will type IN followed by the name of the most recently entered function,
+and then (BROKEN). The system will then effectively be in a break inside of
+this function.   brkexp will be a call to ERROR so that if the user types
+
+
+
+**FOOTNOTES**
+6
+    However, setting  helpflag to NIL will suppress the break.  See
+    discussion of  breakcheck below.
+
+
+
+
+
+                                     16.3
+
+
+
+OK or EVAL or GO, a ? will be printed and the break maintained.
+                                                                        7
+However, if the break is exited with a value via the RETURN command,  the
+computation will proceed exactly as though no error had occurred.
+
+
+
+
+ 16.4  Breakcheck - When to Break
+
+
+
+The decision as to whether or not to induce a break when an error occurs is
+                                        8
+handled by the function  breakcheck.  The user can suppress all error
+breaks by setting the variable  helpflag to NIL (initially set to T).  If
+ helpflag=T, the decision is affected by two factors: the length of time spent
+                                                                              9
+in the computation, and the depth of the computation at the time of the error.
+If the time is greater than  helptime or the depth is greater than
+ helpdepth,  breakcheck returns T, meaning a break will occur.
+
+
+
+                                                                           10
+Since a function is not actually entered until its arguments are evaluated,
+the depth of a computation is defined to be the sum of the number of function
+calls plus the number of internal calls to  eval.  Thus if the user types in
+the expression
+[MAPC FOO (FUNCTION (LAMBDA (X) (COND ((NOT (MEMB X FIE)) (PRINT X] for
+evaluation, and FIE is not bound, at the point of the U.B.A. FIE error, two
+functions,  mapc and  cond, have been entered, and there are three internal
+calls to  eval corresponding to the evaluation of the forms
+                                                                            11
+(COND ((NOT (MEMB X FIE)) (PRINT X))), (NOT (MEMB X FIE)), and (MEMB X FIE).
+The depth is thus 5.
+
+
+
+
+**FOOTNOTES**
+7
+    Presumably the value will be a number, or the error will occur again.
+
+
+8
+     Breakcheck is not actually available to the user for advising or
+    breaking since the error package is block-compiled.
+
+
+9
+    Except that control-B errors always break.
+
+
+10
+    Unless of course the function does not have its arguments evaluated, i.e.
+    is an FEXPR, FEXPR*, CFEXPR, CFEXPR*, FSUBR or FSUBR*.
+
+
+11
+    For complete discussion of the stack and the interpreter, see Section 12.
+
+
+
+
+
+                                     16.4
+
+
+
+ breakcheck begins by searching back up the parameter stack looking for an
+              12
+ errorset.   At the same time, it counts the number of internal calls to
+ eval.  As soon as (if) the number of calls to eval  exceeds  helpdepth,
+ breakcheck can stop searching for  errorset and return T, since the position
+of the  errorset is only needed when a break is not going to occur.  Otherwise,
+                                                                  13
+ breakcheck continues searching until either an  errorset is found   or the top
+of the stack is reached.   Breakcheck then completes the depth check by
+counting the number of function calls between the  error and the last
+ errorset, or the top of the stack.  If the number of function calls plus the
+number of calls to eval  (already counted) is greater than or equal to
+                                   14
+ helpdepth, initially set to 9,    breakcheck returns T.  Otherwise, it
+records the position of the last  errorset, and the value of  errorset's second
+argument, which is used in deciding whether to print the error message, and
+returns NIL.
+
+
+
+ breakcheck next measures the length of time spent in the computation by
+subtracting the value of the variable  helpclock from the value of
+          15
+(CLOCK 2).   If the difference is greater than  helptime milliseconds,
+initially set to 1000, then a break will occur, i.e.,  breakcheck returns T,
+otherwise NIL.  The variable  helpclock is rebound to the current value of
+(CLOCK 2) for each computation typed in to  lispx or to a break.
+
+
+
+The time criterion for breaking can be suppressed by setting  helptime to NIL
+(or a very big number), or by binding  helpclock to NIL.  Note that setting
+ helpclock to NIL will not have any effect because  helpclock is rebound by
+ lispx and by  break.
+
+
+
+
+
+
+**FOOTNOTES**
+12
+     errorsets are simply markers on the stack indicating how far back
+    unwinding is to take place when an error occurs, i.e. they segment the
+    stack into sections such as that if an error occurs in any section, control
+    returns to the point at which the last  errorset was entered, from
+    which NIL is returned as the value of the  errorset.  See page 16.13.
+
+
+13
+    If the second argument to the  errorset is INTERNAL, the errorset is
+    ignored and searching continues.  See discussion of  errorset, page 16.13.
+
+
+14
+    Arrived at empirically, takes into account the overhead due to  lispx or
+     break.
+
+
+15
+    Whose value is number of milliseconds of compute time.  See Section 21.
+
+
+
+
+
+                                     16.5
+
+
+
+If  breakcheck is NIL, i.e., a break is not going to occur, then if an
+ errorset was found, NIL is returned (via  retfrom) as the value of the
+ errorset, after first printing the error message if the  errorset's second
+argument was TRUE.  If there was no  errorset, the message is printed, and
+control returns to  evalgt.  This procedure is followed for all types of
+errors.
+
+
+
+Note that for all error breaks for which a break occurs,  break1 will clear
+and save the input buffer. If the break returns a value, i.e., is not
+aborted via ^ or control-D, the input buffer will be restored as
+described in Section 15.
+
+
+
+
+ 16.5  Error Types
+
+
+
+                                                                            16
+There are currently forty-five  error types in the INTERLISP system.
+They are listed below by error number. The error is set internally by the
+code that detects the error before it calls the error handling functions.  It
+is also the value returned by  errorn if called subsequent to that type of
+error, and is used by  errormess for printing the error message.
+
+
+
+Most error types will print the offending expression following the message,
+e.g., NON-NUMERIC ARG NIL is very common.  Error type 18 (control-B) always
+causes a break (unless  helpflag is NIL).  All other errors cause breaks if
+ breakcheck returns T.
+
+
+
+0   NONXMEM                   (INTERLISP-10) reference to  non-e xistent
+                              memory.  Usually indicates system is very sick.
+
+
+
+1                            Currently not used.
+
+
+
+2   P-STACK OVERFLOW          occurs when computation is too deep, either
+                             with respect to number of function calls, or
+
+
+
+
+
+**FOOTNOTES**
+16
+    Some of these errors are implementation dependent, i.e. appear in
+    INTERLISP-10 but may not appear in other INTERLISP systems.
+
+
+
+
+
+
+
+
+
+                                     16.6
+
+
+                                                         17
+                             number of variable bindings.   Usually because of
+                             a non-terminating recursive computation, i.e. a
+                             bug.
+
+
+
+3   ILLEGAL RETURN            call to  return when not inside of an
+                             interpreted  prog.
+
+
+
+4   ILLEGAL ARG - PUTD        second argument to  putd (the definition) is
+                             not NIL, a list, or a pointer to compiled code.
+
+
+
+5   ARG NOT ATOM - SET        first argument to  set,  setq, or  setqq
+                             (name of the variable) is not a literal atom.
+
+
+
+6   ATTEMPT TO SET NIL       via  set or  setq
+
+
+
+7   ATTEMPT TO RPLAC NIL     attempt either to  rplaca or to  rplacd NIL
+                             with something other than NIL.
+
+
+
+8   UNDEFINED OR ILLEGAL GO   go when not inside of a  prog, or  go to
+                             nonexistent label.
+
+
+
+9   FILE WON'T OPEN          From  infile or  outfile, Section 14.
+
+
+
+10  NON-NUMERIC ARG          a numeric function e.g.  iplus,  itimes,
+                              igreaterp, expected a number.
+
+
+
+11  ATOM TOO LONG            In INTERLISP-10, >= 100 characters.
+
+
+
+12  ATOM HASH TABLE FULL     no room for any more (new) atoms.
+
+
+**FOOTNOTES**
+17
+    In INTERLISP-10, the garbage collector uses the same stack as the rest of
+    the system, so that if a garbage collection occurs when deep in a
+    computation, the stack can overflow (particularly if there is a lot of list
+    structure that is deep in the car direction). If this does happen, the
+    garbage collector will flush the stack used by the computation in order
+    that the garbage collection can complete. Afterwards, the error message
+    STACK OVERFLOW IN GC - CMPUTATION LOST is printed, followed by a
+    reset[], i.e. return to top level.
+
+
+
+
+
+                                     16.7
+
+
+
+13  FILE NOT OPEN            from an I/O function, e.g.  read,  print,
+                              closef.
+
+
+
+14  ARG NOT ATOM             e.g. put called on a list.
+
+
+
+15  TOO MANY FILES OPEN      >= 16 including terminal.
+
+
+
+16  END OF FILE              from an input function, e.g.  read,  readc,
+                              ratom.  Note: the file will then be closed.
+
+
+
+17  ERROR                    call to  error.
+
+
+
+18  BREAK                    control-B was typed.
+
+
+
+19  ILLEGAL STACK ARG        a stack function expected a stack position
+                             and was given something else.  This might occur if
+                             the arguments to a stack function are reversed.
+                             Also occurs if user specified a stack position
+                             with a function name, and that function was not
+                             found on the stack.  See Section 12.
+
+
+
+20  FAULT IN EVAL            artifact of bootstrap.  Never occurs after
+                              faulteval has been defined as described
+                             earlier.
+
+
+
+21  ARRAYS FULL              system will first initiate a GC: 1, and
+                             if no array space is reclaimed, will then generate
+                             this error.
+
+
+
+22  DIRECTORY FULL           (INTERLISP-10) no new files can be created
+                             until user deletes some old ones and expunges.
+
+
+
+23  FILE NOT FOUND           file name does not correspond to a file in
+                             the corresponding directory.  Can also occur if
+                             file name is ambiguous.
+
+
+
+24                           not used.
+
+
+
+
+
+
+
+                                     16.8
+
+
+
+25  UNUSUAL CDR ARG LIST     a form ends in a non-list other than NIL,
+                             e.g. (CONS T . 3).
+
+
+
+26  HASH TABLE FULL          see hash link functions, Section 7.
+
+
+
+27  ILLEGAL ARG              Catch-all error.  Currently used by
+                              evala,  arg,  funarg,  allocate,
+                              rplstring, and  sfptr.
+
+
+
+28  ARG NOT ARRAY             elt or  seta given an argument
+                             that is not a pointer to the beginning of an
+                             array.
+
+
+
+29  ILLEGAL OR IMPOSSIBLE BLOCK        (INTERLISP-10) from  getblk or
+                              relblk.  See Section 21.
+
+
+
+30                           for internal use.
+
+
+
+31  LISTS FULL          following a GC: 8, if a sufficient amount of list
+                             words have not been collected, and there is no un-
+                             allocated space left in the system, this error is
+                             generated.
+
+
+
+32  ATTEMPT TO CHANGE ITEM OF INCORRECT TYPE
+
+                             Before a field of a user-data type is changed, the
+                             type of the item is first checked to be sure that
+                             it is of the expected type.  If not, this error is
+                             generated.  See section  23.
+
+
+
+33  ILLEGAL DATA TYPE NUMBER The argument is not a valid user-data type
+                             number.  See sections  23.
+
+
+
+34  DATA TYPES FULL     All available user-data types have been allocated.
+                             See sections 23.
+
+
+
+35                           for internal use.
+
+
+
+36                           for internal use.
+
+
+
+
+
+                                     16.9
+
+
+
+37  READ-MACRO CONTEXT ERROR      Occurs when a  read is executed from
+                             within a read-macro function and the next token is
+                             a ) or a ].  See section 14.
+
+
+
+38  ILLEGAL READTABLE        The argument was expected to be a valid
+                             readtable.  See section 14.
+
+
+
+39  ILLEGAL ARG - SWPARRAY
+                             (INTERLISP-10) See section 3.
+
+
+
+40   SWAPBLOCK TOO BIG FOR BUFFER      (INTERLISP-10) An attempt was made
+                             to swap in a function/array which is too large for
+                             the swapping buffer.  See  setsbsize, section
+                             3.
+
+
+
+41  ILLEGAL ARG - SETSBSIZE  (INTERLISP-10) The argument to setsbsize must
+                             be either NIL or a number between 0 and 128.  See
+                             section 3.
+
+
+
+42  ILLEGAL ARG - SWPPOS     (INTERLISP-10) See section 3.
+
+
+
+43  USER BREAK               Error corresponding to 'hard' user-interrupt
+                             character. See page 16.14.
+
+
+
+44  TOO MANY USER INTERRUPT CHARACTERS      Attempt to enable a user
+                             interrupt chartacter when all 9 user channels are
+                             currently enabled.  See page 16.14.
+
+
+
+45  ILLEGAL TERMINAL TABLE
+                             The argument was expected to be a valid terminal
+                             table. See section 14.
+
+
+
+In addition, many system functions, e.g.  define,  arglist,  advise,  log,
+ expt, etc, also generate errors with appropriate messages by calling
+ error (see page 16.12) which causes an error of type 17.
+
+
+
+
+ Error handling by error type
+
+
+
+Occasionally the user may want to treat certain error types different than
+others, e.g. always break, never break, or perhaps take some corrective action.
+This can be accomplished via  errortypelst.   errortypelst is a list of
+
+
+
+
+                                     16.10
+
+
+
+elements of the form (n expression), where n is one of the 28 error numbers.
+After  breakcheck has been completed, but before any other action is
+taken,  errortypelst is searched for an element with the same error number as
+that causing the error.  If one is found, and the evaluation of the
+corresponding expression produces a non-NIL value, the value is substituted for
+the offender, and the function causing the error is reeentered.
+
+
+
+For this application, the following three variables may be useful:
+
+
+
+errormess                     car is the error number,  cadr the "offender"
+                             e.g.  (10 NIL) corresponds to NON-NUMERIC ARG NIL
+                             error.
+
+
+
+errorpos                     position of the function in which the error
+                             occurred, e.g. stkname[errorpos] might be IPLUS,
+                             RPLACA, INFILE, etc.
+
+
+
+breakchk                     value of  breakcheck, i.e. T means a break will
+                             occur, NIL means one will not.
+
+
+
+For example, putting
+
+    [10 (AND (NULL (CADR ERRORMESS))
+             (SELECTQ (STKNAME ERRORPOS)
+                      ((IPLUS ADD1 SUB1) 0)
+                      (ITIMES 1)
+                      (PROGN (SETQ BREAKCHK T) NIL]
+
+
+on  errortypelst would specify that whenever a NON-NUMERIC ARG - NIL error
+occurred, and the function in question was IPLUS, ADD1, or SUB1, 0 should be
+used for the NIL.  If the function was ITIMES, 1 should be used.  Otherwise,
+always break.  Note that the latter case is achieved not by the value returned,
+but by the effect of the evaluation, i.e. setting BREAKCHK to T.  Similarly,
+(16 (SETQ BREAKCHK NIL)) would prevent END OF FILE errors from ever breaking.
+
+
+
+
+
+ 16.6  Error Functions
+
+
+
+errorx[erxm]                 is the entry to the error routines.  If
+                              erxm=NIL, errorn[] is used to determine the
+                             error-message.  Otherwise, seterrorn[erxm] is
+                             performed, 'setting' the error type and argument.
+                             Thus following either errorx[(10 T)] or (PLUS T),
+                             errorn[] is (10 T).   errorx calls
+                              breakcheck, and either induces a break or
+                             prints the message and unwinds to the last
+
+
+
+
+                                     16.11
+
+
+
+                              errorset.  Note that  errorx can be called
+                             by any program to intentionally induce an error of
+                             any type.  However, for most applications, the
+                             function  error will be more useful.
+
+
+
+error[mess1;mess2;nobreak]   The message that is (will be) printed is
+                              mess1 (using  prin1), followed by a space if
+                              mess1 is an atom, otherwise a carriage return.
+                             Then  mess2 is printed, using  prin1 if  mess2 is
+                             a string, otherwise  print.  e.g., error["NON-
+                             NUMERIC ARG";T] will print
+
+                             NON-NUMERIC ARG
+                             T
+
+                             and error[FOO;"NOT A FUNCTION"] will print
+                             FOO NOT A FUNCTION.  (If both  mess1 and  mess2
+                             are NIL, the message is simply ERROR.)
+
+
+
+                             If  nobreak=T,  error prints its message and
+                             then calls  error!. Otherwise it calls
+                             errorx[(17 (mess1 . mess2))], i.e. generates an
+                             error of type 17, in which case the decision as to
+                             whether or not to break, and whether or not to
+                             print a message, is handled as per any other
+                             error.
+
+
+
+help[mess1;mess2]            prints  mess1 and  mess2 a la  error, and
+                             then calls  break1.  If both  mess1 and
+                              mess2 are NIL, HELP! is used for the
+                             message.   help is a convenient way to program a
+                             default condition, or to terminate some protion of
+                             a program which theoretically the computation is
+                             never supposed to reach.
+
+
+
+             18
+error![]                     programmable control-E, i.e.,
+                             immediately returns from last  errorset or
+                             resets.
+
+
+
+reset[]                      Programmable control-D, i.e. immediately
+                             returns to the top level.
+
+
+
+
+
+
+**FOOTNOTES**
+18
+    Pronounced "error-bang".
+
+
+
+
+
+                                     16.12
+
+
+
+errorn[]                     returns information about the last error in
+                             the form (n x) where  n is the error type number
+                             and  x is the expression which was (would have
+                             been) printed out after the error message.  Thus
+                             following (PLUS T), errorn[] is (10 T).
+
+
+
+errormess[u]                 prints message corresponding to an  errorn
+                             that yielded  u.  For example, errormess[(10 T)]
+                             would print
+
+                             NON-NUMERIC ARG
+                             T
+
+
+                  19
+errorset[u;v]                performs eval[u].  Note that  errorset is a
+                             lambda-type of function, and that its arguments
+                             are evaluated before it is entered, i.e.
+                             errorset[x] means  eval is called with the
+                             value of  x.  In most cases,  ersetq and
+                              nlsetq (described below) are more useful.
+                             If no error occurs in the evaluation of  u, the
+                             value of  errorset is a list containing one
+                             element, the value of eval[u].  If an error did
+                             occur, the value of  errorset is NIL.
+
+
+
+                             The argument  v controls the printing of error
+                             messages if an error occurs.  If  v=T, the error
+                             message is printed; if  v=NIL it is not.
+
+
+
+                             If  v=INTERNAL, the errorset is ignored for the
+                             purpose of deciding whether or not to break or
+                             print a message.  However, the errorset is in
+                             effect for the purpose of flow of control, i.e. if
+                             an error occurs, this  errorset returns NIL.
+
+
+
+ersetq[ersetx]                nlambda, performs errorset[ersetx;t], i.e.
+                             (ERSETQ (FOO)) is equivalent to
+                             (ERRORSET (QUOTE (FOO)) T).
+
+
+
+nlsetq[nlsetx]                nlambda, performs errorset[nlsetx;NIL].
+
+
+
+
+
+
+**FOOTNOTES**
+19
+     errorset is a  subr, so the names "u" and "v" don't actually appear
+    on the stack nor will they affect the evaluation.
+
+
+
+
+
+                                     16.13
+
+
+
+ Interrupt characters
+
+
+
+This section describes how the user can disable and/or redefine INTERLISP
+interrupt characters, as well as defining his own interrupt characters.
+INTERLISP is initialized with 9 interrupt channels which we shall call:  HELP,
+PRINTLEVEL, STORAGE, RUBOUT, ERROR, RESET, OUTPUTBUFFER, BREAK, and USER. To
+these are assigned respectively, control-H, control-P, control-S,
+delete/rubout, control-E, control-D, control-O, control-B, and control-U.  Each
+                                                                        20
+of these channels independently can be disabled, or have a new interrupt
+character assigned to it via the function interruptchar described below.  In
+addition, the user can enable up to 9 new interrupt channels, and associate
+with each channel an interrupt character and an expression to be evaluated when
+that character is typed.  User interrupts can be either 'hard' or 'soft'.  A
+'hard' interrupt is like control-E or control-D: it takes place as soon as it
+         21
+is typed.   A soft interrupt is like control-H; it does not occur until the
+next function call.
+
+
+
+interruptchar[char;typ/form;hardflg]         char is either a character or
+                                                       22
+                             a terminal interrupt code.
+
+
+                             If  typ/form=NIL,  char is disabled.  If
+                              typ/form=T, the current state of char is returned
+                                                 23
+                             without changing it.
+
+
+
+**FOOTNOTES**
+20
+    TENEX requires that interrupt characters be one of control-A, B, ... , Z,
+    space, esc(alt-mode), rubout(delete), or break.
+
+
+21
+    Hard interrupts are implemented by generating an error of type 43, and
+    retrieving the corresponding form from the list  userinterruptlst once
+    inside of errorx. Soft interrupts are implemented by calling interrupt with
+    an appropriate third argument, and then obtaining the corresponding form
+    from  userinterruptlst.  In either case, if a character is enabled as a
+    user interrupt, but for some reason it  is not found on  userinterrupts, an
+    UNDEFINED USER INTERRUPT error will be generated.
+
+
+22
+    The terminal interrupt code for break is 0, for esc is 27, for
+    rubout/delete is 28, and for space is 29.  The terminal interrupt codes for
+    the control characters can be obtained with  chcon1.
+
+
+23
+    The current state is an expression which can be given back to  interuptchar
+    to restore that state.    This option is used in connection with undoing
+    and  resetform.
+
+
+
+
+
+                                     16.14
+
+
+
+                             If  typ/form is a literal atom, it must be the
+                             name of one of the 9 INTERLISP interrupt channels
+                             given above:  HELP, PRINTLEVEL, ... USER.
+                              interruptchar assigns  char to that channel,
+                             (reenabling the channel if previously disabled).
+                             If  char was previously defined as an interrupt
+                             character, that interpretation is disabled.
+
+
+                             If  typ/form is a list,  char is enabled as a user
+                             interrupt character, and  typ/form is the form
+                             that is evaluated when  char is typed.  The
+                             interrupt will be hard if  hardflg=T, otherwise
+                             soft. Any previous interpretations of  char are
+                             disabled.
+
+
+                             All calls to  interruptchar are undoable.  In
+                             addition, the value of  interruptchar is an
+                             expression which when given back to  interruptchar
+                             will restore things as they were before the call
+                             to  interruptchar.  Thus,  interruptchar can be
+                             used in conjunction with   resetform or resetlst
+                             (see section 5).
+
+
+
+Note:  interruptchar[T] will restore all INTERLISP channels to their original
+state, and disable all user interrupts.
+
+
+

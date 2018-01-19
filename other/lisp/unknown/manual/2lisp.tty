@@ -1,0 +1,570 @@
+
+
+
+
+
+
+
+
+
+
+
+                                   SECTION 2
+
+                                USING INTERLISP
+
+
+
+ 2.1  Using the INTERLISP Manual - Format, Notation, and Conventions
+
+
+
+The INTERLISP manual is divided into separate,  more or less independent
+sections.  Each section is paginated independently, to facilitate issuing
+updates of sections.  Each section contains an index to key words, functions,
+and variables contained in that section.  In addition, there is a composite
+index for the entire manual, plus several appendices and a table of contents.
+
+
+
+INTERLISP is currently implemented on (or implementations are in progress for)
+at least four different computers.  This manual purports to be a reference
+manual for all implementations of INTERLISP, both present and future.  However,
+since the largest user cummunity is still that of INTERLISP-10, the original
+implementation for the DEC PDP-10, the manual does contain some implementation
+dependent material.  Where this is the case, the text refers to INTERLISP-10,
+and is indicated as such.
+
+
+
+Throughout the manual, terminology and conventions will be offset from the text
+and typed in italics, frequently at the beginning of a section.  For example,
+one such notational convention is:
+
+
+
+The names of functions and variables are written in lower case and underlined
+when they appear in the text.  Meta-LISP notation is used for describing forms.
+
+
+
+Examples:  member[x;y] is equivalent to (MEMBER X Y), member[car[x];FOO] is
+equivalent to (MEMBER (CAR X) (QUOTE FOO)).  Note that in meta-LISP notation
+lower case variables are evaluated, upper case quoted.
+
+
+
+. notation is used to distinguish between  cons and  list.
+
+
+
+e.g., if  x=(A B C),  (FOO x) is (FOO (A B C)), whereas  (FOO . x)
+is (FOO A B C).  In other words,  x is  cadr of (FOO x) but  cdr of (FOO . x).
+Similarly,  y is  caddr of (FOO x y), but  cddr of (FOO x . y).  Note that this
+convention is in fact followed by the read program,
+i.e., (FOO . (A B C)) and (FOO A B C) read in as equal structures.
+
+
+
+
+                                      2.1
+
+
+
+Other important conventions are:
+
+
+
+TRUE in INTERLISP means not NIL.
+
+
+
+The purpose of this is to allow a single function to be used both for the
+computation of some quantity, and as a test for a condition.  For example, the
+value of member[x;y] is either NIL, or the tail of  y beginning with  x.
+Similarly, the value of  or is the value of its first TRUE, i.e., non-NIL,
+expression, and the value of  and is either NIL, or the value of its last
+expression.
+
+
+
+Although most lists terminate in NIL, the occasional list that ends in an
+atom, e.g., (A B . C) or worse, a number or string, could cause bizarre
+effects.  Accordingly, we have made the following implementation decision:
+
+
+
+All functions that iterate through a list, e.g.,  member,  length,  mapc, etc.
+terminate by an  nlistp check, rather than the conventional null-check,
+as a safety precaution against encountering data types which might cause
+infinite  cdr loops, e.g., strings, numbers, arrays.
+
+
+
+Thus, member[x;(A B . C)]=member[x;(A B)]
+
+      reverse[(A B . C)]=reverse[(A B)]
+
+      append[(A B . C);y]=append[(A B);y]
+
+
+
+                                                           1
+For users with an application requiring extreme efficiency,  we have provided
+fast versions of  memb,
+                      ,  last,  nth,  assoc, and  length which compile open and
+terminate on NIL checks, and therefore may cause infinite  cdr loops if given
+poorly formed arguments.  However, to help detect these situations,  fmemb,
+ flast,  fnth,  fassoc, and  flength all generate errors when
+interpreted if their argument ends in a non-list other than NIL, e.g. BAD
+ARGUMENT - FLAST.
+
+
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+1
+    A NIL check can be executed in only one instruction, an  nlistp on
+    INTERLISP-10  requires about 12, although both generate only one word of
+    code.
+
+
+
+
+
+                                      2.2
+
+
+
+Most functions that set system parameters, e.g.,  printlevel,
+ linelength,  radix, etc., return as their value the old setting.  If
+given NIL as an argument, they return the current value without changing it.
+
+All SUBRS, i.e., hand coded functions, such as  read,  print,  eval,  cons,
+etc., have 'argument names' selected from U, V, W, X, Y, Z,  as described under
+ arglist, Section 8.  However, for tutorial purposes, more suggestive names
+are used in the descriptions of these functions in the text.
+
+Most functions whose names end in  p are predicates, e.g.  numberp,  tailp,
+ exprp;  most functions whose names end in  q are nlambda's, i.e., do not
+require quoting their arguments, e.g.,  setq,  defineq,  nlsetq.
+
+" x is equal to  y" means equal[x;y] is true, as opposed to " x is
+ eq to  y" meaning eq[x;y] is true, i.e.,  x and  y are the same
+identical LISP pointer.
+
+When new literal atoms are created (by the read program,  pack, or  mkatom),
+they are provided with a function definition cell initialized to NIL (Section
+8), a value cell initialized to the atom NOBIND (Section 16), and a
+property list initialized to NIL (Section 7).  The function definition
+cell is accessed by the functions  getd and  putd described in
+Section 8.  The value cell of an atom is  car of the atom, and its property
+list is  cdr of the atom.  In particular,  car of NIL and  cdr of NIL are
+ always NIL, and the system will resist attempts to change them.
+
+The term  list refers to any structure created by one or more conses, i.e.
+it does not have to end in NIL.  For example, (A . B) is a  list.  The function
+ listp, Section 5, is used to test for lists.  Note that not being a list
+does not necessarily imply an atom, e.g., strings and arrays are not lists, nor
+are they atoms.  See Section 10.
+
+Many system functions have extra optional arguments for internal use that are
+not described in the writeups.  For example,  readline is described as a
+function of one argument, but arglist[READLINE] returns (RDTBL LINE LISPXFLG).
+In such cases, the user should just ignore the extra arguments.
+
+
+
+INTERLISP departs from LISP 1.5 and other LISP dialects in that  car of a form
+is never evaluated.  In other words, if  car of a form is not an atom with a
+function definition, and not a function object, i.e. a list  car of which is
+LAMBDA, NLAMBDA, or FUNARG, an error is generated.   apply or  apply*
+(section 8) must be used if the name of a function is to be  computed as for
+example, when functional arguments are applied.
+
+
+
+
+ 2.2  Using the INTERLISP-10 System on TENEX - An Overview
+
+
+
+Call INTERLISP-10 by typing LISP followed by a carriage return.  INTERLISP will
+type an identifying message, the date, and a greeting, followed by a '_'.
+This prompt character indicates that the user is "talking to" the top level
+INTERLISP executive, called  evalqt, (for historical reasons), just as '@'
+indicates the user is talking to TENEX.  evalqt calls  lispx which accepts
+inputs in either  eval or  apply format: if just one expression is
+typed on a line, it is  evaluated;  if two expressions are typed, the first is
+ apply-ed to the second.   eval and  apply are described in section 8.
+In both cases, the value is typed, followed by _ indicating INTERLISP is ready
+for another input.
+
+
+
+                                      2.3
+
+
+
+INTERLISP is normally exited via the function LOGOUT, i.e., the user types
+LOGOUT(). However, typing control-C at any point in the computation
+returns control immediately to TENEX.  The user can then continue his program
+with no ill effects with the TENEX CONTINUE command, even if he interrupted
+it during a garbage collection.  Or he can reenter his program at  evalqt with
+the TENEX REENTER command.   The  latter  is  DEFINITELY  not  advisable
+ if  the  Control-C  was  typed  during  a  garbage  collection. Typing
+control-D at any point during a computation will return control to  evalqt.
+If typed during a garbage collection, the garbage collection will first be
+completed, and then control will be returned to INTERLISP's top level,
+otherwise, control returns immediately.
+
+
+
+When typing to the INTERLISP  read program, typing a control-Q will cause
+INTERLISP to print '##' and clear the input buffer, i.e., erase the entire
+line up to the last carriage return.  Typing control-A erases the last
+character typed in, echoing a \ and the erased character.  Control-A will
+not back up beyond the last carriage return.  Control-O can be used to
+immediately clear the output buffer, and rubout to immediately clear the
+             2
+input buffer.  In addition, typing control-U (in most cases) will cause the
+INTERLISP editor (Section 9) to be called on the expression being read, when
+the  read is completed.  Appendix 3 contains a list of all control characters,
+and a reference to that part of the manual where they are described.
+Section 16 describes how the system's interrupt characters can be disabled
+or redefined, as well as how the user can define his own interrupt
+characters.
+
+
+
+Since the INTERLISP read program is normally line-buffered to make possible
+                        3
+the action of control-Q,  the user must type a carriage return before any
+characters are delivered to the function requesting input, e.g.,
+
+                                       4
+                        _E T
+                         T
+
+
+However, the read program automatically supplies (and prints) this carriage
+return when a matching right parenthesis is typed, making it unnecessary for
+the user to do so, e.g.,
+
+
+
+**FOOTNOTES**
+2
+    The action of control-Q takes place when it is read.  If the user has
+    'typed ahead' several inputs, control-Q will only affect at most the last
+    line of input.  Rubout however will clear the entire input buffer as
+    soon as it is typed, i.e., even during a garbage collection.
+
+
+3
+    Except following control[T], see Section 14.
+
+
+4
+    '
+'''''used throughout the manual to denote carriage-return.  
+
+
+
+
+
+                                      2.4
+
+
+
+                        _CONS(A B)
+                        (A . B)
+
+
+The INTERLISP read program treats square brackets as 'super-parentheses': a
+right square bracket automatically supplies enough right parentheses to
+match back to the last left square bracket (in the expression being read), or
+if none has appeared, to match the first left parentheses,
+
+e.g.,    (A (B (C]=(A (B (C))),
+
+         (A [B (C (D] E)=(A (B (C (D))) E).
+
+
+
+% is the universal escape character for  read.  Thus to input an atom
+containing a syntactic delimiter, precede it by %, e.g.  AB% (C or %%.  See
+Section 14 for more details.
+
+
+
+^V (control-V) can be used to type a control character that would otherwise
+interrupt the input process, e.g. control-D, control-C, etc.  If the character
+following ^V is A, B, ... or Z, the corresponding control character is input,
+e.g. ^VA^VB^VC is the atom control-Acontrol-Bcontrol-C.  ^V followed by any
+other character has no effect,  i.e. FOO^V1 and FOO1 are identical.  For more
+details, see appendix 3.
+
+
+
+Most of the "basics" of on-line use of INTERLISP, e.g. defining functions,
+error handling, editing, saving your work, etc., are illustrated in the
+following brief console session.  Underlined characters were typed by the user.
+
+
+
+1.  The user calls INTERLISP from TENEX, INTERLISP prints a date, and a
+    greeting.  The prompt character _ indicates the user is at the top
+    level of INTERLISP.
+
+
+
+2.  The user defines a function,  fact, for computing factorial of n.  In
+    INTERLISP, functions are defined via DEFINE or DEFINEQ,
+    (Section 8).  Functions may independently evaluate arguments, or not
+    evaluate them, and spread their arguments, or not spread them (Section 4).
+    The function  fact shown here is an example of an everyday run-of-the-mill
+    function of one argument, which is evaluated.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                      2.5
+
+
+
+@ LISP
+                                                              1
+
+INTERLISP-10 11-17-73 ...
+
+GOOD EVENING.
+ _DEFINEQ((FACT (LAMBDDA (N) (COND ((EQ N 0) NIL)                    2
+ (T (ITIMES N (FACTT (SUB1 N]
+(FACT)
+_ (GETD (QUOTE FACT))                                                3
+(LAMBDDA (N) (COND ((EQ N 0) NIL) (T (ITIMES N (FACTT (SUB1 N))))))
+_ FACT(3)                                                            4
+LAMBDDA [IN FACT] -> LAMBDA ?  YES
+FACTT [IN FACT] -> FACT ?  YES
+
+NON-NUMERIC ARG                                                      5
+NIL
+IN ITIMES
+
+(BROKEN)                                                             6
+: BT
+ITIMES
+COND
+FACT
+COND
+FACT
+COND
+FACT
+**TOP**
+
+: N
+                                                                 7
+1
+: EDITF(FACT)                                                        8
+EDIT
+* (R NIL 1)                                                          9
+* OK
+                                                                10
+FACT
+: RETURN 1
+                                                          11
+'BREAK' = 1
+6
+_ PP FACT
+                                                           12
+
+(FACT
+  [LAMBDA (N)
+    (COND
+      ((EQ N 0)
+       1)
+      (T (ITIMES N (FACT (SUB1 N])
+FACT                                                                 13
+_ PRETTYDEF((FACT) FACT)                                             14
+FACT.;1
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                      2.6
+
+
+
+3.  The user "looks" at the function definition.  Function definitions in
+    INTERLISP are stored in a special cell called the function definition
+    cell, which is associated with the name of the function (Section 8).
+    This cell is accessible via the two functions,  getd and  putd,
+    ( define and  defineq use  putd).  Note that the user typed an
+    input consisting of a single expression, i.e.  (GETD (QUOTE FACT)), which
+    was therefore interpreted as a form for  eval. The user could also have
+    typed GETD(FACT).
+
+
+
+4.  The user runs his function.  Two errors occur and corrections are offered
+    by DWIM (Section 17).  In each case, the user indicates his approval,
+    DWIM makes the correction, i.e.  actually changes the definition of  fact,
+    and then continues the computation.
+
+
+
+5.  An error occurs that DWIM cannot handle, and the system goes into a break.
+    At this point, the user can type in expressions to be eval-ed or apply-ed
+    exactly as at the top level.  The prompt character ':' indicates
+    that the user is in a break, i.e. that the context of his computation is
+    available.  In other words, the system is actually "within" or "below" the
+    call to  itimes in which the error occurred.
+
+
+
+6.  The user types in the break command, BT, which calls for a
+    backtrace to be printed.  In INTERLISP, interpreted and compiled code
+    (see Section 18 for discussion of the compiler) are completely compatible,
+    and in both cases, the name of the function that was called, as well as the
+    names and values of its arguments are stored on the stack. The stack
+    can be searched and/or modified in various ways (see Section 12).
+
+
+
+    Break commands are discussed in Section 15, which also explains how the
+    user can "break" a particular function, i.e. specify that the system go
+    into a "break" whenever a certain function or functions are called.  At
+    that point the user can examine the state of the computation.  This
+    facility is very useful for debugging.
+
+
+
+7.  The user asks for the value of the variable  n, i.e. the most recent value,
+    or binding. The interpreter will search the stack for the most recent
+    binding, and failing to find one, will obtain the top level value from the
+    atom's value cell, which is  car of the atom (Section 3).  If there are no
+    bindings, and the value cell contains the atom NOBIND, an unbound atom
+    error is generated (Section 16).
+
+
+
+8.  The user realizes his error, and calls the editor to fix it.  (Note that
+    the system is still in the break.) The editor is described at length and in
+    detail in Section 9.  It is an extremely useful facility of INTERLISP.
+    Section 9 begins with a simple introduction designed for the new user.
+
+
+
+9.  The user instructs the editor to replace all NIL's (in this case there is
+    only one) by 1.  The editor physically changes the expression it is
+
+
+
+
+                                      2.7
+
+
+
+    operating on so when the user exits from the editor, his function, as it is
+    now being interpreted, has been changed.
+
+
+
+10. The user exits from the editor and returns to the break.
+
+
+
+11. The user specifies the value to be used by  itimes in place of NIL by using
+    the break command RETURN. This causes the computation to continue, and
+    6 is ultimately returned as the value of the original input, fact(3).
+
+
+
+12. The user prettyprints (Section 14)  fact, i.e. asks it be printed with
+    appropriate indentations to indicate structure.   Prettyprint also
+    provides a comment facility.  Note that both the changes made to  fact by
+    the editor and those made by DWIM are in evidence.
+
+
+
+13. The user writes his function on a file by using  prettydef
+    (Section 14), creating a TENEX file, FACT.;1, which when loaded into
+    INTERLISP at a later date via the function  load (Section 14), will
+    cause  fact to be defined as it currently is.  There is also a facility in
+    INTERLISP for saving and restoring an entire core image via the functions
+     sysout and  sysin (Section 14).
+
+
+
+14. The user logs out, returning control to TENEX.  However, he can still
+    continue his session by re-entering INTERLISP via the TENEX REENTER or
+    CONTINUE command.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                      2.8
+
+
+

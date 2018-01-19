@@ -1,0 +1,2086 @@
+.COMMENT UCI-TENEX LISP MANUAL;
+.JOURNAL
+.SINGLE SPACE
+.EVERY HEADING (,UCI-TENEX LISP,)
+.UNDERLINEBETWEEN([[,])
+.GROUP SKIP 15 APART
+.STOPTEXT CENTER
+UCI-TENEX Lisp Manual
+
+Thomas M. Wolpert
+
+
+
+
+Technical Report nnn
+07-01-75
+
+
+
+
+Institute for Mathematical Studies in the Social Sciences
+Stanford University
+Stanford, California  94305
+.STARTTEXT
+.SKIP 15
+The work described herein was supported by the National Science
+Foundation, under grant NSF EC-43997.
+.SEC Introduction
+	UCI-LISP (or ILISP), a precursor to INTERLISP, was developed by
+Bobrow, Burton and Lewis at UCI in 1972.  UCI-TENEX LISP, a modification
+of ILISP, has been developed at IMSSS in order to provide a viable 
+alternative to INTERLISP on the TENEX timesharing system.  ILISP
+contains many of the more useful features of INTERLISP (notably, the
+editor and break package) and is a much faster and more compact system.
+However, it was designed for a variant of the DEC 10/50 operating
+system and does not run well under TENEX.  Our objectives in developing
+UCI-TENEX LISP have been fourfold:  to convert all system-dependant 
+code to TENEX, to maintain compatibility with older versions of ILISP,
+to provide full access to the (more extensive) facilities provided
+by TENEX, and to make such other improvements in ILISP as we from
+time to time find desirable.
+	Major changes include an almost complete rewrite of all input-
+output code, and the addition of improved TTY line editing facilities, 
+expanded (and storage-efficient) string capabilities, 'read-only' 
+(non-garbage collected) list structures, an online 'HELP' system to 
+provide quick access to reference material on the system, improved
+error handling capabilities, and several other miscellaneous 
+improvements.  
+	Unfortunately, this manual is the third in a series.  Basic
+information on the LISP system is contained in {REF ONEMAN}.  
+Information on the ILISP features (eg., the editor and break package)
+may be found in {REF UCIMAN}.  Finally, this document supplements
+both of the above, and supersedes them in case of conflicts.
+.SEC Operation of the Interpreter
+.SS Entry
+	UCI-TENEX LISP is a sharable core image file, <SUBSYS>ILISP.SAV.
+As such, it may be invoked via the EXEC typein:
+.STOPTEXT
+
+		@ILISP<cr>
+.STARTTEXT
+	Once started, UCI-TENEX LISP will respond with its herald, 
+including the date of creation of the particular version in use.  
+The system then prompts with an asterisk (*) and is ready to accept 
+input. The %top level% is EVAL (not EVALQUOTE).  Input is 
+line-buffered, and is not passed to EVAL until a <cr> is encountered.
+Typing errors may be corrected using the features of the line editor 
+(see {YONSS PSTIN}).  
+
+.SS Exit
+	%Exit% from the system may be accomplished in a number of ways.
+The function call
+.STOPTEXT
+
+		*(EXIT)
+
+.STARTTEXT
+may be executed from the keyboard (as shown above) or under program
+control.  This causes the system to halt, returning control to the
+EXEC.  The EXEC command
+.STOPTEXT
+
+		@CONTINUE
+
+.STARTTEXT
+may be used to continue transparently.  
+There are also two keyboard interrupt characters, %CTRL-C% and %CTRL-Q%,
+which may be used to interrupt execution at any point.  Both are
+transparent to %CONTINUE%.  The difference between the two is explained
+in detail in the next section.
+
+.SS Keyboard Interrupts
+	The method of causing %keyboard interrupts% has been changed to
+reflect the improved interrupt capabilities available in TENEX.
+In particular, the %CTRL-C, REENTER% sequence described in {REF UCIMAN},
+page 1.5, is no longer used for this purpose (and, in fact, has another
+meaning - see {YONSS ALLOC}).  Rather, the interrupt character is
+simply typed on the keyboard.  Interrupt action follows automatically.
+	The meanings of the LISP-related interrupt characters have
+changed very little.  They are:
+.LIST ( )
+.ITEM
+%CTRL-H%.  This causes a break at the next interpreted function 
+call.  Because it is possible to have infinite loops which do not
+contain a suitable function call, this interrupt may not always be
+suitable.  Another interrupt character may be used afterward if no
+response is forthcoming.
+.ITEM
+%CTRL-B%.  This character causes the system to back up to
+the last form whose interpretive evaluation was required, and to break
+at that point.
+.ITEM
+%CTRL-G%.  This causes an (ERR @ERRORX), allowing the user
+to back up to the last (ERRSET...ERRORX) on keyboard command.
+.ITEM
+%CTRL-E%.  The action of this interrupt character has been
+slightly expanded.  Formerly (see {REF UCIMAN}, page 1.5.1), this
+character caused an (ERR NIL), returning control to the most recent
+ERRSET call.  In conjunction with the new '%named ERRSET%' feature
+and the %CTRLESET% function ({YONSEC ERRS}), this interrupt character
+can be used to return control to virtually any enclosing ERRSET.
+.ITEM
+%CTRL-Z%.  This interrupt character returns control to the
+current top level of LISP (usually the READ-EVAL-PRINT loop).
+.ENDLIST
+
+	There are three new interrupt characters which are handled
+by the UCI-TENEX LISP system.  These characters are:
+.LIST ( )
+.ITEM
+%CTRL-C%.  This character has the expected effect.  It returns
+control to the EXEC.  However, if a %garbage collection% is in progress,
+it is completed before the system relinquishes control.  Thus, the
+sequence CTRL-C, REENTER ({YONSS ALLOC}) is guaranteed to work
+correctly.  Of course, the user may transparently CONTINUE also.
+.ITEM
+%CTRL-Q%.  The effect of this interrupt is equivalent to that
+of CTRL-C, except that it takes effect immediately, regardless of
+any %garbage collection% in progress.  The only thing which may be done
+after such an interrupt from a garbage collection (without destroying
+the core image) is CONTINUE.  This interrupt is provided primarily as
+protection against bugs in the garbage collector, which could otherwise
+leave the job entirely hung.
+.ITEM
+%CTRL-O%.  This character causes %output suppression%.  That is,
+all terminal output up to the next keyboard read (or program 
+execution of the %TALK% function) is discarded.
+.ENDLIST
+
+.SS Core Allocation,ALLOC:
+	ILISP had rather fixed ideas about how much core was available
+and how it was to be partitioned.  Rather than attempt to rewrite all
+of the necessary code (which includes the garbage collector and 
+reallocation code), we have simply simulated the necessary %allocation%
+arrangements.  The methods described herein supersede those described
+in {REF UCIMAN}, pages 10.1 and 10.2.
+	All storage is allocated from pages 0 - 377.  (All numbers
+in this manual are base 8 unless otherwise noted.)  Initially, pages
+0 - 33 are in use, and are partitioned as follows:
+.STOPTEXT
+
+	Free word space = 5300,
+	Full word space = 1100,
+	Bin prog space  =  200,
+	String space    = 1000,
+	Regular PDL     = 1000,
+	Special PDL     = 1000.
+
+.STARTTEXT
+Additional space (up to the maximum still available at any time) may be
+added to any of these partitions through the following reallocation
+procedure.
+	The keyboard-driven %reallocation% procedure may be invoked in
+either of two ways.  The function call (%CHCORE%) may be executed
+from the keyboard (or under program control - but the function does
+NOT return.  Control is passed to the current LISP top level upon
+completion of the reallocation procedure.), or the %CTRL-C, REENTER%
+sequence may be used instead.  In both cases, the system responds
+with the prompt:
+.STOPTEXT
+
+	Core size (in K octal)? 
+
+.STARTTEXT
+Enter the desired size of the low segment.  Any number larger than
+the current size (initially 34) and less than the available upper limit
+(400, unless the %read only structure% feature has been used) is
+acceptable.  Here, as everywhere in the allocation dialog, the number
+is terminated by any non-numeric character (customarily, space is used).
+Typing errors may be corrected by typing %RUBOUT% (which is echoed as
+'##') and retyping the ENTIRE NUMBER.
+	You will then be asked
+.STOPTEXT
+
+	Alloc (Y or N)?
+
+.STARTTEXT
+If you reply 'N', the automatic reallocation procedures will be used.
+The added core is divided as follows:
+.STOPTEXT
+
+	1/16 to full word space.
+	1/64 to each push down list.
+	The remainder to free space and the bit tables.
+
+.STARTTEXT
+If you reply 'Y', you will be asked to supply an incremental amount
+of space (to be added to the present allocation) for each of the
+following five partitions:
+.STOPTEXT
+
+	Full Word Space,
+	Binary Program Space,
+	String Space,
+	Regular PDL,
+	Special PDL.
+
+.STARTTEXT
+The sum of all increments must be less than the amount of space added.
+Any space left over is divided as listed above.  If additional space
+is allocated to full word or free space, extra bit table space must
+be provided, so do NOT attempt to allocate all of the added space.
+Numbers to be entered are in octal words (not K words).  Terminating
+any typein with <lf> defaults all other entries to zero.
+	A program-driven reallocation is also provided by the
+function %AUTOALC%.  The calling sequence is:
+.STOPTEXT
+
+	(AUTOALC size fws bps strs rpdl spdl)
+where:
+	size = core size (in K octal).
+	fws  = full word space increment in words.
+	bps  = binary program space increment in words.
+	strs = string space increment in words.
+	rpdl = regular PDL increment in words.
+	spdl = special PDL increment in words.
+	Note:  AUTOALC is an lsubr; its arguments are evaluated.
+.STARTTEXT
+	Like CHCORE, AUTOALC does not return to the caller.  Rather, 
+control passes to the top level of LISP.  Parameters at the end of 
+the list may be defaulted to zero by omission.
+
+
+.SEC Input/Output
+.SS Introduction
+	Since %input/output% is a function which interacts heavily with
+the host operating system, it is quite natural that those sections
+of the system dealing with it should be heavily altered.  We have,
+however, managed to TENEXize the ILISP i/o package without sacrificing
+compatibility with earlier versions of ILISP.  We have also extended
+the range of i/o capabilities available to the LISP user to include
+most of the features of the TENEX file system.  In particular, we 
+have included random access i/o (first added to ILISP by Dan
+Swinehart at SAIL, but never documented) and improved terminal
+line-editing capabilities.  We have also documented here (for the
+first time) Swinehart's USERIO package, which allows the program
+to functionally simulate i/o at the character level.
+	This section assumes a certain familiarity with the TENEX
+file system, and a working knowledge of the i/o primitives available
+in ILISP.  See {REF ONEMAN}, section 14 for information on that topic.
+	WARNING:  UCI-TENEX LISP does PMAP i/o on disk files.
+Assembly language/LAP users are warned that byte/string i/o
+JSYSes should not be done on files opened by LISP.
+
+.SS File Names,FNAM:
+	The basic structure of %file names% has not changed from the
+original ILISP implementation.  However, DEC filename length 
+restrictions have been replaced by the corresponding TENEX 
+'restrictions', and provision has been made for TENEX-style
+directory and version specifications.  The form of a file name
+is as follows.
+	First of all, there is an optional %device% specifier.
+A device name is any atom which ends with %colon% (%:%).  For example,
+DSK: or DTA0: are valid device names.  If no device is given, DSK:
+is assumed.  If the device is not a directory device (eg. PTR:), then
+the device is all that is required.  Otherwise, a file name is needed.
+	If the device is DSK:, a %directory% may be included.  If
+the directory is omitted, the connected directory is assumed.  The
+directory may be specified in one of two ways.  It may be a list
+of two atomic elements (not a dotted pair).  The characters of the print
+names of the two atoms will be concatenated to form the directory
+string.  Do not include brokets (<>) in this form of directory
+specification.  This corresponds to the old ILISP %ppn% format.
+Alternatively, the directory name (including brokets) may simply
+be added to the front of the filename atom.
+	If the file has a null %extension%, then the name is atomic.
+If the extension is non-null, then the file name is a dotted pair,
+(filename . extension).  Characters in the name and extension must
+conform to TENEX naming conventions.  Characters which must be
+slashified in LISP may be included.  Slashes will be removed before
+the string is passed to TENEX.  %Version numbers% may be added to the
+extension in the normal TENEX format.
+	Thus, the following are all legal file specifications in
+UCI-TENEX LISP:
+.STOPTEXT
+
+	DTA0: (FILE.LSP)
+	DSK: FILENAME
+	(SM ITH) (FILENAME.LISP)
+	(<SMITH>FILENAME.LISP)
+	(<SMITH>FILENAME.LISP;10)
+	(<SMITH>LISPFILE.;5)
+.STARTTEXT
+
+.SS Versions
+	File %version numbers% may be given explicitly as explained
+above.  If no version is given, the normal default (highest existing
+version for input, highest exisiting plus one for output) is used.
+TENEX provides for user-specified default version selection.  UCI-TENEX
+LISP provides user access to this feature through the function
+%DEFVER%.  The function takes a single argument, the new default
+version number.  The value of the function call is the old default
+version number.  Initially (to specify the normal default) the
+DEFVER number is set to zero.  A valid positive version number
+means default to that version.  Several negative numbers
+have special meanings.  They are:
+.STOPTEXT
+
+	-1 means default to the next higher version.
+	-2 means default to the lowest existing version.
+	-3 means default to '%*%'.
+.STARTTEXT
+	The default is used for all file opens until DEFVER is 
+called again. Note:  DEFVER is a subr; its argument is evaluated.
+
+.SS Opening Files
+.SSS General Information
+	Before a file may be used for input or output, it must
+be opened.  UCI-TENEX LISP requires that a file be opened in one
+of three ways, depending on the manner in which it is to be accessed:
+for input, for output or for both input and output.  As was the
+case with ILISP, a %channel name% must also be given when the file
+is opened.  This name serves to identify the file to the LISP i/o
+primitives.  In particular, the functions %INC% and %OUTC%
+require the channel name in order to direct input or output to the
+specified file.
+
+.SSS INPUT
+	The function %INPUT% is used to open files for input.
+The form of a call to INPUT is:
+.STOPTEXT
+
+	(INPUT channel file1 file2 ... filen)
+where:
+	channel is an atomic channel name (non-NIL).
+	filei is a file specification as described in {YONSS FNAM}.
+	Note:  INPUT is an fsubr; its arguments are not evaluated.
+.STARTTEXT
+	WARNING: contrary to TENEX convention, device and directory 
+specifications are sticky. That is, they remain in effect until 
+countermanded by a new device or directory specification.
+The specified file is opened for input only.
+	When multiple file names are given in a single INPUT call, only
+the first is actually opened at the time of the call.  The others will
+be opened in sequence, as %end of file% is reached on the preceeding
+files.  Note that the program will not be notified of end of file
+conditions on any file but the last.
+	The channel name may be omitted; T is assumed.  Channel NIL
+refers to the terminal.
+	The open operation is modified by the action of the current
+%BUSYWAIT% flag. See below.  See also information on the %DEFVER%
+function.
+
+.SSS OUTPUT
+	The function %OUTPUT% is used to open a single file for output.
+A call to OUTPUT has the form:
+.STOPTEXT
+
+	(OUTPUT channel file)
+where:
+	channel is an atomic channel name.
+	file is a file specification as given in {YONSS FNAM}.
+	Note:  OUTPUT is an fsubr; its arguments are not evaluated.
+.STARTTEXT
+	The specified file is opened for output only.  
+The channel name may be omitted; T is assumed.  NIL refers
+to the teletype.
+	The open operation is modified by the current state of the 
+%BUSYWAIT% flag. See below. Also refer to the information on the 
+function %DEFVER%.
+
+.SSS INOUT
+	In order to open a file for both input and output, the
+function %INOUT% is used.  The form of an INOUT call is:
+.STOPTEXT
+
+	(INOUT channel file)
+where
+	channel is an atomic channel name (non-NIL).
+	file is a file specification as given in {YONSS FNAM}.
+	Note:  INOUT is an fsubr; its arguments are not evaluated.
+.STARTTEXT
+	The specified file is opened for both input and output.  That
+is, both %INC% and %OUTC% may be applied to channel.  Note, however,
+that the channel may not be selected for both input and output
+simultaneously.  
+The channel name may be omitted; T is assumed.  NIL refers to
+the terminal.
+	The open operation is modified by the current
+state of the %BUSYWAIT% flag.  See also the function %DEFVER%.
+	Note that although the file is to be opened for output too, 
+it must exist at the time of the INOUT call.
+
+.SSS BUSYWAIT
+	TENEX provides the facility to wait if a %file is busy%.
+The %BUSYWAIT% function gives the LISP user access to this feature.
+The single argument to BUSYWAIT is a logical flag.  If, at the time
+of any file open operation, the most recent call on BUSYWAIT specified
+a non-NIL flag, then TENEX will be asked to wait if a file is busy.
+If the flag was NIL, the open attempt fails.  The initial value of the
+flag is NIL.  The value of the call on BUSYWAIT is the old value of
+the flag.  BUSYWAIT is a subr; its argument is evaluated.
+	Note that this wait operation has meaning only when conflicting
+permissions are requested in the open attempt.  That is, multiple 
+readers are, of course, permitted.  The necessity for a wait operation
+occurs only when read and write access are required by different users
+simultaneously.
+	TENEX types a file-busy message on the controlling terminal
+if the job is forced to wait.  If the programmer wishes to give the
+user the option to abort the request in this case, he should wrap an
+(ERRSET...ERRORX) around the open call and ask the user to type
+%CTRL-G% to abort the request.  (Other ERRSET arguments are possible,
+in conjunction with the %CTRL-E% interrupt, %named ERRSET% and
+the %CTRLESET% function.)
+
+.SS Indexable File Specifications
+	TENEX provides the ability to handle 
+%indexable file specifications%.  UCI-TENEX LISP gives the LISP 
+programmer access to this feature, at least in the case of input files.
+As is the normal TENEX convention, indexing is specified by placing
+the character '%*%' in one or more fields of a file name specification.
+In this LISP system, this is permitted in any field (except device
+unit) of a file given in an %INPUT% or %INOUT% call.
+The file which is actually opened on the call to INPUT or INOUT is
+the first of the (presumably) several specified by the indexable
+file specification.
+	When/if %end of file% is reached on the file currently open
+on a channel which is indexable, an (ERR @%$NDXEOF$%) (not %$EOF$%)
+occurs.  In addition, the channel is not released (as it would be
+in the case of a normal end of file error).
+	The user may use the function call (%NDXFIL% channel) to
+advance from the currently open file to the next in the sequence
+specified by the indexable file specification which was given when
+channel appeared in the INPUT or INOUT call.  The previously open
+file is cleaned up and closed.  Note:  NDXFIL is a subr; its argument
+is evaluated.
+
+.SS Closing Files
+	There are essentially two methods of %closing files%.  First,
+as in older versions of ILISP, the file open on the presently selected 
+channel may be closed (and the channel released) by means of the
+the function call (%INC% name T) for input files or (%OUTC% name T)
+for output files.  The channel name in the call must, of course,
+be different from that of the presently selected channel.  The effect
+of these function calls is to deselect the presently selected channel,
+close the file open on it, and release the channel.  The named 
+channel is then selected.  
+	UCI-TENEX LISP provides another (somewhat more convenient)
+function, %RELEASE%.  The form of a call to RELEASE is:
+.STOPTEXT
+
+	(RELEASE channel)
+where:
+	channel is the name of the channel to be released.
+	Note: RELEASE is a subr; channel is evaluated.
+.STARTTEXT
+	The named channel may or may not be selected  for input or
+output at the time of the release.  If it is selected, the terminal 
+(channel NIL) ends up selected after the call to RELEASE.  If not, the
+currently selected channel remains selected.  RELEASE performs all
+of the functions described above for the INC/OUTC closing sequence,
+but avoids the awkward (but often used) (INC chan NIL)-(INC chan T)
+sequence which was required to close a file on a channel not currently
+selected.
+	WARNING:  UCI-TENEX LISP does PMAP input/output on disk files.
+Failure to allow LISP to close an output or inout file which has been
+extended will result in a file which contains all the data but has
+an incorrect %end of file pointer%.                 
+
+
+.SS Random access input/output
+.SSS General Information
+	This version of LISP provides the user with the ability to
+do %random access input/output% on disk files.  (TENEX does not
+support the capability on other devices.)  That is, the programmer
+may specify the number of the byte to be written or read on the
+next access to an output or input file.  This facility has proven
+to be quite useful in instructional applications here at IMSSS.
+(In fact, Dan Swinehart had added this capability to the 10/50 version
+of ILISP at SAIL.  Function names differ, however, and he never got
+around to documenting it.)
+	The basic facility is implemented by means of two functions,
+one to read the %file pointer% and the other to set it.  A third
+function is provided for determining the current size of a file.
+
+.SSS RFPTR and CRFPTR
+	There are two separate functions which may be used to 
+interrogate the file pointer.  They are %RFPTR% and %CRFPTR%.
+The form of a call to RFPTR is:
+.STOPTEXT
+
+	(RFPTR channel)
+where:	
+	channel is the name of the channel whose pointer is to be read.
+	Note:  the channel MUST be selected for input or output at
+	   the time of the call to RFPTR.  RFPTR is a subr; its 
+	   argument is evaluated.
+
+.STARTTEXT
+The form of a call to CRFPTR is identical.  The channel need not be
+currently selected, however. The value of either call is the number 
+of the byte which will be next referenced by any input/output operation
+on the file open on the named channel.  The first byte in the file is 
+byte 0.  
+	The CRFPTR form of the call is more TENEXish in flavor, while
+the RFPTR form is more conventionally ILISPish.
+
+.SSS SFPTR and CSFPTR
+	There are two functions, %SFPTR% and %CSFPTR% which may be
+used to set the file pointer.  A call to SFPTR takes the form:
+.STOPTEXT
+
+	(SFPTR channel n)
+where:
+	channel is the name of the channel whose pointer is to be set.
+	n is the integer byte pointer to be used for the next access.
+	Note:  the channel MUST be selected for input or output at
+	   the time of the call to SFPTR.  SFPTR is a subr; its 
+	   arguments are evaluated.
+
+.STARTTEXT
+The form of a call to CSFPTR is the same.  However, the channel need
+not be selected. Again, the distinction between the two is stylistic 
+rather than functional.  Both set the file pointer of the file open 
+on the named channel to the value specified by n.  That is, the next 
+access to the file will reference byte number n.  The value of both 
+calls is n.
+	Three special argument values are allowed.  Both T and -1
+designate current end of file.  The value is -1 in both cases.
+NIL designates beginning of file (byte 0); the value is 0 in this case.
+
+.SSS SIZEF and CSIZEF
+	There are also a pair of functions which may be used to 
+determine the current size of a file (the number of the next byte
+beyond %end of file%).  They are %SIZEF% and %CSIZEF%.
+A call to SIZEF is of the form:
+.STOPTEXT
+
+	(SIZEF channel)
+where:
+	channel is the name of the channel whose file size is wanted.
+	Note:  The named channel MUST be selected at the time of the
+	   SIZEF call.  SIZEF is a subr; its argument is evaluated.
+
+.STARTTEXT
+A call to CSIZEF has the same form; the channel need not be selected.
+The difference is, again, stylistic.  The value in either case is
+the current size of the file in 7 bit bytes.
+
+.SS Teletype Input/Output, PSTIN:
+.SSS The Line Editor
+	This version of LISP has somewhat improved 
+%teletype input/output% mechanisms.  These make use of the
+%PSTIN% jsys available at IMSSS.  In order to guarantee transportability
+to other TENEX sites, slightly modified code for the jsys is included
+in the interpreter for use at other sites.
+	The standard setup provides the following line-editing 
+characters and functions for terminal input to UCI-TENEX LISP:
+.STOPTEXT
+
+	%RUBOUT% to delete the rightmost character on the current line.
+	%CTRL-A% is the same as RUBOUT.
+	%CTRL-W% to delete the rightmost word (back to tab or space).
+	%CTRL-X% to delete the entire line.
+	%CTRL-R% to type the line as the editor now sees it.
+.STARTTEXT
+	The CTRL-R option is particularly useful on hard-copy devices 
+which cannot actually remove deleted characters.  (At IMSSS, PSTIN
+actually deletes characters from display devices.)  On such devices, the
+first RUBOUT is echoed as left-square-bracket followed by the
+character deleted.  Successive RUBOUTS are echoed as the character
+deleted.  When any other character is typed, a closing square-bracket
+is typed.
+	Note that it is not possible to back up over a carriage
+return (even though a complete s-expression has not been typed).
+However, line-feed may be used instead of carriage return on
+intermediate lines.  You may back up over a line-feed.  Note,
+however, that if the input buffer becomes full, you will lose the
+ability to back up to the beginning - and you will NOT be notified
+when this occurs.  (The input buffer holds about 1000 decimal 
+characters.)
+
+.SSS The Long-form Call
+	The system provides the user with full access to all the
+features of PSTIN.  The user can specify his own character
+table (determine the editing control characters and perform
+character translation), establish his own prompt string (up to
+64 characters in length), skip characters already in the buffer
+on startup, and establish 2 additional editor-termination 
+characters.  This setup is accomplished by calling %SETPSTIN%:
+.STOPTEXT
+
+	(SETPSTIN tblflg prmpt skipct ac3)
+where:
+	tblflg is non-NIL if the user's own table is to be used; NIL
+	   if the system table is to be used.  
+	prmpt is NIL if the current LISP prompt character is to
+	   be used.  If non-NIL, then a character string equivalent
+	   to PRINCing prmpt will be used.
+	skipct is NIL if no characters are to be skipped; else it is
+	   the number of characters to be skipped.
+	ac3 is an integer representing the additional terminating
+	   characters - one in bits 18-26, the other in bits 27-35.
+	   NIL if none.
+	Note:  SETPSTIN is a subr; its arguments are evaluated.
+.STARTTEXT
+	The initial user character table is identical to the system
+table.  It may be altered via %SETPTBL% (see below).  The skipct
+feature  allows transparent LISP activation in the middle of a line.
+Settings established by SETPSTIN remain in force until the next call
+to SETPSTIN or until an error, interrupt, etc. causes forcible
+return to the top level.
+
+.SSS Setting the Character Table
+	As mentioned above, %SETPTBL% may be used to alter the
+contents of the user character table for the teletype line editor.
+This table contains one 9-bit entry for each character in the
+ASCII set (128 entries in all).  This entry specifies the action
+to be taken by PSTIN when the character is read from the terminal.
+The form of a call to SETPTBL is:
+.STOPTEXT
+
+	(SETPTBL charnum n)
+where:
+	charnum is the integer ASCII code for the character.
+	n is either NIL (to specify no change) or a 9 bit
+	   integer which becomes the new table entry for the
+	   specified character.
+	Note:  SETPTBL is a subr; its arguments are evaluated.
+
+.STARTTEXT
+The value of a call to SETPTBL is always the old value of the
+byte corresponding to the given character number.  If n is NIL
+no change is made.  Otherwise, the table entry is changed to n.
+The interpretation assigned to n is as follows:
+.STOPTEXT
+
+	400 bit on:  special edit function in lower 8 bits:
+		0 ignore [null]
+		1 erase character [RUBOUT, CTRL-A]
+		2 erase word [CTRL-W]
+		3 erase all [CTRL-X]
+		4 retype [CTRL-R]
+		5 continue [line-feed] (echo <cr><lf>, char to buffer)
+	400 bit off:  lower 7 bits are character to place in buffer.
+	200 bit on:  terminator.  Translate as above, return to user.
+.STARTTEXT
+
+.SSS NOPROMPT
+	LISP normally prints the prompt string (user, furnished 
+by means of SETPSTIN, or system) before each terminal read
+operation.  Under certain unusual circumstances (when the user
+provides his own prompt string), this may be undesirable.
+The function %NOPROMPT% provides a means of disabling this
+prompt printing IN THE CASE OF USER-SUPPLIED PROMPTS.  System
+prompts are always printed.  NOPROMPT is a subr; its argument
+is evaluated.  Its single argument is the new value of the
+NOPROMPT flag.  If the flag is non-NIL, user supplied prompts
+are suppressed; otherwise they are printed.  The value of
+the function is the old value of the flag.
+
+.SSS NOALTMODE
+	LISP usually echoes the character %altmode% as a dollar
+sign ('%$%').  For some types of fancy input, this is undesirable.
+This feature may be suppressed by means of a call to the function
+%NOALTMODE%.  This function, which is a subr (its argument is 
+evaluated), requires a single argument.  If it is non-NIL, the dollar
+echo is suppressed; if NIL, the dollar echo is restored.  The value
+of the function call is the old value of the flag.
+
+.SSS Output Suppression
+	As mentioned previously, typing the character %CTRL-O% 
+causes output to the terminal to be suppressed until such time as 
+a read from the terminal is again required.  This %output suppression% 
+may also be stopped by means of a call to the function %TALK%.  
+TALK has no arguments and returns NIL.
+
+.SS I/O Conversion
+.SSS Octal Numbers
+	No end of grief has been occassioned by the fact that older
+versions of ILISP had no way to indicate that %octal numbers% on a
+file were indeed octal.  Files written with %BASE%=8 were read with
+%IBASE%=10 with disasterous results.  UCI-TENEX LISP provides a remedy
+for this problem.  The input scanner has been altered to recognize
+a number prefixed by single quote ('%'%') as being base 8, regardless
+of the current input base (value of IBASE).  (The single quote may,
+of course, itself be prefixed by a minus sign to indicate a negative
+octal number.)  A global variable, %*NOQUOTE% controls the production
+of single quotes on output.  If its value is non-NIL, the quotes are
+suppressed; if NIL, they are produced.  The initial value of *NOQUOTE
+is T (for compatibility with older versions of ILISP).
+	%DSKOUT% has been modified to force base indications on output.
+(That is, if BASE=8, *NOQUOTE is set to false.  If BASE=10, 
+%*NOPOINT% is set to false.)  Thus, files written by DSKOUT can always
+be read correctly, regardless of the value of IBASE at the time they
+are read.  The flags are restored to their initial values before
+DSKOUT returns.
+	Similarly, the %compiler% has been modified to force single
+quotes onto its LAP output.  This one change alone should alleviate
+lots of problems!
+
+.SSS Lower Case
+	Similarly, many users expressed aggravation at the distinction
+which older versions of ILISP draw between upper and lower case input.
+NIL is NOT the same as nil!  This version of LISP provides lower to
+upper case translation on input.  Separate flags are maintained -
+one for input from the terminal and another for input from files.
+If the flags are non-NIL, lower case input is raised to upper case;
+if NIL, no changes are made.  The default values are T for terminal
+input, NIL for file input.  The functions %RAISE% and %FRAISE%
+may be used to change the values of the flags for terminal and
+file input respectively.  Each takes a single argument, the new flag,
+and returns the old value of the flag.  Both are subrs; their arguments
+are evaluated.
+
+.SS TENEX-specific Functions
+.SSS TNXJFN
+	The function %TNXJFN% takes as its single argument a channel
+name.  The value of the function call is the %JFN% (job file number)
+associated with the file presently open on the named channel.
+TNXJFN is a subr; its argument is evaluated.
+	This function is provided mostly as a convenience to the
+assembly language programmer, who may need this piece of information.
+Also, the JFN is required for use with the %JFNS% and %DELNF% functions
+which require it as an argument.
+
+.SSS TNXJFNF
+	The function %TNXJFNF% may be used to obtain the %GTJFN%
+flag bits for a file presently  open on a given channel.  The single
+argument to the function is the channel name.  Its value is an
+18 bit integer representing the left half of the JFN word as
+returned by GTJFN.  Useful information contained includes an
+indication of which fields, if any, contained '%*%' in the
+file name specification.  Consult  the JSYS manual for details.
+	TNXJFNF is a subr; its argument is evaluated.
+
+.SSS Obtaining File Names
+	Given the job file number, TENEX provides the means for
+obtaining the full name of the file (including version and directory,
+which may not have been specified in the initial file name 
+specification), and certain additional information about the 
+file (detailed below).  This capability is furnished to the
+LISP programmer by means of the %JFNS% function.  The form
+of a call to JFNS is:
+.STOPTEXT
+
+	(JFNS jfn n)
+where:
+	jfn is the job file number (from %TNXJFNF%).
+	n is an optional argument which specifies what is to
+	   be printed.  The default is '211110000001, which
+	   prints the entire file name only.
+	Note:  JFNS evaluates its arguments.
+	The meanings of the bits in n are:
+		0-2	device output control,
+		3-5	directory output control,
+		6-8	name output control (2 illegal),
+		9-11	extension output control (2 illegal),
+		12-14	version output control,
+		15-17	protection output control,
+		18-20	account output control,
+		21	print ;T if file is temporary,
+		22	print size in disk pages,
+		23	print creation date,
+		24	print write date,
+		25	print read date,
+		31-35	format control.
+	The output control fields may be:
+		0	don't print,
+		1	always print,
+		2	print if different from system default.
+	Format control bits are:
+		35	punctuate device through ;T fields,
+		34	tab before fields with 1, 2 as output control,
+		33	tab before all printed fields except the first,
+		32	punctuate size and date fields.
+	All format bits zero means put nothing between fields.
+.STARTTEXT
+	The value of a call to JFNS is a LISP string containing all
+the text returned by TENEX, as specified by n (or the default value
+of n, if n is not present).
+
+.SSS Deleting Files
+	LISP provides a means of %deleting files% from within the
+system.  This is done by calling the function %DELNF%.
+The form of the call is:
+.STOPTEXT
+
+	(DELNF jfn n)
+where:
+	jfn is the job file number (obtained from %TNXJFN%).
+	n is the number of versions to retain.
+	Note:  DELNF is a subr; its arguments are evaluated.
+.STARTTEXT
+	DELNF deletes all but the most recent n versions of
+the file whose job file number is given by jfn.  That is,
+if version v of a file is open on jfn, then all versions having
+numbers less than or equal to v-n are deleted.  The value of the
+function is the number of files  deleted.  Note that an expunge
+is still required to actually destroy the deleted files.
+
+.SS Channel-specific Data Transfer
+	The ILISP method of performing input/output (selecting a
+channel via %INC% or %OUTC% and then using data transfer primitives
+which do not reference a channel) seems somewhat unnatural to
+programmers used to TENEX (where each data transfer operation
+requires the specification of some kind of handle on the file).
+We have, therefore, added several data transfer primitives which
+allow specification of the channel name in call on the data
+transfer function.  Essentially, these functions select the
+specified channel, perform the data transfer, and reselect the
+old channel.  They are, therefore, somewhat less efficient when
+used for repeated transfers to or from the same channel.
+	In each case, the new function name is formed by adding
+'C' to the front of the old function name.  The channel name
+argument appears first in the argument list.  The new functions
+are:
+.STOPTEXT
+
+	%CREAD%
+	%CLINEREAD%
+	%CPRINT%
+	%CPRINC%
+	%CPRIN1%
+	%CSPRINT%
+	%CPRINTLEV%
+	%CTAB%
+	%CTERPRI%
+.STARTTEXT
+
+.SS Other New Functions
+.SSS String Copying
+	Often, one needs to copy data from one file to another
+(for example, from a text file to the terminal).  It is extremely
+slow to read the data into LISP (say as a string or an s-expression)
+and to print it out again.  This requires parsing of the input,
+assembly of the output,  and a certain amount of storage usage
+(and the attendant garbage collection time).  UCI-TENEX LISP
+provides an altenative, the function %STRCOPY%.
+	The form of a call to STRCOPY is:
+.STOPTEXT
+
+	(STRCOPY delim flag)
+where:
+	delim is the integer ASCII code for the delimiter character.
+	flag is non-NIL to copy the delimiters, NIL else.
+	Note:  STRCOPY is a subr; its arguments are evaluated.
+
+.STARTTEXT
+STRCOPY copies a delimited string from the currently selected input 
+channel to the currently selected output channel.  Characters before 
+the first delimiter are thrown away.  Characters between delimiters 
+are copied from on channel to another as efficiently as possible.  
+Copying of the delimiters is controlled by the value of the flag.
+
+.SSS Paging Output
+	LISP is often faulted for its inability to produce pretty
+output.  The %PGSIZE% funciton is a step in the direction of 
+alleviating that problem.  Use of this function allows the user 
+to establish a fixed page size for output on a specified channel,
+and to provide a function to be called each time that page size 
+is reached (allowing him to print headings on the file, for example).
+Setting this up is accomplished by calling PGSIZE:
+.STOPTEXT
+
+	(PGSIZE n fn)
+where:
+	n is the size of the page (in lines).
+	fn is the function to be called when the page size is reached.
+	Note:  PGSIZE is a subr; its arguments are evaluated.
+.STARTTEXT
+	PGSIZE applies to the currently selected output channel.
+The function fn will be called each time n line feeds have been
+written to the channel.  The counter is automatically reset each time
+it overflows, before the function is called.  The page size may be
+changed by calling PGSIZE with fn=NIL; the page size will be changed
+but the function will not be altered.  The function must be a
+function of no arguments.  PGSIZE may not be applied to INOUT
+channels.  PGSIZE always returns NIL.
+	There is also a function for determining how many lines 
+remain on the current page.  A call to %LINECT%, a function of no
+arguments, returns this figure for the currently selected output
+channel.
+	%DSKOUT% has been modified to make use of this feature
+as a user option.  The value of the global variable %#DSKOVAR%
+is a dotted pair of the form (size . fn).  The initial value
+is (0 . NIL), which specifies that the PGSIZE feature is not
+to be used.  Setting the CDR of the pair to a non-NIL value
+enables the PGSIZE feature, using the CAR as the page size and
+the CDR as the function to call.
+
+.SS User Input/Ouput
+	This section describes a feature, implemented by Dan
+Swinehart at SAIL, which allows the programmer to functionally
+simulate an i/o device.  Swinehart named the feature %USERIO%.
+It gives the user access to the LISP print and read routines
+at the character level.  
+	USERIO functions are specified by means of the 'device'
+%FN:%, which may appear in an %INPUT%, %OUTPUT%, or %INOUT%
+call in place of a normal file specification.  It must be
+immediately followed by an atom which is the name of a function
+of two arguments.
+	For input, the function will be called with both
+arguments equal to NIL whenever a character is needed from the
+channel with which it is associated.  The function should return
+the ASCII integer code for the character which it has just 'read',
+to be returned to the appropriate place in the read routines.  
+%End of file% may be indicated by returning the atom %$EOF$%.     
+	For output, the function will be called whenever a character
+must be disposed of to the channel with which it is associated.
+In this case, the first argument will be T, and the second will
+be the ASCII integer code for the character to be passed to
+the 'device'.  The value returned is ignored.
+
+.SEC STRINGS
+.SS Introduction
+	UCI-TENEX LISP has an improved representation for %strings%
+and an expanded set of available string operations.  The new 
+representation cuts the amount of storage required for a string
+roughly in half.  Formerly, 2 words were required for each
+5 characters in the string.  The new implementation requires only
+1 word per 5 characters.
+	A new partition, string space, has been created in the
+LISP storage allocation scheme.  See {YONSS ALLOC} for information
+on how to change the amount of space allocated to strings.
+	The only incompatibility introduced in this implementation
+is that strings may no longer be %INTERN%ed.  This is not considered
+to be a serious handicap; it might be remedied if anyone has an
+application which absolutely requires it.
+	Strings are still delimited by %double quote%s.  The
+%STRINGP% function can now differentiate between a string and a
+normal atom which begins with double quote.
+	Strings are not unique!  They are not (obviously) interned.
+The functions listed below should be used to compare strings.
+
+.SS Comparison of Strings
+	%String comparison% is implemented by means of two separate
+functions, %EQSTR% and %LEXSTR%.
+	EQSTR is a predicate which determines whether or not two
+strings contain the same characters (print in the same way).
+A call on EQSTR takes the form:
+.STOPTEXT
+
+	(EQSTR str1 str2)
+where:
+	str1 and str2 are both LISP strings.
+	EQSTR is a subr; its arguments are evaluated.
+.STARTTEXT
+	The value of EQSTR is T if the strings are equal, NIL if not.
+Note that both arguments must be strings (not normal atoms or general
+s-expressions).
+	LEXSTR determines the lexicographic relation between 
+two strings.  The form of a call is:
+.STOPTEXT
+
+	(LEXSTR str1 str2)
+where:
+	str1 and str2 are LISP strings.
+	LEXSTR is a subr; its arguments are evaluated.
+.STARTTEXT
+	LEXSTR returns an integer which specifies the relationship
+between its two string arguments.  The result is 0 if they are equal
+(EQSTR would return T), 1 if str1 is less than str2, and 2 if
+str1 is greater than str2.  The ordering criterion used is based
+on the ASCII character code.
+
+.SS String Length
+	The function %LSTR% can be used to determine %string length%.
+The length of a string is the number of characters contained in the
+string, not including the delimiting double quotes, which are not
+considered to be part of the string.  LSTR is called as follows:
+.STOPTEXT
+
+	(LSTR str)
+where:
+	str is a LISP string.
+	LSTR is a subr; its argument is evaluated.
+.STARTTEXT
+	The value of an LSTR call is the number of characters in
+its string argument.  The %null string% has length zero.
+
+.SS Substringing and Concatenation
+	This version of LISP provides %substringing% and
+%concatenation% operations on strings.  Substringing is
+performed by the function %SUBSTR%:
+.STOPTEXT
+
+	(SUBSTR str from-num for-count)
+where:
+	str is a LISP string.
+	from-num is the number of the first character to be included.
+	for-count is the number of characters to include.
+	SUBSTR is a subr; its arguments are evaluated.
+.STARTTEXT
+	For the purposes of from-num, the first character in the
+string is character zero.  The double quote delimiters are not
+part of the string, and cannot be accessed by the substring operation.
+The result of the function call is a new LISP string which is the
+specified substring of str.  If for-count and from-num specify
+a string which would reach beyond the end of str, only those characters
+which appear in str appear in the result.  No padding is supplied,
+nor is an error generated.
+	Concatenation is performed by %CONSTR%:
+.STOPTEXT
+
+	(CONSTR str1 str2)
+where:
+	str1 and str2 are LISP strings.
+	CONSTR is a subr; its arguments are evaluated.
+.STARTTEXT
+	The value of a call on CONSTR is a new LISP string made
+by appending the characters of str2 to the end of those of str1.
+.SEC Scanning Routines
+.SS Introduction,SCANINT:
+	In conjunction with the new string routines, UCI-TENEX
+LISP offers string scanning facilities similar to the SCAN
+function available in SAIL (see {REF SAILMAN}).  There are
+also functions to perform scanning from a file (or from the
+TTY), and a scanner function which uses the normal LISP scanner
+on a string input.  These functions (except the latter) 
+scan an input stream until a break character is encountered,
+returning a LISP string which is made up of those characters
+up to (and optionally including) the break character.
+Although the input string is not lopped (as in SAIL), information
+is also returned specifying where in the string the next
+scan is to begin.  This information may be used to direct
+the scanning routines to begin at some character other than
+the first.
+	There are two LISP array arguments which must be used
+in many of the function calls described below.  These arrays
+define the scanner table and a paramter block.  They are described
+once here for conciseness.
+	%SCANTABLE% is an array of 128 (decimal) 2-bit elements.
+It is declared:
+.STOPTEXT
+
+	(ARRAY SCANTABLE 2 128.)
+
+.STARTTEXT
+There is nothing sacred about the name SCANTABLE; the user may have
+and use as many tables as he desires.  The table is indexed by
+the ASCII code for a character.  The entry has the following
+meaning (for the character which indexes it):
+.STOPTEXT
+
+	2	break on this character.
+	1	ignore (flush) this character.
+
+.STARTTEXT
+
+	%SCANPARM% is an array of 3 s-expression elements.  It is
+declared:
+.STOPTEXT
+
+	(ARRAY SCANPARM T 3)
+
+.STARTTEXT
+Again, there is nothing sacred about the name and the user may
+have and use as many parameter tables as he likes.  The precise
+use of the entries in this array varies with the function being
+called.  In general, however, they are used in the following
+ways:
+.STOPTEXT
+
+	Entry 0:  returned:  the ASCII code for the break
+		  character, if any; else some type of error
+		  indication.
+	Entry 1:  given:  the starting character to scan (string
+		  inputs) or the maximum number of characters
+		  to scan without a break character (file inputs).
+		  returned:  updated character number (string
+		  inputs only).
+	Entry 2:  returned:  the length of the source string
+		  (string inputs only).
+.STARTTEXT
+
+	In addition, several of these routines require a flag
+argument specifying the disposition of the break character.
+Possible values of this flag and their meanings are:
+
+.STOPTEXT
+
+	A	append the break character to the output.
+	S	skip the break character (flush it).
+	R	retain the break character in the input stream
+		(it will be the first character seen on the
+		next scan).
+
+.STARTTEXT
+
+.SS Break Table Set-up
+	%Break table set-up% can, of course, be done via the
+%STORE% function for LISP arrays.  The function %BRKTBLSET%
+provides a more convenient method of initializing the scanner
+table.  A call to BRKTBLSET has the following format:
+.STOPTEXT
+
+	(BRKTBLSET scantable brk ignr clrto)
+where:
+	scantable is the name of the scanner table array.
+	brk is a string (or other s-expression) whose characters
+	   are to be set to 'break' (2).
+	ignr is a string (or other s-expression) whose characters
+	   are to be set to 'ignore' (1).
+	clrto is an integer (0, 1 or 2) giving the value to
+	   which all elements of the array are to be set.
+
+.STARTTEXT
+Arguments which are not needed (including clrto) on this particular
+call may be noop-ed by using NIL.  LISP initializes the array to
+all zeroes when it is created.  EXPLODEC is used on the s-expressions
+brk and ignr.  These will usually be strings, but may be any
+s-expression as well.  The array is cleared (if required), the
+ignore characters are processed and then the break characters
+are processed.  (Therefore, break overrides ignore.)
+The value is always NIL.
+	Note that for some single characters which are hard to
+type (or which cannot appear in a string), the function %ASCII%
+is useful.
+
+.SS Scanning from Strings
+	There are two functions, %SCANSTR% and %LISPSCAN% which
+scan from strings.  The former uses a breaktable to produce a
+string output.  The latter uses the regular LISP scanner to
+produce an s-expression output.
+	A call to SCANSTR has the form:
+.STOPTEXT
+
+	(SCANSTR string scantable scanparm flag)
+where:
+	string is a LISP string to be scanned.
+	scantable is a SCANTABLE array ({YONSS SCANINT}).
+	scanparm is a SCANPARM array ({YONSS SCANINT}).
+	flag is A, R or S ({YONSS SCANINT}).
+
+.STARTTEXT
+The string is scanned, beginning at SCANPARM[1], according to
+scantable.  The value is another LISP string.  SCANPARM[0]
+is set to the break character (-1 if none is found by the end
+of the string), and SCANPARM[1] is updated according to the
+value of the flag (which also controls the appearance of the
+break character in the result).  SCANPARM[2] is set to the length
+of the input string.
+	A call to LISPSCAN has the form:
+.STOPTEXT
+
+	(LISPSCAN string scanparm)
+where:
+	string is a LISP string.
+	scanparm is a SCANPARM array ({YONSS SCANINT}).
+
+.STARTTEXT
+The string is scanned, beginning at SCANPARM[1], with the normal
+LISP input scanner.  The value is one LISP s-expression.  SCANPARM[0]
+is set to 0 if READ got one complete s-expression; otherwise, the
+partial s-expression is terminated with ALTMODE and SCANPARM[0]
+is set to -1.  In the peculiar case in which the string does
+not contain even the start of an s-expression (eg., is all
+blanks), SCANPARM[0] is set to -1 and LISPSCAN returns the
+atom %$ENDSTR$%. SCANPARM[1] is updated so that the next scan, if any,
+will begin with the character after that which terminated the
+s-expression.  SCANPARM[2] is set to the length of the source string.
+
+.SS Scanning from Files
+	The functions %SCANFIL% and %CSCANFIL% may be used to
+scan from files (or the terminal) in much the same way that
+SCANSTR is used to scan from strings.  The forms of calls on
+these functions are:
+.STOPTEXT
+
+	(SCANFIL scantable scanparm flag)
+	(CSCANFIL channel scantable scanparm flag)
+where:
+	scantable is a SCANTABLE array ({YONSS SCANINT}).
+	scanparm is a SCANPARM array ({YONSS SCANINT}).
+	flag is A, R or S ({YONSS SCANINT}).
+	channel is a LISP channel name.
+
+.STARTTEXT
+These routines scan from the specified channel (the currently
+selected channel for SCANFIL, the named channel for CSCANFIL),
+according to scantable.  SCANPARM[1] gives the maximum number
+of characters to scan without a break character (-1 means scan
+forever).  The result is a LISP string including the characters
+scanned and (optionally, according to flag) the break character.
+SCANPARM[0] will be set to the break character, if any.  A
+value of -1 indicates that the count in SCANPARM[1] was exceeded,
+-2 that a regular end of file was encountered, and -3 that an
+indexable end of file was encountered.  In no case is an error
+generated.  In case of normal EOF, channel NIL is selected and
+the original channel is released.  For indexable EOF, channel
+NIL is selected, but the original channel is not released.
+CSCANFIL temporarily selects the named channel, and restores the
+previously selected one before returning.
+
+.SS S-expression to String Conversion
+	Two functions are provided to convert an arbitrary s-expression
+into a LISP string.  These functions, %CVSTR% and %CVSTRC%, are
+identical, except that the former slashifies special characters
+in the result string (as if the s-expression were being PRIN1ed)
+while the latter does not (as if the s-expression were being
+PRINCed).  In both cases, the character double-quote is replaced
+by RUBOUT (ASCII '177) in the result string to avoid creating
+an ill-formed string.  The form of calls on these functions is:
+.STOPTEXT
+
+	(CVSTR s-expr)
+	(CVSTRC s-expr)
+where:
+	s-expr is an arbitrary LISP s-expression.
+
+.STARTTEXT
+The result is a (possibly null) LISP string containing exactly
+those characters which would be PRIN1ed or PRINCed, as appropriate.
+
+.SS Limitations and Warnings
+	Various limitations are imposed by the nature of the
+string facility available in LISP.  These are:
+.LIST ( )
+.ITEM
+The character %NULL% (ASCII '0) may not appear in a LISP string.
+There is a wired-in 'ignore' state attached to the character null
+for this reason.
+.ITEM
+The character %double quote% (ASCII '42) is assumed to be the
+string delimiter character.  %MODCHR% users beware!!
+.ITEM
+Because double quote read from a file would cause premature
+termination of the string being constructed, that character
+is replaced (by SCANFIL and CSCANFIL) in the result string
+by %RUBOUT% (ASCII '177).  The scanner action with regard to
+double quote IS, however, controlled by the contents of
+SCANTABLE['42] (not SCANTABLE['177]); SCANPARM[0] will also
+be set to '42 if double quote is the break character.  The
+ONLY thing affected is the character placed in the result string.
+.ITEM
+Both %CTRL-Y% (ASCII '31) and %CTRL-Z% (ASCII '32) are normally
+treated as start of comment, even within a string.  This causes
+everything up to and including the next LF to be flushed.  In
+order to avoid this effect when scanning from a file or string,
+use %MODCHR% to set the string scan bits for these to characters
+to '3.  (They were zero.)  For example,
+.STOPTEXT
+
+	(MODCHR '32 '600000000)
+
+.STARTTEXT
+.ITEM
+DDTIN mode does not work correctly with SCANFIL applied to
+channel NIL (the terminal).
+.ENDLIST
+
+
+.SEC Read Only Structure
+.SS Definition
+	Production LISP programs often require a large amount of
+static structure (structure which is used but not modified by
+the program).  This includes such things as grammars and file
+indices, for example.  It is a shame to waste time garbage collecting
+such structures.  This version of LISP provides a means of
+circumventing this garbage collection process, at least for
+regular list structure (free space cells).  This mechanism
+is called %read only structure%.  
+	This type of structure can be created in one of two
+ways:  as a result of input (from terminal or file) or as
+a result of explicit %read only CONS% operations.  Structures
+created in these ways are stored in a space which dynamically
+grows down from the top of the low segment (beginning with page
+377 and working downward a page at a time, as needed).  It is
+anticipated that initialization phases of production programs will
+set up the contents of this area, which will then be saved along
+with the rest of the core image.  Thus, in a production incarnation,
+the space is truly read only.  An extra bonus is that these pages,
+if initially sharable, will stay sharable.
+	Note that reallocation of the core image will cause
+the read only section to be 'dirtied', since references to atoms,
+etc. in the space must be updated to reflect the relocation.
+
+.SS Creation from Input
+	The function %SETRO% may be used to establish the space to
+be used for all CONSes required in creating structure by means of
+the read routines.  A call to SETRO has the form:
+.STOPTEXT
+
+	(SETRO flag)
+where:
+	flag determines which space (free space or read only) to use
+	   for CONSes in future read operations.
+	SETRO is a subr; its arguments are evaluated.
+.STARTTEXT
+	If the flag is non-NIL, read only space is used in the future;
+otherwise, normal free space is used.  The value of the function call
+is the old value of the flag.
+
+.SS Read Only CONS Operations
+	Three %read only CONS% operations are provided.  %ROCONS%,
+%RONCONS% and %ROXCONS% are precisely analogous to %CONS%, %NCONS%
+and %XCONS%, respectively, except that they use read only space
+rather than normal free space as the source of the new CONS cell.
+Calling sequences are identical to those for the normal CONS
+functions.
+
+.SEC The HELP System
+.SS Introduction
+	%The HELP system% is designed to provide convenient online
+access to documentation about the features of the UCI-TENEX LISP system.
+It contains information on topics ranging from the basic (CAR, CDR
+and CONS) to the obscure (the editor macro creation commands).
+It is intended to provide quick reference material on all commonly
+used aspects of LISP.  Its material is more user-oriented than that
+provided by {REF UCIMAN}.  For example, the editor explanations
+do not refer to the edit chain!
+	The material is divided into topics (eg., EDITOR, 
+LIST-FUNCTIONS) and sub-topics (eg. CAR, F).  This allows both
+easy access to the information and the ability to obtain an index
+of all the material available in the HELP system (and sub-indices of
+information on any given topic).  
+	
+.SS Entering and Leaving the HELP System
+	Entry to the HELP system is gained by calling the function
+%HELP%.  HELP has no arguments.  It reads %HELP commands% and
+%HELP information request% from the keyboard (prompting with
+exclamation point, '%!%') and displays text information on the
+terminal as required.
+	The HELP system may also be entered from the editor
+or the break package simply by typing the command %HELP% to
+either utility package.
+	The HELP command %OK% is used to exit from the HELP
+system.  This causes the function HELP to return NIL to the
+caller.
+
+.SS Requesting Information
+.SSS Normal Requests
+	Normally, a %HELP information request% is given simply
+by typing the topic and sub-topic about which information is
+needed.  For example,
+.STOPTEXT
+
+	!LIST-FUNCTIONS CAR
+	!EDITOR N
+
+.STARTTEXT
+are both valid information requests.  (The '!' is the HELP command
+prompt).  The HELP system responds to such requests by displaying
+any information it has about the specified topic on the user's
+terminal.
+	Note that this requires that the user know both the
+topic and subtopic names for which he desires information.
+The %INDEX% and %SUBINDEX% commands allow him to find out the
+names of all topics and all sub-topics for any given topic.
+Also, the %XREF% command eliminates the need for entering
+the topic name in information requests (at the cost of some
+additional storage).
+
+.SSS The INDEX and SUBINDEX Commands
+	The %INDEX% command,
+.STOPTEXT
+
+	!INDEX
+
+.STARTTEXT
+lists the names of all topics on which the HELP system contains
+information.  
+	The %SUBINDEX% command, which requires a topic name
+as an argument, lists the names of all sub-topics of a given
+topic.  For example,
+.STOPTEXT
+
+	!SUBINDEX EDITOR
+
+.STARTTEXT
+lists the names of all sub-topics of the topic EDITOR.
+	These two commands allow the user to browse through
+the help information, and to determine the information necessary
+to formulate an information request.
+
+.SSS The XREF Command
+	The %XREF% command,
+.STOPTEXT
+
+	!XREF
+
+.STARTTEXT
+causes the HELP system to process all its information files, building
+an internal cross-reference structure which links sub-topics to
+their associated topics.  The net result of this operation is
+that the topic name need not be specified in an information
+request.  That is,
+.STOPTEXT
+
+	!CAR
+
+is sufficient, rather than
+
+	!LIST-FUNCTIONS CAR
+.STARTTEXT
+	Ambiguous references are handled by giving the user a list
+of all possible topics which might apply.  He may then enter
+an unambiguous information request which includes the topic name
+which he meant in his original request.
+
+.SS Other Commands
+.SSS The DUMP Command.
+	The %DUMP% command allows the user to create a human-readable
+disk copy of information in the HELP system.  He may use this file
+to produce hard-copy on some suitable device.  The command has
+no arguments:
+.STOPTEXT
+
+	!DUMP
+
+.STARTTEXT
+but the user will be interactively asked to furnish three pieces
+of information:  the starting topic and sub-topic, the ending topic
+and sub-topic, and a file name onto which the information will be
+written.  If no sub-topic is given, the first topic (always the
+topic BASIC) of the named topic is assumed.  The dump includes
+information from the starting to the ending topic/sub-topic pairs,
+inclusive.  The inclusion range is determined by the ordering of
+topics and sub-topics returned by the INDEX and SUBINDEX commands,
+respectively. File names are specified in the normal manner
+({YONSS FNAM}).
+	As each printer page is started, its number will be
+printed on the terminal, indicating that all is proceeding normally.
+
+.SSS The GRIPE Command
+	The %GRIPE% command,
+.STOPTEXT
+
+	!GRIPE
+
+.STARTTEXT
+may be used to send a message (be it complaint or question) to the
+local maintainers of UCI-TENEX LISP.  After typing the GRIPE command,
+the user will be asked if he wants an explanation of the procedure.
+If 'Y' is the response, information similar to this will be
+displayed on the terminal before he is given the opportunity to
+enter his comment.  If he responds 'N', he will be asked to enter
+his comment immediately.  
+	The user will be asked to supply a one-line message
+subject and a comment. Both must (individually) be delimited by 
+%double quote%s.  They may each be as long as desired and may contain 
+any characters except double quote (including carriage return!).  
+The prompt character for the entire operation is exclamation point 
+('%!%').
+	Information identifying the user and the date and time
+of the message are added to the comment by the system.
+	If the gripe file is busy, the user will be informed.  If
+he does not wish to wait, he may type %CTRL-G% to escape.
+
+.SEC Error Handling,ERRS:
+.SS Introduction
+	The %error handling% capabilities of ILISP have been
+expanded somewhat in the new version.  This section describes
+the added features, which include the %named ERRSET% feature,
+added flexibility in the handling of the %CTRL-E% interrupt
+characer, and the ability for the program to determine what
+the last error was.
+.SS Named ERRSETs
+	Previously, all ERRSETs with a non-NIL flag argument were
+considered to be equivalent. The %NAMEDERR% function allows the
+user to specify that such ERRSETs are to be distinguishable by
+the atom which is their flag argument.  This is the 
+%named ERRSET% feature.  The form of a call to NAMEDERR is:
+.STOPTEXT
+
+	(NAMEDERR flag)
+where:	
+	flag is T to enable named ERRSETs, NIL to disable.
+	NAMEDERR is a subr; its argument is evaluated.
+.STARTTEXT
+	The default setting of the flag is NIL.  This is
+compatible with older versions of ILISP.  The value of the 
+function call is the old value of the flag.
+	When the feature is enabled, %ERR%s propagating to
+an ERRSET behave as follows:
+.STOPTEXT
+
+	ERR arg:		Stops for ERRSET:
+	  NIL			  Any ERRSET (as before)
+	  $EOF$			  Any ERRSET (as before)
+	  $NDXEOF$		  Any ERRSET 
+	  ERRORX		  ERRSET...ERRORX
+	  Other non-NIL		  ERRSET with matching argument.
+
+.STARTTEXT
+Additionally, an ERRSET...ERRORX stops any error propagating to
+it.
+	The net result of this strategy is that system errors
+stop for the first enclosing ERRSET.  The user who makes use of
+of explicit ERR calls can now return control to any point in
+the enclosing environment by using a named ERRSET and causing
+an ERR with a matching argument.  This eliminates the need
+for the awkward expedient of having the code at each ERRSET
+examine the return from the error and decide whether or not 
+to propagate the error further upward.
+
+.SS CTRL-E Handling
+	Previously, the %CTRL-E% interrupt caused an (ERR NIL).
+In conjunction with the %named ERRSET% feature described above,
+it is now possible to allow the programmer more flexibility.
+The function %CTRLESET% can be used to establish the argument
+which will be used in the %ERR% call caused by the interrupt.
+The format of a call to CTRLESET is:
+.STOPTEXT
+
+	(CTRLESET atom)
+where:
+	atom is the atom to be used in future ERR calls which
+	   result from CTRL-E interrupts.
+	CTRLESET is a subr; its argument is evaluated.
+.STARTTEXT
+	The initial value of the atom is NIL.  The value of the
+function call is the old value of the atom.  The setting remains
+in force until reset by another call to CTRLESET.
+	Note that the named ERRSET feature must be enabled
+(by means of %NAMEDERR%) for the user to do anything fancy
+with this feature.
+
+.SS Error Numbers
+.SSS Interrogation
+	Each error has now been assinged a unique number.  The
+program may use the function %GETENUM% to determine the %error number%
+of the last error.  GETENUM requires no arguments and returns
+the integer number of the most recent LISP error.
+If the most recent error was the result of a call on the %ERROR%
+function with no number specified, the result is NIL.
+	The numbers are partitioned as follows:
+.STOPTEXT
+
+	1-177		LISPish errors (33),
+	200-377		Input/Ouput errors (265),
+	400-477		System errors (412),
+	500-577		Arithmetic errors (504),
+	600-677		Storage errors (607).
+.STARTTEXT
+	Presently, the codes in each group up to and including
+the parenthesized number have been assigned.  A complete listing
+may be found on %<ILISP>TNXLSP.ERRORLIST%.  
+	Certain additional information is also available.  The
+function %GETEPARM% may be used to obtain the value of the
+error 'parameter' for the most recent error.  This is usually
+the information printed on the line above the error message
+itself.  For example, if the the error is 'UNDEFINED FUNCTION',
+the the parameter is the name of the function.  Caution:  not
+all errors have paramters; if the most recent error did not
+have one, then the information returned by GETEPARM is for a
+prior error.  GETEPARM requires no parameters.  Its value is
+always an s-expression.
+	The address of the most recent error message may be
+obtained as an integer by means of the function %GETEADDR%.
+The function requires no arguments.  Its value is an integer
+which has the address of the most recent error message in
+the right half.  If the left half is non-zero, then the
+message is in SIXBIT.  It is terminated by exclamation point.
+Back arrow in the message is meant to be a carriage return.
+At present, there is no handy way to retrieve such a message.
+If the left half is zero, the message is an s-expression.
+It can be referenced by (NUMVAL (GETEADDR)).  (This latter
+case occurs only for errors generated by a call on the
+function %ERROR%.  See below.)
+
+.SSS The ERROR Function
+	The %ERROR% function has been slightly modified to take
+advantage of the extended error interrogation features described
+above.  It behaves exactly as it used to.  However, it has
+an optional second argument which is the error number.
+If no error number is given, GETENUM will return NIL if
+it is called afterwards.  In any case, GETEADDR can be used to
+access the error message s-expression.
+
+.SEC User Interrupts
+.SS Introduction
+	UCI-TENEX LISP supports %user interrupts% from the keyboard
+in a somewhat limited way.  Because of some singularly bad
+implementation decisions on the part of those wonderful people
+at SAIL (who implemented LISP 1.6, upon which all subsequent
+efforts with ILISP were based), it is impossible to provide
+a truly flexible interrupt handling mechanism.  Rather, we
+are limited to a polling scheme.
+	This section assumes a fairly detailed knowledge of
+TENEX keyboard interrupt handling, since most of the functions
+are extremely low level.
+
+.SS Channel Assignments
+	The LISP system uses a number of the 36 available interrupt
+channels for its own purposes.  These channels are:
+.STOPTEXT
+
+	Channel:	Use:
+	   0		   CTRL-H
+	   1		   CTRL-Z
+	   2		   CTRL-E
+	   3		   CTRL-B
+	   4		   CTRL-G
+	   5		   CTRL-C (semi-protected)
+	   9		   PDL overflow (protected)
+	   11		   I/O errors (protected)
+	   15		   Illegal instruction (protected)
+	   16-18	   Memory protection (protected)
+	   22	 	   Illegal mem ref (protected)
+	   24		   CTRL-O
+	   25		   CTRL-Q (semi-protected)
+
+.STARTTEXT
+The protected channels may not be assigned for user interrupt use.
+The semi-protected channels (%CTRL-C% and %CTRL-Q%) may be
+unprotected (via %STEALCQ%) by the sufficiently foolish user.
+They may, thereafter, be used for user interrupt characters.
+Other channels may be used in accordance with TENEX conventions.
+
+.SS Assigning Interrupt Characters
+	%Interrupt characters% may be assigned to a channel
+via the function %ASSGNTI%:
+.STOPTEXT
+
+	(ASSGNTI code ichan)
+where:
+	code is the integer TENEX interrupt code for the character
+	   (not necessarily the same as the ASCII code - consult
+	   your JSYS manual).
+	ichan is the integer number of the channel (0 - 35).
+	ASSGNTI is a subr; it evaluates its arguments.
+.STARTTEXT
+	This function performs the %ATI% JSYS.  It will not allow
+assignment to protected channels.  It always returns T.
+The %ASSGNEVENT% function must also be used on the channel, and
+the channel must be enabled via %ENAINT% before an interrupt
+may actually occur on the channel.
+
+	Interrupt character assignments to channels may be removed
+by means of %DEASSGNTI%:
+.STOPTEXT
+
+	(DEASSGNTI code)
+where:
+	code is the integer TENEX interrupt code for the character.
+	DEASSGNTI is a subr; its argument is evaluated.
+.STARTTEXT
+	This function performs the %DTI% JSYS, so that the character
+is no longer associated with any interrupt channel with which it 
+might have been associated previously.
+	This function will not allow deassignment of %CTRL-C% or
+%CTRL-Q% without prior use of STEALCQ.  The function always
+returns T.
+
+	The function %STEALCQ% is used to enable or disable to
+ability to diddle the semi-protected (%CTRL-C% and %CTRL-Q%)
+channels.  The form of the call is:
+.STOPTEXT
+
+	(STEALCQ flag)
+where:
+	flag is T to enable diddling, NIL to disable.
+	STEALCQ is a subr; its argument is evaluated.
+.STARTTEXT
+	The value of the call is the old value of the flag.
+Unless this function has been most recently called with
+a non-NIL argument, no interrupt operations may be performed
+on the channels associated with CTRL-C and CTRL-Q.  Altering
+these channels is EXTREMELY DANGEROUS, since it may leave the
+an incorrect program without any means of returning to the EXEC.
+
+.SS Events
+	The user must next establish the internal tables which
+will allow polling of a flag to test for the occurrence of an
+%event% (interrupt) associated with a given channel.
+This is accomplished by means of the function %ASSGNEVENT%,
+which is called as follows:
+.STOPTEXT
+
+	(ASSGNEVENT ichan)
+where:
+	ichan is the number of the channel for which an event is
+	   to be established (0 - 35).
+	ASSGNEVENT is a subr; its argument is evaluated.
+.STARTTEXT
+	The effect of this function call is to establish an
+interrupt handling routine for the given channel which knows how
+to set flags which can be tested by %TESTEVENT% (see below).
+Its actual function is to alter the TENEX %CHNTAB%.
+	Protected channels may not be used.  The function always
+returns T.  An %ASSGNTI% should be done on the channel first,
+and the ASSGNEVENT must be followed by a call to %ENAINT%
+in order for an interrupt to actually occur on the channel.
+
+	Events can be tested by means of the predicate %TESTEVENT%,
+which is called as follows:
+.STOPTEXT
+
+	(TESTEVENT ichan)
+where:
+	ichan specifies the channel(s) to be tested as explained below.
+	TESTEVENT is a subr; its argument is evaluatd.
+.STARTTEXT
+	If ichan is a number (0 - 35), then the predicate returns
+ichan if an interrupt has occurred on that channel since the last
+time it was tested.  If not, NIL is returned.  The flag for the
+channel is cleared.  (Note that multiple interrupts on the same
+channel between calls to TESTEVENT are lost.)
+	If ichan is NIL, then the function returns the number of
+the lowest numbered channel on which at least one interrupt has
+occurred since the last call to TESTEVENT, if any.  If no such
+channel exists, the value of the call is NIL.  The flag for the
+specified channel, if any, is cleared.
+
+.SS Enabling and Disabling Interrupts
+	In addition to assigning a character to a channel (%ASSGNTI%)
+and establishing the event for the channel (%ASSGNEVENT%), the user
+must enable interrupts on the channel.  The LISP system provides
+for both %enabling and disabling interrupts%.  
+	Interrupts are enabled by means of a call to %ENAINT%:
+.STOPTEXT
+
+	(ENAINT mask)
+where:
+	mask is an integer with a bit set for each channel to be 
+	   enabled.
+	ENAINT is a subr; its argument is evaluated.
+.STARTTEXT
+	In the mask, B0 is channel zero, etc.  This function
+takes no notice of bits applying to protected channels.  It 
+always returns T.  In terms of TENEX operations, it performs
+the %AIC% JSYS.
+	Interrupt channels may be disabled by means of the
+function %DISINT%:
+.STOPTEXT
+
+	(DISINT mask)
+where:
+	mask is an integer with a bit set for each channel to be
+	   disabled.
+	DISINT is a subr; its argument is evaluated.
+.STARTTEXT
+	The mask is as explained above.  Again, bits applying to
+protected channels are ignored, and the function returns T.
+In terms of TENEX operations, this function performs the %DIC% JSYS.
+	Interrupts on disabled channels are ignored, but the 
+character from the keyboard (if any) disappears.
+
+.SEC Other Added Functions
+.SS Directories
+.SSS The Login Directory
+	UCI-TENEX LISP provides the user with the ability to determine
+the %login directory% of the job running the program.  There are
+two functions for this purpose.  Both require no arguments.
+%LOGDIR% returns the login directory name as a LISP string.  %LOGDIRN%
+returns the number of the login directory as an integer.
+
+.SSS The Connected Directory
+	The user may determine the present %connected directory%
+by calling %CONDIR% or %CONDIRN%, which return the directory 
+name as a LISP string and the directory number as an integer,
+respectively.  Both require no arguments.
+	The user may connect to another directory by means of
+the function %CNDIR%:
+.STOPTEXT
+
+	(CNDIR dirname)
+where:
+	dirname is an s-expression which, when PRINCed, gives the
+	   name of the desired directory (without brokets).
+	CNDIR is a subr; its argument is evaluated.
+.STARTTEXT
+
+	The user must have permission to connect to the target
+directory without a password.  CNDIR returns T if connection
+is successful.  The directory name must be fully specified.
+
+.SSS Directory Number Conversion
+	The function %DIRST% provides conversion from a directory
+number to a string.  The form of a call to DIRST is:
+.STOPTEXT
+
+	(DIRST dirnum)
+where:
+	dirnum is an integer directory number.
+	DIRST is a subr; its argument is evaluated.
+.STARTTEXT
+	The value of the call is a LISP string which is the name
+of the directory whose number is dirnum.
+
+.SS Time Information
+.SSS Execution Time
+	As in older versions of ILISP, the function %TIME%, which
+takes no arguments, returns the accumulated %execution time%
+(in milliseconds) for the entire job.
+
+.SSS Connect Time
+	UCI-TENEX LISP also provides the ability to determine
+the amount of terminal %connect time% which has been used by
+the job running LISP.  The function %CONNECT-TIME%, also requiring
+no arguments, returns the connect time in seconds for the job.
+
+.SSS Time of Day
+	The %time of day% is available from LISP in two different
+formats: as a LISP string, suitable for printout, and as a number
+suitable for use in computational applications.
+	The function %DAYTIME% is used to return the string
+textual representation of the current date and time.  A call
+to DAYTIME takes the form:
+.STOPTEXT
+
+	(DAYTIME arg)
+where:
+	arg is an optional argument (integer) which specifies the
+	   format of the output.
+	DAYTIME evaluates its argument, if any.
+.STARTTEXT
+	The value is a LISP string representing the current date
+and/or time.  The default format is 'day NN-mon-NN NN:NN:NN'.
+Other formats may be specified by means of the optional integer
+argument.  This argument is used as ac3 in the call to the %ODTIM%
+JSYS.  Consult the JSYS manual for a detailed description of the
+nearly limitless options.  Some popular values are:
+.STOPTEXT
+
+	'044401000000 which yields date only as mm-dd-yy,
+	'044201000000 which yields date, time as mm-dd-yy hh:mm,
+	'336321000000 which gives date and time in English.
+.STARTTEXT
+	The function %LOCAL-TIME%, which has no arguments, returns
+the local time of day in seconds since midnight as an integer.
+
+.SS DDT and Symbol Table Functions
+.SSS DDT
+	UCI-TENEX LISP provides the user with a simple mechanism
+for loading DDT and a complete symbol table for the interpreter
+into the LISP core image.  This facilitates linking and debugging
+of hand coded LAP routines, and debugging of assembly language
+routines.
+	DDT and the symbol table are loaded by means of a call
+to %GETDDT%, a function of no arguments which always returns T.
+	DDT may be invoked by a call on the function %DDT%, which
+requires no arguments.  To exit from DDT when it has been
+entered in this manner, type:
+.STOPTEXT
+
+	POPJ P,$X
+
+.STARTTEXT
+to DDT.  This causes the DDT function to return NIL to the caller.
+	To remove DDT and the symbol table from the core image,
+the function %UNDDT% is called.  This function requires no
+arguments and always returns NIL.
+
+.SSS The Symbol Table Functions
+	Several functions are provided for manipulating the
+%symbol table% which is associated with the DDT overlay.
+	The function %FIXSYM%, which requires no arguments,
+must be called after the call to %GETDDT% in order to set
+up LISP core pointers in such a way that the LISP routines
+can find the symbol table which resides in the DDT overlay.
+FIXSYM always returns NIL.
+	Once the symbol table has been loaded and established,
+the ordinary ILISP symbol table functions (%GETSYM%, %PUTSYM%,
+%*GETSYM%, %*PUTSYM%) may be used to manipulate it.  (Note that
+symbols added will be lost if UNDDT is used.)
+	In addition, several new functions are available for use
+in linking hand-coded LAP routines to the interpreter.  The
+function %SYMDEF% is used to create %LAP% %SYM% definitions.
+The form of a call is:
+.STOPTEXT
+
+	(SYMDEF id1 id2 ... idn) 
+where:
+	each idi is a label known in the interpreter.
+	SYMDEF is an fsubr; its arguments are not evaluated.
+.STARTTEXT
+	Each idi is defined as a SYM (has the property SYM
+added with the appropriate value) so that it can be used
+symbolically in LAP programs.  Note that GETDDT and FIXSYM must
+be called first in order to make the symbol table available.
+The value of SYMDEF is always NIL.
+	The function %SYMOFF% may be used to define LAP
+SYMs which are offset from labels in the interpreter.
+A call to SYMOFF has the form:
+.STOPTEXT
+
+	(SYMOFF lbl1 id1 n1 ... lbln idn nn)
+where:
+	each lbli is the atomic name of the SYM to be defined.
+	each idi is a label known in the interpreter.
+	each ni is the offset to be applied.
+	SYMOFF is an fsubr; its arguments are not evaluated.
+.STARTTEXT
+	Each lbli will be defined as a SYM whose value is
+formed by adding the corresponding ni to the address of the
+label idi.  The symbol table must be present and set up (GETDDT
+and FIXSYM).  The value of SYMOFF is always NIL.
+
+.SS Miscellaneous
+.SSS Random Numbers
+	At IMSSS, UCI-TENEX LISP allows the generation of a 
+%random number% by means of the function %RAND% (which uses the local 
+RAND JSYS). RAND has no arguments; its value is a floating point 
+random number between zero and one. 
+
+.SSS Inferior EXEC
+	This version of LISP allows the user to sprout an 
+%inferior EXEC% fork below the LISP fork.  The function %SUBSYS%,
+which takes no arguments, performs this function.  The
+function returns when the inferior fork EXEC is exited via
+the %QUIT% command.  The value of the function is NIL.  The
+inferior fork is killed upon return.
+
+.SEC The Compiler
+.SS Invocation
+	The %compiler% is invoked by means of the EXEC command
+.STOPTEXT
+
+	@<ILISP>TNXCMP
+
+.STARTTEXT
+and may be exited in any of the ways in which the interpreter may be
+exited.  Operation of the compiler has not been changed.  See
+{REF ONEMAN} for details.
+
+.SS The NOCALL Feature
+	The %NOCALL% feature has been slightly expanded by means of
+a slight change to %LAP% itself.  It is now possible to cause system
+functions (subrs and fsubrs, not lsubrs) to be called NOCALL.
+This was not possible before because LAP required a definition
+for any function in order to process the fixup list for calls on
+that function.  LAP now uses the SUBR or FSUBR property of any
+function which has one, rather than waiting for a definition.
+	As a consequence, NOCALL declarations for system functions
+work properly.  Users who redefine system functions should be
+careful to guarantee that definitions for their versions of the
+functions appear before ALL references to the functions.  Otherwise,
+some references will be linked to the system functions and some to
+the redefinitions.  This change should not affect normal users at all.
+	As an added convenience, the file %<ILISP>ALLFNS.LSP%
+contains a NOCALL declaration for all functions known at the time
+the UCI-TENEX LISP core image is generated.  All references to system
+functions can be compiled NOCALL simply by compiling this file
+first.  It contains one awfully big s-expression, and may require
+additional stack space to compile.  Please use:
+.STOPTEXT
+
+	(COMPL (IL ISP) (ALLFNS.LSP))
+
+rather than
+
+	(COMPL (<ILISP>ALLFNS.LSP))
+
+.STARTTEXT
+since the latter leaves a useless LAP file in <ILISP>.
+
+.SS Output Radix
+	The compiler uses the new %*NOQUOTE% feature in such a way
+that the radix of the output numbers in the LAP file is guaranteed
+to be correctly determined on input.  That is, numbers are
+prefixed by the single quote character.  As a consequence, LAP
+output from this compiler cannot be loaded by LAP in older versions
+of ILISP.  The incompatibility may be removed by setting *NOQUOTE
+to T in the compiler before compiling anything.
+
+.REFER ONEMAN,|Quam, Lynn H. and Whitfield Diffie,#
+.[[Stanford LISP 1.6 Manual], SAILON 28.6.,#
+.Stanford Artificial Intelligence Laboratory|
+
+.REFER UCIMAN, |Bobrow, Robert J., Richard R. Burton and Daryle Lewis,#
+.[[UCI LISP Manual], Technical Report Number 21, October 1972,#
+.UC Irvine Information and Computer Science Department|
+
+.REFER SAILMAN, |VanLehn, Kurt A.,#
+.[[SAIL User Manual], Memo AIM 204,#
+.Stanford Artifical Intelligence Laboratory|
+
+
+
+.APPENDIX Function-call Templates
+	All functions added to UCI-TENEX LISP appear in this
+appendix, in the form of a template to be used in calling
+the function.  Every effort has been made to make the argument
+names mnemonic.  Please refer to the index in order to find
+out where more information on any given function may be found.
+	Note: a few functions which were present in older versions
+of ILISP are also included here for completeness.
+.STOPTEXT
+
+
+	(ASSGNEVENT int-chan-num)			T	subr
+	(ASSGNTI term-code int-chan-num)		T	subr
+	(AUTOALC size fws bps strs rpdl spdl)		no ret	lsubr
+	(BRKTBLSET table brk-on ignore clear-to)	NIL	subr
+	(BUSYWAIT flag)					oldflag	subr
+	(CHCORE)					no ret	subr
+	(CLINEREAD channel)				list	subr
+	(CNDIR dir-name)				T	subr
+	(CONDIR)					dirname	subr
+	(CONDIRN)					dirnum	subr
+	(CONNECT-TIME)					secs	subr
+	(CONSTR string-1 string-2)			string	subr
+	(CPRIN1 channel s-expr)				s-expr	subr
+	(CPRINC channel s-expr)				s-expr	subr
+	(CPRINT channel s-expr)				s-expr	subr
+	(CPRINTLEV channel s-expr level)		s-expr	subr
+	(CSCANFIL channel scantable scanparm flag)	string	subr
+	(CREAD channel)					s-expr	subr
+	(CRFPTR channel)				ptr-num	subr
+	(CSFPTR channel ptr)				ptr-num	subr
+	(CSIZEF channel)				nbytes	subr
+	(CSPRINT channel s-expr column)			NIL	subr
+	(CTAB channel column)				NIL	subr
+	(CTERPRI channel arg)				arg	subr
+	(CTRLESET atom)					oldatom	subr
+	(CVSTR s-expr)					string	subr
+	(CVSTRC s-expr)					string	subr
+	(DAYTIME optional-flags)			string	fsubr
+	(DDT)						NIL	subr
+	(DEASSGNTI term-code)				T	subr
+	(DEFVER num)					oldver	subr
+	(DELNF jfn ver-to-keep)				n-del'd	subr
+	(DIRST dir-num)					dirname	subr
+	(DISINT mask)					T	subr
+	(ENAINT mask)					T	subr
+	(EQSTR string1 string2)				T/NIL	subr
+	(ERR atom)					no ret	subr
+	(ERROR msg optional-num)			no ret	fsubr
+	(EXIT)						NIL	subr
+	(FIXSYM)					NIL	subr
+	(FRAISE flag)					oldflag	subr
+	(GETDDT)					T	subr
+	(GETEADDR)					addrnum	subr
+	(GETENUM)					errnum	subr
+	(GETEPARM)					s-expr	subr
+	(HELP)						NIL	subr
+	(INOUT channel file-spec)			channel	fsubr
+	(JFNS jfn)					filname	subr
+	(LEXSTR string1 string2)			0/1/2	subr
+	(LINECT)					n-left	subr
+	(LISPSCAN string scantable)			s-expr	subr
+	(LOCAL-TIME)					sec	subr
+	(LOGDIR)					dirname	subr
+	(LOGDIRN)					dirnum	subr
+	(LSTR string)					nbytes	subr
+	(ERRSET form atom)				strange	fsubr
+	(NAMEDERR flag)					oldflag	subr
+	(NDXFIL channel)				channel	subr
+	(NOALTMODE flag)				oldflag	subr
+	(NOPROMPT flag)					oldflag	subr
+	(PGSIZE num-lines function)			NIL	subr
+	(RAISE flag)					oldflag	subr
+	(RAND)						flonum	subr
+	(RELEASE channel)				channel	subr
+	(RFPTR channel)					ptr-num	subr
+	(ROCONS s-expr1 s-expr2)			s-expr	subr
+	(RONCONS s-expr)				s-expr	subr
+	(ROXCONS s-expr1 s-expr2)			s-expr	subr
+	(SCANFIL scantable scanparm flag)		string	subr
+	(SCANSTR string scantable scanparm flag)	string	subr
+	(SETPSTIN tblflg prompt skipct ac3)		NIL	subr
+	(SETPTBL charnum tbl-entry)			oldent	subr
+	(SETRO flag)					oldflag	subr
+	(SFPTR channel ptr)				ptr-num	subr
+	(SIZEF channel)					nbytes	subr
+	(STEALCQ flag)					oldflag	subr
+	(STRCOPY delimiter-num flag)			flag	subr
+	(STRINGP s-expr)				T/NIL	subr
+	(SUBSTR string from-num for-num)		string	subr
+	(SUBSYS)					NIL	subr
+	(SYMDEF id1 id2 ... idn)			NIL	fsubr
+	(SYMOFF id1 lb1 n1 ... idn lbln nn)		NIL	fsubr
+	(TALK)						NIL	subr
+	(TESTEVENT int-channel)				channum	subr
+	(TIME)						ms-time	subr
+	(TNXJFN channel)				jfn	subr
+	(TNXJFNF channel)				flags	subr
+	(UNDDT)						NIL	subr
+.STARTTEXT
+
+.STANDARD BACK
+
+

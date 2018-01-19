@@ -1,0 +1,1187 @@
+
+
+
+
+
+
+
+
+
+
+
+                                   SECTION 3
+
+                                                                       1
+       DATA TYPES, STORAGE ALLOCATION, GARBAGE COLLECTION, AND OVERLAYS
+
+
+                                              2
+INTERLISP operates in an 18-bit address space.  This address space is divided
+into 512 word pages with a limit of 512 pages, or 262,144 words, but only that
+portion of address space currently in use actually exists on any storage
+medium.  INTERLISP itself and all data storage are contained within this
+address space.  A pointer to a data element such as a number, atom, etc., is
+simply the address of the data element in this 18-bit address space.
+
+
+
+
+ 3.1  Data Types
+
+
+
+The data types of INTERLISP are lists, atoms, pnames, arrays,
+large and small integers, floating point numbers, string
+                                       3
+characters and string pointers.  Compiled code and hash arrays are
+currently included with arrays.
+
+
+
+In the descriptions of the various data types given below, for each data type,
+first the input syntax and output format are described, that is, what input
+sequence will cause the INTERLISP read program to construct an element of that
+type, and how the INTERLISP print program will print such an element.  Next,
+those functions that construct elements of that data type are given.  Note that
+some data types cannot be input, they can only be constructed, e.g. arrays.
+
+
+
+**FOOTNOTES**
+1
+    This section was written by A. K. Hartley and J. W. Goodwin.
+
+
+2
+    INTERLISP is currently implemented on (or implementations are in progress
+    for) at least four different machines.  This section treats subjects that
+    are for the most part somewhat implementation dependent.  Where this is the
+    case, the discussion refers to INTERLISP-10, the implementation for the DEC
+    PDP-10, on which INTERLISP was first implemented.
+
+
+3
+    The user can  also define new data types, as described in section 23.
+
+
+
+
+
+                                      3.1
+
+
+
+Finally, the format in which an element of that data type is stored in memory
+is described.
+
+
+
+
+ 3.1.1  Literal Atoms
+
+
+
+A literal atom is input as any string of non-delimiting characters that
+cannot be interpreted as a number.  The syntatic characters that delimit atoms
+                           4
+are space, end-of-line,  line-feed, % ( ) " ]
+and [. However, these characters may be included in atoms by preceding them
+with the escape character %.
+
+
+
+Literal atoms are printed by  print and  prin2 as a sequence of
+characters with %'s inserted before all delimiting characters (so that the atom
+will read back in properly).  Literal atoms are printed by  prin1 as a
+sequence of characters without these extra %'s.  For example, the atom
+consisting of the five characters A, B, C, (, and D will be printed as ABC%(D
+by  print and ABC(D by  prinl.  The extra %'s are an artifact of the print
+program; they are not stored in the atom's pname.
+
+
+
+Literal atoms can be constructed by  pack,  mkatom, and  gensym
+(which uses  mkatom).
+
+
+
+Literal atoms are unique.  In other words, if two literal atoms have the
+same pname, i.e. print the same, they will always be the same identical atom,
+that is, they will always have the same address in memory, or equivalently,
+                        5
+they will always be  eq.  Thus if  pack or  mkatom is given a list of
+characters corresponding to a literal atom that already exists, they return a
+pointer to that atom, and do not make a new atom.  Similarly, if the read
+program is given as input of a sequence of characters for which an atom already
+exists, it returns a pointer to that atom.
+
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+4
+    An end-of-line character is transmitted by TENEX when it sees a
+    carriage-return.
+
+
+5
+    Note that this is not true for strings, large integers, floating point
+    numbers, and lists, i.e. they all can print the same without being  eq.
+
+
+
+
+
+                                      3.2
+
+
+
+A literal atom is a 3 word (36 bits) datum containing:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                  Figure 3-1
+
+
+
+
+
+
+
+
+ Car of a literal atom, i.e. the right half of word 1, contains its top
+level binding, initially the atom NOBIND.  Cdr of the atom is a pointer to
+its property list, initially NIL.
+
+
+
+Word 2, the function definition cell, is a full 36 bit word, containing an
+instruction to be executed for calling the function associated with that atom,
+if any.  The left half differs for different function types (i.e., EXPR, SUBR,
+                                                                          6
+or compiled code); the right half is a pointer to the function definition.
+
+
+
+The pname cell, the left half of the third word, contains a pointer to the
+pname of the atom.  The remaining half word is reserved for an extension of
+INTERLISP-10 to permit storing function definitions on files.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+6
+    This use of a full word saves some time in function calls from compiled
+    code in that we do not need to look up the type of the function definition
+    at call time.
+
+
+
+
+
+                                      3.3
+
+
+
+ 3.1.2  Pnames
+
+
+
+                        7
+The pnames of atoms,  pointed to in the third word of the atom, comprise
+another data type with storage assigned as it is needed.  This data type only
+occurs as a component of an atom or a string.  It does not appear, for example,
+as an element of a list.
+
+
+
+Pnames have no input syntax or output format as they cannot be directly
+referenced by user programs.
+
+
+
+A pname is a sequence of 7 bit characters packed 5 to a word, beginning at a
+word boundary.  The first character of a pname contains its length; thus the
+maximum length of a pname is 126 characters.
+
+
+
+
+ 3.1.3  Numerical Atoms
+
+
+
+Numerical atoms, or simply numbers, do not have property lists, value cells,
+functions definition cells, or explicit pnames.  There are currently two types
+of numbers in INTERLISP: integers, and floating point numbers.
+
+
+
+
+ Integers
+
+
+
+The input syntax for an integer is an optional sign (+ or -) followed by a
+                                              8
+sequence of digits, followed by an optional Q.  If the Q is present, the
+digits are interpreted in octal, otherwise in decimal, e.g. 77Q and 63 both
+correspond to the same integers, and in fact are indistinguishable internally
+since no record is kept of how integers were created.
+
+
+
+**FOOTNOTES**
+7
+    All INTERLISP pointers have pnames, since we define a pname simply to
+    be how that pointer is printed.  However, only literal atoms and strings
+    have their pnames explicitly stored.  Thus, the use of the term pname in a
+    discussion of data types or storage allocation means pnames of atoms or
+    strings, and refers to a sequence of characters stored in a certain part of
+    INTERLISP's memory.
+
+
+8
+    and terminated by a delimiting character.  Note that some data types are
+    self-delimiting, e.g. lists.
+
+
+
+
+
+                                      3.4
+
+
+
+The setting of  radix (Section 14), determines how integers are printed:
+signed or unsigned, octal or decimal.
+
+
+
+Integers are created by  pack and  mkatom when given a sequence of
+characters observing the above syntax, e.g.  (PACK (LIST 1 2 (QUOTE Q))) = 10.
+Integers are also created as a result of arithmetic operations, as described in
+Section 13.
+
+
+
+An integer is stored in one 36 bit word; thus its magnitude must be less than
+     9
+2^35.  To avoid having to store (and hence garbage collect) the values of small
+integers, a few pages of address space, overlapping the INTERLISP-10
+machine language code, are reserved for their representation.  The small number
+pointer itself, minus a constant, is the value of the number.  Currently the
+range of 'small' integers is -1536 thru +1535.  The predicate  smallp is
+used to test whether an integer is 'small'.
+
+
+
+While small integers have a unique representation, large integers do not.  In
+other words, two large integers may have the same value, but not the same
+address in memory, and therefore not be  eq.  For this reason the function
+ eqp (or  equal) should be used to test equality of large integers.
+
+
+
+
+ Floating Point Numbers
+
+
+
+A floating point number is input as a signed integer, followed by a decimal
+point, followed by another sequence of digits called the fraction, followed by
+                                                            10
+an exponent (represented by E followed by a signed integer).   Both signs
+are optional, and either the fraction following the decimal point, or the
+integer preceding the decimal point may be omitted. One or the other of the
+decimal point or exponent may also be omitted, but at least one of them must be
+present to distinguish a floating point number from an integer.  For example,
+the following will be recognized as floating point numbers:
+
+         5.        5.00      5.01      .3        5E2       5.1E2
+
+                             5E-3      -5.2E+6
+
+
+
+
+**FOOTNOTES**
+9
+    If the sequence of digits used to create the integer is too large, the high
+    order portion is discarded.  (The handling of overflow as a result of
+    arithmetic operations is discussed in Section 13.)
+
+
+10
+    and terminated by a delimiter.
+
+
+
+
+
+                                      3.5
+
+
+
+Floating point numbers are printed using the facilities provided by
+TENEX. INTERLISP-10 calls the floating point number to string conversion
+        11
+routines   using the format control specified by the function  fltfmt (Section
+14).   fltfmt is initialized to T, or free format.  For example, the above
+floating point numbers would be printed free format as:
+
+         5.0       5.0       5.01      .3        500.0     510.0
+
+                             .005      -5.2E6
+
+
+
+Floating point numbers are also created by  pack and  mkatom, and
+as a result of arithmetic operations as described in section 13.
+
+
+
+A floating point number is stored in one 36 bit word in standard PDP-10 format.
+The range is  +2.94E-39 thru  +1.69E38 (or 2^-128 thru 2^127).
+
+
+
+
+ 3.1.4  Lists
+
+
+
+                                                        12
+The input syntax for a list is a sequence (at least one)   of INTERLISP data
+elements, e.g. literal atoms numbers, other lists, etc.  enclosed in
+parentheses or brackets.  A bracket can be used to terminate several lists,
+e.g. (A (B (C], as described in Section 2.
+
+
+
+If there are two or more elements in a list, the final element can be preceded
+by a . (delimited on both sides), indicating that  cdr of the final node in
+the list is to be the element immediately following the ., e.g. (A . B) or
+                                                                   13
+(A B C . D), otherwise  cdr of the last node in a list will be NIL.   Note that
+the input sequence (A B C . NIL) is thus equivalent to (A B C), and that (A B .
+(C D)) is thus equivalent to (A B C D).  Note however that (A B . C D) will
+create a list containing the five literal atoms A B . C and D.
+
+
+
+
+**FOOTNOTES**
+11
+    Additional information concerning these conversions may be obtained from
+    the TENEX JSYS Manual.
+
+
+12
+    () is read as the atom NIL.
+
+
+13
+    Note that in INTERLISP terminology, a list does not have to end in NIL, it
+    is simply a structure composed of one or more conses.
+
+
+
+
+
+                                      3.6
+
+
+
+Lists are constructed by the primitive functions  cons and  list.
+
+
+
+Lists are printed by printing a left parenthesis, and then printing the first
+                    14
+element of the list,   then printing a space, then printing the second element,
+etc. until the final node is reached.  Lists are considered to terminate when
+ cdr of some node is not a list.  If  cdr of this terminal node is NIL (the
+usual case),  car of the terminal node is printed followed by a right
+parenthesis.  If  cdr of the terminal node is not NIL,  car of the terminal
+node is printed, followed by a space, a period, another space,  cdr of the
+terminal node, and then the right parenthesis.  Note that a list input as (A B
+C . NIL) will print as (A B C), and a list input as (A B . (C D)) will print as
+(A B C D).  Note also that  printlevel affects the printing of lists to
+teletype, and that carriage returns may be inserted where dictated by
+ linelength, as described in Section 14.
+
+
+
+A list is stored as a chain of list nodes. A list node is stored in one 36
+bit word, the right half containing  car of the list (a pointer to the first
+element of the list), and the left half containing  cdr of the list (a pointer
+to the next node of the list).
+
+
+
+
+ 3.1.5  Arrays
+
+
+
+An array in INTERLISP is a one dimensional block of contiguous storage of
+arbitrary length.  Arrays do not have input syntax; they can only be created by
+the function  array. Arrays are printed by both  print,  prin2, and
+ prin1, as # followed by the address of the array pointer (in
+octal).  Array elements can be referenced by the functions  elt and
+ eltd, and set by the functions  seta and  setd, as described in
+Section 10.
+
+
+
+Arrays are partitioned into four sections: a header, a section containing
+unboxed numbers, a section containing INTERLISP pointers, and a section
+containing relocation information. The last three sections can each be of
+arbitrary length (including 0); the header is two words long and contains the
+length of the other sections as indicated in the diagram below.  The unboxed
+number region of an array is used to store 36 bit quantities that are not
+INTERLISP pointers, and therefore not to be chased from during garbage
+collections, e.g. machine instructions.  The relocation informaion is used when
+the array contains the definition of a compiled function, and specifies which
+locations in the unboxed region of the array must be changed if the array is
+moved during a garbage collection.
+
+
+
+**FOOTNOTES**
+14
+    The individual elements of a list are printed using  prin2 if the list is
+    being printed by  print or  prin2, and by  prin1 if the list is being
+    printed by  prin1.
+
+
+
+
+
+                                      3.7
+
+
+
+The format of an array is as follows:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                  Figure 3-2
+
+
+
+The header contains:
+
+
+word 0   right     -    length of entire block=ARRAYSIZE+2.
+
+         left      -    address of relocation information relative to word 0 of
+                        block (> 0 if relocation information exists, negative
+                        if array is a hash array, 0 if ordinary array).
+
+word 1   right     -    address of pointers relative to word 0 of block.
+
+         left      -    used by garbage collector.
+
+
+
+
+
+ 3.1.6  Strings
+
+
+
+The input syntax for a string is a ", followed by a sequence of any characters
+except " and %, terminated by a ". " and % may be included in a string by
+preceding them with the escape character %.
+
+
+
+Strings are printed by  print and  prin2 with initial and final
+"'s, and %'s inserted where necessary for it to read back in properly.
+Strings are printed by  prin1 without the delimiting "'s and extra %'s.
+
+
+
+
+
+
+                                      3.8
+
+
+
+Strings are created by  mkstring,  substring, and  concat.
+
+
+
+Internally a string is stored in two parts; a string pointer and the sequence
+of characters.  The INTERLISP pointer to a string is the address of the string
+pointer.  The string pointer, in turn, contains the character position at which
+the string characters begin, and the number of characters.  String
+                                                               15
+pointers and string characters are two separate data types,   and several
+string pointers may reference the same characters.  This method of storing
+strings permits the creation of a substring by creating a new string pointer,
+thus avoiding copying of the characters.  For more details, see Section 10.
+
+
+
+String characters are 7 bit bytes packed 5 to a word.  The format of a
+string pointer is:
+
+
+
+
+
+
+
+
+
+
+
+                                  Figure 3-3
+
+
+
+
+
+The maximum length of a string is 32K (K=1024) characters.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+15
+    String characters are not directly accessible by user programs.
+
+
+
+
+
+                                      3.9
+
+
+
+ 3.2  Storage Allocation and Garbage Collection
+
+
+
+In the following discussion, we will speak of a quantity of memory being
+assigned to a particular data type, meaning that the space is reserved for
+storage of elements of that type.   Allocation will refer to the process used
+to obtain from the already assigned storage a particular location for storing
+one data element.
+
+
+
+A small amount of storage is assigned to each data type when INTERLISP-10 is
+started; additional storage is assigned only during a garbage collection.
+
+
+
+The page is the smallest unit of memory that may be assigned for use by a
+particular data type.  For each page of memory there is a one word entry in a
+type table.  The entry contains the data type residing on the page as well as
+other information about the page.  The type of a pointer is determined by
+examining the appropriate entry in the type table.
+
+
+
+Storage is allocated as is needed by the functions which create new data
+elements, such as  cons,  pack,  mkstring. For example, when a
+large integer is created by  iplus, the integer is stored in the next available
+location in the space assigned to integers.  If there is no available location,
+a garbage collection is initiated, which may result in more storage being
+assigned.
+
+
+
+The storage allocation and garbage collection methods differ for the
+various data types. The major distinction is between the types with
+elements of fixed length and the types with elements of arbitrary length.  List
+nodes, atoms, large integers, floating point numbers, and
+string pointers are fixed length; all occupy 1 word except atoms which use
+3 words.  Arrays, pnames, and strings (string characters) are
+variable length.
+
+
+
+Elements of fixed length types are stored so that they do not overlap page
+boundaries.  Thus the pages assigned to a fixed length type need not be
+adjacent.  If more space is needed, any empty page will be used.  The method of
+allocating storage for these types employs a free-list of available
+locations; that is, each available location contains a pointer to the next
+available location. A new element is stored at the first location on the free-
+                                           16
+list, and the free-list pointer is updated.
+
+
+
+**FOOTNOTES**
+16
+    The allocation routine for list nodes is more complicated.  Each page
+    containing list nodes has a separate free list.  First a page is chosen
+    (see CONS for details), then the free list for that page is used.  Lists
+    are the only data type which operate this way.
+
+
+
+
+
+                                     3.10
+
+
+
+Elements of variable length data types are allowed to overlap page boundaries.
+Consequently all pages assigned to a particular variable length type must be
+contiguous.  Space for a new element is allocated following the last space used
+in the assigned block of contiguous storage.
+
+
+
+When INTERLISP-10 is first called, a few pages of memory are assigned to each
+data type.  When the allocation routine for a type determines that no more
+space is available in the assigned storage for that type, a garbage collection
+is initiated.  The garbage collector determines what data is currently in use
+and reclaims that which is no longer in use.  A garbage collection may also be
+initiated by the user with the function  reclaim (Section 10).
+
+
+
+Data in use (also called active data) is any data that can be 'reached' from
+the currently running program (i.e., variable bindings and functions in
+execution) or from atoms.  To find the active data the garbage collector
+'chases' all pointers, beginning with the contents of the push-down lists and
+the components (i.e.,  car,  cdr, and function definition cell) of all atoms
+with at least one non-trivial component.
+
+
+
+When a previously unmarked datum is encountered, it is marked, and all pointers
+contained in it are chased.  Most data types are marked using bit tables; that
+is tables containing one bit for each datum.  Arrays, however, are marked
+using a half-word in the array header.
+
+
+
+When the mark and chase process is completed, unmarked (and therefore unused)
+space is reclaimed.  Elements of fixed length types that are no longer active
+are reclaimed by adding their locations to the free-list for that type.
+This free list allocation method permits reclaiming space without moving any
+data, thereby avoiding the time consuming process of updating all pointers to
+moved data.  To reclaim unused space in a block of storage assigned to a
+variable length type, the active elements are compacted toward the
+beginning of the storage block, and then a scan of all active data that can
+contain pointers to the moved data is performed to update the pointers.
+
+
+
+                                                       17
+Whenever a garbage collection of any type is initiated,   unused space for all
+fixed length types is reclaimed since the additional cost is slight.  However,
+space for a variable length type is reclaimed only when that type initiated the
+garbage collection.
+
+
+
+If the amount of storage reclaimed for the type that initiated the garbage
+
+
+
+**FOOTNOTES**
+17
+    The 'type of a garbage collection' or the 'type that initiated a garbage
+    collection' means either the type that ran out of space and called the
+    garbage collector, or the argument to  reclaim.
+
+
+
+
+
+                                     3.11
+
+
+
+collection is less than the minimum free storage requirement for that type, the
+garbage collector will assign enough additional storage to satisfy the minimum
+free storage requirement.  The minimum free storage requirement for each data
+may be set with the function  minfs (Section 10).  The garbage collector
+assigns additional storage to fixed length types by finding empty pages, and
+adding the appropriate size elements from each page to the free list.
+Assigning additional storage to a variable length type involves finding empty
+pages and moving data so that the empty pages are at the end of the block of
+storage assigned to that type.
+
+
+
+In addition to increasing the storage assigned to the type initiating a garbage
+collection, the garbage collector will attempt to minimize garbage collections
+by assigning more storage to other fixed length types according to the
+                    18
+following algorithm.   If the amount of active data of a type has increased
+since the last garbage collection by more than 1/4 of the minfs value for
+that type, storage is increased (if necessary), to attain the  minfs value.  If
+active data has increased by less than 1/4 of the  minfs value, available
+storage is increased to 1/2  minfs.  If there has been no increase, no more
+storage is added.  For example, if the  minfs setting is 2000 words, the
+number of active words has increased by 700, and after all unused words have
+been collected there are 1000 words available, 1024 additional words (two
+pages) will be assigned to bring the total to 2024 words available.  If the
+number of active words had increased by only 300, and there were 500 words
+available, 512 additional words would be assigned.
+
+
+
+
+ 3.3  Shared INTERLISP-10
+
+
+
+The INTERLISP-10 system initially obtained by the user is shared; that is, all
+active users of INTERLISP-10 are actually using the same pages of memory.  As a
+user adds to the system, private pages are added to his memory.  Similarly, if
+the user changes anything in the original shared INTERLISP-10, for example, by
+advising a system function, a private copy of the changed page is created.
+
+
+
+In addition to the swapping time saved by having several users accessing the
+same memory, the sharing mechanism permits a large saving in garbage
+collection time, since we do not have to garbage collect any data in the shared
+system, and thus do not need to chase from any pointers on shared pages
+during garbage collections.
+
+
+
+This reduction in garbage collection time is possible because the shared system
+usually is not modified very much by the user.  If the shared system is changed
+extensively, the savings in time will vanish, because once a page that was
+initially shared is made private, every pointer on it must be assumed
+
+
+
+**FOOTNOTES**
+18
+    We may experiment with different algorithms.
+
+
+
+
+
+                                     3.12
+
+
+
+active, because it may be pointed  to by something in the shared system.  Since
+every pointer on an initially shared but now private page can also point to
+private data, they must always be chased.
+
+
+
+A user may create his own shared system with the function  makesys.  If
+several people are using the same system, making the system be shared will
+result in a savings in swapping time.  Similarly, if a system is large and
+seldom modified, making it be shared will result in a reduction of garbage
+collection time, and may therefore be worthwhile even if the system is only
+being used by one user.
+
+
+
+makesys[file]                creates a saved file in which all pages in
+                             this system, including private user pages, are
+                             made read execute, i.e. shared.  This system can
+                             then be run via the TENEX command RUN,
+                             or GET and START.
+
+
+
+For example, new INTERLISP-10 systems are brought up by loading the appropriate
+                                                     19
+compiled files and then performing makesys[LISP.SAV].
+
+
+
+herald[string]               makes  string be the 'herald' for the system,
+                             i.e. the message printed when the system is first
+                             started.  Primarily for use in conjunction with
+                                      20
+                              makesys.
+
+
+
+                                   21
+ 3.4  The INTERLISP-10 Swapper
+
+
+
+
+**FOOTNOTES**
+19
+     makesys is also advised (see section 19) to set the variable
+     makesysdate to (DATE), i.e. the time and date the system was made.
+
+
+20
+    makesys is advised to set the variable  heraldstring  to the
+    concatenation of "INTERLISP-10", the month and day of the  makesys, and
+    "..." and to call  herald  on this string.  Alternatively,  makesys can be
+    given as a second argument a string to be used instead of "INTERLISP-10",
+    e.g. makesys[STREK.SAV;STAR-TREK] would cause the message STAR-TREK
+    followed by the date and "..." to be printed when STREK.SAV was run.
+
+
+21
+    The INTERLISP-10 swapper was designed by E. L. Wegbreit (PARC) and J. W.
+    Goodwin (BBN), and implemented by J. W. Goodwin.
+
+
+
+
+
+                                     3.13
+
+
+
+INTERLISP-10 provides a very large auxilary address space exclusively for
+swappable arrays (primarily compiled function definitions).  In addition to the
+256K  of resident address space, this "shadow space" can currently accomodate
+an additonal 256K words, can easily be expanded to 3.5 million words, and with
+some further modifications, could be expanded to 128 million words.  Thus, the
+                                                                      22
+overlay system provides essentially unlimited space for compiled code.
+
+
+
+Shadow space and the swapper are intended to be more or less transparent to the
+user.  However, this section is included in the manual to give programmers a
+reasonable feeling for what overlays are like, without getting unnecessarily
+technical, as well as to document some new functions and system controls which
+may be of interest for authors of exceptionally large systems.
+
+
+
+ 3.4.1  Overlays
+
+
+The shadow space is a very large auxiliary address space used exclusively for
+an INTERLISP data type called a swappable array.  The regular address
+space is called the "resident" space to distinguish it from shadow space.  Any
+kind of resident array -  compiled code, pointer data, binary data, or a hash
+array - can be copied into shadow space ("made swappable"), from which it is
+referred to by a one-word resident entity called a handle.  The resident
+space occupied by the original array can then be garbage collected normally
+(assuming there are no remaining pointers to it, and it has not been made
+shared by a makesys).  Similarly, a swappable array can be made resident again
+at any time, but of course this requires (re)allocating the necessary resident
+space.
+
+
+The main purpose and intent of the swapping system is to permit utilization of
+    swappable arrays directly and interchangeably with resident arrays, thereby
+    saving resident space which is then available for other data types, such as
+    lists, atoms, strings, etc.
+
+
+This is accomplished as follows: A section of the resident address space is
+                                           23
+permanently reserved for a swapping buffer.   When a particular swappable array
+is requested, it is brought (swapped) in by mapping or overlaying the pages of
+shadow space in which it lies onto a section of the swapping buffer.  This
+
+
+
+**FOOTNOTES**
+22
+    Since compiled code arrays point to atoms for function names, and strings
+    for error messages, not to mention the fact that programs usually have data
+    base, which are typically lists rather than arrays, there is still a very
+    real and finite limit to the total size of programs that INTERLISP-10 can
+    accomodate.  However, since much of the system and user compiled code can
+    be made swappable, there is that much more resident space available for
+    these other data types.
+
+
+23
+    Currently 64 512 word pages.
+
+
+
+
+
+                                     3.14
+
+
+
+process is the swapping or overlaying from which the system takes its name.
+The array is now (directly) accessible.  However, further requests for swapping
+could cause the array to be overlaid with something else, so in effect it is
+liable to go away at any time. Thus all system code that relates to arrays must
+recognize handles as a special kind of array, fetch them into the buffer (if
+not already there), when necessary check that they have not disappeared, fetch
+them back in if they have, and even be prepared for the second fetch to bring
+the swappable array in  at a different place than did the first.
+
+
+
+The major emphasis in the design of the overlay system has been placed on
+running compiled code, because this accounts for the overwhelming majority of
+arrays in typical systems, and for as much as 60% of the overall data and code.
+The system supports the running of compiled code directly from the swapping
+buffer, and the function calling mechanism knows when a swappable definition is
+being called, finds it in the buffer if it is already there, and brings it in
+otherwise.  Thus, from the user's point of view, there is no need to
+distinguish between swappable and resident compiled definitions, and in fact
+ccodep will be true for either.
+
+
+
+ 3.4.2  Non-Code Arrays
+
+
+The data-array functions (elt, seta, gethash, puthash, etc.,) do not yet
+recognize swappable arrays, and will generate ARG NOT ARRAY errors if
+called with one.  This will be fixed someday, and then users will be free to
+copy resident data arrays into swappable ones or vice-versa.  However, note
+that programs which generate and use pointers directly into the bodies of
+arrays, or take CAR or CDR of them, will not work, since they cannot fetch the
+array in, nor guarantee that it would not go away.
+
+
+
+ 3.4.3  Efficiency
+
+
+Once of the most important design goals for the overlay system was that
+swappable code should not execute any extra instructions compared to resident
+code, once it had been swapped in.  Thus, the instructions of a swappable piece
+of code are identical (except for two instructions at the entry point) to those
+                                              24
+of the resident code from which it was copied,   and similarly when a swappable
+function calls another function (of any kind) it uses the exact same calling
+sequence as any other code.  Thus, all costs associated with running of
+
+
+
+
+
+**FOOTNOTES**
+24
+    The relocatable instructions are indexed by a base register, to make them
+    run equally well at any location in the buffer. The net slowdown due to
+    this extra level of indirection is too small to measure accurately in the
+    overall running of a program.  On analytical grounds, one would expect it
+    to be around 2%.
+
+
+
+
+
+
+
+                                     3.15
+
+
+                                                                           25
+swappable code are paid at the point of entry (both calling and returning).
+
+
+
+The cost of the swapping itself, i.e. the fetch of a new piece of swapped code
+into the buffer, is even harder to measure meaningfully, since two successive
+fetches of the same function are not the same, due to the fact that the
+instance created by the first fetch is almost certain to be resident when the
+second is done, if no swapping is done in between.  Similarly, two successive
+PMAP's (the Tenex operation to fetch one page) are not the same from one moment
+to another, even if the virtual state of both forks is exactly the same - a
+                                       26
+difficult constraint to meet in itself.   Thus, all that can be reported is
+that empirical measurements and observations have shown no consistent slowdown
+in performance of systems containing swappable functionsp viz a viz resident
+functions.
+
+
+
+ 3.4.4  Specifications
+
+
+Associated with the overlay system is a datatype called a swparray,
+(numeric datatype 4), which occupies one word of resident space, plus however
+much of shadow space needed for the body of the array.  arglist, fntyp, nargs,
+getd, putd, argtype, arraysize, changename, calls, printstructure, break,
+advise, and edita all work equally well with swappable as resident programs.
+ccodep is true for all compiled functions/definitions.
+
+
+
+swparray[n;p;v]              Analogous to array.  Allocates a
+                             swappable array.
+
+
+
+swparrayp[x]                 Analogous to arrayp. Returns x if x is a
+                             swappable array and,  NIL otherwise.
+
+
+
+
+
+
+**FOOTNOTES**
+25
+    If the function in question does nothing, e.g.  a compiled
+    (LAMBDA NIL NIL), it costs approximately twice as much to enter its
+    definition if it is swappable as compared to resident.  However, very small
+    functions are normally not made swappable (see mkswapp, page 3.17),
+    because they don't save much space, and are (typically) entered frequently.
+    Larger programs don't exhibit a measurable slow down since they amortize
+    the entry cost over longer runs.
+
+
+26
+    The cost of fetching is probably not in the mapping operation itself but in
+    the first reference to the page, which has a high probability of faulting.
+    This raises the problem of measuring page fault activity, another morass of
+    uncertainty.  The BBN INTERLISP group has a project in progress to measure
+    the interaction of INTERLISP-10 and TENEX.
+
+
+
+
+
+                                     3.16
+
+
+
+mkswap[x]                    If x is a resident array, returns a swappable
+                             array which is a copy of x.  If x is a literal
+                             atom and ccodep[x] is true, its definition is
+                             copied into a swappable array, and it is
+                             (undoably) redefined with the latter.  The value
+                             of mkswap is x.
+
+
+
+mkunswap[x]                  the inverse of mkswap.  x is either a
+                             swappable array, or an atom with swapped
+                             definition on its CODE property.
+
+
+
+mkswapp[fname;cdef]          All compiled definitions begin life as
+                             resident arrays, whether they are created by load,
+                             or by compiling to core.  Before they are stored
+                             away into their atom's function cell, mkswapp is
+                             applied to the atom and the array.  If the value
+                             of mkswapp is  T, the definition is made
+                             swappable; otherwise, it is left resident.  By
+                             redefining mkswapp or advising it, the user can
+                             completely control the swappability of all future
+                             definitions as they are created.  The initial
+                             definition of mkswapp will make a function
+                             swappable if (1) noswapflg is NIL, and (2) the
+                             name of the function is not on noswapfns, and
+                             (3) the size of its definition is greater than
+                             mkswapsize words, initially 128.
+
+
+
+setsbsize[n]                 Sets the size of the swapping buffer to n, a
+                             number of pages. Returns the previous value.
+                             setsbsize[]  returns the current size without
+                                         27
+                             changing it.  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+27
+    Currently, the system lacks error recovery routines for situations such as
+    a call to a swappable function which is too big for the swapping buffer, or
+    when the size is zero.  Therefore, setsbsize should be used with care.
+
+
+

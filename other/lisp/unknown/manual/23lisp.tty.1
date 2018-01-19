@@ -1,0 +1,4555 @@
+
+
+
+
+
+
+
+
+
+
+
+                                            1
+                                  SECTION 23
+
+                          CLISP - CONVERSATIONAL LISP
+
+
+
+
+
+ 23.1  Introduction
+
+
+
+The syntax of LISP is very simple, in the sense that it can be described
+concisely, but not in the sense that LISP programs are easy to read or write!
+This simplicity of syntax is achieved by, and at the expense of, extensive use
+of explicit structuring, namely grouping through parenthesesization.  Unlike
+many languages, there are no reserved words in LISP such as IF, THEN, AND, OR,
+                                                                              2
+FOR, DO, BEGIN, END, etc., nor reserved characters like +, -, *, /, =, _, etc.
+This eliminates entirely the need for parsers and precedence rules in the LISP
+interpreter and compiler, and thereby makes program manipulation of LISP
+programs straightforward.  In other words, a program that "looks at" other LISP
+programs does not need to incorporate a lot of syntactic information.  For
+example, a LISP interpreter can be written in one or two pages of LISP code
+([McC1], pp. 70-71).   It is for this reason that LISP is by far the most
+suitable, and frequently used, programming language for writing programs that
+deal with other programs as data, e.g., programs that analyze, modify, or
+construct other programs.
+
+
+
+However, it is precisely this same simplicity of syntax that makes LISP
+programs difficult to read and write (especially for beginners).  'Pushing
+down' is something programs do very well, and people do poorly.  As an example,
+consider the following two 'equivalent' sentences:
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+1
+    CLISP was designed and implemented by W. Teitelman.  It is discussed in
+    [Tei5].
+
+
+2
+    except for parentheses (and period), which are used for indicating
+    structure, and space and end-of-line, which are used for delimiting
+    identifiers.
+
+
+
+
+                                     23.1
+
+
+
+    "The rat that the cat that the dog that I owned chased caught ate the
+    cheese."
+
+                             versus
+
+    "I own the dog that chased the cat that caught the rat that ate the
+    cheese."
+
+
+
+Natural language contains many linguistic devices such as that illustrated in
+the second sentence above for minimizing embedding, because embedded sentences
+are more difficult to grasp and understand than equivalent non-embedded ones
+(even if the latter sentences are somewhat longer).  Similarly, most high level
+programming languages offer syntactic devices for reducing apparent depth and
+complexity of a program: the reserved words and infix operators used in ALGOL-
+like languages simultaneously delimit operands and operations, and also convey
+meaning to the programmer.  They are far more intuitive than parentheses.  In
+fact, since LISP uses parentheses (i.e. lists) for almost all syntactic forms,
+there is very little information contained in the parentheses for the person
+reading a LISP program, and so the parentheses tend mostly to be ignored: the
+meaning of a particular LISP expression for people is found almost entirely in
+the words, not in the structure.  For example, the following expression
+
+
+
+            (COND (EQ N 0) 1) (T TIMES N FACTORIAL ((SUB1 N)))
+
+
+
+is recognizable as FACTORIAL even though there are five misplaced or missing
+parentheses.  Grouping words together in parentheses is done more for LISP's
+benefit, than for the programmer's.
+
+
+
+CLISP is designed to make INTERLISP programs easier to read and write by
+permitting the user to employ various infix operators, IF-THEN-ELSE statements,
+FOR-DO-WHILE-UNLESS-FROM-TO-etc. expressions, which are automatically converted
+to equivalent INTERLISP expressions when they are first interpreted.  For
+example, FACTORIAL could be written in CLISP:
+
+
+
+                    (IF N=0 THEN 1 ELSE N*(FACTORIAL N-1))
+
+
+
+Note that this expression would become an equivalent COND after it had been
+interpreted once, so that programs that might have to analyze or otherwise
+process this expression could take advantage of the simple syntax.
+
+
+
+There have been similar efforts in other LISP systems, most notably the MLISP
+language at Stanford [Smi1].  CLISP differs from these in that it does not
+attempt to replace the LISP syntax so much as to augment it.  In fact, one of
+the principal criteria in the design of CLISP was that users be able to freely
+intermix LISP and CLISP without having to identify which is which.  Users can
+write programs, or type in expressions for evaluation, in LISP, CLISP, or a
+mixture of both.  In this way, users do not have to learn a whole new language
+and syntax in order to be able to use selected facilities of CLISP when and
+where they find them useful.
+
+
+
+                                     23.2
+
+
+
+CLISP is implemented via the error correction machinery in INTERLISP (see
+Section 17).  Thus, any expression that is well-formed from INTERLISP's
+standpoint will never be seen by CLISP (i.e., if the user defined a function
+IF, he would effectively turn off that part of CLISP).  This means that
+interpreted programs that do not use CLISP constructs do not pay for its
+availability by slower execution time.  In fact, the INTERLISP interpreter does
+not 'know' about CLISP at all.  It operates as before, and when an erroneous
+form is encountered, the interpreter calls an error routine which in turn
+invokes the Do-What-I-Mean (DWIM) analyzer which contains CLISP.  If the
+expression in question turns out to be a CLISP construct, the equivalent
+INTERLISP form is returned to the interpreter. In addition, the original CLISP
+expression, is modified so that it becomes the correctly translated INTERLISP
+form.  In this way, the analysis and translation are done only once.
+
+
+
+Integrating CLISP into the INTERLISP system (instead of, for example,
+implementing it as a separate preprocessor) makes possible Do-What-I-Mean
+features for CLISP constructs as well as for pure LISP expressions.  For
+example, if the user has defined a function named GET-PARENT, CLISP would know
+not to attempt to interpret the form (GET-PARENT) as an arithmetic infix
+operation.  (Actually, CLISP would never get to see this form, since it does
+not contain any errors.)  If the user mistakenly writes (GET-PRAENT), CLISP
+would know he meant (GET-PARENT), and not (DIFFERENCE GET PRAENT), by using the
+information that PRAENT is not the name of a variable, and that GET-PARENT is
+the name of a user function whose spelling is "very close" to that of
+GET-PRAENT.  Similarly, by using information about the program's environment
+not readily available to a preprocessor, CLISP can successfully resolve the
+following sorts of ambiguities:
+
+
+
+1)  (LIST X*FACT N), where FACT is the name of a variable, means
+    (LIST (X*FACT) N).
+
+
+
+2)  (LIST X*FACT N), where FACT is not the name of a variable but instead is
+    the name of a function, means (LIST X*(FACT N)), i.e., N is FACT's
+    argument.
+
+
+
+3)  (LIST X*FACT(N)), FACT the name of a function (and not the name of a
+    variable), means (LIST X*(FACT N)).
+
+
+
+4)  cases (1),(2) and (3) with FACT misspelled!
+
+
+
+The first expression is correct both from the standpoint of CLISP syntax and
+semantics and the change would be made without the user being notified.  In the
+other cases, the user would be informed or consulted about what was taking
+place.  For example, to take an extreme case, suppose the expression
+(LIST X*FCCT N) were encountered, where there was both a function named FACT
+and a variable named FCT.  The user would first be asked if FCCT were a
+misspelling of FCT.  If he said YES, the expression would be interpreted as
+
+
+
+
+
+
+
+                                     23.3
+
+
+                 3
+(LIST (X*FCT) N).  If he said NO, the user would be asked if FCCT were a
+misspelling of FACT, i.e., if he intended X*FCCT N to mean X*(FACT N).  If he
+said YES to this question, the indicated transformation would be performed.  If
+he said NO, the system would then ask if X*FCCT should be treated as CLISP,
+                                                 4
+since FCCT is not the name of a (bound) variable.  If he said YES, the
+expression would be transformed, if NO, it would be left alone, i.e., as
+(LIST X*FCCT N).  Note that we have not even considered the case where X*FCCT
+is itself a misspelling of a variable name, e.g., a variable named XFCT (as
+with GET-PRAENT).  This sort of transformation would be considered after the
+user said NO to X*FCCT N -> X*(FACT N).  The graph of the possible
+interpretations for (LIST X*FCCT N) where FCT and XFCT are the names of
+variables, and FACT is the name of a function, is shown in Figure 23-1 below.
+
+
+
+
+
+
+
+
+
+
+
+                             Figure 23-1
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+3
+    Through this discussion, we speak of CLISP or DWIM asking the user.
+    Actually, if the expression in question was typed in by the user for
+    immediate execution, the user is simply informed of the transformation, on
+    the grounds that the user would prefer an occasional misinterpretation
+    rather than being continuously bothered, especially since he can always
+    retype what he intended if a mistake occurs, and ask the programmer's
+    assistant to UNDO the effects of the mistaken operations if necessary.  For
+    transformations on expressions in user programs, the user can inform CLISP
+    whether he wishes to operate in CAUTIOUS or TRUSTING mode.  In the
+    former case (most typical) the user will be asked to approve
+    transformations, in the latter, CLISP will operate as it does on type-in,
+    i.e., perform the transformation after informing the user.
+
+
+4
+    This question is important because many INTERLISP users already have
+    programs that employ identifiers containing CLISP operators.  Thus, if
+    CLISP encounters the expression A/B in a context where either A or B are
+    not the names of variables, it will ask the user if A/B is intended to be
+    CLISP, in case the user really does have a free variable named A/B.
+
+
+
+
+                                     23.4
+
+
+
+The final states for the various terminal nodes shown in the graph are:
+
+
+
+    1:   (LIST (TIMES X FCT) N)
+
+    2:   (LIST (TIMES X (FACT N)))
+
+    3:   (LIST XFCT N)
+
+    4:   (LIST (TIMES X FCCT) N)
+
+    5:   (LIST X*FCCT N)
+
+
+
+CLISP can also handle parentheses errors caused by typing 8 or 9 for '(' or
+')'.  (On most terminals, 8 and 9 are the lower case characters for '(' and
+')', i.e., '(' and '8' appear on the same key, as do ')' and '9'.)  For
+example, if the user writes N*8FACTORIAL N-1, the parentheses error can be
+detected and fixed before the infix operator * is converted to the INTERLISP
+function TIMES.  CLISP is able to distinguish this situation from cases like
+N*8*X meaning (TIMES N 8 X), or N*8X, where 8X is the name of a variable, again
+by using information about the programming environment.  In fact, by
+integrating CLISP with DWIM, CLISP has been made sufficiently tolerant of
+errors that almost everything can be misspelled!  For example, CLISP can
+successfully translate the definition of FACTORIAL:
+
+
+
+                    (IFF N=0 THENN1 ESLE N*8FACTTORIALNN-1)
+
+
+
+to the corresponding COND, while making 5 spelling corrections and fixing the
+                  5
+parenthesis error.
+
+
+
+This sort of robustness prevails throughout CLISP.  For example, the iterative
+                                              6
+statement permits the user to say things like:
+
+
+              FOR OLD X FROM M TO N DO (PRINT X) WHILE (PRIMEP X)
+
+
+
+**FOOTNOTES**
+5
+    CLISP also contains a facility for converting from INTERLISP back to CLISP,
+    so that after running the above incorrect definition of FACTORIAL, the user
+    could 'CLISPIFY' the now correct LISP version to obtain
+    (IF N=0 THEN 1 ELSE N*(FACTORIAL N-1)).
+
+
+6
+    This expression should be self explanatory, except possibly for the
+    operator OLD, which says X is to be the variable of iteration, i.e., the
+    one to be stepped from N to M, but X is not to be rebound.  Thus when this
+    loop finishes execution, X will be equal to N+1.
+
+
+
+
+                                     23.5
+
+
+
+However, the user can also write OLD (X_M), (OLD X_M), (OLD (X_M)), permute the
+order of the operators, e.g., DO PRINT X TO N FOR OLD X_M WHILE PRIMEP X, omit
+either or both sets of parentheses, misspell any or all of the operators FOR,
+OLD, FROM, TO, DO, or WHILE, or leave out the word DO entirely!  And, of
+                                                   7
+course, he can also misspell PRINT, PRIMEP, M or N!
+
+
+
+CLISP is well integrated into the INTERLISP system.  For example, the above
+iterative statement translates into an equivalent INTERLISP form using PROG,
+              8
+COND, GO, etc.  When the interpreter subsequently encounters this CLISP
+                                                                   9
+expression, it automatically obtains and evaluates the translation.  Similarly,
+the compiler "knows" to compile the translated form.  However, if the user
+PRETTYPRINTs his program, at the corresponding point in his function,
+PRETTYPRINT "knows" to print the original CLISP.  Similarly, when the user
+edits his program, the editor keeps the translation invisible to the user.  If
+the user modifies the CLISP, the translation is automatically discarded and
+recomputed the next time the expression is evaluated.
+
+
+
+In short, CLISP is not a language at all, but rather a system.  It plays a role
+analagous to that of the programmer's assistant (Section 22).  Whereas the
+programmer's assistant is an invisible intermediary agent between the user's
+console requests and the INTERLISP executive, CLISP sits between the user's
+programs and the INTERLISP interpreter.
+
+
+
+Only a small effort has been devoted to defining the core syntax of CLISP.
+Instead, most of the effort has been concentrated on providing a facility which
+'makes sense' out of the input expressions using context information as well as
+built-in and acquired information about user and system programs.  It has been
+said that communication is based on the intention of the speaker to produce an
+effect in the recipient.  CLISP operates under the assumption that what the
+
+
+
+**FOOTNOTES**
+7
+    In this example, the only thing the user could not misspell is the first X,
+    since it specifies the name of the variable of iteration.  The other two
+    instances of X could be misspelled.
+
+
+8
+    (PROG NIL
+          (SETQ X M)
+      $$LP(COND
+            ((OR (IGREATERP X N)
+                 (NOT (PRIMEP X)))
+               (RETURN)))
+          (PRINT X)
+          (SETQ X (ADD1 X))
+          (GO $$LP))
+
+
+9
+    See page 23.25, for discussion of how translations are stored.
+
+
+
+
+                                     23.6
+
+
+
+user said was intended to represent a meaningful operation, and therefore tries
+very hard to make sense out of it.  The motivation behind CLISP is not to
+provide the user with many different ways of saying the same thing, but to
+enable him to worry less about the syntactic aspects of his communication with
+the system.  In other words, it gives the user a new degree of freedom by
+permitting him to concentrate more on the problem at hand, rather than on
+translation into a formal and unambiguous language.
+
+
+
+
+
+ 23.2  CLISP Syntax
+
+
+
+Throughout CLISP, a non-atomic form, i.e., a list, can always be substituted
+for a variable, and vice versa, without changing the interpretation.  For
+example, if the value of (FOO X) is A, and the value of (FIE Y) is B, then
+(LIST (FOO X)+(FIE Y)) has the same value as (LIST A+B).  Note that the first
+expression consists of a list of four elements: the atom 'LIST', the list
+'(FOO X)', the atom '+', and the list '(FIE X)', whereas the second expression,
+(LIST A+B), consists of a list of only two elements: the atom 'LIST' and the
+atom 'A+B'.  Since (LIST (FOO X)+(FIE Y)) is indistinguishable from
+(LIST (FOO X) + (FIE Y)) because spaces before or after parentheses have no
+                                     10
+effect on the INTERLISP READ program,   to be consistent, extra spaces have no
+effect on atomic operands either.  In other words, CLISP will treat
+(LIST A+ B), (LIST A +B), and (LIST A + B) the same as (LIST A+B).
+
+
+
+
+
+ 23.3  Infix Operators
+
+
+
+CLISP recognizes the arithmetic infix operators +, -, *, /, and ^.  These
+are converted to IPLUS, IDIFFERENCE (or in the case of unary minus, IMINUS),
+                            11
+ITIMES, IQUOTIENT, and EXPT.   The usual precedence rules apply (although
+
+
+**FOOTNOTES**
+10
+    CLISP does not use its own special READ program because this would require
+    the user to explicitly identify CLISP expressions, instead of being able to
+    intermix INTERLISP and CLISP.
+
+
+11
+    The I in IPLUS denotes integer arithmetic, i.e., IPLUS converts its
+    arguments to integers, and returns an integer value.  INTERLISP also
+    contains floating point arithmetic functions as well as mixed arithmetic
+    functions (see Section 13).  Floating point arithmetic functions are used
+    in the translation if one or both of the operands are themselves floating
+    point numbers, e.g. X+1.5 translates as (FPLUS X 1.5). In addition, CLISP
+    contains a facility for declaring which type of arithmetic is to be used,
+    either by making a global declaration, or by separate declarations about
+    individual functions or variables.  See section on declarations, page
+    23.29.
+
+
+
+
+                                     23.7
+
+
+
+                                         12
+these can be easily changed by the user),   i.e., * has higher precedence than
++ so that A+B*C is the same as A+(B*C), and both * and / are lower than ^ so
+that 2*X^2 is the same as 2*(X^2).  Operators of the same precedence group from
+left to right, e.g., A/B/C is equivalent to (A/B)/C.  Minus is binary whenever
+possible, i.e., except when it is the first operator in a list, as in (-A) or
+                                                                  13 14
+(-A), or when it immediately follows another operator, as in A*-B.   
+
+
+
+Note that grouping with parentheses can always be used to override the normal
+precedence grouping, or when the user is not sure how a particular expression
+will parse.
+
+
+
+                                                               15
+CLISP also recognizes as infix operators =, GT, LT, GE, and LE,   as well as
+                                                      16
+various predicates, e.g., MEMBER, AND, OR, EQUAL, etc.   AND is higher than OR,
+e.g., (X OR Y AND Z) is the same as (X OR (Y AND Z)), and both AND and OR are
+lower than the other infix operators, e.g., (X AND Y EQUAL Z) is the same as
+(X AND (Y EQUAL Z)).  All of the infix predicates have lower precedence than
+INTERLISP forms, i.e., (FOO X GT FIE Y) is the same as ((FOO X) GT (FIE Y)),
+since it is far more common to apply a predicate to two forms, than to use a
+
+
+
+**FOOTNOTES**
+12
+    The complete order of precedence for CLISP operators is given in
+    Figure 23-2, page 23.12.
+
+
+13
+    There are some do-what-I-mean features associated with Unary minus, as in
+    (LIST -X Y).  See section on operation, page 23.55.
+
+
+14
+    Note that + in front of a number will disappear when the number is read,
+    e.g., (FOO X +2) is indistinguishable from (FOO X 2).  This means that
+    (FOO X +2) will not be interpreted as CLISP, or be converted to
+    (FOO (IPLUS X 2)).  Similarly, (FOO X -2) will not be interpreted the same
+    as (FOO X-2).  To circumvent this, always type a space between the + or -
+    and a number if an infix operator is intended, e.g., write (FOO X + 2).
+
+
+15
+     Greater  Than,  Less  Than,  Greater than or  Equal to, and  Less than or
+     Equal to, respectively.  GT, LT, GE, and LE are all affected by the same
+    declarations as + and *, with the initial default to use IGREATERP and
+    ILESSP.
+
+
+16
+    Currently the complete list is MEMBER, MEMB, FMEMB, ILESSP, IGREATERP,
+    LESSP, GREATERP, FGTP, EQ, NEQ, EQP, EQUAL, OR, and AND.  New infix
+    operators can be easily added, as described in the section on CLISP
+    internal conventions, page 23.58.  Spelling correction on misspelled infix
+    operators is peformed using  clispinfixsplst as a spelling list.
+
+
+
+
+                                     23.8
+
+
+
+Boolean as an argument to a function, e.g. (FOO (X GT (FIE Y))).  However,
+again, the user can easily change this.
+
+
+
+Note that only single character operators, e.g. +, _, =, etc., can appear in
+the  interior of an atom. All other operators must be set off from identifiers
+                                                                17
+with spaces.  For example, XLTY will not be recognized as CLISP.
+
+
+
+                         *             *              *
+
+
+
+: is an infix operator used in CLISP for extracting substructures from
+      18
+lists,   e.g., X:3 specifies the 3rd element of X, (FOO Y)::2 specifies the
+second tail of (FOO Y), i.e., (CDDR (FOO Y)), and Z:1:2 is the second element
+of the first element of Z, or (CADAR Z).  Negative numbers may be used to
+indicate position counting from the end of a list, e.g., X:-1 is the last
+                                                                        19
+element of X, or (CAR (LAST X)), X::-1 is the last tail, i.e., (LAST X).
+
+
+
+                         *             *              *
+
+
+
+                         
+
+
+
+
+
+**FOOTNOTES**
+17
+    In some cases, DWIM will be able to diagnose this situation as a run-on
+    spelling error, in which case after the atom is split apart, CLISP will be
+    able to perform the indicated transformation.
+
+
+18
+    The record facility, page 23.40, provides another way of extracting
+    substructures by allowing the user to assign names to the various parts of
+    the structure and then retrieve from or store into the corresponding
+    structure by name. The pattern match facility, page 23.31, also can be
+    used to extract substructure.  : is also used to indicate both record and
+    pattern match operations.
+
+
+19
+    The interpretation of negative numbers can be explained neatly in terms of
+    edit commands: :-n returns what would be the current expression after
+    executing the command -n, and ::-n returns what would be the current
+    expression after executing -n followed by UP.
+
+
+
+
+
+
+
+
+                                     23.9
+
+
+                                                                     20 21
+_ is used to indicate assignment, e.g., X_Y translates to (SETQ X Y).      In
+conjunction with : and ::, _ can also be used to perform a more general type of
+assignment, namely one involving structure modification.  For example, X:2_Y
+means make the second element of X be Y, in INTERLISP terms
+                   22 23                                                 24
+(RPLACA (CDR X) Y).      Negative numbers can also be used, e.g., X:-2_Y.   _
+is also used to indicate assignment in record operations, page 23.40, and
+pattern match operations, page 23.31.
+
+
+
+_ has different precedence on the left from on the right.  On the left, _ is a
+"tight" operator, i.e., high precedence, so that A+B_C is the same as A+(B_C).
+On the right, _ has broader scope so that A_B+C is the same as A_(B+C).
+
+
+
+On typein, $_form (alt-mode_form) is equivalent to set the "last thing
+           25
+mentioned".   For example, immediately after examining the value of
+LONGVARIABLENAME, the user could set it by typing $_ followed by a form.  
+
+
+
+
+
+**FOOTNOTES**
+20
+    If  x does not have a value, and is not the name of one of the bound
+    variables of the function in which it appears, spelling correction is
+    attempted.  However, since this may simply be a case of assigning an
+    initial value to a new free variable, DWIM will always ask for approval
+    before making the correction.
+
+
+21
+    Note that an atom of the form X_Y, appearing at the top level of a PROG,
+    will not be recognized as an assignment statement because it will be
+    interpreted as a PROG label by the INTERLISP interpreter, and therefore
+    will not cause an error, so DWIM and CLISP will never get to see it.
+    Instead, one must write (X_Y).
+
+
+22
+    Note that the value of this operation is the value of  rplaca, which is the
+    corresponding node.
+
+
+23
+    The user can indicate he wants  /rplaca and  /rplacd used (undoable version
+    of  rplaca and  rplacd, see Section 22), or  frplaca and  frplacd (fast
+    versions of  rplaca and  rplacd, see Section 5), by means of
+    declarations (page 23.29). The initial default is for  rplaca and
+     rplacd.
+
+
+24
+    which translates to (RPLACA (NLEFT X 2) Y).
+
+
+25
+    i.e. is equivalent to (SETQ lastword form). See Section 17.
+
+
+
+
+                                     23.10
+
+
+
+ 23.4  Prefix Operators
+
+
+
+CLISP recognizes ' and ~ as prefix operators.   ' means QUOTE when it
+is the first character in an identifier, and is ignored when it is used in the
+interior of an identifier.  Thus, X='Y means (EQ X (QUOTE Y)), but X=CAN'T
+means (EQ X CAN'T), not (EQ X CAN) followed by (QUOTE T).  This enables users
+to have variable and function names with ' in them (so long as the ' is not the
+first character).
+
+
+
+Following ', all operators are ignored for the rest of the identifier, e.g.,
+                                                                       26
+'*A means (QUOTE *A), and 'X=Y means (QUOTE X=Y), not (EQ (QUOTE X) Y).
+
+
+
+On typein, '$ (i.e. 'alt-mode) is equivalent to (QUOTE value-of-lastword)
+(see Section 17).  For example, after calling  prettyprint on LONGFUNCTION, the
+                                                               27
+user could move its definition to FOO by typing (MOVD '$ 'FOO).
+
+
+
+~ means NOT.  ~ can negate a form, as in ~(ASSOC X Y), or ~X, or negate an
+infix operator, e.g., (A ~GT B) is the same as (A LEQ B).  Note that ~A=B means
+(EQ (NOT A) B).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+26
+    To write (EQ (QUOTE X) Y), one writes Y='X, or 'X =Y.  This is one place
+    where an extra space does make a difference.
+
+
+27
+    Not (MOVD $ 'FOO), which would be equivalent to (MOVD LONGFUNCTION 'FOO),
+    and would (probably) cause a U.B.A. LONGFUNCTION error, nor MOVD($ FOO),
+    which would actually move the definition of $ to FOO, since DWIM and the
+    spelling corrector would never be invoked.
+
+
+
+
+
+
+
+
+                                     23.11
+
+
+
+                     Order of Precedence of CLISP operators
+
+
+
+
+                        '
+
+                        :
+
+                                                           28
+                        _ (left precedence)
+
+                                                           29
+                        - (unary), ~
+
+                        ^
+
+                        *, /
+
+                        +, - (binary)
+
+                        _ (right precedence)
+
+                        =
+
+                        INTERLISP forms
+
+                        LT, GT, EQUAL, MEMBER, etc.
+
+                        AND
+
+                        OR
+
+                        IF, THEN, ELSEIF, ELSE
+
+                        iterative statement operators
+
+
+
+
+
+                                  Figure 23-2
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+28
+    _ has a different left and right precedence, e.g., A+B_C+D is the same
+    as A+(B_(C+D)).  In other words, _ has minimal scope on the left and
+    maximal scope on the right.
+
+
+29
+    When ~ negates an operator, e.g., ~=, ~LT, the two operators are treated as
+    a single operator whose precedence is that of the second operator.  When ~
+    negates a function, e.g., (~FOO X Y), it negates the whole form, i.e.,
+    (~(FOO X Y)).
+
+
+
+
+                                     23.12
+
+
+
+                                             30
+ 23.5  Constructing Lists - the <,> operators  
+
+
+
+Angle brackets are used in CLISP to indicate list construction.  The appearance
+of a '<' corresponds to a '(' and indicates that a list is to be constructed
+containing all the elements up to the corresponding '>'. For example, <A B <C>>
+translates to (LIST A B (LIST C)).  ! can be used to indicate that the next
+expression is to be inserted in the list as a segment, e.g., <A B ! C>
+translates to (CONS A (CONS B C)) and <! A ! B C> to (APPEND A B (LIST C)).
+!! is used to indicate that the next expression is to be inserted as a segment,
+and furthermore, all list structure to its right in the angle brackets is to be
+physically attached to it, e.g., <!! A B> translates to (NCONC1 A B), and
+                                      31 32
+<!!A !B !C> to (NCONC A (APPEND B C)).      Note that <, !, !!, and > need not
+be separate atoms, for example, <A B ! C> may be written equally well as
+< A B !C >.  Also, arbitrary INTERLISP or CLISP forms may be used within angle
+brackets.  For example, one can write <FOO_(FIE X) ! Y> which translates to
+(CONS (SETQ FOO (FIE X)) Y).  CLISPIFY converts expressions in  cons,  list,
+ append,  nconc,  nconc1,  /nconc, and  /nconc1 into equivalent CLISP
+expressions using <, >, !, and !!.
+
+
+
+Note: angle brackets differ from other CLISP operators in that they act more
+like brackets than operators. For example, <A B 'C> translates to
+(LIST A B (QUOTE C)) even though following ', all operators are ignored for the
+                       33
+rest of the identifier.   Note however that <A B ' C> D> is equivalent to
+(LIST A B (QUOTE C>) D).
+
+
+
+
+
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+30
+    The <,> operator was written by P.C. Jackson.
+
+
+31
+    Not (NCONC (APPEND A B) C), which would have the same value, but would
+    attach C to B, and not attach either to A.
+
+
+32
+    The user can indicate  /nconc or  /nconc1 be used instead of  nconc and
+     nconc1 by declarations.
+
+
+33
+    Only if a previous unmatched < has been seen, e.g.  (PRINT 'A>B)  will
+    print the atom A>B.
+
+
+
+
+                                     23.13
+
+
+
+ 23.6  IF, THEN, ELSE
+
+
+
+CLISP translates expressions employing IF|THEN|ELSEIF|ELSE into equivalent
+conditional expressions.  The segment between IF|ELSEIF and the next THEN
+corresponds to the predicate of a COND clause, and the segment between THEN and
+the next ELSE|ELSEIF as the consequent(s).  ELSE is the same as ELSEIF T THEN.
+
+
+
+IF, THEN, ELSE, and ELSEIF are of lower precedence than all infix and prefix
+operators, as well as INTERLISP forms, so that parentheses can be omitted
+                            34
+between IF|ELSEIF, and THEN.   For example, (IF FOO X Y THEN --) is equivalent
+                          35
+to (IF (FOO X Y) THEN --).   Similarly, CLISP treats (IF X THEN FOO X Y ELSE
+--) as equivalent to (IF X THEN (FOO X Y) ELSE --) because it does not 'make
+sense' to evaluate a variable for effect.  In other words, even if FOO were
+also the name of a variable, (COND (X FOO X Y)) doesn't make sense.
+Essentially, CLISP determines whether the segment between THEN and the next
+                                                                    36
+ELSE|ELSEIF corresponds to one form or several and acts accordingly.   Thus,
+(IF -- THEN (FOO X) Y ELSE --) corresponds to a clause with two consequents.
+Similarly, (IF -- THEN FOO_X Y ELSE --) corresponds to a clause with two
+                                                                 37
+consequents, and is equivalent to (IF -- THEN (FOO_X) Y ELSE --).
+
+
+
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+34
+    IF, THEN, ELSE, and ELSEIF can also be misspelled. Spelling correction is
+    performed using  clispifwordsplst as a spelling list.
+
+
+35
+    If FOO is the name of a variable, IF FOO THEN -- is translated as
+    (COND (FOO --)) even if FOO is also the name of a function.  If the
+    functional interpretation is intended, FOO should be enclosed in
+    parentheses, e.g., IF (FOO) THEN --.  Similary for
+    IF -- THEN FOO ELSEIF --.
+
+
+36
+    occasionally interacting with the user to resolve ambiguous cases.
+
+
+37
+    To write the equivalent of a singleton cond clause, i.e., a clause with a
+    predicate but no consequent, write either nothing following the THEN, or
+    omit the THEN entirely, e.g., (IF (FOO X) THEN ELSEIF --) or
+    (IF (FOO X) ELSEIF --), meaning if (FOO X) is not NIL, it is the value of
+    the  cond.
+
+
+
+
+                                     23.14
+
+
+
+ 23.7  Iterative Statements
+
+
+
+The following is an example of a CLISP iterative statement:
+
+
+                  (WHILE X_(READ)~='STOP DO (PRINT (EVAL X)))
+
+
+
+This statement says "READ an expression and set X to it.  If X is not equal to
+                                                               38
+the atom STOP, then evaluate X, print the result, and iterate."
+
+
+
+The i.s. (iterative statement) in its various forms permits the user to specify
+complicated iterative statements in a straightforward and visible manner.
+Rather than the user having to perform the mental transformations to an
+equivalent INTERLISP form using PROG, MAPC, MAPCAR, etc., the system does it
+for him.  The goal was to provide a robust and tolerant facility which could
+"make sense" out of a wide class of iterative statements.  Accordingly, the
+user should not feel obliged to read and understand in detail the description
+of each operator given below in order to use iterative statements.
+
+
+
+Currently, the following i.s. operators are implemented: FOR, BIND, OLD, IN,
+ON, FROM, TO, BY, WHEN, WHILE, UNTIL, REPEATWHILE, REPEATUNTIL, UNLESS,
+COLLECT, JOIN, DO, SUM, COUNT, ALWAYS, NEVER, THEREIS, AS, FIRST, FINALLY,
+EACHTIME.  Their function is explained below.  New operators can be defined as
+described on page 23.24.  Misspellings of operators are recognized and
+          39                                                         40
+corrected.   The order of appearance of operators is never important;   CLISP
+scans the entire statement before it begins to construct the equivalent
+INTERLISP form.
+
+
+
+
+
+**FOOTNOTES**
+38
+    The statement translates to:
+    (PROG ($$VAL) $$LP(COND ((EQ (SETQ X (READ))(QUOTE STOP)) (RETURN $$VAL)))
+    (PRINT (EVAL X)) $$ITERATE (GO $$LP))
+
+
+39
+    using the spelling list  clispforwordsplst.
+
+
+40
+    DWIM and CLISP are invoked on iterative statements because  car of the i.s.
+    is not the name of a function, and hence generates an error.  If the user
+    defines a function by the same name as an i.s. operator, e.g. WHILE, TO,
+    etc., the operator will no longer have the CLISP interpretation when it
+    appears as  car of a form, although it will continue to be treated as an
+    i.s. operator if it appears in the interior of an i.s. To alert the user, a
+    warning message is printed, e.g.
+    (WHILE DEFINED, THEREFORE DISABLED IN CLISP).
+
+
+
+
+                                     23.15
+
+
+
+DO form             specifies what is to be done at each iteration.  DO
+                   with no other operator specifies an infinite loop.  If some
+                   explicit or implicit terminating condition is specified, the
+                   value of the i.s. is NIL.  Translate to MAPC or MAP whenever
+                   possible.
+
+
+
+COLLECT form        like DO, except specifies that the value of  form at
+                   each iteration is to be collected in a list, which is
+                   returned as the value of the i.s. when it terminates.
+                                                                             41
+                   Translates to MAPCAR, MAPLIST or SUBSET whenever possible.
+
+
+
+JOIN form      like DO, except that the values are NCONCed.  Translates to
+                                                       42
+                   MAPCONC or MAPCON whenever possible.
+
+
+
+SUM form            like DO, except specifies that the values of  form at
+                   each iteration be added together and returned as the value
+                   of the i.s., e.g. (FOR I FROM 1 TO 5 SUM I^2) is equal to
+                               43
+                   1+4+9+16+25.
+
+
+
+COUNT pred     like DO, except counts number of times that  pred is true,
+                   and returns that count as its value.
+
+
+
+ALWAYS pred         like DO, except returns T if the value of  pred is
+                   non-NIL for all iterations (returns NIL as soon as the value
+                   of  pred is NIL), e.g.  (FOR X IN Y ALWAYS (ATOM X)) is the
+                   same as (EVERY Y (FUNCTION ATOM)).
+
+
+
+NEVER pred          like ALWAYS, except returns T if the value of  pred is
+                   never true, i.e. NEVER pred is the same as ALWAYS ~pred.
+
+
+
+**FOOTNOTES**
+41
+    when COLLECT translates to a PROG, e.g. a WHILE operator appears in the
+    iterative statement, the translation employs an open tconc using two
+    pointers similar to that used by the compiler for compiling  mapcar.
+
+
+42
+    /NCONC, /MAPCONC, and /MAPCON are used when the declaration UNDOABLE is in
+    effect.
+
+
+43
+     iplus,  fplus, or  plus will be used for the translation depending on the
+    declarations in effect.
+
+
+
+
+                                     23.16
+
+
+
+THEREIS pred        returns the first value of the i.v. for which  pred is
+                   non-NIL, e.g.  (FOR X IN Y THEREIS NUMBERP) returns the
+                   first number in Y, and is equivalent to
+                                                     44
+                   (CAR (SOME Y (FUNCTION NUMBERP))).
+
+
+
+DO, COLLECT, JOIN, SUM, ALWAYS, NEVER, and THEREIS are examples of a certain
+kind of i.s. operator called an  i.s.type.  The  i.s.type specifies what is
+to be done at each iteration.  Its operand is called the  body of the iterative
+statement.  Each i.s. must have one and only one  i.s.type.  The function
+ i.s.type, page 23.24, provides a means of defining additional  i.s.types.
+
+
+
+FOR var             specifies the variable of iteration, or i.v., which is
+                   used in conjunction with IN, ON, FROM, TO, and BY.  The
+                   variable is rebound for the scope of the i.s., except when
+                   modified by OLD as described below.
+
+
+
+FOR vars             vars a list of variables, e.g., FOR (X Y Z) IN --.
+                   The first variable is the i.v., the rest are dummy
+                   variables.  See BIND below.
+
+
+
+OLD var             indicates  var is not to be rebound, e.g.,
+                   (FOR OLD X FROM 1 TO N DO -- UNTIL --),
+
+
+
+BIND var, vars used to specify dummy variables, e.g., FOR (X Y Z) IN -- is
+                   equivalent to FOR X BIND (Y Z) IN --.  BIND can be used
+                   without FOR.  For example, in the i.s. shown on page 23.15,
+                   X could be made local by writing
+                   (BIND X WHILE X_(READ)~='STOP...).
+
+
+
+Note:    FOR, OLD, and BIND variables can be initialized by using _, e.g.,
+(FOR OLD (X_form) BIND (Y_form)...).
+
+
+
+IN form             specifies that the i.s. is to iterate down a list with
+                   the i.v. being reset to the corresponding element at each
+                   iteration.  For example, FOR X IN Y DO -- corresponds to
+                   (MAPC Y (FUNCTION (LAMBDA (X) --))).  If no i.v. has been
+                   specified, a dummy is supplied, e.g., IN Y COLLECT CADR is
+                   equivalent to (MAPCAR Y (FUNCTION CADR)).
+
+
+**FOOTNOTES**
+44
+    THEREIS returns the i.v. instead of the tail (as does the function  some)
+    in order to provide an interpretation consistent with statements such as
+    (FOR I FROM 1 TO 10 THEREIS --), where there is no tail.  Note that
+    (SOME Y (FUNCTION NUMBERP)) is equivalent to
+    (FOR X  ON Y THEREIS (NUMBERP (CAR X))).
+
+
+
+
+                                     23.17
+
+
+
+ON form             same as IN except that the i.v. is reset to the
+                   corresponding tail at each iteration.  Thus IN corresponds
+                   to MAPC, MAPCAR, and MAPCONC, while ON corresponds to MAP,
+                   MAPLIST, and MAPCON.
+
+
+
+IN OLD var          specifies that the i.s. is to iterate down  var, with
+                    var itself being reset to the corresponding tail at each
+                   iteration, e.g., after (FOR X IN OLD L DO -- UNTIL --)
+                   finishes, L will be some tail of its original value.
+
+
+
+IN OLD (var_form)   same as IN OLD  var, except  var is first set to value
+                   of  form.
+
+
+
+ON OLD var         same as IN OLD  var except the i.v. is reset to the current
+                   value of  var at each iteration, instead of to car[var].
+
+
+
+ON OLD (var_form)   same as ON OLD  var, except  var is first set to value
+                   of  form.
+
+
+
+WHEN pred      provides a way of excepting certain iterations.  For
+                   example, (FOR X IN Y COLLECT X WHEN NUMBERP X) collects only
+                   the elements of Y that are numbers.
+
+
+
+UNLESS pred         same as WHEN except for the difference in sign, i.e.,
+                   WHEN Z is the same as UNLESS ~Z.
+
+
+
+WHILE pred          provides a way of terminating the i.s.  WHILE  pred
+                   evaluates  pred before each iteration, and if the value is
+                   NIL, exits.
+
+
+
+UNTIL pred          Same as WHILE except for difference in sign, i.e.,
+                   WHILE PRED is equivalent to UNTIL ~PRED.
+
+
+
+UNTIL n             n a number, equivalent to UNTIL (i.v. GT n).
+
+
+
+REPEATWHILE pred
+                   same as WHILE except the test is performed  after the
+                   evalution of the body, but before the i.v. is reset for the
+                   next iteration.
+
+
+
+REPEATUNTIL pred/n
+                   same as UNTIL, except the test is performed after the
+                   evaluation of the body.
+
+
+
+                                     23.18
+
+
+
+FROM form      is used to specify an initial value for a numerical i.v.
+                   The i.v. is automatically incremented by 1 after each
+                   iteration (unless BY is specified).  If no i.v. has been
+                   specified, a dummy i.v. is supplied and initialized, e.g.,
+                   (COLLECT SQRT FROM 2 TO 5) returns (1.414 1.732 2.0 2.236).
+
+
+
+TO form             is used to specify the final value for a numerical i.v.
+                   If FROM is not specified, the i.v. is initialized to 1.
+                   If no i.v. has been specified, a dummy i.v. is supplied and
+                   initialized.  If BY is not specified, the i.v. is
+                                                                       45
+                   automatically incremented by 1 after each iteration.   When
+                   the i.v. is definitely being incremented, i.e. either BY is
+                   not specified, or its operand is a positive number, the i.s.
+                   terminates when the i.v. exceeds the value of  form (which
+                   is reevaluated each iteration) e.g., (FOR X FROM 1 TO 10 --
+                   ), is equivalent to (FOR X FROM 1 UNTIL (X GT 10) --).
+
+
+
+                   Similarly, when the i.v. is definitely being decremented the
+                   i.s. terminates when the i.v. becomes less than the value of
+                    form (see description of BY).
+
+
+
+BY x (with IN/ON)   If IN or ON have been specified, the value of
+                    x determines the tail for the next iteration, which in turn
+                   determines the value for the i.v. as described earlier, i.e.
+                   the new i.v. is  car of the tail for IN, the tail itself for
+                   ON.  In conjunction with IN, the user can refer to the
+                   current tail within  x by using the i.v. or the operand for
+                   IN/ON, e.g. (FOR Z IN L BY (CDDR  Z) ...) or
+                   (FOR Z IN L BY (CDDR  L) ...).  At translation time, the
+                   name of the internal variable which holds the value of the
+                   current tail is substituted for the i.v. throughout  x.  For
+                   example, (FOR X IN Y BY (CDR (MEMB 'FOO (CDR X))) COLLECT X)
+                   specifies that after each iteration,  cdr of the current
+                   tail is to be searched for the atom FOO, and ( cdr of) this
+                   latter tail to be used for the next iteration.
+
+
+
+BY x (without IN/ON)     If IN or ON have not been used, BY specifies how
+                   the i.v. itself is reset at each iteration.  If FROM or
+                   TO have been specified, the i.v. is known to be
+                   numerical, so the new i.v. is computed by adding the value
+                   of  x (which is reevaluated each iteration) to the current
+                   value of the i.v., e.g., (FOR N FROM 1 TO 10 BY 2 COLLECT N)
+                   makes a list of the first five odd numbers.
+
+
+
+
+**FOOTNOTES**
+45
+    except when both the operands to TO and FROM are numbers, and TO's operand
+    is less than FROM's operand, e.g. FROM 10 TO 1, in which case the i.v. is
+    decremented by 1 after each iteration.  In this case, the i.s. terminates
+    when the i.v. becomes less than the value of  form.
+
+
+
+
+                                     23.19
+
+
+
+                                              46
+                   If  x is a positive number,   the i.s. terminates when the
+                   value of the i.v. exceeds the value of TO's operand.  If  x
+                   is a negative number, the i.s. terminates when the value of
+                   the i.v. becomes less than TO's operand, e.g.
+                   (FOR I FROM N TO M BY -2 UNTIL (I LT M) ...).  Otherwise,
+                   the terminating condition for each iteration depends on the
+                   value of  x for that iteration: if  x < 0, the test is
+                   whether the i.v. is less than TO's operand, if  x > 0 the
+                   test is whether the i.v. exceeds TO's operand, otherwise if
+                                                             47
+                    x=0, the i.s. terminates unconditionally.
+
+
+
+                   If FROM or TO have not been specified, the i.v. is
+                   simply reset to the value of  x after each iteration, e.g.
+                   (FOR I FROM N BY 2 ...) is equivalent to
+                   (FOR I_N BY (IPLUS I 2) ...).
+
+
+
+FIRST form           form is evaluated once before the first iteration,
+                   e.g.
+
+                   (FOR X Y Z IN L -- FIRST (FOO Y Z)), and FOO could be used
+                   to initialize Y and Z.
+
+
+
+FINALLY form         form is evaluated after the i.s. terminates.  For
+                   example,
+
+                   (FOR X IN L BIND Y_0 DO (IF ATOM X THEN Y_Y+1)
+
+                   FINALLY (RETURN Y)) will return the number of atoms in L.
+
+
+
+EACHTIME form   form is evaluated at the beginning of each iteration
+                   before, and regardless of, any testing. For example,
+                   consider (FOR I FROM 1 TO N DO (... (FOO I) ...) UNLESS (...
+                   (FOO I) ...) UNTIL (... (FOO I) ...)).  The user might want
+                   to set a temporary variable to the value of (FOO I) in order
+                   to avoid computing it three times each iteration. However,
+                   without knowing the translation, he would not know whether
+                   to put the assignment in the operand to DO, UNLESS, or
+                   UNTIL, i.e. which one would be executed first.  He can avoid
+                   this problem by simply writing EACHTIME J_(FOO I).
+
+
+
+**FOOTNOTES**
+46
+     x itself, not its value, which in general CLISP would have no way of
+    knowing in advance.
+
+
+47
+    A temporary variable is used so that  x is only evaluated once.  However,
+    code for TO's operand appears twice in the translation, even though it is
+    evaluated only once.
+
+
+
+
+                                     23.20
+
+
+
+AS var              is used to specify an iterative statement involving
+                   more than one iterative variable, e.g.
+                   (FOR X IN Y AS U IN V DO --) corresponds to  map2c.  The
+                   i.s. terminates when any of the terminating conditions are
+                   met, e.g.  (FOR X IN Y AS I FROM I TO 10 COLLECT X) makes a
+                   list of the first ten elements of Y, or however many
+                   elements there are on Y if less than 10.
+
+
+
+                   The operand to AS,  var, specifies the new i.v.  For the
+                   remainder of the i.s., or until another AS is encountered,
+                   all operators refer to the new i.v.  For example,
+                   (FOR I FROM I TO N1 AS J FROM 1 TO N2 BY 2
+
+                   AS K FROM N3 TO 1 BY -1 --) terminates when I exceeds N1, or
+                   J exceeds N2, or K becomes less than 1.  After each
+                   iteration, I is incremented by 1, J by 2, and K by -1.
+
+
+
+
+ Miscellaneous
+
+
+
+1.  Lowercase versions of all i.s. operators are equivalent to the uppercase,
+    e.g., (for X in Y ...).
+
+2.  Each i.s. operator is of lower precedence than all INTERLISP forms, so
+    parentheses around the operands can be omitted, and will be supplied where
+    necessary, e.g., BIND (X Y Z) can be written BIND X Y Z, OLD (X_form) as
+    OLD X_form, WHEN (NUMBERP X) as WHEN NUMBERP X, etc.
+
+3.  RETURN or GO may be used in any operand.  (In this case, the
+    translation of the iterative statement will always be in the form of a
+    PROG, never a mapping function.) RETURN means return from the i.s. (with
+    the indicated value), not from the function in which the i.s appears.  GO
+    refers to a label elsewhere in the function in which the i.s. appears,
+    except for  the labels $$LP,$$ITERATE, and $$OUT which  are reserved, as
+    described in 6 below.
+
+4.  In the case of FIRST, FINALLY, EACHTIME, or one of the
+    i.s.types, e.g. DO, COLLECT, SUM, etc., the operand can consist of more
+    than one form, e.g., COLLECT (PRINT X:1) X:2, in which case a PROGN is
+    supplied.
+
+5.  Each operand can be the name of a function, in which case it is applied to
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                     23.21
+
+
+
+                    48 49 50
+    the (last) i.v.,         e.g., FOR X IN Y DO PRINT WHEN NUMBERP, is the
+    same as FOR X IN Y DO (PRINT X) WHEN (NUMBERP X).  Note that the i.v. need
+    not be explicitly specified, e.g., IN Y DO PRINT WHEN NUMBERP will work.
+
+6.  While the exact form of the translation of an iterative statement depends
+    on which operators are present, a PROG will always be used whenever the
+    i.s. specifies dummy variables, i.e. if a BIND operator appears, or there
+    is more than one variable specified by a FOR operator, or a GO, RETURN, or
+    a reference to the variable $$VAL  appears in any of the operands.  When a
+    PROG is used, the form of the translation is:
+
+                             (PROG variables
+                                   {initialize}
+                             $$LP  {eachtime}
+                                   {test}
+                                   {body}
+                             $$ITERATE
+                                   {aftertest}
+                                   {update}
+                                   (GO $$LP)
+                             $$OUT {finalize}
+                                   (RETURN $$VAL))
+
+    where {test} corresponds to that portion of the loop that tests for
+    termination and also for those iterations for which {body} is not going to
+    be executed, (as indicated by a WHEN or UNLESS); {body} corresponds to the
+    operand of the i.s.type, e.g. DO, COLLECT, etc.; {aftertest} corresponds to
+    those tests for termination specified by REPEATWHILE or REPEATUNTIL; and
+    {update} corresponds to that part that resets the tail, increments the
+    counter, etc. in preparation for the next iteration.  {initialize},
+    {finalize}, and {eachtime} correspond to the operands of FIRST, FINALLY,
+    and EACHTIME, if any.
+
+
+
+    Note that since {body} always appears at the top level of the PROG, the
+    user can insert labels in {body}, and go to them from within {body} or from
+
+
+
+
+
+
+**FOOTNOTES**
+48
+    For i.s.types, e.g. DO, COLLECT, JOIN, the function is always applied to
+    the first i.v. in the i.s., whether explicity named or not.  For example,
+    (IN Y AS I FROM 1 TO 10 DO PRINT) prints elements on Y, not integers
+    between 1 and 10.
+
+
+49
+    Note that this feature does not make much sense for FOR, OLD, BIND, IN, or
+    ON, since they "operate" before the loop starts, when the i.v. may not even
+    be bound.
+
+
+50
+    In the case of BY in conjunction with IN, the function is applied
+    to the current tail e.g., FOR X IN Y BY CDDR ..., is the same as FOR X IN Y
+    BY (CDDR X)... See page 23.19.
+
+
+
+
+                                     23.22
+
+
+
+                                                                         51
+    other i.s. operands, e.g. (FOR X IN Y FIRST (GO A) DO (FOO) A (FIE)).   The
+    user can also   go to $$LP, $$ITERATE, or $$OUT, or explicitly set $$VAL.
+
+
+
+
+ Errors in Iterative Statements
+
+
+
+An error will be generated and an appropriate diagnostic printed if any of
+the following conditions hold:
+
+
+
+l.  Operator with null operand, i.e. two adjacent operators, as in FOR X IN Y
+    UNTIL DO --
+
+2.  Operand consisting of more than one form (except as operand to FIRST,
+    FINALLY, or one of the i.s.types), e.g., FOR X IN Y (PRINT X) COLLECT --.
+
+3.  IN, ON, FROM, TO, or BY appear twice in same i.s.
+
+4.  Both IN and ON used on same i.v.
+
+5.  FROM or TO used with IN or ON on same i.v.
+
+6.  More than one i.s.type, e.g. a DO and a SUM.
+
+
+
+In 3, 4, or 5, an error is not generated if an intervening AS occurs.
+
+
+
+If an error occurs, the i.s. is left unchanged.
+
+
+
+If no DO, COLLECT, JOIN or any of the other i.s.types are specified, CLISP will
+first attempt to find an operand consisting of more than one form, e.g.,
+FOR X IN Y  (PRINT X) WHEN ATOM X, and in this case will insert a DO after the
+first form.  (In this case, condition 2 is not considered to be met, and an
+error is not generated.) If CLISP cannot find such an operand, and no WHILE or
+UNTIL appears in the i.s., a warning message is printed: NO DO, COLLECT, OR
+JOIN: followed by the i.s.
+
+
+
+Similarly, if no terminating condition is detected, i.e. no IN, ON, WHILE,
+UNTIL, TO, or a RETURN or GO, a warning message is printed:
+POSSIBLE NON-TERMINATING ITERATIVE STATEMENT: followed by the i.s.  However,
+
+
+
+**FOOTNOTES**
+51
+    However, since {body} is dwimified as a list of forms, the label(s) should
+    be added to the dummy variables for the iterative statement in order to
+    prevent their being dwimified and possibly 'corrected', e.g.
+    (FOR X IN Y BIND A FIRST (GO A) DO (FOO) A (FIE)).
+
+
+
+
+                                     23.23
+
+
+
+since the user may be planning to terminate the i.s. via an error, control-E,
+or a  retfrom from a lower function, the i.s. is still translated.
+
+
+
+
+ Defining New Iterative Statement Operators
+
+
+
+
+The i.s.type specifies what is to be done at each iteration, e.g. collecting
+values on a list, adding numbers, searching for a particular condition, etc.
+Each i.s. can have one and only one i.s.type.  The function  i.s.type provides
+a means of defining new i.s.types.
+
+
+
+i.s.type[name;form;others]     name is the name of the i.s.type.   form is
+                             the form to be evaluated at each iteration.  In
+                              form $$VAL can be used to reference the value
+                             being assembled, I.V. to reference the current
+                             value of the i.v., and BODY to reference the
+                             body of the statement, i.e.  name's operand.
+
+
+
+For example, for COLLECT,  form would be (SETQ $$VAL (NCONC1 $$VAL BODY)), for
+                        52                                                 53
+SUM: ($$VAL_$$VAL+BODY),   for NEVER: (IF BODY THEN $$VAL_NIL (GO $$OUT))),
+THEREIS: (IF BODY THEN $$VAL_I.V. (GO $$OUT)).
+
+
+
+                              others specifies an optional list of additional
+                             i.s.  operators and operands which will be tacked
+                             on to the end of the i.s.  For example,  others
+                             for SUM is (FIRST $$VAL_0).
+
+
+
+                              i.s.type is undoable.
+
+
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+52
+    $$VAL+BODY is used instead of (IPLUS $$VAL BODY), so that the choice of
+    function used in the translation, i.e.  iplus,  fplus, or  plus, will be
+    determined by the declarations then in effect.
+
+
+53
+    (IF BODY THEN RETURN NIL) would prevent any operations specified via a
+    FINALLY from being executed.
+
+
+
+
+                                     23.24
+
+
+
+Examples:
+
+1)  To define RCOLLECT, a version of COLLECT which uses  cons instead of
+     nconc1 and then reverses the list of values:
+
+    i.s.type[RCOLLECT;($$VAL_(CONS BODY $$VAL));
+                 (FINALLY (RETURN (DREVERSE $$VAL)))]
+
+
+
+2)  To define TCOLLECT, a version of COLLECT which uses  tconc:
+
+    i.s.type[TCOLLECT;(TCONC $$VAL BODY);
+                 (FIRST $$VAL_(CONS) FINALLY (RETURN (CAR $$VAL)))]
+
+
+
+3)  To define PRODUCT:   i.s.type[PRODUCT;($$VAL_$$VAL*BODY);(FIRST $$VAL_1]
+
+
+
+ i.s.type performs the appropriate modifications to the property list for
+ name, as well as for the lower case version of name, and also updates the
+appropriate spelling lists.
+
+
+
+ i.s.type can also be used to define synonyms for all i.s. operators, (not just
+those that are i.s.types), by calling  i.s.type with  form an atom, e.g.
+i.s.type[WHERE;WHEN] makes WHERE be the same as WHEN.  Similarly, following
+i.s.type[ISTHERE;THEREIS] one can write (ISTHERE ATOM IN Y), and following
+i.s.type[FIND;FOR] and i.s.type[SUCHTHAT;THEREIS], one can write
+                                  54
+(FIND X IN Y SUCHTHAT X MEMBER Z).    
+
+
+
+This completes the description of iterative statements.
+
+
+
+
+
+ 23.8  CLISP Translations
+
+
+
+ The translation of infix operators and IF|THEN|ELSE statements are handled
+in CLISP by replacing the CLISP expression with the corresponding INTERLISP
+expression, and discarding the original CLISP, because (1) the CLISP expression
+
+
+
+
+
+**FOOTNOTES**
+54
+    In the current system, WHERE is synonymous with WHEN, SUCHTHAT and ISTHERE
+    with THEREIS, and FIND with FOR.
+
+
+
+
+
+
+
+                                     23.25
+
+
+                                      55
+is easily recomputable (by  clispify),   and (2) the INTERLISP expressions are
+simple and straightforward.  In addition to saving the space required to retain
+both the CLISP and the INTERLISP, another reason for discarding the original
+CLISP is that it may contain errors that were corrected in the course of
+translation, e.g.  the user writes FOO_FOOO:1, N*8FOO X), etc.  If the original
+CLISP were retained, either the user would have to go back and fix these errors
+by hand, thereby negating the advantage of having DWIM perform these
+corrections, or else DWIM would have to keep correcting these errors over and
+over.
+
+
+
+Where (1) or (2) are not the case, e.g. with iterative statements, pattern
+                                 56
+matches, record expressions, etc.   the original CLISP is retained (or a
+slightly modified version thereof), and the translation is stored elsewhere,
+                                          57 58
+usually in  clisparray,  a hash array.      The interpreter automatically
+checks this array using  gethash when given a form  car of which is not a
+
+
+
+
+
+**FOOTNOTES**
+55
+    Note that  clispify is sufficiently fast that it is practical for the user
+    to configure his INTERLISP system so that all expressions are automatically
+     clispifyed immediately before they are presented to him.  For example, he
+    can define an edit macro to use in place of P which calls  clispify on the
+    current expression before printing it. Similarly, he can inform
+     prettyprint to call  clispify on each expression before printing it, etc.
+
+
+56
+    The handling of translations for IF|THEN|ELSE statements is determined by
+    the value of  clispiftranflg. If T, the translations are stored elsewhere,
+    and the (modified) CLISP retained as described below. If NIL, the
+    corresponding COND replaces the IF|THEN|ELSE expression.  The initial value
+    of  clispiftranflg is NIL.
+
+
+57
+    The actual storing of the translation is performed by the function
+     clisptran, page 23.61.
+
+
+58
+    The user can also indicate that he wants the original clisp retained by
+    embedding it in an expression of the form (CLISP . clisp-expression), e.g.
+    (CLISP X:5:3) or (CLISP <A B C ! D>).  In such cases, the translation will
+    be stored remotely as described in the text.  Furthermore, such expressions
+    will be treated as clisp even if infix and prefix transformations have been
+    disabled by setting clispflg to NIL, as described on page 23.61.  In other
+    words, the user can instruct the system to interpret as clisp infix or
+    prefix constructs only those expressions that are specifically flagged as
+    such.
+
+
+
+
+
+
+
+
+
+                                     23.26
+
+
+         59
+function.   Similarly, the compiler performs a  gethash when given a form
+it does not recognize to see if it has a translation, which is then compiled
+instead of the form.  Whenever the user changes a CLISP expresson by editing
+it, the editor automatically deletes its translation (if one exists), so that
+the next time it is evaluated or dwimified, the expression will be
+             60
+retranslated.   The function  ppt and the edit commands PPT and
+CLISP: are available for examining translations, see page 23.64.
+Similarly, if  prettytranflg is T,  prettyprint will print the
+                                                           61
+translations instead of the corresponding CLISP expression.
+
+
+
+                      62
+If  clisparray is NIL,   translations are implemented instead by replacing the
+CLISP expression by an expression of the form
+                                              63
+(CLISP%  translation . CLISP-expression),   e.g.
+(FOR X IN Y COLLECT (CAR X)) would be replaced by
+
+(CLISP%  (MAPCAR Y (FUNCTION CAR)) FOR X IN Y COLLECT (CAR X)).  Both the
+editor and prettyprint know about CLISP%  expressions and treat them specially
+
+
+
+**FOOTNOTES**
+59
+    CLISP translations can also be used to supply an interpretation for funtion
+    objects, as well as forms, either for function objects that are used
+    openly, i.e. appearing as car of form, function objects that are explicitly
+     applyed, as with arguments to mapping functions, or function objects
+    contained in function definition cells.  In all cases, if car of the object
+    is not LAMBDA or NLAMBDA, the interpreter and compiler will check
+    clisparray.
+
+
+60
+    If the value of  clispretranflg is T,  dwimify will also (re)translate
+    any expressions which have translations stored remotely. The initial value
+    of  clispretranflg is NIL.
+
+
+61
+    Note that the user can always examine the translation himself by performing
+    (GETHASH expression CLISPARRAY).
+
+
+62
+     clisparray is initially NIL, and  #clisparray is its size.  The first time
+    a translation is performed, a hash array of this size is created.
+    Therefore to disable  clisparray, both it and  #clisparray should be set to
+    NIL.
+
+
+63
+    CLISP%  is an atom  consisting of the six characters C, L, I, S, P, and
+    space, which must be preceded by the escape character % in order for it to
+    be included as a part of an identifier.  The intent was to deliberately
+    make this atom hard to type so as to make it unlikely that it would
+    otherwise appear in a user's program or data, since the editor and
+    prettyprint treat it very specially, as described above.
+
+
+
+
+                                     23.27
+
+
+
+by suppressing the translations:  Prettyprint prints just the CLISP
+(unless  prettytranflg=T, as described below), while the editor makes the
+translation completely invisible, e.g. if the current expression were the above
+CLISP%  expression, F MAPCAR would fail to find the MAPCAR, and (3 ON) would
+replace IN with ON, i.e. the editor operates as though both the CLISP%  and the
+MAPCAR were not there.  As with translations implemented via  clisparray, if
+the CLISP expression is changed by editing it, the translation is automatically
+deleted.
+
+
+
+CLISP%  expressions will interpret and compile correctly: CLISP%  is defined as
+an nlambda nospread function with an appropriate compiler macro. Note that if
+the user sets  clisparray to NIL, he can then break, trace, or advise CLISP% 
+to monitor the evaluation of iterative statements, pattern matches, and record
+operations. This technique will work even if  clisparray was not NIL at the
+time the expressions were originally translated, since setting  clisparray to
+NIL will effectively delete the translations, thereby causing the CLISP
+expressions to be retranslated when they are first encountered. Note that if
+the user only wishes to monitor the CLISP in a certain function, he can
+accomplish this by embedding its definition in (RESETVAR CLISPARRAY NIL *).
+
+
+
+
+If a CLISP%  expression is encountered and  clisparray is not NIL, the
+translation is transferred to the hash array, and the CLISP%  expression
+replaced by just the CLISP.  Setting  prettytranflg to CLISP%  causes
+ prettyprint to print CLISP expressions that have been translated in the form
+of (CLISP%  translation . CLISP-expression), even if the translation is
+currently stored in  clisparray. These two features together provide the user
+with a way of dumping CLISP expressions together with their translations so
+that when reloaded (and run or dwimified), the translations will automatically
+be transferred to  clisparray.
+
+
+
+In summary, if  prettytranflg=NIL, only the CLISP is printed (used for
+producing listings).  If  prettytranflg=T, only the translation is printed
+(used for exporting programs to systems that do not provide CLISP, and to
+                                             64
+examine translations for debugging purposes).   If  prettytranflg=CLISP% , an
+expression of the form (CLISP%  translation . CLISP) is printed, (used for
+dumping both CLISP and translations).  The preferred method of storing
+translations is in  clisparray, so that if any CLISP%  expressions are
+converted while  clisparray is not NIL, they will automatically be converted so
+as to use  clisparray.  If  clisparray=NIL, they will be left alone, and
+furthermore, new translations will be implemented using CLISP% 
+expressions.
+
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+64
+    Note that  makefile will reset  prettytranflg to T, using  resetvar, when
+    called with the option NOCLISP.
+
+
+
+
+                                     23.28
+
+
+
+ 23.9  Declarations
+
+
+
+Declarations are used to affect the choice of INTERLISP function used as
+the translation of a particular operator.  For example, A+B can be translated
+as either (IPLUS A B), (FPLUS A B), or (PLUS A B), depending on the declaration
+in effect.  Similarly X:1_Y can mean (RPLACA X Y), (FRPLACA X Y), or
+(/RPLACA X Y), and <!!A B> either (NCONC1 A B) or (/NCONC1 A B).  The table
+below gives the declarations available in CLISP, and the INTERLISP functions
+they indicate.  The choice of function on all CLISP transformations are
+affected by these declarations, i.e. iterative statements, pattern matches,
+record operations, as well as infix and prefix operators.
+
+
+
+The user can make (change) a global declaration by calling the function
+CLISPDEC and giving it as its argument a list of declarations, e.g.,
+(CLISPDEC (QUOTE (FLOATING UNDOABLE))).  Changing a global declaration does not
+affect the speed of subsequent CLISP transformations, since all CLISP
+transformation are table driven (i.e. property list), and global declarations
+are accomplished by making the appropriate internal changes to CLISP at the
+time of the declaration.  If a function employs local declarations (described
+below), there will be a slight loss in efficiency owing to the fact that for
+each CLISP transformation, the declaration list must be searched for possibly
+relevant declarations.
+
+
+
+Declarations are implemented in the order that they are given, so that later
+declarations override earlier ones.  For example, the declaration FAST
+specifies that FRPLACA, FRPLACD, FMEMB, and FLAST be used in place of RPLACA,
+RPLACD, MEMB, and LAST; the declaration RPLACA specifies that RPLACA be used.
+Therefore, the declarations (FAST RPLACA RPLACD) will cause FMEMB, FLAST,
+RPLACA, and RPLACD to be used.
+
+
+
+The initial global declaration is INTEGER and STANDARD.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                     23.29
+
+
+
+ Table of Declarations
+
+
+
+ Declaration             INTERLISP functions to be used
+
+
+INTEGER or FIXED        IPLUS, IMINUS, IDIFFERENCE, ITIMES, IQUOTIENT, ILESSP,
+                        IGREATERP
+
+FLOATING                FPLUS, FMINUS, FDIFFERENCE, FTIMES, FQUOTIENT, LESSP,
+                        FGTP
+
+MIXED                   PLUS, MINUS, DIFFERENCE, TIMES, QUOTIENT, LESSP,
+                        GREATERP
+
+FAST                    FRPLACA, FRPLACD, FMEMB, FLAST, FASSOC
+
+UNDOABLE                /RPLACA, /RPLACD, /NCONC, /NCONC1, /MAPCONC, /MAPCON
+
+STANDARD                RPLACA, RPLACD, MEMB, LAST, ASSOC, NCONC, NCONC1,
+                        MAPCONC, MAPCON
+
+RPLACA, RPLACD,         corresponding function
+/RPLACA, ...
+
+
+
+
+ Local Declarations
+
+
+
+The user can also make declarations affecting a selected function or functions
+by inserting an expression of the form (CLISP: . declarations) immediately
+following the argument list, i.e., as CADDR of the definition.  Such local
+declarations take precedence over global declarations.  Declarations affecting
+selected variables can be indicated by lists, where the first element is the
+name of a variable, and the rest of the list the declarations for that
+variable.  For example, (CLISP: FLOATING (X INTEGER)) specifies that in this
+function integer arithmetic be used for computations involving X, and floating
+                                      65
+arithmetic for all other computations.   The user can also make local record
+declarations by inserting a record declaration, e.g. (RECORD --),
+(ARRAYRECORD --), etc., in the local declaration list.  Local record
+declarations override global record declarations for the function in which
+they appear.  Local declarations can also be used to override the global
+setting of certain DWIM/CLISP parameters effective only for transformations
+within that function, by including in the local declaration an expression of
+the form (variable = value), e.g. (PATVARDEFAULT = QUOTE).
+
+
+
+**FOOTNOTES**
+65
+    'involving' means where the variable itself is an operand.  For example,
+    with the declaration (FLOATING (X INTEGER)) in effect, (FOO X)+(FIE X)
+    would translate to FPLUS, i.e., use floating arithmetic, even though X
+    appears somewhere inside of the operands, whereas X+(FIE X) would translate
+    to IPLUS.  If there are declarations involving both operands, e.g. X+Y,
+    with (X FLOATING) (Y INTEGER), whichever appears first in the declaration
+    list will be used.
+
+
+
+
+                                     23.30
+
+
+
+The CLISP: expression is converted to a comment of a special form recognized by
+CLISP.  Whenever a CLISP transformation that is affected by declarations is
+about to be performed in a function, this comment will be searched for a
+relevant declaration, and if one is found, the corresponding function will be
+used.  Otherwise, if none are found, the global declaration(s) currently in
+effect will be used.
+
+
+
+Local declarations are effective in the order that they are given, so that
+later declarations can be used to override earlier ones, e.g.
+(CLISP: FAST RPLACA RPLACD) specifies that FMEMB, FLAST, RPLACA, and RPLACD be
+used.  An exception to this is that declarations for specific variables take
+precedence of general, function-wide declarations, regardless of the order of
+appearance, as in (CLISP: (X INTEGER) FLOATING).
+
+
+
+ Clispify also checks the declarations in effect before selecting an infix
+operator to ensure that the corresponding CLISP construct would in fact
+translate back to this form.  For example, if a FLOATING declaration is in
+effect,  clispify will convert (FPLUS X Y) to X+Y, but leave (IPLUS X Y) as is.
+Note that if (FPLUS X Y) is CLISPIFYed while a FLOATING declaration is under
+effect, and then the declaration is changed to INTEGER, when X+Y is translated
+back to INTERLISP, it will become (IPLUS X Y).
+
+
+
+
+
+                                  66
+ 23.10  The Pattern Match Compiler
+
+
+
+CLISP contains a fairly general pattern match facility.  The purpose of
+this pattern match facility is to make more convenient the specifying of
+certain tests that would otherwise be clumsy to write (and not as
+intelligible), by allowing the user to give instead a pattern which the datum
+is supposed to match.  Essentially, the user writes "Does the (expression) X
+look like (the pattern) P?" For example, X:(& 'A -- 'B) asks whether the second
+element of X is an A, and the last element a B.  The implementation of the
+matching is performed by computing (once) the equivalent INTERLISP expression
+which will perform the indicated operation, and substituting this for the
+pattern, and not by invoking each time a general purpose capability such as
+that found in FLIP or PLANNER.  For example, the translation of X:(& 'A -- 'B)
+is: (AND  (EQ (CADR X) (QUOTE A))  (EQ (CAR (LAST X)) (QUOTE B))).  Thus the
+CLISP pattern match facility is really a Pattern Compiler, and the emphasis in
+its design and implementation has been more on the efficiency of object code
+than on generality and sophistication of its matching capabilities.  The goal
+was to provide a facility that could and would be used even where efficiency
+was paramount, e.g. in inner loops.  As a result, the CLISP pattern match
+facility does not contain (yet) some of the more esoteric features of other
+pattern match languages, such as repeated patterns, disjunctive and conjunctive
+patterns, recursion, etc.  However, the user can be confident that what
+facilities it does provide will result in INTERLISP expressions comparable to
+
+
+
+**FOOTNOTES**
+66
+    The pattern match compiler was written by L. M. Masinter.
+
+
+
+
+                                     23.31
+
+
+
+                                67
+those he would generate by hand.
+
+
+
+The syntax for pattern match expressions is form:pattern, where pattern is a
+list as described below.  As with iterative statements, the translation of
+patterns, i.e., the corresponding INTERLISP expressions, are stored in
+ clisparray, a hash array, as described on page 23.25.  The original
+expression, form:pattern, is replaced by an expression of the form
+(MATCH form WITH pattern).  CLISP also recognizes expressions input in
+this form.
+
+
+
+If  form appears more than once in the translation, and it is not either a
+variable, or an expression that is easy to (re)compute, such as (CAR Y),
+(CDDR Z), etc.,  a dummy variable will be generated and bound to the value of
+ form so that  form is not evaluated a multiple number of times.  For example,
+the translation of (FOO X):($ 'A $) is simply (MEMB (QUOTE A) (FOO X)), while
+the translation of (FOO X):('A 'B --) is:
+
+                   [PROG ($$2) (RETURN
+                         (AND (EQ (CAR (SETQ $$2 (FOO X)))
+                                  (QUOTE A))
+                              (EQ (CADR $$2) (QUOTE B].
+
+
+
+In the interests of efficiency, the pattern match compiler assumes that all
+lists end in NIL, i.e. there are no LISTP checks inserted in the translation to
+check tails.  For example, the translation of X:('A & --) is
+(AND (EQ (CAR X) (QUOTE A)) (CDR X)), which will match with (A B) as well as
+(A . B).  Similarly, the pattern match compiler does not insert LISTP
+checks on elements, e.g. X:(('A --) --) translates simply as
+                                                           68
+(EQ (CAAR X) (QUOTE A)), and X:(($1 $1 --) --) as (CDAR X).   Note that the
+user can explicitly insert LISTP checks himself by using @, as described on
+page 23.34, e.g. X:(($1 $1 --)@LISTP --) translates as (CDR (LISTP (CAR X))).
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+67
+    Wherever possible, already existing INTERLISP functions are used in the
+    translation, e.g., the translation of ($ 'A $) uses MEMB, ($ ('A $) $) uses
+    ASSOC, etc.
+
+
+68
+    The insertion of LISTP checks for elements is controlled by the variable
+     patlistpcheck. When  patlistpcheck is T, LISTP checks are inserted,
+    e.g. X:(('A --) --) translates as:
+                 (EQ (CAR (LISTP (CAR (LISTP X)))) (QUOTE A))
+     patlistpcheck is initially NIL. Its value can be changed within a
+    particular function by using a local declaration, as described on page
+    23.30.
+
+
+
+
+                                     23.32
+
+
+
+ Pattern Elements
+
+
+
+A pattern consists of a list of pattern elements.  Each pattern element is said
+to match either an element of a data structure or a segment.  (cf. the editor's
+pattern matcher, "--" matches any arbitrary segment of a list, while & or a
+subpattern match only one element of a list.) Those patterns which may match a
+segment of a list are called SEGMENT patterns; those that match a single
+element are called ELEMENT patterns.
+
+
+
+
+ Element Patterns
+
+
+
+There are several types of element patterns, best given by their syntax:
+
+
+
+ PATTERN            MEANING
+
+
+
+$1, or &           matches an arbitrary element of a list
+
+
+
+'expression        matches only an element which is equal to the given
+                                       69
+                   expression e.g., 'A,   '(A B).
+
+
+
+=form              matches only an element which is  equal to the value of
+                   form, e.g., =X, =(REVERSE Y).
+
+
+
+==form             same as =, but uses an  eq check instead of  equal.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+69
+     eq,  memb, and  assoc  are automatically used in the translation when the
+    quoted expression is atomic, otherwise  equal,  member, and  sassoc.
+
+
+
+
+                                     23.33
+
+
+
+atom               treatment depends on setting of  patvardefault.
+
+                   If  patvardefault is ' or QUOTE, same as 'atom.
+
+                   If  patvardefault is = or EQUAL, same as =atom.
+
+                   If  patvardefault is == or EQ, same as ==atom.
+
+                   If  patvardefault is _ or SETQ, same as atom_&.
+
+                                                 70
+                    patvardefault is initially =.
+
+
+
+Note: numbers and strings are always interpreted as though  patvardefault
+were =, regardless of its setting.   Eq,  memb, and  assoc are used for
+comparisons involving small integers.
+
+
+
+(pattern1 ... patternn) n >= 1   matches a list which matches the given
+                   patterns, e.g., (& &), (-- 'A).
+
+
+
+element-pattern@function-object   matches an element if the
+                   element-pattern matches it, and the function-object (name of
+                   a function or a LAMBDA expression) applied to that element
+                   returns non-NIL, e.g. &@NUMBERP matches a number,
+                   ('A --)@FOO matches a list whose first element is A, and for
+                                                             71
+                   which FOO applied to that list is non-NIL.
+
+
+
+*                  matches any arbitrary element.  If the entire match
+                   succeeds, the element which matched the * will be returned
+                   as the value of the match.
+
+
+
+Note: normally, the pattern match compiler constructs an expression whose value
+is guaranteed to be non-NIL if the match succeeds and NIL if it fails.
+However, if a * appears in the pattern, the expression generated will
+either return NIL if the match fails, or whatever matched the * even though
+that may be NIL.  For example, X:('A * --) translates as
+(AND  (EQ (CAR X) (QUOTE A))  (CADR X)).
+
+
+
+
+**FOOTNOTES**
+70
+     patvardefault can be changed within a particular function by using a local
+    declaration, as described on page 23.30.
+
+
+71
+    For 'simple' tests, the function-object is applied before a match is
+    attempted with the pattern, e.g. ((-- 'A --)@LISTP --) translates as
+    (AND  (LISTP (CAR X))  (MEMB (QUOTE A) (CAR X))), not the other way around.
+
+
+
+
+                                     23.34
+
+
+
+~element-pattern   matches an element if the element is not matched by
+                   element-pattern, e.g.  ~'A,  ~=X,  ~(-- 'A --).
+
+
+
+
+ Segment Patterns
+
+
+
+$, or --           matches any segment of a list (including one of
+                   zero length).
+
+
+
+The difference between $ and -- is in the type of search they generate.  For
+example, X:($ 'A 'B $) translates as (EQ (CADR (MEMB (QUOTE A) X)) (QUOTE B)),
+whereas X:(-- 'A 'B $) translates as: [SOME X (FUNCTION (LAMBDA ($$2 $$1)
+(AND (EQ $$2 (QUOTE A)) (EQ (CADR $$1) (QUOTE B].  Thus, a paraphrase of
+($ 'A 'B $) would be "Is the element following the first A a B?", whereas a
+paraphrase of (-- 'A 'B $) would be "Is there any A immediately followed by a
+B?" Note that the pattern employing $ will result in a more efficient search
+than that employing --.  However, ($ 'A 'B $) will not match with
+(X Y Z A M N O A B C), but (-- 'A 'B $) will.
+
+
+
+Essentially, once a pattern following a $ matches, the $ never resumes
+searching, whereas -- produces a translation that will always continue
+searching until there is no possibility of success.  However, if the pattern
+match compiler can deduce from the pattern that continuing a search after a
+particular failure cannot possibly succeed, then the translations for both --
+and $ will be the same. For example, both  X:($ 'A $3 $) and (-- 'A $3 --)
+translate as (CDDDR (MEMB (QUOTE A) X)), because if there are not three
+elements following the first A, there certainly will not be three elements
+following subsequent A's, so there is no reason to continue searching, even for
+--.  Similarly, ($ 'A $ 'B $) and (-- 'A -- 'B --) are equivalent.
+
+
+
+$2, $3, etc.       matches a segment of the given length.  Note that $1 is
+                   not a segment pattern.
+
+
+
+!element-pattern   matches any segment which the given element pattern
+                   would match as a list.  For example, if the value of FOO is
+                   (A B C) !=FOO will match the segment ... A B C ...  etc.
+                   Note that !* is permissible and means Value-of-match_$, e.g.
+                   X:($ 'A !*) translates to (CDR (MEMB (QUOTE A) X)).
+
+
+
+Note: since ! appearing in front of the last pattern specifies a match with
+some tail of the given expression, it also makes sense in this case for a ! to
+appear in front of a pattern that can only match with an atom, e.g., ($2 !'A)
+means match if  cddr of the expression is the atom A.  Similarly, X:($ ! 'A)
+translates to (EQ (CDR (LAST X)) (QUOTE A)).
+
+
+
+!atom              treatment depends on setting of  patvardefault.  If
+                    patvardefault is ' or QUOTE, same as !'atom (see above
+
+
+
+                                     23.35
+
+
+
+                   discussion).  If  patvardefault is = or EQUAL, same as
+                   !=atom.  If  patvardefault is == or EQ, same as !==atom.  If
+                    patvardefault is _ or SETQ, same as atom_$.
+
+
+
+                                                               72
+.                  The atom '.' is treated exactly like !.   In addition,
+                   if a pattern ends in an atom, the '.' is first changed to !,
+                   e.g., ($1 . A) and ($1 ! A) are equivalent, even though the
+                   atom '.' does not explicitly appear in the pattern.
+
+
+
+Segment-pattern@function-object   matches a segment if the segment-pattern
+                   matches it, and the function object applied to the
+                   corresponding segment (as a list) returns non-NIL, e.g.
+                   ($@CDDR 'D $) matches (A B C D E) but not (A B D E), since
+                   CDDR of (A B) is NIL.
+
+
+
+Note:  an @ pattern applied to a segment will require computing the
+corresponding structure (with  ldiff) each time the predicate is applied
+(except when the segment in question is a tail of the list being matched).
+
+
+
+
+ Assignments
+
+
+
+Any pattern element may be preceded by a variable and a '_', meaning if
+the match succeeds (i.e., everything matches), the variable given is to be set
+to what matches that pattern element. For example, if X = (A B C D E),
+X:($2 Y_$3) will set Y to (C D E).  Assignments are not performed until the
+entire match has succeeded.  Thus, assignments cannot be used to specify a
+                                                                      73
+search for an element found earlier in the match, e.g.  X:(Y_$1 =Y --)   will
+
+
+**FOOTNOTES**
+72
+    With one exception, namely '.' preceding an assignment does not have the
+    special interpretation that ! has preceding an assignment (see page
+    23.37).  For example, X:('A . FOO_'B) translates as:
+    (AND  (EQ (CAR X) (QUOTE A))  (EQ (CDR X) (QUOTE B))  (SETQ FOO (CDR X))),
+    but X:('A ! FOO_'B) translates as:
+                   (AND (EQ (CAR X) (QUOTE A))
+                         (NULL (CDDR X))
+                         (EQ ( CADR X) (QUOTE B))
+                         (SETQ FOO (CDR X))).
+
+
+73
+    The translation of this pattern is:
+    (COND ((AND (CDR X) (EQUAL (CADR X) Y))
+            (SETQ Y (CAR X))
+            T)).
+    The AND is because if Y is NIL, the pattern should match with (A NIL), but
+    not with just (A). The T is because (CAR X) might be NIL.
+
+
+
+
+                                     23.36
+
+
+
+                             74
+not match with (A A B C ...).   This type of match is achieved by using
+place-markers, described below.
+
+
+
+If the variable is preceded by a !, the assignment is to the tail of the
+list as of that point in the pattern, i.e. that portion of the list matched by
+the remainder of the pattern. For example, if X is (A B C D E),
+X:($ !Y_'C 'D $) sets Y to (C D E), i.e.  cddr of X.  In other words, when !
+precedes an assignment, it acts as a modifier to the _, and has no effect
+whatsoever on the pattern itself, e.g.  X:('A 'B) and X:('A !FOO_'B) match
+identically, and in the latter case, FOO will be set to CDR of X.
+
+
+
+Note: *_pattern-element and !*_pattern-element are acceptable, e.g.
+X:($ 'A *_('B --) --) translates as:
+
+              [PROG ($$2) (RETURN
+                    (AND (EQ (CAADR (SETQ $$2 (MEMB (QUOTE A) X)))
+                             (QUOTE B))
+                         (CADR $$2]
+
+
+
+
+ Place-markers
+
+
+
+Variables of the form #n,  n a number, are called place-markers, and
+are interpreted specially by the pattern match compiler.  Place-markers are
+used in a pattern to mark or refer to a particular pattern element.
+Functionally, they are used like ordinary variables, i.e. they can be assigned
+values, or used freely in forms appearing in the pattern, e.g.
+X:(#1_$1 =(ADD1 #1)) will match the list (2 3).  However, they are not really
+variables in the sense that they are not bound, nor can a function called from
+within the pattern expect to be able to obtain their values.  For convenience,
+regardless of the setting of  patvardefault, the first appearance of a
+defaulted place-marker is interpreted as though  patvardefault were _. Thus the
+above pattern could have been written as X:(#1 =(ADD1 #1)).  Subsequent
+appearances of a place-marker are interpreted as though  patvardefault were =.
+For example, X:(#1 #1 --) is equivalent to X:(#1_$1 =#1 --), and translates as
+                                      75
+(AND (CDR X) (EQUAL (CAR X) (CADR X)).
+
+
+
+ Replacements
+
+
+
+
+
+**FOOTNOTES**
+74
+     unless, of course, the value of Y was A before the match started.
+
+
+75
+    Just (EQUAL (CAR X) (CADR X)) would incorrectly match with (NIL).
+
+
+
+
+                                     23.37
+
+
+
+Any pattern element may be followed by a '_' and a form, meaning if the match
+succeeds, the part of the data that matched is to be replaced (e.g., with
+                 76
+RPLACA or RPLACD)   with the value of <form>.  For example, if
+X =(A B C D E), X:($ 'C $1_Y $1) will replace the fourth element of X with the
+value of Y.  As with assignments, replacements are not performed until after it
+is determined that the entire match will be successful.
+
+
+
+Replacements involving segments splice the corresponding structure into the
+list being matched, e.g. if X is (A B C D E F) and FOO is (1 2 3), after the
+pattern ('A $_FOO 'D $) is matched with X, X will be (A 1 2 3 D E F), and FOO
+will be  eq to CDR of  x, i.e. (1 2 3 D E F).
+
+
+
+                         *             *              *
+
+
+
+Note that ($ FOO_FIE $) is ambiguous, since it is not clear whether FOO or FIE
+is the pattern element, i.e. whether _ specifies assignment or replacement.
+For example, if  patvardefault is =, this pattern can be interpreted as
+($ FOO_=FIE $), meaning search for the value of FIE, and if found set FOO to
+it, or ($ =FOO_FIE $) meaning search for the value of FOO, and if found, store
+the value of FIE into the corresponding position.  In such cases, the user
+should disambiguate by not using the  patvardefault option, i.e. by specifying
+' or =.
+
+
+
+
+ Reconstruction
+
+
+
+ The user can specify a value for a pattern match operation other than
+what is returned by the match by writing after the pattern => followed by
+                                                         77
+another form, e.g. X:(FOO_$ 'A --) => (REVERSE FOO),   which translates
+as:
+
+                   [PROG ($$2) (RETURN
+                         (COND ((SETQ $$2 (MEMB (QUOTE A) X))
+                                 (SETQ FOO (LDIFF X $2))
+                                 (REVERSE FOO].
+
+
+
+
+**FOOTNOTES**
+76
+    The user can indicate he wants  /rplaca and  /rplacd used, or  frplaca and
+     frplacd, by means of declarations.  The initial default is for
+     rplaca and  rplacd.
+
+
+77
+    The original CLISP is replaced by an expression of the form
+    (MATCH form1 WITH pattern => form2).  CLISP also recognizes expressions
+    input in this form.
+
+
+
+
+                                     23.38
+
+
+
+Place-markers in the pattern can be referred to from within  form, e.g. the
+above could also have been written as X:(!#1 'A --)=>(REVERSE #1).  If -> is
+used in place of =>, the expression being matched is also physically
+changed to the value of  form.  For example, X:(#1 'A !#2) -> (CONS #1 #2)
+would remove the second element from X, if it were equal to A.
+
+
+
+In general, form1:pattern->form2 is translated so as to compute  form2 if the
+match is successful, and then smash its value into the first node of  form1.
+However, whenever possible, the translation does not actually require  form2 to
+be computed in its entirety, but instead the pattern match compiler uses  form2
+as an indication of what should be done to  form1. For example,
+X:(#1 'A !#2) -> (CONS #1 #2) translates as:
+
+(AND  (EQ (CADR X) (QUOTE A))  (RPLACD X (CDDR X))).
+
+
+
+
+ Examples
+
+
+
+X:(-- 'A --)            -- matches any arbitrary segment.  'A matches only an
+                        A, and the 2 nd -- again matches an arbitrary segment;
+                        thus this translates to (MEMB (QUOTE A) X).
+
+
+
+X:(-- 'A)               Again, -- matches an arbitrary segment; however, since
+                        there is no -- after the 'A, A must be the last element
+                        of X.  Thus this translates to:
+                        (EQ (CAR (LAST X)) (QUOTE A)).
+
+
+
+X:('A 'B -- 'C $3 --)   CAR of X must be A, and CADR must be B, and there must
+                        be at least three elements after the first C, so the
+                        translation is:
+
+                        (AND (EQ (CAR X) (QUOTE A))
+                             (EQ (CADR X) (QUOTE B))
+                             (CDDDR (MEMB (QUOTE C) (CDDR X))))
+
+
+
+X:(('A 'B) 'C Y_$1 $)   Since ('A 'B) does not end in $ or --, (CDDAR X) must
+                        be NIL.
+
+                        (COND
+                          ((AND (EQ (CAAR X) (QUOTE A))
+                                (EQ (CADAR X) (QUOTE B))
+                                (NULL (CDDAR X))
+                                (EQ (CADR X) (QUOTE C))
+                                (CDDR X))
+                            (SETQ Y (CADDR X))
+                            T))
+
+
+X:(#1 'A $ 'B 'C #1 $)  #1 is implicitly assigned to the first element in the
+                        list. The $ searches for the first B following A. This
+                        B must be followed by a C, and the C by an expression
+                        equal to the first element.
+
+
+                                     23.39
+
+
+
+                        [PROG ($$2) (RETURN
+                              (AND (EQ (CADR X) (QUOTE A))
+                                   (EQ [CADR (SETQ $$2 (MEMB (QUOTE B) (CDDR X]
+                                       (QUOTE C))
+                                   (CDDR $$2)
+                                   (EQUAL (CADDR $$2) (CAR X]
+
+
+
+X:(#1 'A -- 'B 'C #1 $) Similar to the pattern above, except that -- specifies
+                        a search for any B followed by a C followed by the
+                        first element, so the translation is:
+
+                        [AND (EQ (CADR X) (QUOTE A))
+                             (SOME (CDDR X) (FUNCTION (LAMBDA ($$2 $$1)
+                                       (AND (EQ $$2 (QUOTE B))
+                                            (EQ (CADR $$1) (QUOTE C))
+                                            (CDDR $$1)
+                                            (EQUAL (CADDR $$1) (CAR X]
+
+
+
+This concludes the description of the pattern match compiler.
+
+
+
+
+
+                               78
+ 23.11  The Record Package
+
+
+
+The advantages of "data-less" or data-structure-independent programming have
+long been known: more readable code, fewer bugs, the ability to change the data
+structure without having to make major modifications to the program, etc. The
+record package in CLISP both encourages and facilitates this good programming
+practice by providing a uniform syntax for accessing and storing data into many
+different types of data structures, e.g. those employing arrays, list
+structures, atom property lists, hash links, etc., or any combination thereof,
+as well as removing from the user the task of writing the various access and
+storage routines themselves. The user declares (once) the data structure(s)
+used by his programs, and thereafter indicates the manipulations of the data in
+a data-structure-independent manner.  The record package automatically computes
+from the declaration(s) the corresponding INTERLISP expressions necessary to
+accomplish the indicated access/storage operations.  The user can change his
+data structure simply by changing the corresponding declaration(s), and his
+program automatically (re)adjusts itself to the new conventions.
+
+
+
+The user informs the record package about the format of his data structure by
+making a record declaration.  A record declaration defines a  record, i.e. a
+data structure.  (Note that the record itself is an abstraction that exists
+only in the user's head.) The record declaration is essentially a template
+which describes the record, associating names with its various parts or fields.
+
+
+
+**FOOTNOTES**
+78
+    The record package was written by L. M. Masinter.
+
+
+
+
+                                     23.40
+
+
+
+For example, the record declaration (RECORD MSG (ID (FROM TO) . TEXT))
+describes a data structure called MSG, which contains four fields: ID, FROM,
+TO, and TEXT.  The user can then reference these fields by name, either to
+retrieve their contents, or to store new data into them, by using the :
+operator followed by the field name.  For example, for the above record
+declaration, X:FROM would be equivalent (and translate) to (CAADR X), and
+                               79
+Y:TO_Z to (RPLACA (CDADR Y) Z).   The fields of a record can be further broken
+down into subfields by additional declarations within the record, e.g.
+
+
+         (RECORD MSG (ID (FROM TO) . TEXT) (RECORD TEXT (HEADER TXT)))
+would permit the user to refer to TEXT, or to its subfields HEADER and TXT.
+
+
+
+Note that what the record declaration is really doing is specifying the
+data-paths of the structure, and thereby specifying how the corresponding
+access/storage operations are to be carried out.  For example,
+(RECORD MSG (ID (FROM TO) . TEXT) (RECORD TEXT (HEADER TXT))) says the HEADER
+of a MSG is to be found as the first element of its TEXT, which is the second
+tail of the MSG itself.  Hence, X:HEADER_string is achieved by performing
+(RPLACA (CDDR X) string).
+
+
+
+Note also that when the user writes X:HEADER, he is implicitly saying the X is
+an instance of the record MSG, or at least is to be treated as such for this
+particular operation. In other words, the interpretation of X:FORM  never
+depends on the value of X.  The record package (currently) does not provide any
+facility which uses run-time checks to determine data paths, nor is there any
+error checking other than that provided by INTERLISP itself.  For example, if X
+                                                                80
+happened to be an array, X:HEADER would still compute (CADDR X).
+
+
+
+The user may also elaborate a field by declaring that field name in a separate
+record declaration (as opposed to an embedded declaration). For example, the
+two declarations
+
+      (RECORD MSG (ID (FROM TO) . TEXT)) and (RECORD TEXT (HEADER . TXT))
+subdivide TEXT into two subfields.  The user may then specify X:MSG.HEADER to
+
+
+
+
+
+
+**FOOTNOTES**
+79
+    or /RPLACA or FRPLACA, depending on the CLISP declaration in effect.  Note
+    that the value of X:TO_Z is neither X, X:TO,  nor Z. In general, the user
+    should not depend on the value of a replacement record operation as it may
+    differ from one record type to the next.
+
+
+80
+    However, it is possible to make the interpretation of X:HEADER differ from
+    that of Y:HEADER (regardless of the values of X and Y), by using local
+    record declarations, as described on page 23.30.  Note that this
+    distinction depends on a translation-time check, not run-time.
+
+
+
+
+                                     23.41
+
+
+
+                                                             81
+achieve the interpretation "X is a MSG, retrieve its HEADER".   The central
+point of separate declarations is that the record is not tied to another record
+(as with embedded declarations), and therefore can be used in many different
+contexts.  For example, one might additionally have a declaration
+(RECORD REPLY (TEXT TO . RESPONSE)).  In this case, one could specify
+X:REPLY.HEADER to mean that X is a REPLY, and to retrieve (CAAR X).  In
+general, the user may specify as a data path a chain of record/field names,
+e.g. X:MSG.TEXT.HEADER.SUBHEAD... etc., where there is some path from each
+record to the next in the chain.  Only as much of the path as is necessary to
+disambiguate it needs to be specified. For example, with the above declarations
+of MSG, TEXT, and REPLY, the path X:MSG.HEADER is unambiguous (it must go thru
+TEXT); however, X:TEXT is not, as this could mean that X is either a MSG or a
+         82
+RESPONSE.
+
+
+
+RECORD (used to specify elements and tails of a list structure) is just one of
+several record-types currently implemented.  For example, the user can specify
+'optional' fields, i.e. property list format, by using the record type
+PROPRECORD; or fields to be associated with parts of the data structure via
+hash links, by using the record-type HASHRECORD; or that an entirely new
+data-type be allocated with both pointer and unboxed number fields by using the
+record type DATATYPE; or even specify the access definitions in the record
+declaration himself, by using the record-type ACCESSFN.  These are described in
+detail below.
+
+
+
+
+The record package also provides a facility for creating new data
+structures using a record declaration as a guide or template.  Initial values
+for the various fields can be specified in the CREATE expression, or
+defaulted to values specified in the record declaration itself.  Alternatively,
+CREATE can be instructed to use an existing datum as a model, i.e. to obtain
+the field values for the new datum from the corresponding fields of the
+existing datum, or even to actually re-use the structure of the existing datum
+itself.
+
+
+
+Additionally, the record package provides the facility for testing a data
+structure to determine if it is an instance of a given record, via a TYPE?
+expression.
+
+
+
+
+
+**FOOTNOTES**
+81
+    X:HEADER by itself is interpreted to mean that X is an instance of TEXT,
+    and translates as (CAR X).
+
+
+82
+    In this case, the message AMBIGUOUS RECORD FIELD is printed and an
+    error is generated. If a data-path rather than a single field is ambiguous,
+    (e.g. if there were yet another declaration (RECORD TO (NAME . HEADER)) and
+    the user specified X:MSG.HEADER), the error AMBIGUOUS DATA PATH is
+    generated.
+
+
+
+
+                                     23.42
+
+
+
+As with all DWIM/CLISP facilities, the record package contains many
+do-what-I-mean features, spelling correction on field names, record types, etc.
+In addition, the record package includes a RECORDS  prettydef macro for
+dumping record declarations, as well as the appropriate modifications to the
+file package (Section 14), so that  files? and  cleanup will inform the user
+about records that need to be dumped.
+
+
+
+
+ Record Declarations
+
+
+
+A record declaration is an expression of the form
+
+        (record-type record-name fields . {defaults and/or subfields})
+
+                                                                     83
+This expression is evaluated to effect the corresponding declaration.
+
+
+
+1.  record-type specifies the "type" of data being described by the record
+   declaration, and thereby implicitly specifies the data paths, i.e. how the
+   corresponding access/storage operations are performed.   record-type
+   currently is either RECORD, TYPERECORD, ARRAYRECORD, ATOMRECORD, PROPRECORD,
+   HASHRECORD, DATATYPE, or ACCESSFN.  RECORD and TYPERECORD are used to
+   describe list structures, DATATYPE to describe user data-types, ARRAYRECORD
+   to describe arrays, ATOMRECORD to describe (the property list of) atoms, and
+   PROPRECORD to describe lists that use property list format. HASHRECORD can
+   be used with any type of data: since it simply specifies the data path to be
+   a hash-link.  ACCESSFN is also type-less; the user specifies the
+   data-path(s) in the record declaration itself, as described below.
+
+
+
+2.  record-name is a literal atom used to identify the record declaration for
+   dumping to files via the RECORDS  prettydef macro, and for creating
+   instances of the record via CREATE. For most top-level declarations,
+    record-name is optional, e.g. (RECORD (ID (FROM TO) . TEXT)) is perfectly
+              84
+   acceptable.
+
+
+
+   For TYPERECORD,  record-name is obligatory and is used as an indicator
+   in CAR of the datum to signify what "type" of record it is.  CREATE will
+
+
+
+**FOOTNOTES**
+83
+    Local record declarations are performed by including an expression of this
+    form in the CLISP declaration for that function (page 23.30), rather than
+    evaluating the expression itself.
+
+
+84
+    If  record-name is omitted, it simply means that the user cannot specify
+    the record by name, e.g.  in CREATE expressions, or when using the RECORDS
+     prettydef command.
+
+
+
+
+                                     23.43
+
+
+
+   insert an extra field containing  record-name at the beginning of the
+   structure, and the translation of the access and storage functions will take
+                                 85
+   this extra field into account.
+
+
+
+   For subfield declarations,  record-name is also obligatory, and specifies
+   the parent field that is being elaborated, as described below.
+
+
+
+3.  fields describes the structure of the record. Its exact interpretation
+   varies with the  record-type:
+
+
+
+
+          For RECORD,  fields is a list whose non-NIL literal atoms are taken
+          as field-names to be associated with the corresponding elements and
+          tails of a list structure.  NIL can be used as a place marker to fill
+          an unnamed field, e.g. (A NIL B) describes a three element list, with
+          B corresponding to the third element.
+
+
+
+          
+          For TYPERECORD,  fields has the same meaning as for RECORD. However,
+          since CAR of the datum contains an indicator signifying its "type,"
+          the translation of the access/storage functions differ from those of
+          RECORD.  For example, for (TYPERECORD MSG (ID (FROM TO) . TEXT)),
+          X:FROM translates as (CAADDR X), not (CAADR X).
+
+
+
+
+          For ATOMRECORD declarations,  fields is a list of property
+          names, e.g.  (ATOMRECORD (EXPR CODE MACRO BLKLIBRARYDEF)).  Accessing
+          will be performed with  getp, storing with  put.
+
+
+
+          For PROPRECORD,  fields is also a list of property names.
+                                                               86
+          Accessing is performed with  get, storing with  putl.   For example,
+
+          (RECORD ENTRY (INPUT VALUE ID . PROPS) (PROPRECORD PROPS (*HISTORY*
+
+
+
+**FOOTNOTES**
+85
+    This type-field is used by the record package in the translation of
+    TYPE? expressions.
+
+
+86
+    A new function (part of the record package), similar to  put, which
+    takes a list as its first argument, searches the list looking for an
+    occurrence of the given property name (its second argument). If found, it
+    replaces the next element with the new property value (its third argument),
+    otherwise adds the property name and property value to the list.
+
+
+
+
+                                     23.44
+
+
+
+          *LISPXPRINT* SIDE *GROUP* *ERROR*))) could be used to describe an
+                                                     87
+          entry on the history list (see Section 22).
+
+
+
+          For HASHRECORD (or HASHLINK),  fields is usually just
+           field-name, i.e. an atom, and is the name by which the corresponding
+          hash-value is referred to.  For example, for
+          (RECORD (A B . C) (HASHRECORD B FOO)), X:FOO translates as
+          (GETHASH (CADR X)).  If  field-name is a list, it is interpreted as
+          (field-name arrayname arraysize).  In this case,  arrayname indicates
+          the hash-array to be used.  For example,
+          (HASHRECORD (CLISP CLISPARRAY)) would permit the user to obtain the
+          CLISP translation of X by simply writing X:CLISP.   arraysize is used
+          for initializing the hash array: if  arrayname has not been
+          initialized at the time of the declaration, it will be set to
+          (HARRAY (OR arraysize 100)).
+
+
+
+          For ARRAYRECORD,  fields is a list of field-names that are
+          associated with the corresponding elements of the array.  NIL can be
+          used as a place marker for an unnamed field (element). Positive
+          integers can be used as abbreviation for the corresponding number of
+          NILs. For example, (ARRAYRECORD (ORG DEST NIL ID 3 TEXT)) describes
+          an eight element array, with ORG corresponding to the first element,
+          ID to the fourth, and TEXT to the eighth.
+
+
+
+          For DATATYPE, the user may specify data structures which
+          are more compact and which can be accessed faster than if list
+          structures were used. When the user declares a DATATYPE for the first
+          time, the record package informs the garbage collector of the
+          structure; the system then allocates storage space and a type number
+                             88
+          for that data type.   For DATATYPE record declarations,  fields is a
+          list of field specifications, where each specification is either
+           fieldname or ( fieldname fieldtype). If fieldtype is omitted (or
+           fieldtype=POINTER) then the field can contain a pointer to any
+          arbitrary INTERLISP  datum. Other options for  fieldtype are:
+
+
+          BITS  n            field contains an  n-bit unsigned integer.
+
+          INTEGER or INT     field contains a full word signed intege
+
+
+
+**FOOTNOTES**
+87
+    Note that (ATOMRECORD (FOO FIE))) is equivalent to (RECORD (VALUE . PROPS)
+    (PROPRECORD PROPS (FOO FIE))), the difference being in the translations.
+    In the first case, X:FIE translates as (GETP X (QUOTE FIE)),, in the second
+    case, as (GET (CDR X) (QUOTE FIE)).  Note also that in the first case, if X
+    is not a literal atom, INTERLISP (i.e.  getp) will generate an error.
+
+
+88
+    The necessary support, at the system level, for user data types was written
+    by D.C. Lewis.
+
+
+
+
+                                     23.45
+
+
+
+          FLOATING or REAL   field contains a full word floating poin
+
+          HALFWORD or HALF   field contains a half word  signed integ
+
+
+
+          For example, the declaration
+
+              (DATATYPE MESSAGE ((FLG BITS 12) TEXT (CNT BITS 4)
+                       (DATE HALF) (PRIO REAL) HEADER))
+          would define a data type MESSAGE which occupies in INTERLISP-10
+          three words of storage with two pointer fields, with 2 bits left
+               89
+          over.
+
+
+
+          For ACCESSFN (or ACCESSFNS),  fields is a list of the form
+          (field-name accessdefinition setdefinition), or a list of elements of
+          this form.  accessdefinition is a function of one argument, the
+          datum, and will be used for accessing.  setdefinition is a function
+          of two arguments, the datum and the new value,  and is used for
+                  90
+          storing.   For example, (HASHRECORD FOO) and
+          (ACCESSFN (FOO GETHASH PUTHASH)) are equivalent: in both cases, X:FOO
+          translates as (GETHASH FOO).  Similarly, (ACCESSFN (DEF GETD PUTD))
+                                                                       91
+          would permit defining functions by writing fn:DEF_definition.
+
+
+
+4. {defaults and/or subfields} is optional. It may contain expressions of the
+   form:
+
+
+
+          (1) field-name _ form - specifies the default value for  field-name.
+          Used by CREATE.
+
+
+
+**FOOTNOTES**
+89
+    Fields are allocated in such a way as to optimize the storage used, and not
+    necessarily in the order specified.  Thus in this example the first word
+    would contain TEXT and HEADER (pointers are put together); the second PRIO;
+    and the third, DATE in the left half and FLG and CNT in the right.
+
+    Note that to store this information in a conventional RECORD list
+    structure, e.g.  (RECORD MESSAGE (FLG TEXT CNT DATE PRIO . HEADER)), would
+    take 5 words of list space and three number boxes (for FLG, DATE, and
+    PRIO).
+
+
+90
+    Currently, an error is generated if CREATE is called with a record
+    declaration containing an ACCESSFNS record-type.
+
+
+91
+    [ACCESSFN (DEF GETD (LAMBDA (FN DEF) (DEFINE (LIST (LIST FN DEF] would be
+    preferable to using  putd.
+
+
+
+
+                                     23.46
+
+
+
+          (2) DEFAULT _ form - specifies default value for every field not
+          given a specific default via (1).
+
+
+
+          (3) a subfield declaration - i.e. a record declaration of any of the
+          above types.  For subfield declarations,  record-name is obligatory.
+          Instead of identifying the declaration as with the case of top level
+          declarations,  record-name identifies the parent field or record that
+          is being described by the subfield declaration. It must be either the
+          record-name of the immediately superior declaration, or one of its
+          field-names (or else an error is generated).
+
+
+
+          Subfields can be nested to an arbitrary depth.
+
+
+
+          Note that in some cases, it makes sense for a given field to have
+          more than one subfield declaration. For example, in
+          (RECORD (A . B) (PROPRECORD B (FOO FIE FUM)) (HASHRECORD B C)), B is
+          elaborated by both a PROPRECORD and HASHRECORD.  Similarly,
+          (RECORD (A B) (RECORD A (C D)) (RECORD A (FOO FIE))) is also
+          acceptable, and essentially "overlays" (FOO FIE) and (C D), i.e.
+          X:FOO and X:C would be equivalent.  In such cases, the first subfield
+          declaration is the one used by CREATE, e.g.
+
+          (RECORD X (A B)   (RECORD A (C D))  (RECORD A (FOO FIE FUM)) ) will
+          cause (CREATE X) to construct ((NIL NIL) NIL), not
+          ((NIL NIL NIL) NIL), as would be the case if the subfield declaration
+          (RECORD A (C D)) were removed.  
+
+
+
+
+ CREATE
+
+
+
+Record operations can be applied to arbitrary structures, i.e. structures
+created directly by user programs can be manipulated in a data-independent
+manner using record declarations.  However, to be completely data-independent,
+new data should be created using the same declarations that define its data
+paths. This can be done by means of an expression of the form
+                                     92
+(CREATE record-name . {assignments}).   {assignments} is optional and may
+contain expressions of the following form:
+
+
+
+
+
+
+
+**FOOTNOTES**
+92
+    CREATE is not defined as a function. Instead, DWIM calls the appropriate
+    function in the record package giving it the entire CREATE expression as an
+    argument.  The translation of the CREATE expression, i.e. the INTERLISP
+    form which is evaluated to construct the datum, is then stored elsewhere,
+    as with iterative statements and pattern matches.
+
+
+
+
+                                     23.47
+
+
+
+                                                                          93
+     (1) field-name _ form        specifies initial value for  field-name.
+
+
+
+     (2) USING form          specifies that for all fields not given a
+                                  value by (1), the value of the corresponding
+                                  field in  form is to be used.
+
+
+
+     (3) COPYING form        like USING except the corresponding values
+                                  are copied ( copy).
+
+
+
+     (4) REUSING form        like USING, except that wherever possible,
+                                  the corresponding structure in  form is used
+                                  (similar to operation of  subpair and
+                                   sublis).
+
+
+
+For example, following (RECORD FOO (A B C)),
+
+(CREATE FOO A_T USING X) translates as (LIST T (CADR X) (CADDR X)),
+
+(CREATE FOO A_T COPYING X)) as (LIST T (COPY (CADR X)) (COPY (CADDR X))), and
+
+(CREATE FOO A_T REUSING X) as (CONS T (CDR X)).
+
+
+
+A CREATE expression translates into an appropriate INTERLISP form using  cons,
+ list,  put,  putl,  puthash,  seta, etc., that creates the new datum with the
+various fields initialized to the appropriate values.  If values are neither
+explicitly specified, nor implicitly specified via USING or COPYING, the
+
+
+
+
+**FOOTNOTES**
+93
+    The record package goes to great pain to insure that the order of
+    evaluation in the translation is the same as that given in the original
+    create expression.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                     23.48
+
+
+
+                                                       94               95 96
+DEFAULT value in the  declaration is used, if any,   otherwise NIL.   
+
+
+
+
+
+ Implementation
+
+
+Record operations are implemented by replacing expressions of the form X:FOO by
+                                                                       97
+ (FETCH FOO OF X), and X:FOO_Y by  (REPLACE FOO OF X WITH Y),   and
+then storing the translation elsewhere, usually in a hash array, as described
+on page 23.25.  Expressions involving data-paths, e.g. X:FOO.FIE.A and
+X:FOO.A_19, are replaced by (FETCH (FOO FIE A) OF X) and
+(REPLACE (FOO A) OF X WITH 19) respectively.  Translations of CREATE and TYPE?
+expressions are also stored elsewhere.
+
+
+
+The list of global record declarations currently in effect is stored as the
+value of the variable userreclst.  Particular declarations may be edited
+by calling the function  editrec, giving the record name (or the name of
+one of the fields). editrec calls the editor on a copy of all relevant
+declarations, and on exit redeclares those that have changed.  Calling
+(EDITREC) allows the user to edit all declarations.
+
+
+
+Records can also be declared local to a particular function by using a CLISP
+declaration, as described on page 23.30; all local record declarations override
+global ones.
+
+
+
+
+**FOOTNOTES**
+94
+    For RECORD and TYPERECORD declarations with non-NIL defaults, all elements
+    and named tails will be initialized; unnamed tails will not be initialized.
+    For example, (RECORD FOO (A NIL B) DEFAULT_T) will cause (CREATE FOO) to
+    construct (T T T) not (T T T . T). Of course,
+    (RECORD FOO (A B . C) DEFAULT_T) will cause (CREATE FOO) to construct
+    (T T . T) as expected.
+
+
+95
+    For PROPRECORD, initialization is only performed where necessary. For
+    example, (RECORD FOO (A B) (PROPRECORD B (C D E))) would cause
+    (CREATE FOO D_T) to construct (NIL (D T)), not (NIL (C NIL D T E NIL)).
+    However, with the declaration (PROPRECORD FIE (H I J)) the expression
+    (CREATE FIE) would still construct (H NIL), since a later operation of
+    X:J_T could not possibly change the instance of the record if it were NIL.
+
+
+96
+    For non-pointer fields in DATATYPE records, zero is used.
+
+
+97
+    CLISP also recognizes expressions input in this form.
+
+
+
+
+                                     23.49
+
+
+
+For both global and local records, the translation is computed using all CLISP
+declarations in effect as described on page 23.29, e.g. if the declaration
+                                                                     98
+UNDOABLE is in effect, /RPLACA, /RPLACD, /PUTHASH, etc. will be used.
+
+
+When the user redeclares a global record, the translations of all expressions
+                                                99
+involving that record are automatically deleted,   and thus will be recomputed
+using the new information.  If the user changes a local record declaration, or
+changes some other CLISP declaration, e.g. STANDARD to FAST, and wishes the new
+information to affect record expressions already translated, he must make sure
+the corresponding translations are removed, usually either by CLISPIFYING or
+applying the !DW edit macro.  
+
+
+
+
+
+ 23.12  CLISPIFY
+
+
+
+ Clispify converts INTERLISP expressions to CLISP.  Note that the
+expression given to  clispify need not have originally been input as CLISP,
+i.e.,  clispify can be used on functions that were written before CLISP was
+even implemented.   Clispify is cognizant of declaration rules as well as all
+                        100
+of the precedence rules.    For example,  clispify will convert
+                                                                           101
+(IPLUS A (ITIMES B C)) into A+B*C, but (ITIMES A (IPLUS B C)) into A*(B+C).
+ Clispify converts calls to the six basic mapping functions, MAP, MAPC, MAPCAR,
+MAPLIST, MAPCONC, and MAPCON, into equivalent iterative statements.  It also
+converts certain easily recognizable internal PROG loops to the corresponding
+i.s.  For example,
+
+
+
+**FOOTNOTES**
+98
+    Currently, there are no UNDOABLE versions of the replace functions for
+    DATATYPEs.
+
+
+99
+    from  clisparray.  If the user is not using this method for storing
+    translations, i.e. is instead using the CLISP%  method (page 23.27), those
+    expressions already translated will remain as they are. (There is no
+    practical way to locate them.)
+
+
+100
+     clispify is table driven exactly the same as CLISP, so that if the user
+    changes any precedence, or defines new operators,  clispify "automatically"
+    knows about it.
+
+
+101
+     clispify also knows how to handle expressions consisting of a mixture of
+    INTERLISP and CLISP, e.g. (IPLUS A B*C) is converted to A+B*C, but
+    (ITIMES A B+C) to (A*(B+C)).   clispify handles such cases by first
+     dwimifying the expression.
+
+
+
+
+                                     23.50
+
+
+
+         ... label (COND (pred ... forms ... (GO label))) ...
+
+becomes
+
+                                                                102
+         ... label (WHILE pred DO ... forms ...) ...
+
+
+
+ Clispify is not destructive to the original INTERLISP expression, i.e.
+                                                                  103
+ clispify produces a new expression without changing the original.     Clispify
+                                                                         104
+will not convert expressions appearing as arguments to NLAMBDA functions.
+
+
+
+The value of various global parameters affect the operation of  clispify:
+
+
+
+ cl:flg
+
+The user can disable the : transformation by setting the variable  cl:flg
+to NIL.  This will prevent  clispify from constructing any expression employing
+a : infix operator, e.g.  (CADR X) will not be transformed to X:2.  When
+ cl:flg is T,  clispify will convert to : notation only when the argument is
+atomic or a simple list (a function name and one atomic argument).  If  cl:flg
+is ALL,  clispify will convert to : expressions whenever possible.  The initial
+value of  cl:flg is T.
+
+
+
+ clremparsflg
+
+ Clispify will remove parentheses in certain cases from simple forms, where
+'simple' means a function name and one or two atomic arguments.  For example,
+(COND ((ATOM X) --)) will CLISPIFY to (IF ATOM X THEN --).  However, if
+ clremparsflg is set to NIL,  clispify will produce (IF (ATOM X) THEN --).
+Note that regardless of the setting of this flag, the expression can be input
+in either form.  The initial value of  clremparsflg is T.
+
+
+
+
+**FOOTNOTES**
+102
+     clispify can convert all iterative statements input in CLISP back to
+    CLISP, regardless of how complicated the translation was, because the
+    original CLISP is saved.
+
+
+103
+    The new expression may however contain some 'pieces' of the original, since
+     clispify attempts to minimize the number of CONSes by not copying
+    structure whenever possible.
+
+
+104
+    Except for those functions with property INFO, value EVAL such as
+    nlsetq, resetlst, etc.    clispify also contains built in information
+    enabling it to process special forms such as  prog,  selectq, etc.
+
+
+
+
+                                     23.51
+
+
+
+ clispifypackflg
+
+ clispifypackflg affects the treatment of infix operators with atomic operands.
+If  clispifypackflg is T,  clispify will pack these into single atoms,
+e.g., (IPLUS A (ITIMES B C)) becomes A+B*C.  If  clispifypackflg is NIL, no
+packing is done, e.g., the above becomes A + B * C.  The initial value of
+ clispifypackflg is T.
+
+
+
+ funnyatomlst
+
+Suppose the user has variables named A, B, and A*B.  If  clispify were to
+convert (ITIMES A B) to A*B, A*B would not translate back correctly to
+(ITIMES A B), since it would be the name of a variable, and therefore would not
+cause an error.  The user can prevent this from happening by adding A*B to the
+list  funnyatomlst.  Then, (ITIMES A B) would  clispify to A * B.
+
+
+
+Note that A*B's appearance on  funnyatomlst would not enable DWIM/CLISP to
+decode A*B+C as (IPLUS A*B C);  funnyatomlst is used only by  clispify.  Thus,
+if an identifier contains a CLISP character, it should always be separated
+(with spaces) from other operators.  For example, if X* is a variable, the user
+should write (SETQ X* form) in CLISP as X* _form, not X*_form.  However, in
+general, it is best to  avoid use of identifiers containing CLISP character
+operators as much as possible.
+
+
+
+ clispifyprettyflg
+
+If T, causes  prettyprint to  clispify all expressions before printing them
+(but not to redefine any functions).   clispifyprettyflg is temporarily reset
+to T, using  resetvar, when  makefile is called with the option CLISPIFY,
+or when the file in question has property FILETYPE with value CLISP on its
+property list.   clispifyprettyflg is initially NIL.
+
+
+
+                         *             *              *
+
+
+
+In addition to the above controls, disabling a CLISP operator (see
+ cldisable, page 23.63) will also disable the corresponding CLISPIFY
+transformation.  Thus, if _ is "turned off", A_B will not transform to
+(SETQ A B), nor vice versa.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                     23.52
+
+
+
+ 23.13  Dwimify
+
+
+
+ Dwimify is effectively a preprocessor for CLISP.   Dwimify operates by
+scanning an expression as though it were being interpreted, and for each form
+                                                       105
+that would generate an error, calling DWIM to 'fix' it.    Thus the user will
+see the same messages, and be asked for approval in the same situations, as he
+would if the expression were actually run.  If DWIM is unable to make a
+correction, no message is printed, the form is left as it was, and the analysis
+proceeds.
+
+
+
+ Dwimify knows exactly how the interpreter works.  It knows the syntax of
+ progs,  selectqs,  lambda expressions,  setqs, et al.  It knows that the
+                                        106
+argument of  nlambdas are not evaluated.    It also knows how variables are
+bound.  In the course of its analysis of a particular expression,  dwimify
+builds a list of the bound variables from the LAMBDA expressions and PROGs that
+it encounters.  It uses this list for spelling corrections.   Dwimify also
+knows not to try to 'correct' variables that are on this list since they would
+be bound if the expression were actually being run.  However, note that
+ dwimify cannot, a priori, know about variables that are used freely but would
+be bound in a higher function if the expression were evaluated in its normal
+context.  Therefore,  dwimify will try to 'correct' these variables.
+Similarly,  dwimify will attempt to correct forms for which  car is undefined,
+even when the form is not in error from the user's standpoint, but the
+corresponding function has simply not yet been defined.
+
+
+
+In most cases, an attempt to transform a form that is already as the user
+intended will have no effect (because there will be nothing to which that form
+could reasonably be transformed).  However, in order to avoid needless calls to
+DWIM or to avoid possible confusion, the user can inform  dwimify not to
+attempt corrections or transformations on certain functions or variables  by
+adding them to the list  nofixfnslst or  nofixvarslst
+
+
+
+
+
+**FOOTNOTES**
+105
+    Thus  dwimify performs all DWIM transformations, not just CLISP
+    transformations, i.e., it does spelling correction, fixes 8-9 errors,
+    handles F/L, etc.
+
+
+106
+    The user can inform  dwimify that an NLAMBDA function does evaluate its
+    arguments (presumably by direct calls to  eval), by including on its
+    property list the property INFO with value EVAL.
+
+
+
+
+
+
+
+
+
+
+
+                                     23.53
+
+
+
+             107 108
+respectively.    
+
+
+
+ Dwimify and  dwimifyfns (used to  dwimify several functions) maintain two
+internal lists of those functions and variables for which corrections were
+unsuccessfully attempted.  These lists are initialized to  nofixfnslst and
+ nofixvarslst.  Once an attempt is made to fix a particular function or
+variable, and the attempt fails, the function or variable is added to the
+corresponding list, so that on subsequent occurrences (within this call to
+ dwimify or  dwimifyfns), no attempt at correction is made.  For example, if
+FOO calls FIE several times, and FIE is undefined at the time FOO is dwimified,
+ dwimify will not bother with FIE after the first occurrence.  In other words,
+once  dwimify "notices" a function or variable, it no longer attempts to
+           109
+correct it.    Moreover, once  dwimify "notices" such functions or variables,
+it subsequently treats them the same as though they were actually defined or
+set.
+
+
+
+Note that these internal lists are local to each call to  dwimify and
+ dwimifyfns, so that if a function containing FOOO, a misspelled call to FOO,
+is  dwimified before FOO is defined or mentioned, if the function is dwimified
+again after FOO has been defined, the correction will be made.
+
+
+
+Note that the user can undo selected transformations performed by  dwimify, as
+described in section 22.
+
+
+
+
+
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+107
+    Note that the user could achieve the same effect by simply setting the
+    corresponding variables, and giving the functions dummy definitions.
+
+
+108
+     Dwimify will never attempt corrections on global variables, i.e.
+    variables that are a member of the list globalvars, or have the
+    property GLOBALVAR with value T, on their property list.  Similarly,
+    variables declared to be LOCALFREEVARS or SPECVARS in block declarations
+    are automatically added to  nofixvarslst at compile time, so that they will
+    not be 'corrected.'
+
+
+109
+     Dwimify and  dwimifyfns also "notice" free variables that are set in the
+    expression being processed.
+
+
+
+
+                                     23.54
+
+
+
+ Compiling CLISP
+
+
+
+Since the compiler does not know about CLISP, in order to compile
+functions containing CLISP constructs, the definitions must first be
+ dwimified.  The user can automate this process in several ways:
+
+
+
+1)  If the variable  dwimifycompflg is T, the compiler will always
+ dwimify expressions before compiling them.   dwimifycompflg is initially NIL.
+
+
+
+2)  If a file has the property FILETYPE with value CLISP on its property
+list,  tcompl,  bcompl,  recompile, and  brecompile will operate as though
+ dwimifycompflg is T and  dwimify all expressions before compiling.
+
+
+
+3)  If the function definition has a CLISP declaration (see page 23.29),
+including a null  declaration, i.e., just (CLISP:), the definition will be
+automatically dwimified before compiling.
+
+
+
+Note:  tcompl,  bcompl,  recompile, and  brecompile all scan the entire file
+before doing any compiling, and take note of the names of all functions that
+are defined in the file as well as the names of all variables that are set by
+adding them to  nofixfnslst and  nofixvarslst, respectively.  Thus,
+if a function is not currently defined, but is defined in the file being
+compiled, when  dwimify is called before compiling, it will not attempt to
+correct the function when it appears as  car of a form.
+
+
+
+Note:   compileuserfn (Section 18) is defined to call  dwimify on
+iterative statements, as well as IF-THEN statements.  Thus, if the only CLISP
+constructs in a function appear inside of iterative statements or IF
+statements, the function does not have to be dwimified before compiling.
+
+
+
+
+
+ 23.14  Operation
+
+
+
+CLISP is a part of the basic INTERLISP system.  Without any special
+preparations, the user can include CLISP constructs in programs, or type them
+in directly for evaluation (in  eval or  apply format), and when the "error"
+                                                  110
+occurrs, and DWIM is called, it will destructively    transform the CLISP to
+the equivalent INTERLISP expression and evaluate the INTERLISP expression.
+
+
+
+**FOOTNOTES**
+110
+    CLISP transformations, like all DWIM corrections, are undoable.
+
+
+
+
+                                     23.55
+
+
+
+                                                          111
+User approval is not requested, and no message is printed.
+
+
+
+However, if a CLISP construct contains an error, an appropriate diagnostic is
+generated, and the form is left unchanged.  For example, if the user writes
+(LIST X+Y*), the error diagnostic MISSING OPERAND AT X+Y* IN (LIST X+Y*)
+would be generated.  Similarly, if the user writes (LAST+EL X), CLISP knows
+that ((IPLUS LAST EL) X) is not a valid INTERLISP expression, so the error
+diagnostic MISSING OPERATOR IN (LAST+EL X) is generated.  (For example,
+the user might have meant to say (LAST+EL*X).) Note that if LAST+EL were the
+name of a defined function, CLISP would never see this form.
+
+
+
+Since the bad CLISP transformation might not be CLISP at all, for example, it
+might be a misspelling of a user function or variable, DWIM holds all CLISP
+error messages until after trying other corrections.  If one of these succeeds,
+the CLISP message is discarded.  Otherwise, if all fail, the message is printed
+                        112
+(but no change is made).    For example, suppose the user types (R/PLACA X Y).
+CLISP generates a diagnostic, since ((IQUOTIENT R PLACA) X Y) is obviously not
+right.  However, since R/PLACA spelling corrects to /RPLACA, this diagnostic is
+never printed.
+
+
+
+If a CLISP infix construct is well formed from a syntactic standpoint, but one
+                                                 113
+or both of its operands are atomic and not bound,    it is possible that either
+the operand is misspelled, e.g., the user wrote X+YY for X+Y, or that a CLISP
+transformation operation was not intended at all, but that the entire
+expression is a misspelling.  For example, if the user has a variable named
+LAST-EL, and writes (LIST LAST-ELL).  Therefore, CLISP computes, but does not
+actually perform, the indicated infix transformation.  DWIM then continues, and
+if it is able to make another correction, does so, and ignores the CLISP
+interpretation.  For example, with LAST-ELL, the transformation
+LAST-ELL -> LAST-EL would be found.
+
+
+
+If no other transformation is found, and DWIM is about to interpret a construct
+as CLISP for which one of the operands is not bound, DWIM will ask the user
+
+
+
+**FOOTNOTES**
+111
+    This entire discussion also applies to CLISP transformation initiated by
+    calls to DWIM from  dwimify.
+
+
+112
+    Except that CLISP error messages are not printed on type-in.  For example,
+    typing X+*Y will just produce a U.B.A. X+*Y message.
+
+
+113
+    For the purpose of  dwimifying,, 'not bound' means no top level value, not
+    on list of bound variables built up by  dwimify during its analysis of the
+    expression, and not on  nofixvarslst, i.e., not previously seen.
+
+
+
+
+                                     23.56
+
+
+
+whether CLISP was intended, in this case by printing
+                         114
+LAST-ELL TREAT AS CLISP ?   
+
+
+
+The same sort of procedure is followed with 8 and 9 errors.  For example,
+suppose the user writes FOO8*X where FOO8 is not bound.  The CLISP
+transformation is noted, and DWIM proceeds.  It next asks the user to approve
+FOO8*X -> FOO ( *X.  (For example, this would make sense if the user has (or
+plans to define) a function named *X.)  If he refuses, the user is asked
+whether FOO8*X is to be treated as CLISP.  Similarly, if FOO8 were the name of
+a variable, and the user writes FOOO8*X, he will first be asked to approve
+                     115
+FOOO8*X -> FOOO ( XX,    and if he refuses, then be offered the FOOO8 -> FOO8
+correction.
+
+
+
+CLISP also contains provision for correcting misspellings of infix operators
+(other than single characters), IF words, and i.s. operators.  This is
+implemented in such a way that the user who does not misspell them is not
+penalized.  For example, if the user writes IF N=0 THEN 1 ELSSE N*(FACT N-1)
+CLISP does not operate by checking each word to see if it is a misspelling of
+IF, THEN, ELSE, or ELSEIF, since this would seriously degrade CLISP's
+performance on all IF statements.  Instead, CLISP assumes that all of the IF
+words are spelled correctly, and transforms the expression to
+(COND ((ZEROP N) 1 ELSSE N*(FACT N-1))).  Later, after DWIM cannot find any
+other interpretation for ELSSE, and using the fact that this atom originally
+appeared in an IF statement, DWIM attempts spelling correction, using
+(IF THEN ELSE ELSEIF) for a spelling list.  When this is successful, DWIM
+'fails' all the way back to the original IF statement, changes ELSSE to ELSE,
+and starts over.  Misspellings of AND, OR, LT, GT, etc. are handled similarly.
+
+
+
+CLISP also contains many Do-What-I-Mean features besides spelling corrections.
+For example, the form (LIST +X Y) would generate a MISSING OPERATOR error.
+However, (LIST -X Y) makes sense, if the minus is unary, so DWIM offers this
+interpretation to the user.  Another common error, especially for new users, is
+to write (LIST X*FOO(Y)) or (LIST X*FOO Y), where FOO is the name of a
+function, instead of (LIST X*(FOO Y)).  Therefore, whenever an operand that is
+not bound is also the name of a function (or corrects to one), the above
+interpretations are offered.
+
+
+
+
+**FOOTNOTES**
+114
+    If more than one infix operator was involved in the CLISP construct, e.g.,
+    X+Y+Z, or the operation was an assignment to a variable already noticed, or
+     treatasclispflg is T (initially NIL), the user will simply be
+    informed of the correction.  Otherwise, even if DWIM was enabled in
+    TRUSTING mode, the user will be asked to approve the correction.
+
+
+115
+    The 8-9 transformation is tried before spelling correction since it is
+    empirically more likely that an unbound atom or undefined function
+    containing an 8 or a 9 is a parenthesis error, rather than a spelling
+    error.
+
+
+
+
+                                     23.57
+
+
+
+ 23.15  CLISP Interaction with User
+
+
+
+Syntactically and semantically well formed CLISP transformations are
+always performed without informing the user.  Other CLISP transformations
+described in the previous section, e.g. misspellings of operands, infix
+operators, parentheses errors, unary minus - binary minus errors, all follow
+the same protocol as other DWIM transformations (Section 17).  That is, if DWIM
+has been enabled in TRUSTING mode, or the transformation is in an
+expression typed in by the user for immediate execution, user approval is not
+                                    116
+requested, but the user is informed.    However, if the transformation involves
+a user program, and DWIM was enabled in CAUTIOUS mode, the user will be
+asked to approve.  If he says NO, the transformation is not performed.  Thus,
+in the previous section, phrases such as "one of these (transformations)
+succeeds" and "the transformation LAST-ELL -> LAST-EL would be found" etc., all
+mean if the user is in CAUTIOUS mode and the error is in a program, the
+corresponding transformation will be performed only if the user approves (or
+defaults by not responding).  If the user says NO, the procedure followed is
+the same as though the transformation had not been found.  For example, if A*B
+appears in the function FOO, and B is not bound (and no other transformations
+are found) the user would be asked
+
+                                                           117
+                    A*B [IN FOO]  TREAT AS CLISP ?
+
+If the user approved, A*B would be transformed to (ITIMES A B), which would
+then cause a U.B.A. B error in the event that the program was being run
+(remember the entire discussion also applies to DWIMIFYing).  If the user said
+NO, A*B would be left alone.
+
+
+
+
+
+
+ 23.16  CLISP Internal Conventions
+
+
+
+Note: the reader can skip this section and proceed to "Function and
+Variables" (page 23.61), unless he wants to add new operators, or modify the
+action of existing ones (other than by making declarations).
+
+
+
+CLISP is almost entirely table driven by property lists for the corresponding
+
+
+
+**FOOTNOTES**
+116
+    However, in certain situations, DWIM will ask for approval even if DWIM is
+    enabled in TRUSTING mode.  For example, the user will always be asked
+    to approve a spelling correction that might also be interpreted as a CLISP
+    transformation, as in LAST-ELL -> LAST-EL.
+
+
+117
+    The waiting time on such interactions is three times as long as for simple
+    corrections, i.e., 3* dwimwait.
+
+
+
+
+                                     23.58
+
+
+
+infix or prefix operators.  Thus it is relatively easy to add new infix or
+prefix operators or change old ones, simply by adding or changing selected
+                118
+property values.
+
+
+
+CLISPTYPE               The property value of the property CLISPTYPE is
+                                                              119
+                        the precedence number of the operator:    higher values
+                        have higher precedence, i.e. are tighter.  Note that
+                        the actual value is unimportant, only the value
+                        relative to other operators.  For example, CLISPTYPE
+                        for :, ^, and * are 14, 6, and 4 respectively.
+                        Operators with the same precedence group left to right,
+                        e.g., / also has precedence 4, so  A/B*C is (A/B)*C.
+
+
+
+                        An operator can have a different left and right
+                        precedence by making the value of CLISPTYPE be a dotted
+                        pair of two numbers, e.g., CLISPTYPE of _ is
+                        (8 . -12).  In this case,  car is the left precedence,
+                        and  cdr the right, i.e.,  car is used when comparing
+                        with operators on the  left, and  cdr with operators on
+                        the right.  For example, A*B_C+D is parsed as
+                        A*(B_(C+D)) because the left precedence of _ is 8,
+                        which is higher than that of *, which is 4.  The right
+                        precedence of _ is -12, which is lower than that of +,
+                        which is 2.
+
+
+
+                        If the CLISPTYPE property for any infix operator
+                        is removed, the corresponding CLISP transformation is
+                        disabled, as well as the inverse CLISPIFY
+                        transformation.
+
+
+
+UNARYOP                 The value of property UNARYOP must be T for unary
+                        operators.  The operand is always on the right, i.e.,
+                        unary operators are always prefix operators.
+
+
+
+BROADSCOPE              The value of property BROADSCOPE is T if the
+                        operator has lower precedence than INTERLISP forms,
+                        e.g., LT, EQUAL, AND, etc.  For example, (FOO X AND Y)
+
+
+
+**FOOTNOTES**
+118
+    There is some built in information for handling minus, :, ', <, >, and ~,
+    i.e., the user could not himself add such 'special' operators, although he
+    can disable them.
+
+
+119
+    Unless otherwise specified, the property is stored on the property list of
+    the operator.
+
+
+
+
+                                     23.59
+
+
+
+                        parses as ((FOO X) AND Y).  If the BROADSCOPE property
+                        were removed from the property list of AND,
+                        (FOO X AND Y) would parse as (FOO (X AND Y)).
+
+
+
+LISPFN                  The value of the property LISPFN is the name of
+                        the function to which the infix operator translates.
+                        For example, the value of LISPFN for ^ is EXPT, for '
+                        QUOTE, etc.  If the value of the property LISPFN is
+                        NIL, the infix operator itself is also the function
+                        e.g., AND, OR, EQUAL.
+
+
+
+SETFN                   If FOO has a SETFN property FIE, then (FOO --)_X
+                        translates to (FIE -- X).  For example, if the user
+                        makes ELT be an infix operator, e.g. #, by putting
+                        appropriate CLISPTYPE and LISPFN properties on the
+                        property list of # then he can also make # followed by
+                        _ translate to SETA, e.g. X#N_Y to (SETA X N Y), by
+                        putting SETA on the property list of ELT under the
+                        property SETFN.  Putting (ELT) (i.e. list[ELT])) on the
+                        property list of SETA under property SETFN will enable
+                        SETA forms to CLISPIFY back to ELT's.
+
+
+
+CLISPINFIX              The value of this property is the CLISP infix to
+                        be used in CLISPIFYing.  This property is stored on the
+                        property list of the corresponding INTERLISP function,
+                        e.g., the value of property CLISPINFIX for EXPT is ^,
+                        for QUOTE is ' etc.
+
+
+
+Global declarations operate by changing the corresponding LISPFN and CLISPINFIX
+properties.
+
+
+
+clispchars              is a list of single character operators that can
+                        appear in the interior of an atom.  Currently these
+                        are: +, -, *, /, ^, ~, ', =, _, :, <, and >.
+
+
+
+clispcharray       is a bit table of the characters on  clispchars used
+                        for calls to  strposl (see Section 10).   clispcharray
+                        is initialized by performing
+
+                        (SETQ CLISPCHARRAY (MAKEBITTABLE CLISPCHARS)).
+
+
+
+clispinfixsplst              is a list of infix operators used for
+                        spelling correction.
+
+
+
+
+
+
+
+
+
+                                     23.60
+
+
+
+As an example, suppose the user wants to make | be an infix character operator
+meaning OR.  He performs:
+
+
+    _(PUT (QUOTE |) (QUOTE CLISPTYPE) (GETP (QUOTE OR) (QUOTE CLISPTYPE)))
+    _PUT(| LISPFN OR)
+    _PUT(| BROADSCOPE T)
+    _PUT(OR CLISPINFIX |)
+    _SETQ(CLISPCHARS (CONS (QUOTE |) CLISPCHARS))
+    _SETQ(CLISPCHARRAY (MAKEBITTABLE CLISPCHARS))
+
+
+
+
+
+ 23.17  CLISP Functions and Variables
+
+
+
+clispflg                if set to NIL, disables all CLISP infix or prefix
+                        transformations (but does not affect IF/THEN/ELSE
+                        statements, or iterative statements).
+
+
+
+                        If  clispflg=TYPE-IN, CLISP transformations are
+                        performed only on expressions that are typed in for
+                        evaluation, i.e. not on user programs.
+
+
+
+                        If  clispflg=T, CLISP transformations are performed on
+                        all expressions.
+
+
+
+                        The initial value for  clispflg is T.   clispifying
+                        anything will cause  clispflg to be set to T.
+
+
+
+clisparray              hash array used for storing translations.
+                         clisparray is checked by  faulteval  and  faultapply
+                        on erroneous forms before calling DWIM, and by the
+                        compiler.
+
+
+
+clisptran[x;tran]       gives  x the translation  tran.  If clisparray is
+                        not NIL, uses hashing scheme, otherwise uses CLISP%
+                        scheme. See page 23.25 - page 23.29.
+
+
+
+nofixfnslst             list of functions that  dwimify will not try to
+                        correct.  See page 23.54.
+
+
+
+nofixvarslst            list of variables that  dwimify will not try to
+                        correct.  See page 23.54.
+
+
+
+
+
+                                     23.61
+
+
+
+nospellflg              If  nospellflg is T,  dwimify will not perform any
+                        spelling corrections.  The initial value of  nospellflg
+                        is NIL.
+
+
+For example, setting  nospellflg to T might be useful in the case where a file
+known to contain no misspellings had been clispified, and was now being
+dwimified, e.g. as it was being compiled.  With  nospellflg=T, DWIM would not
+waste time trying to spelling correct the free variables.  Note that if all of
+the free variables are known, the same effect could be achieved by simply
+adding them to  nofixvarslst.
+
+
+
+dwimify[x;l]            dwimifies  x, i.e., performs all corrections and
+                        transformations that would be performed if  x were run.
+                        If  x is an atom and  l is NIL,  x is treated as the
+                        name of a function, and its entire definition is
+                        dwimified.
+
+
+
+                        Otherwise, if  x is a list or  l is not NIL,  x is the
+                        expression to be dwimified.  If  l is not NIL, it is
+                        the edit push-down list leading to  x, and is used for
+                        determining context, i.e., what bound variables would
+                        be in effect when  x was evaluated, whether  x is a
+                                                                            120
+                        form or sequence of forms, e.g., a cond clause, etc.
+
+
+
+dwimifyfns[fns]         nlambda, nospread. Dwimifies each function on
+                         fns.  If  fns consists of only one element, the value
+                        of car[fns] is used, e.g., dwimifyfns[FOOFNS].  Every
+                        30 seconds,  dwimifyfns prints the name of the function
+                        it is processing, a la  prettyprint.
+
+
+
+dwimifycompflg          if T,  dwimify is called before compiling an
+                        expression.  See page 23.55.
+
+
+
+clispdec[declst]        puts into effect the declarations in  declst.
+                         clispdec performs spelling corrections on words not
+                        recognized as declarations.   clispdec is undoable.
+
+
+
+clispify[x;l]           clispifies  x.  If  x is an atom and  l is NIL,  x
+                        is treated as the name of a function, and its
+                        definition (or EXPR property) is clispified.  After
+                         clispify has finished,  x is redefined (using /PUTD)
+
+
+
+**FOOTNOTES**
+120
+    If  x is an iterative statement and  l is NIL,  dwimify will also
+    print the translation, i.e. what is stored in the hash array.
+
+
+
+
+                                     23.62
+
+
+
+                        with its new CLISP definition.  The value of  clispify
+                        is  x.  If  x is atomic and not the name of a function,
+                        spelling correction is attempted.  If this fails, an
+                        error is generated.
+
+
+
+                        If  x is a list, or  l is not NIL,  x itself is the
+                        expression to be clispified.  If l is not NIL, it is
+                        the edit push-down list leading to  x and is used to
+                        determine context as with  dwimify, as well as to
+                        obtain the local declarations, if any.  The value of
+                         clispify is the clispified version of  x.
+
+
+
+                        See earlier section on CLISPIFY for more details.
+
+
+
+clispifyfns[fns]        nlambda, nospread.  Calls  clispify on each member
+                        of  fns under errorset protection.  If  fns consists of
+                        only one element, the value of car[fns] is used, e.g.,
+                        clispifyfns[FOOFNS].  Every 30 seconds,  clispifyfns
+                        prints the name of the function it is working, a la
+                         prettyprint.  Value is list of functions  clispifyed.
+
+
+
+cldisable[op]      disables  op, e.g.  cldisable[-] makes - be just
+                        another character.   cldisable can be used on all CLISP
+                        operators, e.g. infix operators, prefix operators,
+                        iterative statement operators, etc.   cldisable is
+                        undoable.
+
+
+
+clispiftranflg     affects handling of translations of IF|THEN|ELSE
+                        statements.  If T, the translations are stored
+                        elsewhere, and the (modified) CLISP retained.  If NIL,
+                        the corresponding COND expression, replaces the CLISP.
+                         clispiftranflg is initially NIL. See page 23.25.
+
+
+
+clispretranflg     If T, informs  dwimify to (re)translate all expression
+                        which have remote translations, either in hash array or
+                        using CLISP%.  Initially NIL.
+
+
+
+cl:flg                  affects  clispify's handling of forms beginning
+                        with  car,  cdr, ...  cddddr, as well as pattern match
+                        and record expressions.  See page 23.51.
+
+
+
+clremparsflg            affects  clispify's removal of parentheses from
+                        "small" forms.  See page 23.51.
+
+
+
+clispifypackflg         if T, informs  clispify to pack operator and
+
+
+
+                                     23.63
+
+
+
+                        atomic operands into single atoms; if NIL, no packing
+                        is done.  See page 23.52.
+
+
+
+clispifyprettyflg       if non-NIL, causes  prettyprint to CLISPIFY
+                        selected function definitions before printing them
+                        according to the following interpretations of
+                        clispfifyprettyflg:
+
+                             ALL            all functions
+
+                             T,EXPRS        functions currently defined as
+                                            exprs
+
+                             CHANGES        functions marked as having been
+                                            changed
+
+                             a list         a member of that list
+
+
+
+                        clispifyprettyflg is (temporarily) reset to T when
+                         makefile is called with the option CLISPIFY, and reset
+                        to CHANGES when the file being dumped has the property
+                        FILETYPE value CLISP.  
+                                                            121
+                         clispifyprettyflg is initially NIL.
+
+
+
+prettytranflg           If T, causes  prettyprint to print translations
+                        instead of CLISP expressions.  This is useful for
+                        creating a file for compilation, or for exporting to a
+                        LISP system that does not have CLISP.   prettytranflg
+                        is (temporarily) reset to T when  makefile is called
+                        with the option NOCLISP. If  prettytranflg is
+                        CLISP% , both the CLISP and translations are
+                        printed in appropriate form.  For more details, see
+                        page 23.28.   prettytranflg is initially NIL.
+
+
+
+PPT           is both a function and an edit macro for prettyprinting
+                        translations. It performs a PP after first resetting
+                         prettytranflg to T, thereby causing any translations
+                        to be printed instead of the corresponding CLISP.
+
+
+
+CLISP:                  edit macro that obtains the translation of the
+                        correct expression, if any, from  clisparray, and
+                        calls  edite on it.
+
+
+
+**FOOTNOTES**
+121
+    If clispifyprettyflg is non-NIL, and the only transformation performed by
+    DWIM are well formed CLISP transformations, i.e. no spelling corrections,
+    the function will not be marked as changed, since it would only have to be
+    re-clispified and re-prettyprinted when the file was written out.
+
+
+
+
+                                     23.64
+
+
+
+funnyatomlst            list of identifiers containing CLISP operators.
+                        Used by  clispify to avoid accidentally constructing a
+                        user identifier, e.g., (ITIMES A B) should not become
+                        A*B if A*B is the name of a PROG variable.  See page
+                        23.52.
+
+
+
+CL                      edit macro.  Replaces current expression with
+                        CLISPIFYed current expression.  Current expression can
+                        be an element or tail.
+
+
+
+DW                      edit macro.  DWIMIFYs current expression, which
+                        can be an element (atom or list) or tail.
+
+
+
+Both CL and DW can be called when the current expression is either an element
+or a tail and will work properly.  Both consult the declarations in the
+function being edited, if any, and both are undoable.
+
+
+
+lowercase[flg]          If  flg=T,  lowercase makes the necessary internal
+                        modifications so that  clispify will use lower case
+                        versions of AND, OR, IF, THEN, ELSE, ELSEIF, and all
+                        i.s. operators.  This produces more readable output.
+                        Note that the user can always type in either upper or
+                        lower case (or a combination), regardless of the action
+                        of  lowercase.
+
+
+
+                        If  flg=NIL,  clispify will use uppercase versions of
+                        AND, OR, et al.  The value of  lowercase is its
+                        previous 'setting'.   Lowercase is undoable.  The
+                        initial setting for  lowercase is T.  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                     23.65
+
+
+

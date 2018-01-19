@@ -1,0 +1,659 @@
+	TITLE E
+
+
+ ARRAY PDL[20]	; STACK
+
+ ; SET UP REGISTER NAMES
+A_1
+B_2
+C_3
+D_4
+E_5
+F_6
+G_7
+PTR_10
+BPTR_11	; POINTS TO CHAR IN BUF
+P_13	; STACK POINTER
+
+ ; defns of ascii chars
+nul_0
+etx_3
+eot_4
+enq_5
+bel_7
+bs_10
+ht_11
+lf_12
+vt_13
+ff_14
+cr_15
+so_16
+si_17
+dle_20
+dc1_21
+em_31
+esc_33
+rs_36
+us_37
+
+ data_20000
+ data2_22000
+ data3_24000
+ d3_24
+filenm:	0
+filepg:	0
+numfpg:	1
+corepg:	xwd 20,22
+
+bterm:	xwd 440700,data	; ptr
+bterm2:	xwd 440700,data2	; ptr
+sterm:	0		; ptr to start of displayed data
+eterm:	0		; ptr to end
+tlen:	0		; length of displayed data
+lineno:	0		; lineno on core page of displayed data
+dsplin:	=10		; number of lines to normally display
+nmlin:	0		; number of lines actually displayed
+; start, comman,exit
+ ; START OF PROGRAM
+START:
+ RESET
+ MOVE	P,[IOWD 20,PDL]	; SET UP STACK
+ HRROI 	A,[ASCIZ /DISPLAY EDITOR
+/]
+ PSOUT
+ skipn	a,filenm	; skip if already open
+ pushj	p,filein	; get filename before changing to page mode
+
+ hrrzi	a,101
+ rfmod	; get term chars
+ move d,b
+ ; pushj p,octal
+ hrrzi	a,101
+ rfmod	; get term chars
+ orcai b,3b25	; set to no echo
+ setca b,
+ sfmod
+ movei	b,525252	; set to alternate ones and zeros
+ hrl	b,b
+ move	c,b
+ sfcoc	; set term chars
+ movei	d,123
+ ;pushj	p,octal
+ HRROI	A,[ASCIZ /PUT IN PAGE MODE
+ ?  FOR HELP
+
+/]
+ PSOUT
+
+LOOP:
+ pushj	p,clear2	; clear two lines
+ PUSHJ	P,CLEAR	; SET UP CMD LINE
+ hrrzi	A,100		; TTY INPUT
+ HRROI	B,BUF		; INPUT CMD BUFFER
+ MOVEI	C,=79		; MAX NO OF CHARS
+ MOVEI	D,32		; CONTROL Z
+ SIN			; READ A COMMAND
+
+ move	d,buf
+ ;  pushj	p,octal
+ ; emark
+ MOVE     BPTR,bbuf 
+ ILDB     A,BPTR 
+ CAIL     A,"a" 
+ SUBI     A,40 ; LOWER CASE TO UPPER 
+ CAIGE    A,"?" 
+ MOVEI     A,"@"     ; PUNCTUATION TO @ 
+ CAILE    A,"Z" 
+ MOVEI    A,"@"     ; BRACKETS TO @ 
+ PUSHJ    P,@COMMAN-77(A)     ; PUSHJ THRU THE TABLE TO SUBROUTINE 
+ JRST	LOOP	; GO LOOP
+
+EXIT:		
+ setzm	data
+ setzm	data2
+ HRROI	A,[ASCIZ /
+EXIT
+/]
+ PSOUT
+ move	a,filenm	; jfn
+ closf		; close file
+ jrst	error
+ move	a,filenm
+ rljfn			; release jfn
+ jrst	error
+ hrrzi	a,400000	; own fork
+ clzff		; close and release
+exit9:
+ RESET
+ HALTF
+
+COMMAN:			; COMMAND TABLE
+ HELP	; ?  77 OCTAL
+ WEIRD	; @  100 OCTAL
+ NONE	; A  101 OCTAL
+ conv ; b
+ copy
+ delete
+ EXIT	; E
+ FIND
+ GO
+ help
+ NONE
+ NONE
+ NONE	; K
+ NONE
+ MARK	; M
+ NONE
+ NONE
+ PRINT
+ NONE
+ READ
+ savpg
+ TEST
+ NONE
+ NONE
+ WRITE
+ NONE
+ NONE
+ NONE	; Z 132 OCTAL
+ NONE	; JUST IN CASE
+
+ 
+help:
+ pushj	p,clear2
+ hrroi	a,[asciz /The Following Commands are available:
+ Delete
+ Exit
+ Find
+ Mark
+ Print
+ Read
+ Save
+ Test
+ Write
+/]
+ psout
+ popj	p,
+WEIRD:		; WEIRD KEYBOARD ENTRY
+ HRROI	A,[ASCIZ /WEIRD DATA
+/]
+ PSOUT
+ POPJ	P,
+NONE:		; ALPHABETIC ENTRY
+ HRROI	A,[ASCIZ /NO SUCH COMMAND
+/]
+ PSOUT
+ POPJ	P,
+TEST:	; JUST TO TEST
+ HRROI	A,[ASCIZ /TEST OK/]
+ PSOUT
+ hrroi	a,[asciz /
+
+
+ file pg 1 access, core pg 20,22 access: /]
+ psout
+ hrl	a,filenm
+ hrri	a,1
+ rpacs
+ move	d,b
+ pushj	p,octal
+ hrli	a,400000
+ hlr	a,corepg
+ rpacs
+ move	d,b
+ pushj	p,octal
+ hrli	a,400000
+ hrr	a,corepg
+ rpacs
+ move	d,b
+ pushj	p,octal
+ hrroi	a,[asciz /
+ jfn status: /]
+ psout
+ hrrz	a,filenm
+ gtsts	; get jfn status
+ move	d,b
+ pushj	p,octal
+ hrroi	a,[asciz /
+process capabilities: /]
+ ;psout
+ hrrzi	a,400000	; fork handle
+ rpcap	; get process capabilities
+ move	d,b
+ ;pushj	p,octal
+ move	d,c
+ ;pushj	p,octal
+ hrrzi	a,400000	; fork handle
+ seto	b,
+ seto	c,
+ epcap			; enable the world
+ movem	a,data2	; put something in page
+ movem	a,data	; put something in page
+ POPJ	P,
+
+buf:	block 20	; command input buffer
+bbuf:	point 7,buf
+
+octal:		; print the octal contents of a word
+ movei	a,101
+ movei	c,=12
+oc2:
+ rot	d,3
+ move	b,d
+ andi	b,=7
+ ori	b,"0"
+ bout
+ sojg	c,oc2
+ movei	b," "
+ bout
+ popj	p,
+clear:
+ hrrzi	a,101	; primary output
+ hrroi	b,cleard
+ setzb	c,d
+ sout		; clear screen, write first 2 lines
+ popj	p,
+cleard:
+ byte (7) vt,"@",esc,enq,"1"
+ byte (7) "0","*",dle,etx,vt
+ byte (7) "A","*",dle,etx,vt
+ byte (7) "@",nul
+clear2:
+ hrrzi	a,101	; primary output
+ hrroi	b,clear3
+ setzb	c,d
+ sout		; write top two lines blank
+ popj	p,
+clear3:
+ xwd 056001,506400	; vt,@,cr,cr,nul
+cleart:
+ hrrzi	a,101	; primary output
+ hrroi	b,clear5
+ setzb	c,d
+ sout		; clear screen, write first 2 lines
+ popj	p,
+clear5:
+ byte (7) vt,"@",cr,cr,vt
+ byte (7) "@",dc1,nul
+cleare:
+ hrrzi	a,101	; primary output
+ hrroi	b,clear7
+ setzb	c,d
+ sout		; send 2 eot chars
+ popj	p,
+clear7:
+ byte (7) dle,etx,"*",cr,cr
+ byte (7) dle,etx,"*",nul
+; filein,read,save,error,go
+go:
+ pushj	p,filein
+ pushj	p,read
+ popj	p,
+filein:
+ hrroi	a,[asciz /Filein = /]
+ psout
+ hrlzi	a,3
+ move	b,[xwd 100,101]
+ gtjfn		; input file
+ pushj	p,error
+ hrrzm	a,filenm
+ move	a,filenm
+ gtsts		; get status
+ move	d,b
+ ;pushj	p,octal
+ move	a,filenm
+ movsi	b,440000
+ hrri	b,300000	; read,write access
+ openf		; open input file
+ pushj	p,error
+ move	a,filenm
+ ffffp		; first free file pag
+ hrrz	e,a	; number of page
+ move	a,filenm
+ move	b,[xwd 1,11]
+ movei	c,c	; write file block starting at c
+ gtfdb		; gt file desc block
+ hrrz	b,c	; number of pages in file
+ movem	b,numfpg	; save
+ camn	b,e		; compare actual number to number of sequential pgs
+ popj	p,	; same - ok
+ hrroi	a,[asciz /funny file/]
+ psout
+ popj	p,
+
+forkdm:	0
+read:	; try a pmap
+ move	d,corepg
+ move	e,filepg
+diskrd:
+ hrl	a,filenm
+ hrr	a,e
+ movsi	b,400000	; this fork
+ hlr	b,d
+ ;move	b,forkdm
+ movsi	c,140400	; read,write,copyonwrite access
+ pmap		; read to core
+ hrroi	a,[asciz /read /]
+ psout
+ popj	p,
+
+savpg:	; save page from data2 to disk
+ movs	d,corepg
+ move	e,filepg
+diskwr:
+ movsi	a,400000
+ hrr	a,d
+ hrl	b,filenm
+ hrr	b,e
+ movsi	c,140400	; read,write,copyonwrite access
+ pmap		; write core to file
+ hrroi	a,[asciz /write/]
+ psout
+ move	a,e	; filepg
+ addi	a,1
+ camn	a,numfpg	; is this the last file pg
+ pushj	p,eofmk	; last page - write eof mark
+ popj	p,
+
+eofmk:	; write a distant eof mark on the file
+ move	a,filenm
+ move	b,[xwd 1,12]	; for eof ptr
+ movei	c,c		; put it in c
+ gtfdb		; get file desc block, eof ptr
+ movei	b,=512
+ imul	b,numfpg	; number of file pages
+ subi	b,1
+ camg	b,c	; skip if new ptr greater than file eof ptr
+ popj	p,	; old one ok, return
+ move	a,filenm
+ sfptr		; set file ptr
+ jrst	error
+ movei	b,0	; write a null and set eof mark
+ bout
+ popj	p,
+
+error:	; universal error routine
+ hrroi	a,[asciz /error: /]
+ psout
+ hrrzi	a,101
+ move	b,[xwd 400000,777777]
+ movei	c,0
+ erstr		; translate error to string and print
+ jrst 	exit9
+ jrst	exit9
+ psout
+ jrst	exit9
+print:		; display at lineno for dsplin lines
+ pushj	p,clear2
+dsp1:	; set sterm to point to lineno line
+ move	a,bterm
+ movem	a,sterm	; ptr to start of data
+ setzm	a,nmlin
+ move	c,lineno
+dsp11:
+ sojl	c,dsp14	; jump if done
+dsp12:
+ ildb	a,sterm		; get a byte
+ jumpe	dsp13		; if null, exit
+ caie	a,15		; skip if cr
+ jrst	dsp12		; continue
+ aos	nmlin		; incr line count
+ jrst	dsp11		; continue
+dsp13:
+ hrroi	[asciz /No such line/]
+ psout
+ jrst error
+dsp14:
+	; put length to be displayed in tlen
+	; starting at sterm for length dsplin
+ setzm	c,tlen
+ move	ptr,sterm	; byte ptr
+dsp2:
+ ildb	a,ptr		; get byte
+ jumpe	a,dsp25		; if null, exit
+ caie	a,15		; skip if cr
+ aoja	c,dsp2		; loop and incr count
+ addi	c,1		; incr count
+ aos	a,nmlin		; incr num of lines
+ camge	a,dsplin	; skip if done
+ jrst	dsp2		; loop
+dsp25:
+ movem	ptr,eterm	; save final byte ptr
+ hrrzi	a,101		; primary output
+ move	b,sterm
+ move	c,tlen
+ setz	d,
+ sout			; print lines
+ pushj	p,cleare	; print eot marks
+ popj	p,
+write:	; write terminal to core using sterm and eterm
+ pushj	p,cleart		; transmit page to core
+ move	a,[xwd data,data2]	; from data to data2
+ hrrz	b,sterm
+ subi	b,data
+ addi	b,data2
+ blt	a,0(b)		; blt to sterm-data+data2
+
+ hrrzi	a,100	; primary input
+ move	b,dbufs
+ movei	c,=1920
+ movei	d,32	; control z
+ sin		; put screenful in dbuf
+ move	ptr,dbufs	; ptr to dbuf
+ movei	a,=6
+ ildb	b,ptr
+ sojg	a,.-1	; remove 6 chars (2 cr's) from dbuf
+ move	f,sterm	; where to stuff chars
+ subi	f,data
+ addi	f,data2
+ skipa
+w3:	; main loop
+ idpb	a,f	; stuff char to data2
+ ildb	a,ptr	; get char from dbuf
+ jumpe	a,w4	; done if nul
+ cain	a,32	; control z
+ jrst	w4	; done if control z
+ caie	a,40	; skip if space
+ jrst	w3	; loop
+ move	b,ptr	; get ptr
+ ildb	c,b	; look ahead 1 char
+ caie	c,us	; skip if cr (really a us)
+ jrst	w3	; loop
+ ildb	a,ptr	; cr
+ ildb	a,ptr	; lf
+ movei	a,cr	; cr to stuff
+ idpb	a,f
+ movei	a,lf	; lf to stuff
+ jrst	w3	; loop
+ ;hrrzi	a,100	; primary input
+ ;bin			; read 2 cr's
+ ;bin
+ ;move	b,sterm
+ ;subi	b,data
+ ;addi	b,data2
+ ;hrrzi	c,=1920
+ ;hrrzi	d,32		; control-z to terminate
+ ;sin				; read terminal screen
+
+w4:
+ move	b,f	; ptr to data2
+ move	a,eterm		; ptr to the rest
+ setzb	c,d
+ sin					; read the rest from core
+; test page size
+ hrrz	a,b			; get final address
+ subi	a,data2+=512
+ jumpl	a,w5			;ok if less than zero
+ hrroi	a,[asciz /Page too long, aborted/]
+ psout
+ popj	p,
+
+w5:	; move back to data
+ move	a,[xwd data2,data]
+ movei	b,data+=512
+ blt	a,0(b)			; blt back to data
+ popj	p,
+conv:	; convert input, drop space and line feed
+ pushj	p,cleart		; transmit page 
+ hrrzi	a,100
+ move	b,dbufs	; ptr to dbuf
+ movei	c,=1920
+ movei	d,32		; control-z
+ sin				; input from tty to dbufs
+ popj	p,
+dbufs:	point 7,dbuf
+dbuf:	block =500
+find:	; command is f/string/ where / can be any char
+		; find a string, display line before and dsplin lines
+ ildb	g,bptr	; get string delimiter in g
+ move	f,bterm	; ptr to data
+ ildb	d,bptr	; first char of buf in d
+ setzm	a,fndlin
+f2:
+ ildb	a,f		; first char from data
+ jumpe	a,f4		; if nul, then done
+ camn	a,d		; skip if no match
+ jrst	f22		; match, go to match the rest
+ cain	a,cr		; test if cr
+ aos		a,fndlin	; incr line count
+ jrst	f2		; loop
+f22:
+ move	e,bptr	; ptr to first matched char of buf
+ move	c,f		; ptr to first matched char of data
+f3:
+ ildb	a,e		; char from buf
+ camn	a,g		; compare string delim
+ jrst	f5		; done
+ ildb	b,c		; char from data
+ came	a,b		; compare bytes
+ jrst	f2		; not equal, quit this match
+ jrst	f3		; equal, continue this match
+f4:
+ hrroi	a,[asciz /not found/]
+ psout
+ popj	p,
+f5:
+ sos		a,fndlin	; decr line count to print line before
+ movem	a,lineno
+ jrst	print	; go print some lines
+fndlin:	0	; line the string is found on
+mark:	; mark a new page starting with cursor line
+ pushj	p,blankp	; get a blank page in data2
+	; move last part of page to data2
+	; set ptr to start of last part 
+ move	ptr,sterm	; start of term
+ move	c,cursor
+ skipa			; to get a small loop
+m1:
+ cain	a,cr		; skip if not cr
+ sojl	c,m3		; jump if gone thru c cr's
+ ildb	a,ptr	; get char
+ jumpn	a,m1	; loop if not null
+m3:
+ move	a,bterm2	; ptr set
+ move	b,ptr	; source of string
+ setzb	c,d
+ sout		; move last part of page to data2
+	; blank out last part of data
+ setzb	a,b
+ movei	c,=15	; put in 15 nul bytes
+ idpb	a,ptr
+ sojge	c,.-1	; 2 inst loop
+ hrrz	a,ptr	; get addr of where to blank out data
+ subi	a,1
+ hrl	a,a
+ addi	a,1
+ blt		a,data+=512	; blt (a) to (a+1)
+ 	; now have 2 pages in data and data2
+ move	a,filenm
+ ffffp	; first free file page
+ hrli	a,0	; erase jfn
+ movem	a,e	; store in e
+ movem	e,numfpg	; store for eofmk
+ movei	d,d3	; core page for reading and writing file pages
+ pushj	p,diskrd	; create new file page
+ subi	e,1	; core
+ move	f,filepg	; bottom, page to be replaced
+ pushj	p,eofmk	
+	; corepg in d, top filepg in e, bottom filepg in f
+mark4:
+m4:
+ pushj	p,diskrd	; read file page n
+ addi	e,1
+ pushj	p,diskwr	; write into n+1
+ subi	e,2	; decrement file page
+ came	e,f	; skip if reached page to be replaced
+ jrst	m4	; loop
+ addi	e,1
+ move	d,corepg	; data2 ptr
+ pushj	p,diskwr	; write e+1
+ movs	d,corepg	; data ptr
+ subi	e,1
+ pushj	p,diskwr	; write e
+ popj	p,
+blankp:	; put a blank page in data2
+ setzm	a,40000	; establish a null page in core
+ movsi	b,400000	; this fork
+ movsi	a,400000	; this fork
+ hrr	b,corepg	; to data2
+ hrli	a,40	; from page 40
+ pmap
+ popj	p,
+cursor:	0
+delete:	; deletes page mark after current page
+ move	a,[xwd data,data2]
+ blt	a,data+=512	; move first page to data2 -- maybe pmap
+ aoj	a,filepg	; get next file page
+ pushj	p,read	; read next page
+ move	a,bterm2	; look for end of first pg, save in a
+ ildb	b,a	; incr and get byte
+ jumpn	b,.-1	; loop if not nul
+ move	b,bterm	; source
+ setzb	c,d
+ sout		; move second page to end of first
+ hrrz	a,b	; get ending addr
+ subi	a,data2+=512
+ jumpl	a,d5	; jump if ok
+ hrroi	a,[asciz /pages too long; aborted/]
+ psout
+ popj	p,
+d5:
+ move	d,corepg
+ soj	e,filepg
+ pushj	p,diskwr
+ move	e,filepg
+ move	d,d3
+	; now must bubble down to fill gap
+d6:
+ aoj	a,e	; file pg, next one to look at
+ hrl	a,filenm
+ rpacs	; get status of page
+ rot	a,6
+ andi	a,1
+ jumpe	a,d7	; done if no file page
+ pushj	p,diskrd	; get next page
+ subi	e,1
+ pushj	p,diskwr	; write back to file
+ aoj	e,d6	; incr and loop
+d7:
+ movem	e,numfpg	; for eof mark
+ setob	a,c	; release old page
+ movsi	b,filenm
+ hrr	b,filepg	
+ pmap
+ pushj	p,eofmk
+ popj	p,
+copy:	; copy a whole page
+ ildb	a,bptr
+ caie	a,"p"	; command must be cp
+ jrst	none
+ movsi	a,400000
+ hlr	a,corepg	; data
+ movsi	b,400000
+ hrr	b,corepg	; data2
+ movsi	c,140400	; read, write, copyonwrite
+ pmap	; copy data to data2
+ jrst	mark4	; now mark does the rest
+dum:
+ jrst none
+	END START

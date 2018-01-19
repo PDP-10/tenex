@@ -1,0 +1,563 @@
+
+
+
+
+
+
+
+
+
+
+
+                                       1
+                             SECTION 19
+
+                               ADVISING
+
+
+
+
+The operation of advising gives the user a way of modifying a
+function without necessarily knowing how the function works or even
+what it does.  Advising consists of modifying the interface between
+functions as opposed to modifying the function definition itself, as
+in editing.   break,  trace, and  breakdown, are examples of the use
+of this technique: they each modify user functions by placing relevant
+computations between the function and the rest of the programming
+environment.
+
+
+
+The principal advantage of advising, aside from its convenience, is
+that it allows the user to treat functions, his or someone else's, as
+"black boxes," and to modify them without concern for their contents
+or details of operations.  For example, the user could modify  sysout
+to set  sysdate to the time and date of creation by
+advise[SYSOUT;(SETQ SYSDATE (DATE))]
+
+
+
+As with  break, advising works equally well on compiled and
+interpreted functions.  Similarly, it is possible to effect a
+modification which only operates when a function is called from some
+other specified function, i.e., to modify the interface between two
+particular functions, instead of the interface between one function
+and the rest of the world.  This latter feature is especially useful
+for changing the internal workings of a system function.
+
+
+
+For example, suppose the user wanted  time (Section 21) to print the
+results of his measurements to the file FOO instead of the teletype.
+He could accomplish this by
+ADVISE(((PRIN1 PRINT SPACES) IN TIME) BEFORE (SETQQ U FOO))
+
+
+
+Note that advising  prin1,  print, or  spaces directly would have
+affected all calls to these very frequently used function, whereas
+
+
+
+**FOOTNOTES**
+1
+    Advising was developed and implemented by W. Teitelman.
+
+
+
+
+
+                                 19.1
+
+
+
+advising ((PRIN1 PRINT SPACES) IN TIME) affects just those calls to
+ prin1,  print, and  spaces from  time.
+
+
+
+Advice can also be specified to operate after a function has been
+evaluated.  The value of the body of the original function can be
+obtained from the variable  !value, as with  break1.  For example,
+suppose the user wanted to perform some computation following each
+ sysin, e.g. check whether his files were up to date.  He could
+then:
+
+
+                                                        2
+         ADVISE(SYSOUT AFTER (COND ((LISTP !VALUE) --)))
+
+
+
+
+ 19.1  Implementation of Advising
+
+
+
+The structure of a function after it has been modified several times
+by  advise is given in the following diagram:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                             Figure 19-1
+
+
+
+
+
+**FOOTNOTES**
+2
+    After the  sysin, the system will be as it was when the  sysout
+    was performed, hence the advice must be to  sysout, not  sysin.
+    See Section 14 for complete discussion of  sysout/sysin.
+
+
+
+
+
+                                 19.2
+
+
+
+The corresponding INTERLISP definition is:
+
+
+
+              (LAMBDA arguments (PROG (!VALUE)
+                   (SETQ !VALUE (PROG NIL
+                         advice1
+                           .
+                           .                          ADVICE
+                           .                          BEFORE
+                         advicen
+                         (RETURN form)))
+                    advice1
+                     .
+                     .                                ADVICE
+                     .                                AFTER
+                    advicem
+                    (RETURN !VALUE)))
+
+
+                                                     3 4
+where  form is equivalent to the original definition.  
+
+
+
+Note that the structure of a function modified by  advise allows a
+piece of advice to bypass the original definition by using the
+function RETURN.  For example, if (COND ((ATOM X) (RETURN Y))) were
+one of the pieces of advice BEFORE a function, and this function
+was entered with  x atomic,  y would be returned as the value of the
+inner PROG,  !value would be set to  y, and control passed to the
+advice, if any, to be executed AFTER the function.  If this same
+piece of advice appeared AFTER the function,  y would be returned as
+the value of the entire advised function.
+
+
+
+The advice (COND ((ATOM X) (SETQ !VALUE Y))) AFTER the function would
+have a similar effect, but the rest of the advice AFTER the function
+would still be executed.
+
+
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+3
+    Actually,  advise uses its own versions of PROG, SETQ, and RETURN,
+    (called ADV-PROG, ADV-SETQ, and ADV-RETURN) in order to
+    enable advising these functions.
+
+
+4
+    If  fn was originally an EXPR,  form is the body of the
+    definition, otherwise a form using a  gensym which is defined
+    with the original definition.
+
+
+
+
+
+                                 19.3
+
+
+
+ 19.2  Advise Functions
+
+
+
+ Advise
+
+
+
+ Advise is a function of four arguments:  fn,  when,  where, and
+ what.   fn is the function to be modified by advising,  what is the
+modification, or piece of advice.   when is either BEFORE or
+AFTER, and indicates whether the advice is to operate BEFORE or
+AFTER the body of the function definition is evaluated.   where
+specifies exactly where in the list of advice the new advice is to be
+placed, e.g., FIRST, or (BEFORE PRINT) meaning before the advice
+containing  print, or (AFTER 3) meaning after the third piece of
+advice, or even (: TTY:).  If  where is specified,  advise first
+checks to see if it is one of LAST, BOTTOM, END, FIRST, or
+TOP, and operates accordingly.  Otherwise, it constructs an
+appropriate edit command and calls the editor to insert the advice at
+the corresponding location.
+
+
+
+Both  when and  where are optional arguments, in the sense that they
+can be omitted in the call to  advise.  In other words,  advise can be
+thought of as a function of two arguments [fn;what], or a function of
+three arguments: [fn;when;what], or a function of four arguments:
+[fn;when;where;what].  Note that the advice is always the last
+argument.  If  when=NIL, BEFORE is used.  If  where=NIL, LAST is used.
+
+
+
+advise[fn;when;where;what]     fn is the function to be advised,
+                              when=BEFORE or AFTER,
+                              whereW19LISP.FNT specifies where in the
+                             advice list the advice is to be inserted,
+                             and  what is the piece of advice.
+
+
+
+                             If  fn is of the form (fn1 IN fn2),
+                              fn1 is changed to  fn1-IN-fn2
+                             throughout  fn2, as with break, and then
+                                                                 5
+                              fn1-IN-fn2 is used in place of  fn.
+
+
+
+                             If  fn is broken, it is unbroken
+                             before advising.
+
+
+
+
+
+
+**FOOTNOTES**
+5
+    If  fn1 and/or  fn2 are lists, they are distributed as shown in
+    the example on page 19.1.
+
+
+
+
+
+                                 19.4
+
+
+
+                             If  fn is not defined, an error is
+                             generated, NOT A FUNCTION.
+
+
+
+                             If  fn is being advised for the first
+                             time, i.e. if getp[name,ADVISED]=NIL, a
+                              gensym is generated and stored on
+                             the property list of  fn under the
+                             property ADVISED, and the  gensym is
+                             defined with the original definition of
+                              fn.  An appropriate S-expression
+                                                                6
+                             definition is then created for  fn.
+                             Finally,  fn is added to the (front of)
+                                             7
+                              advisedfns.
+
+
+
+                             If  fn has been advised before, it is
+                             moved to the front of  advisedfns.
+
+
+
+                             The advice is inserted in  fn's
+                             definition either BEFORE or AFTER
+                             the original body function depending on
+                                   8
+                              when.  Within that context, its position
+                             is determined by  where.  If
+                              where=LAST, BOTTOM, END, or NIL,
+                             the advice is added following all other
+                             advice, if any.  If  where=FIRST or
+                             TOP, the advice is inserted as the
+                             first piece of advice.  Otherwise,  where
+                             is treated as a command for the editor, a
+                             la  breakin, e.g.  (BEFORE 3),
+                             (AFTER PRINT) .
+
+
+
+                             Finally list[when;where;what] is added
+
+
+
+**FOOTNOTES**
+6
+    Using private versions of PROG, SETQ, and RETURN, so that these
+    functions can also be advised.
+
+
+7
+    So that unadvise[T] always unadvises the last function
+    advised.  See page 19.7.
+
+
+8
+    A special case is  when=BIND. Here the advice is treated as a
+    list of PROG variables to be bound.  The variables are  nconced to
+    the PROG variable list containing  !value.  See page 19.3.
+
+
+
+
+
+                                 19.5
+
+
+
+                             (by  addprop) to the value of property
+                                                                 9
+                             ADVICE on the property list  fn.
+                             Note that this property value is a list
+                             of the advice in order of calls to
+                              advise, not necessarily in order of
+                             appearance of the advice in the
+                             definition of  fn.
+
+
+
+                             The value of  advise is  fn.
+
+
+
+                             If  fn is non-atomic, every function in
+                              fn is advised with the same values (but
+                             copies) for  when,  where, and  what.  In
+                             this case, the value of  advise is a list
+                             of individual functions.
+
+
+
+Note:  advised functions can be broken.  (However if a function is
+broken at the time it is advised, it is first unbroken.) Similarly,
+advised functions can be edited, including their advice.
+ unadvise will still restore the function to its unadvised state,
+but any changes to the body of the definition will survive.  Since the
+advice stored on the property list is the same structure as the advice
+inserted in the function, editing of advice can be performed on either
+the function's definition or its property list.
+
+
+
+unadvise[x]                   is a no-spread NLAMBDA a la
+                              unbreak.  It takes an indefinite number
+                             of functions and restores them to their
+                             original unadvised state, including
+                             removing the properties added by
+                                     10
+                              advise.    unadvise saves on the list
+                              advinfolst enough information to allow
+                             restoring a function to its advised state
+                             using  readvise.   advinfolst and
+                              readvise thus correspond to  brkinfolst
+                             and  rebreak.
+
+
+
+
+
+**FOOTNOTES**
+9
+    So that a record of all the changes is available for subsequent
+    use in readvising, see page 19.7.
+
+
+10
+    Except if a function also contains the property READVICE (see
+     readvise below),  unadvise moves the current value of the
+    property ADVICE to READVICE.
+
+
+
+
+
+                                 19.6
+
+
+
+                             unadvise[] unadvises all functions on
+                                             11
+                              advisedfns.   It first sets
+                              advinfolst to NIL.
+
+
+
+                             unadvise[T] unadvises the first function
+                             of  advisedfns, i.e., the most recently
+                             advised function.
+
+
+
+readvise[x]                   is a no-spread NLAMBDA a la  rebreak
+                             for restoring a function to its advised
+                             state without having to specify all the
+                             advise information.  For each function on
+                              x,  readvise retrieves the advise
+                             information either from the property
+                             READVICE for that function, or from
+                              advinfolst, and performs the
+                             corresponding advise operation(s).  In
+                             addition it stores this information on
+                             the property READVICE if not already
+                             there.  If no information is found for a
+                             particular function, value is
+                             (fn - NO ADVICE SAVED).
+
+
+
+                             readvise[] readvises everything on
+                              advinfolst.
+
+
+
+                             readvise[T] readvises just the first
+                             function on  advinfolst, i.e., the
+                             function most recently unadvised.
+
+
+
+The difference between  advise,  unadvise, and  readvise versus
+ break,  unbreak, and  rebreak, is that if a function is not rebroken
+between successive unbreak[]'s, its break information is forgotten.
+However, once  readvised, a function's advice is permanently saved on
+its property list (under READVICE); subsequent calls to  unadvise will
+not remove it.  In fact, calls to  unadvise update the property
+READVICE with the current value of the property ADVICE, so that
+the sequence  readvise,  advise,  unadvise causes the
+augmented advice to become permanent.  Note that the sequence
+ readvise,  advise,  readvise removes the 'intermediate advice' by
+restoring the function to its earlier state.
+
+
+
+
+
+**FOOTNOTES**
+11
+    In reverse order, so that the most recently advised function is
+    unadvised last.
+
+
+
+
+
+                                 19.7
+
+
+
+advisedump[x;flg]             Used by  prettydef when given a
+                             command of the form (ADVISE --) or
+                             (ADVICE --).  flg=T corresponds to
+                             (ADVISE --), i.e.  advisedump writes both
+                             a  deflist and a  readvise.   flg=NIL
+                             corresponds to (ADVICE --), i.e. only the
+                              deflist is written.  In either case,
+                              advisedump copies the advise information
+                             to the property READVICE, thereby
+                             making it 'permanent' as described
+                             above.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                 19.8
+
+
+

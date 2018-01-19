@@ -1,0 +1,930 @@
+;<LEWIS>SWAP.MAC;1    23-SEP-74 19:31:49    EDIT BY LEWIS
+; FIX ^E CHEKBR/BRREST BUG.
+;<NEWLISP>SWAP.MAC;12    20-JUL-74 15:57:00    EDIT BY LEWIS
+; FIXED BUG IN RESWAPPING IN FNOPENR/CLOSER FNS
+;<NEWLISP>SWAP.MAC;11    14-JUL-74 04:38:50    EDIT BY LEWIS
+; FIXED RESWPC TO HANDLE THE CASE WHERE CLOCK ZEROS OUT
+;<NEWLISP>SWAP.MAC;10    10-JUL-74 19:41:28    EDIT BY LEWIS
+;<NEWLISP>SWAP.MAC;8     9-JUL-74 19:45:53    EDIT BY LEWIS
+; ADDED FAST FN-OPENR/CLOSER FNS
+;<NEWLISP>SWAP.MAC;6     9-JUL-74 01:10:11    EDIT BY LEWIS
+; ADDED FN-OPENR/CLOSER FNS
+;<NEWLISP>SWAP.MAC;5     8-JUL-74 17:01:25    EDIT BY LEWIS
+; FIX SSBSIZ TO CALL RESWAP
+;<NEWLISP>SWAP.MAC;4     5-JUL-74 23:07:48    EDIT BY LEWIS
+; fixed SCAN1H and stack fix up.
+;<GOODWIN>SWAP.MAC;181    20-MAY-74 01:57:49    EDIT BY GOODWIN
+;<GOODWIN>SWAP.MAC;156    12-MAY-74 11:49:09    EDIT BY GOODWIN
+; - Reorganize material and try to make reentrant for interrupts.
+;<GOODWIN>SWAP.MAC;149     8-MAY-74 09:07:14    EDIT BY GOODWIN
+;<GOODWIN>SWAP.MAC;147     3-MAY-74 06:13:58	EDIT BY GOODWIN
+; - GOING TO <NEWLISP> !! RENAMED BUFLOC TO BE SWPPOS, TOO.
+;<DLISP>SWAP.MAC;67    24-SEP-73 18:19:03	EDIT BY GOODWIN
+
+
+
+
+
+
+;Description of various tables which control the allocation of
+;space for shadow-memory and the core buffer, etc.
+
+;FPT is the File Page Table, one 9-bit byte per page of shadow memory.
+;It contains the main fork page number of the page of the Core Buffer
+;into which the given file page is presently mapped. If the file
+;page is not in, then the FPT entry is zero. Because a given file
+;page may be needed in two places in the buffer at once (first as 
+;the tail page of FOO, then as the header page of FIE) there may in 
+;general be instances of the page in the core buffer not recorded in the
+;FPT, even if the FPT is zero (suppose the one of FOO or FIE which you
+;chose to record is swapped out, there is no way to know the other
+;is in). Since it never helps to know that a tail page is in,
+;except in cases where
+;a header page would be just as useful or where you are confirming
+;a specific CB hole and can check positively in the CBT, the convention
+;is to record the header instances where one has to choose.
+;Note also that middle pages, i.e. pages which are neither header nor
+;tail pages and hence lie entirely within one swapped array, are ignored
+;by the FPT which will contain zero for them. This is simply because
+;the FPT entry for them will never be needed.
+;Additional temporaries for the shadow are:
+;
+;HISHAD contains the first unallocated shadow space address. It is
+;	a word address, not a page address.
+;
+;
+;FPTBPT is the FPT Byte Pointer Table, whose purpose is to allow one to
+;	access the FPT entry for a file page with the
+;	following sequence:
+;		MOVE	10,file page number
+;		IDIVI	10,4
+;		LDB AC,@FPTBPT	;Indexing by 10 and 11
+;
+;The allocation of the FPT is done by assembly now, but should be 
+;dynamic too eventually. Assumes one fork of shadow space maximum
+;at present, because assembled in.
+
+FPTSIZ==200
+U	FPT,FPTSIZ
+
+FPTBPT:	.+1(11)
+	POINT 9,FPT(10),8
+	POINT 9,FPT(10),17
+	POINT 9,FPT(10),26
+	POINT 9,FPT(10),35
+
+U	HISHAD
+
+;The Core Buffer, alias Swapping Buffer, has several control words too:
+;
+;CBRANG is a two word table containing the (main fork) page numbers of
+;	the first and last pages of the core buffer, for range checking.
+;
+;CBSIZE contains the length of the core buffer in pages.
+;	It is also the flag for "is there a buffer yet at all".
+
+;
+;The CBT or Core Buffer Table is a table of 1-word entries for 
+;each page of the CB, and they contain in their right halves the File
+;Page number of the page in that CB page, and in their LH the date
+;or age (see SWPCLK).
+;
+;CBTHED is an AOBJN pointer to the CBT, i.e. -length of CB,,addr CBT
+;
+;CBTPTR is a word such that it addresses the CBT entry for a CB page 
+;	whose page number is in AC 12q, i.e. such that
+;		HRR	12,CBPAGE#
+;		MOVE	ac,@CBTPTR
+;	will get date,,contents for CBPAGE# if in range.
+
+
+U	CBSIZE
+
+U	CBRANG,2
+
+U	CBTHED
+
+U	CBTPTR
+
+
+NSWFRK==1			;Max # shadow forks allowed.
+				;Assumed=1 in FPT assembly for now.
+U	SWFRKS,NSWFRK		;Table for their handles.
+
+U	MKCBHS,16		;storage area for ac's.
+
+
+;SSBSIZ is a subr, to Set the Swapping Buffer Size. It takes one
+;argument, a number of pages. It is called internally once during
+;initialization to init. the buffer. It releases the old buffer
+;first, to optimize your chances of getting the new (presumably
+;larger) allocation; this causes the problem that you have no buffer
+;if the new allocation cannot be met (too large, error in GETBLK).
+;In the future, perhaps find a way to detect that this will happen and
+;give an error before flushing the old buffer. Returns previous size,
+;may be called with NIL to read the current size.
+
+;NOTE - SSBSIZ and its subroutine CBFLSH are NOT, repeat NOT, safe if
+;the using loser hits ^B, ^E, ^D, or ^C and REENTER during their
+;work. Fix.
+
+
+
+SSBSIZ:	Push	NP,CBSIZE	;Save old size for return
+	Camn	1,KNIL
+	 Jrst	SSBSZZ		;Just read existing size.
+	Call	IUNBOX
+	Caig	1,200		;Arbitrary max buffer size
+	Jumpge	1,.+2
+	 Jrst ILLSIZ
+	Push	NP,1
+	Skipe	CBSIZE
+	Call	CBFLSH
+	Pop	NP,CBSIZE
+	Skipn	1,CBSIZE
+	 Jrst	SSBSZZ		;Requested zero-length CB.
+	Aos	1,-2(PP)	;Plus 1 page for CBT (much waste).
+	CALL	GETBLK		;GETBLK will see same args as SETSBSIZE
+	Hrrzm	1,CBTHED	;1st page becomes CBT
+	Lsh	1,-11		;Convert wrd addr to page addr
+	Addi	1,1		;Skip page alloc'd for CBT
+	Hrrzm	1,CBRANG
+	Add	1,CBSIZE
+	Subi	1,1		;CBRANG+1 is last page included
+	Hrrzm	1,CBRANG+1
+	Movn	1,CBSIZE
+	Hrlm	1,CBTHED
+	Hrrz	1,CBTHED
+	Sub	1,CBRANG
+	Hrli	1,12
+	Movem	1,CBTPTR
+	Call	CLKINI		;Age all the slots infinitely
+	CALL	RESWAP		;In case a swapped guy called us.
+SSBSZZ:	Pop	NP,1
+	Addi	1,ASZ
+	Ret
+
+
+ILLSIZ:	Hrrz	1,-2(PP)
+	ERROR1	51,RESET	;"SSBSIZ: Illegal size."
+
+;CBFLSH called only by SSBSIZ to flush old buffer.
+CBFLSH:	Seto	1,		;First PMAP all the CB pages out.
+	Hrr	2,CBRANG
+	Hrlzi	3,160000	;Read, Write and execute ok now.
+CBFLS1:	Hrli	2,400000
+	PMAP
+	Hrrzi	2,1(2)
+	Camg	2,CBRANG+1
+	 Jrst CBFLS1
+
+;Now use RELBLK to flush the CB and CBT pages.
+	Hrrz	2,CBRANG
+	Lsh	2,11
+	Subi	2,1		;To flush CBT too.
+	Push	PP,2
+	Hrrz	2,CBSIZE
+	Addi	2,ASZ+1		;Plus 1 for CBT again.
+	Push	PP,2
+	Push	PP,KNIL
+	Hrrz	1,-2(PP)
+	Hrrz	2,-1(PP)
+	Hrrz	3,0(PP)
+	CALL	RELBLK
+	Sub	PP,BHC+3
+
+;Also zero FPT since pages all gone.
+	Setzm	FPT
+	Move	2,[XWD FPT,FPT+1]
+	Blt	2,FPT+177
+
+	Setzm	CBSIZE		;Indicator that no CB exists
+	Ret
+
+;The allocator for shadow space. Must make sure necessary forks
+;are created but the pages allocated are not necessarily created. HISHAD
+;is next word of unallocated shadow space (27-bit word addr).
+;SWPARY takes size of desired array (minus header) in ac 1.
+;Returns handle to allocated creature. Does not set
+;up header. (But it should! We make do now because there is no gc'ing
+;of shadow space itself - merely tracing of it - so the headers are
+;not vital, and this allocator is only called from MKSWAP, which has to
+;overwrite the header anyway.) SYSHAD is an assembly parameter for the
+;number of pages reserved (pre-allocated) for system use,
+;and must be at least 1 since the FPT cannot address page 0.
+;A basic mistake in the swapper was to initialize HISHAD like this
+;instead of to SYSHAD*1000 plus 1 fork, so that shadow addresses
+;essentially begin where resident addresses leave off. It will take
+;an editing pass over the code before SYSHAD can be adjusted to
+;accomplish this, I fear.
+
+SYSHAD==1
+
+SWPARY:	Skipe	HISHAD	
+	 Jrst	SWARY2	
+	Hrrzi	2,SYSHAD*1000 
+	Hrrzm	2,HISHAD 
+
+SWARY2:	Call IUNBOX
+	Jumple 1,SWARE
+	Push NP,HISHAD		;Save for return from MKHDL1.
+	Movei 2,2(1)		;Two extra words for header
+	Addb 2,HISHAD		;Allocate it.
+	Hlrz 2,2
+SWARY1:	Skipn 1,SWFRKS(2)	;Forkhandle, or 0 meaning make it.
+	 Call	MAKFRK
+	Sojge 2,SWARY1
+	Pop	NP,1		;Build value for handle in 1.
+	Move	2,1		;B9-35 are shadow word addr.
+	Trz	2,777		;B0-8 will be # pages needed for
+	Move	3,HISHAD	;swapper (not length in pp).
+	Trze	3,777
+	 Addi	3,1000
+	Sub	3,2		;1st page head after last wrd used
+	Hrlzi	3,(3)		;minus head of page of 1st used word
+	Iorm	3,1
+	Jrst	MKHDL		;and return handle itself from MKHDL.
+
+MAKFRK:	CFORK
+	 JSYS	JSYSER
+	Movem	1,SWFRKS(2)	;Enter forkhandle in the table
+	Ret
+
+SWARE:	Hrrz	1,-2(PP)
+	ERROR1	47,RESET	;BAD ARG TO SWPARRAY ERROR.
+
+;Macros to unpack handles various ways.
+;Handles assumed here to mean unboxed contents of HANDLT things.
+
+;HANLEN gets B0-8, the length of the swapblock in pages.
+
+DEFINE HANLEN (AC,HANDLE) <
+
+IFB <HANDLE>, <	LSH AC,-33>
+
+IFNB <HANDLE>, <	LDB AC,[POINT 9,HANDLE,8]>
+
+>
+
+
+;HANADR gets the shadow address, B9-36.
+
+DEFINE HANADR (AC,HANDLE) <
+
+IFB <HANDLE>, <	TLZ AC,777000>
+
+IFNB <HANDLE>, <	MOVE AC,HANDLE
+		TLZ AC,777000>
+>
+
+
+;HANPAG gets the shadow page number, B9-B26
+
+DEFINE	HANPAG	(AC,HANDLE) <
+	HANADR	AC,HANDLE
+	LSH	AC,-11
+>
+
+
+;That ends the storage management stuff. Now for the
+;actual swapping stuff. First the routine to Make a Core
+;Buffer Hole of a specified size. Called with unboxed size in pages in 1
+;Definition of terms: A page's age is recorded in the LH of the CBT, and
+;is merely the value of the SWPCLK, a counter which is SOS'd once for
+;each meaningful call to the swapper. Given some section of the buffer,
+;the age of the section or potential "hole" is the age of the youngest
+;page in it. The optimum hole which is found by MKCBH is the oldest hole
+;of the specified size. The buffer hole is also cleared by MKCBH.
+;It is also dated. The return, in  NEWHOL, is
+;	-#pp,,CBP# of first page.
+
+;Note that the worst case for this algorithm is when the pages in the
+;CB are sorted in the order oldest to youngest; the best case is
+;when they are sorted the other way. When we start, all pages are
+;the same age (see CLKINI). We must therefore be careful to resolve ties
+;in favor of higher addresses, i.e. if the current page/window ties the
+;best page/window you have seen so far, take the new one rather than
+;carrying the old "best one so far". This means that the first filling
+;of the buffer approximates the best case rather than the
+;worst, in that the blocks within the buffer are sorted favorably.
+
+;One might speculate that this is preserved dynamically. Suppose the
+;buffer is sorted best-case, youngest to oldest. Then the second
+;filling of the buffer under a swapping pattern that called for a new
+;one-page block each time would also be best-case.
+
+;Accumulator assignments. CBP# means Core Buffer Page Number and is
+;a main fork page number.
+
+;	1-7	contains a subroutine, but see also NEGLEN
+NEGLEN==7	;Negative of Length of desired hole, in pages.
+		;RH used as AC. LH used in execution of SCAN1H, as
+		;POPJ CP,
+J1==10		;Temporary (junk) register
+NEWEST==11	;SCAN1H returns CBP#,,age of youngest page
+		;of the specified hole in NEWEST
+NXTPAG==12	;Arg to SCAN1H defines hole as -length,,CBP#
+		;of 1st page. Must be 12 for CBTPTR to work.
+BHSF==13	;Between calls to SCAN1H the Best Hole So Far
+		;is kept here as CBP# to top,,age of hole
+
+U	LIMIT	;CBP# of 1st page of last hole to examine.
+
+;The subroutine, SCAN1H, scans one hole and computes the age of the hole
+;as defined above. It runs in ac's.
+
+SCAN1H:	Hlrz	J1,@CBTPTR	;Gets age of next page from CBT.
+	Caile	J1,(NEWEST)	;If newer, or =, the newest page so far,
+	 Jrst	6		;(if not, go to the Aobjn)
+	Hrri	NEWEST,(J1)	;then remember its age
+	Hrli	NEWEST,(NXTPAG)	;and position,
+	Aobjn	NXTPAG,1	;scan the rest of the hole,
+	;Ret supplied in LH of next ac, NEGLEN.
+
+
+
+
+MKCBH:	CAMLE	1,CBSIZE
+	 JRST	MKCBHX
+	JUMPLE	1,MKCBHX
+;	Cain	1,1		;Special case for size 1 someday.
+;	 Jrst ?
+	Movni	NEGLEN,(1)
+	Hrrz	2,CBRANG+1
+	Addi	2,1(NEGLEN)
+	HRRZM	2,LIMIT		;NOT a MOVEM.
+	Hrrz	NXTPAG,CBRANG	;CBP# for 1st page of buffer.
+	Setz	BHSF,		;0=younger than anything, see SWPCLK.
+	MOVE	J1,[XWD SCAN1H,1]
+	Blt	J1,6		;Load ac's with SCAN1H.
+	HRLI	7,<RET>B53	;Get return into lh of NEGLEN
+
+
+;Main loop, picks next hole, sets up for SCAN1H, processes result.
+
+MKCBHL:	HRLI	NXTPAG,(NEGLEN)	;NXTPAG=Aobjn ptr to a test hole.
+	Hrrzi	NEWEST,-1	;Newest page this hole infinitely old.
+	CALL	1		;Call SCAN1H.
+
+;SCAN1H will compute, in NEWEST, ptr,,age of the newest page in the
+;test hole defined by NXTPAG. This is the age of the hole.
+
+	Hrrzi	J1,(NEWEST)	;If the age of this hole
+	Caige	J1,(BHSF)	;is > or = that of the best hole so
+				;far, then the new one is the best.
+	 Jrst	SCAN1N		;Not so, scan the next one.
+	Hrri	BHSF,(NEWEST)	;Remember age of new winner,
+	Addi	NXTPAG,(NEGLEN)	;Recompute its top CBP#,
+	Hrli	BHSF,(NXTPAG)	;and remember that too.
+
+;Next candidate hole begins with the page after the worst page in
+;the test hole just scanned, whether it won or not.
+
+SCAN1N:	Hlrz	NXTPAG,NEWEST
+	Addi	NXTPAG,1
+	CAMG	NXTPAG,LIMIT
+	 Jrst	MKCBHL
+
+
+;BHSF now has winner, i.e. CBP#,,age of winner.
+
+	Hlr	12,BHSF		;Create -length,,CBP# both in NEWHOL
+	Hrli	12,(NEGLEN)	;for return from MKCBH and in 12
+	Movem	12,NEWHOL		;for loop below (see CBTPTR).
+	Hrlz	6,SWPCLK	;Clock value for dating CBT, and
+				;zero for clearing FPT.
+SCAN1C:	Hrrz	10,@CBTPTR	;FP# of each CBP in this hole
+	Idivi	10,4
+	Ldb	3,@FPTBPT	;CBP# where FPT says that that FP# is
+	Cain	3,(12)		;If NEQ it's a different instance,
+				;(or zero already, e.g. middle pages)
+	 Dpb	6,@FPTBPT	;Else zero FPT, that instance going away
+	Movem	6,@CBTPTR	;and CBT slot gets newdate,,0 contents
+	Aobjn	12,SCAN1C
+
+
+	Ret			;Value for MKCBH still in 1.
+
+
+MKCBHX:	HLRZ	1,BR
+	ERROR1	50,RESET	;TOO BIG FOR BUFFER ERROR
+				;ALSO USED FOR NON-POSITIVE SIZE
+				;TRAP (SHOULDN'T EVER OCCUR).
+
+U	NEWHOL			;place for return.
+
+
+;SWPCLK is a full word counter which records the passage of time as
+;concerns the swapper. Each 'tick' DECREMENTS the counter, the standard
+;call being	Sosg	SWPCLK
+;		 Call	RESWPC
+;The initial value is 777776, so that 777777 is older than anything,
+;and zero is younger than anything. Older is > and younger is <. Ages
+;are kept in the CBT, a halfword age for each page in the CB.
+
+U	SWPCLK
+
+RESWPC:	SkipE	CBSIZE
+	JRST	FXSWPC		;FIX THE CLOCK
+	HRROI	1,[ASCIZ /
+You cannot swap code when the buffer size is 0 -- see SETSBSIZE.
+/]
+	PSOUT
+	Jrst	RESETE
+
+;FXSWPC must worry about fixing up the buffer when the count
+;reaches zero. Just add delta to SWPCLK and all
+;CBT lh's, where delta is 777776 minus age of oldest extant page.
+
+FXSWPC:	SETZ	2,
+	MOVE	3,CBTHED
+	HLRZ	4,(3)
+	CAIG	2,(4)
+	MOVEI	2,(4)
+	AOBJN	3,.-3
+	MOVEI	3,-2
+	SUBI	3,(2)		;3 NOW HAS THE DELTA
+	ADDM	3,SWPCLK
+	MOVE	2,CBTHED
+	HLRZ	4,(2)
+	ADDI	4,(3)
+	HRLM	4,(2)
+	AOBJN	2,.-3
+	RET
+
+;CLKINI called in SSBSIZ to reset clock and age the virgin buffer.
+
+CLKINI:	Hrroi	1,777776
+	Hrrzm	1,SWPCLK
+	Move	2,CBTHED
+	HLLZM	1,(2)		;Zero "contents" too - probably garbage
+	Aobjn	2,.-1
+	Ret
+
+
+
+
+;Now for the swapper prapper. Parameter is BR, which has ptr
+;to the handle in LH, and return from SWAPIN leaves RH of BR set
+;to address the header.
+
+
+
+
+SWAPIN:	MOVEM	1,MKCBHS+1	;Save ac's 1
+	HRRI	1,MKCBHS+2
+	HRLI	1,2
+	BLT	1,MKCBHS+14	;thru BR.
+	CALL	RSW1
+SWPRET:	HRRI	1,2
+	HRLI	1,MKCBHS+2
+	BLT	1,14
+	MOVE	1,MKCBHS+1
+	Ret
+
+
+
+;IF THE TYPTRAP at RSW1 EVER STOPS OCCURRING FOR
+;SAY SIX MONTHS OR SO, IT SHOULD BE REMOVED.
+;THE SWAPPER ISN'T SUPPOSED TO BE CALLED EXCEPT FROM PLACES
+;LIKE SBCAL AND SWPPOS WHICH HAVE ALREADY CHECKED.
+
+
+;RSW1 can use 1-13 freely. Must preserve ALL other ac's including BR.
+;The output of RSW1 is a new value for BR but it goes on MKCBHS+BR.
+;See RESWAP for why.
+
+RSW1:	HLRZ	1,BR
+	LSH	1,-LPS
+	HRRZ	1,TYPTAB(1)
+	ANDI	1,77
+	CAME	1,HANDLT
+	 JRST	SWPWOT		;BR's left half wasn't handle.
+	Sosg	SWPCLK		;Tick the clock.
+	 Call	RESWPC
+	HLRZ	1,BR		;Unbox the handle into ac 1.
+	MOVE	1,(1)
+	TLZ	1,700		;FLUSH GC BITS BEFORE WE USE IT
+	Movem	1,UBHNDL	;Save unboxed handle
+				;Now save intra-page offset
+	Dpb	1,[POINT 9,MKCBHS+BR,35] ;on B27-35 of value
+
+	Call	FINDIT		;If in buffer already,
+	 RET			;we're done.
+	HANLEN	1,UBHNDL	;Length for MKCBH
+	Call	MKCBH		;Go make the hole
+	Move	12,NEWHOL
+	HANPAG	7,UBHNDL
+	Hrrzi	10,(7)
+	Idivi	10,4
+	Dpb	12,@FPTBPT	;FPT record of 1st page's CB pos.
+				;CBP# becomes page-part of value
+	Dpb	12,[POINT 9,MKCBHS+BR,26] ;Save on B18-26 of value.
+
+PMAPLP:	CALL	SWAP1P		;SWAP1P GETS OCCUPANT IN
+	HRRM	7,@CBTPTR	;RECORD NEW OCCUPANT IN CBT
+	ADDI	7,1
+	AOBJN	12,PMAPLP
+	SOS	10,7
+	Idivi	10,4
+	Ldb	4,@FPTBPT	;old FPT record for last page.
+	Jumpn	4,.+2		;If another instance keep that.
+	 Dpb	12,@FPTBPT	;Else record this one.
+	RET
+
+
+
+
+
+SWPWOT:	HRROI	1,[ASCIZ /
+SWPWOT: Swapper called with garbage.
+/]
+	PSOUT
+	HALTF
+
+;SWAP1P brings one page into CB. Parameters are ac 12, which
+;contains CB dest. page #, & ac7, with the desired shadow page number in
+;its right half.
+
+SWAP1P:	HRRZI	1,(7)		;GET SHADOW PAGE NUM.
+	LSH	1,-11
+	HRL	1,SWFRKS(1)	;LH(1)=forkhandle
+	HRRI	1,(7)
+	TRZ	1,777000	;NOW IT'S FORK,,PAGE FOR PMAP
+	HRR	2,12		;DESIRED CB PAGE SLOT
+	HRLI	2,400000	;THIS FORK
+	HRLZI	3,160000	;R,W,E (BUT LIMITED BY FORK'S PROT.)
+	PMAP
+;	DPB	2,[POINT 9,1,26] ;NOW THAT CB ISN'T CW ANY MORE, I THINK
+;	MOVE	1,(1)		;THIS TENEX BUGHLT AVOIDER OBSOLETE
+;I forget how the BUGHLT happened, except that it was only when
+;this PMAP referenced a non-existent page in the lower fork. Then
+;certain kinds of first references halted Tenex instead of making pge
+;exist. Writes or JSYS's? Bob Clements wanted to know why people used
+;Tenex like that.
+	RET
+
+
+;Note on reentrancy under interrupts such as control E, B, etc.
+;MKCBHL has cleared the contents part of the CBT entries for the pages
+;we're loading. Thus if we get interrupted, CBT claims nothing. PMAPLP
+;doesn't write new contents on 'till mapping done. When called
+;from RESTCB, interrupts aren't enabled.
+
+U	UBHNDL
+
+
+;FINDIT must look to see if the desired swapblock is already
+;in the corebuffer somewhere, and if not, skip. If so, it must set up
+;the RH of BR (in the MKCBHS return table) or rather the page bits
+;of the RH, since the intra-page offset is already set. It must
+;also confirm the hole, since the FPT entry for the first page is not
+;sufficient proof that the entire block is in. And it
+;dates all the CB pages with the current date, since we're about to
+;run in them. Note: the FAIL return is the SKIP return.
+
+
+FINDIT:	HANPAG	10,UBHNDL
+	Move	1,10
+	Idivi	10,4
+	Ldb	12,@FPTBPT	;FPT record for header page.
+	Jumpe	12,RSKP	;FPT knows nothing of it.
+
+	Dpb	12,[POINT 9,MKCBHS+BR,26] ;Write the page bits for BR.
+				;The Dpb is premature since the hole
+				;is as yet unconfirmed, but harmless.
+
+	HANLEN	3,UBHNDL
+	Movns	3
+	Hrli	12,(3)		;12 now -len,,CBP#
+	Hrrz	3,SWPCLK	;Current date
+
+FNDLP:	Hrrz	2,@CBTPTR	;Current occupant of CB slot
+	Caie	2,(1)		;had better be right shadow page
+	 Jrst	FNDBAD		;or we give up on finding the guy.
+	Hrlm	3,@CBTPTR	;Update the CB slot.
+	Addi	1,1		;Next shadow page
+	Aobjn	12,FNDLP	;compares to next CB slot,
+	Ret			;We found it.
+
+FNDBAD:	AOS	FNDBDC
+	JRST	RSKP
+
+U	FNDBDC			;Just to see how much FNDBAD happens.
+
+;PS 2 months later: it's used lots. MKCBHL (see note there) prefers
+;to use the last hole found (highest addresses) if there's a tie.
+;Thus any large block will usually get broken up end-first. If it is
+;returned to after partial breakup, you have a case of FNDBAD.
+;Wonder if I should zero FPT in this case?
+
+
+
+;Say we run in  A, which is brought into the CB at P1. A calls other
+;functions which cause some swapping to go on before they eventually
+;return control to A. RESWAP is called, and may have to bring
+;A back into the buffer. If we restricted RESWAP to bring A back
+;in the same place it was before, we would not be able to take advantage
+;of an instance of A in the buffer at another place. Thus we must do
+;stack fixups. RESWAP scans the part of the control stack which contains
+;the POPJ returns into the code for A (i.e. into the P1 area of the
+;CB) and adjusts them all to point to the word of P2, the new instance
+;of A, where the desired instruction ended up. The adjustment is
+;trivial: add (P2-P1) to each return word. The cleverness is all in
+;finding the right words to adjust. This present algorithm looks for
+;pointers to the P1 zone between the current top of CP and the stack
+;word pointed to by LSTSWF, LaST SWap Frame. The other 2 parameters are
+;P1 and P2. P1, the old position, is in BR. P2 is put into MKCBHS+BR
+;by RSW1, so the restoring BLT in SWPRET will set up BR correctly
+;for running when we return.
+
+
+;0 - flags. 1-7 contain the subroutine at SCAN1H.
+PTR==13
+LO==12
+DELTA==11
+;J1 is 10 already.
+HI==4	;LH is used for CAIA instruction!
+
+RESWAP:	JUMPE	BR,R
+	MOVEM	1,MKCBHS+1
+	HRRI	1,MKCBHS+2
+	HRLI	1,2
+	BLT	1,MKCBHS+14
+	CALL	RSW1
+	CAMN	BR,MKCBHS+BR	;Do we have to fix stack up?
+	 JRST	SWPRET		;No.
+	HRLI	PTR,SCAN1W	;Put SCAN1W into ac's.
+	HRRI	PTR,1
+	BLT	PTR,7
+	MOVE	DELTA,MKCBHS+BR
+	Hrr	HI,(DELTA)	;Length of array now in P2. KEEP LH!
+	SUB	DELTA,BR	;Both LH's = the handle; they cancel.
+	Jumpe	DELTA,SWPRET	;Shouldn't have been called.
+	Hrrz	LO,BR		;LO has lower bound of P1
+	Addi	HI,(LO)		;HI has upper bound of P1
+	Hrrz	PTR,LSTSWF	;Lowest stack addr to do.
+	Subi	PTR,1(CP)	;minus highest = neg. cnt
+	Hrl	PTR,PTR
+	Hrr	PTR,LSTSWF
+	TRNN	F,GCFLG		;If it looks like a GC then we must have
+	SETZM GINTD		;been called from BRREST and an
+	TRO	F,GCFLG		;may have already occured.
+	CALL	1		;Run SCAN1W in ac's.
+	CALL	SWPRET		;Restore ac's but don't return. Only at
+				;this point are BR and CB back in synch
+				;and interrupts safe again.
+	JRST	DOINTN		;Clear interrupt system & return.
+
+
+
+
+SCAN1W:	Hrrz	J1,(PTR)	;ac1.
+	Caig	J1,(HI)		;ac2.
+	CaiGe	J1,(LO)		;ac3.
+	 CAIA			;Not in range, scan on. RH has data!
+	Addm	DELTA,(PTR)	;ac5. In zone, add delta.
+	Aobjn	PTR,1		;ac6. Go back to SCAN1W,
+	RET			;ac7. or exit.
+
+U	LSTSWF	;Convention: LSTSWF must always pt. to last swap
+		;block CP frame. SBCALQ worries about this.
+		;It points into the middle of the frame somewhere.
+
+;BRREST is a routine to restore the base register and swapping
+;buffer after stack flushes. Its parameter is CP and LSTSWF. 
+;It is called ONLY by UNBLIP, ERRJMP, SYSINR, & STKERR, and is supposed
+;to go away ASAP since it's a little fragile and will be obsolete in
+;the spaghetti system. Called with JSYS, clobbers AC1, resets BR
+;and LSTSWF, restores swapping buffer & stack, preserves the rest.
+;LSTSWF is the header of a linked
+;list of the swapblocks on the stack before the stack flush.
+;That list is mapped, until the frame is
+;found which is still within the scope of the value now in CP.
+;The appropriate values are then generated for LSTSWF, and the
+;left half of BR, which becomes an input to RESWAP which
+;sets up the right half of BR, the swapping buffer, and the returns
+;on the control stack if they need fixing.
+;	Bear in mind that each swapblock control stack frame saves BR,
+;but that the value saved is current for the PREVIOUS frame, i.e. is
+;the value in BR when we decided to run a new guy and made a new frame
+;for him. Also, LSTSWF points to the 4th of 5 words in an
+;swapblock CP frame; see SBCALQ.
+
+
+BRREST:	XWD BRRRET,.+1
+	SKIPN	CBSIZE			;No swapping happening.
+	 JRST	@BRRRET
+	SETZM	GINTD			;Turn off interrupts.
+	TROE	F,GCFLG
+	 JRST	TRAP
+	SKIPN	1,LSTSWF
+	 JRST	BRESET			;No sblocks above us even before
+					;the stack flush began. Reset.
+
+BRFLUP:	HRRZ	1,LSTSWF
+	CAIG	1,(CP)			;Is this frame within new scope?
+	 JRST	BRSET			;Yes.
+	MOVS	BR,-2(1)		;Get BR for next frame,
+	HLRZ	1,-3(1)			;and the frame itself,
+	HRRZM	1,LSTSWF
+	JUMPN	1,BRFLUP		;and iterate if exists.
+BRESET:	SETZB	BR,LSTSWF		;No sblock on what's left of CP.
+	CAIA
+
+BRSET:	CALL	RESWAP			;BR already set; restore buffer.
+	CALL	DOINTN			;Turn interrupts back on, do
+					;any pending.
+	JRST	@BRRRET			;Can PUSHJ  here but it
+					;is admittedly fragile. Will go
+					;away come spaghetti.
+
+U	BRRRET
+
+
+;The routine, used by SYSIN, to restore the entire CB to the
+;state indicated in the CBT. Note that it does NOT save the usual
+;ac's, and in fact clobbers several. Doesn't have anything to do with
+;BR. May be used someday after GC's if GC's are taught to swap into
+;the buffer directly instead of calling SWAPIN. This would greatly
+;reduce GC PMAP's since GC really only needs 1st & last pp. of a block.
+
+
+RESTCB:	SKIPN	CBSIZE
+	 RET
+	HRRZ	12,CBRANG	;Make an AOBJN pointer that contains
+	SUB	12,CBRANG+1	;-count,,CB page num.
+	HRLI	12,-1(12)
+	HRR	12,CBRANG
+RSTCB1:	HRRZ	7,@CBTPTR
+	JUMPE	7,.+2
+	 CALL	SWAP1P
+	AOBJN	12,RSTCB1
+	RET
+
+
+JSYSER:	XWD	JSYRET,.+1
+	MOVEM	1,JSYRET+1
+	MOVEM	2,JSYRET+2
+	MOVEM	3,JSYRET+3
+	Hrroi	1,[ASCIZ /
+JSYS FAILED AT LISP PC /]
+	PSOUT
+	Hrrzi	1,101
+	HRRZ	2,JSYRET
+	SUBI	2,2
+	HRRZI	3,10
+	NOUT
+	 JFCL
+	HRRZI	1,37
+	PBOUT
+	HRLOI	2,400000
+	Setz	3,
+	ERSTR
+	Jfcl
+	Jfcl
+	MOVE	1,JSYRET+1
+	MOVE	2,JSYRET+2
+	MOVE	3,JSYRET+3
+	HALTF
+	JRST	@JSYRET			;Good luck, sucker.
+
+U	JSYRET,4
+
+
+
+;SWPPOS is a subr for positioning something in the buffer. It is
+;an "escape" mechanism, in the same sense as VAG, OPENR, etc. IT
+;takes two arguments, a handle and a function; it swaps the shadow
+;array denoted by the handle into the buffer and applies the function
+;to the address of the header of the array. There is no protection at
+;all against being an idiot and calling something with your functional
+;argument which does more swapping and causes the desired array to
+;move and/or disappear. However, if the stuff you call
+;which swaps is kind enough to return without trying to reference
+;the thing you think you have in the buffer, well, the swapper
+;is recursive, natch, so your victim will be back in the buffer,
+;and your BR will address it. It may have come back to a different
+;place, so the value of the parameter to your functional arg is
+;garbage.
+ 
+
+SWPPOS:	LDT	2,1
+	CAME	2,HANDLT
+	 ERROR1	52,RESET	;"You can't swap that"
+	Push	CP,-1(CP)	;make 5-wd CP frame a la SBCAL
+	Push	CP,-1(CP)
+	Movsm	BR,-3(CP)
+	Hrri	BR,CHEKBR	;Upon return from user's fn, CHEKBR
+				;will just think we ran the sblock
+				;instead of running fn'l arg instead.
+	Hll	BR,-4(CP)	;Move NARGS field down
+	Movem	BR,-2(CP)
+	Hrrzi	BR,-1(CP)
+	Exch	BR,LSTSWF
+	Hrlm	BR,-4(CP)
+	Hrlz	BR,-2(PP)
+	Call	SWAPIN
+	Push	PP,-1(PP)	;SWPPOS's 2nd arg becomes APPLY*'s 1st
+	Push	PP,BR		;and the buffer position APPLY*'s 2nd.
+	Hrrzi	1,2		;Nargs for APPLY*
+	Jrst	APPLY.		;Value of application -> value of SWPPOS
+
+	PURGE	J1,NEWEST,NXTPAG,BHSF,NEGLEN,PTR,HI,LO,DELTA
+
+; New functions for accessing and changeing locations in compiled
+; or swapped code.  The first 2 args are always fndef, relative loc.
+; For the "closer" type fns, the 3rd arg is the new data.
+
+RFNPOS:	PUSH	PP,BR		;SAVE THE OLD BR
+	HRLZ	BR,1		;SWAPIN THE SPECIFIED FN.
+	CALL	SWAPIN
+	HRRZI	1,2(BR)		;POINT TO THE FN ENTRY
+	POP	PP,BR		;RESTORE BR INCASE OF INTERRUPT
+	SETZ	4,		;INDICATE SWAPPED, SET TO >0 BY FNPOS
+	RET
+
+FNPOS:	LDT	4,1		;IS THE FN SWAPPED
+	CAMN	4,HANDLT
+	CALL	RFNPOS		;YES, GET IT IN.
+	PUSH	PP,1
+	HRRZI	1,(2)		;2ND ARG STILL IN REG.
+	CALL	IUNBOX
+	POP	PP,2
+	ADDI	1,(2)		;ADD ENTRY TO REL. LOCATION
+	RET
+
+FNOPNR:	CALL	FNPOS		;FNOPENR
+	MOVE	1,(1)
+	SKIPN	4
+	CALL	RESWAP		;MUST DO RESWAP BEFORE MKN?
+	JRST	MKN
+
+FNOPNA:	CALL	FNPOS		;FNOPENRA
+	HRRZ	1,(1)
+FNOPN1:	SKIPN	4		;WAS IT SWAPPED?
+	CALL	RESWAP		;YES, GET OLD CONTENTS BACK IN.
+	RET
+
+FNOPND:	CALL	FNPOS		;FNOPENRD
+	HLRZ	1,(1)
+	JRST	FNOPN1
+
+FNCLSR:	CALL	FNPOS		;FNCLOSER
+	PUSH	PP,1
+	HRRZ	1,-1(PP)	;GET 3RD ARG
+	CALL	IUNBOX
+	MOVEM	1,@(PP)
+	MOVE	1,-1(PP)	;THIRD ARG AGAIN
+	SUB	PP,BHC+1
+	JRST	FNOPN1
+
+FNCLSA:	CALL	FNPOS		;FNCLOSERA
+	EXCH	1,0(PP)		;THIRD ARG
+	HRRM	1,@(PP)
+	JRST	FNOPN1
+
+FNCLSD:	CALL	FNPOS		;FNCLOSERD
+	EXCH	1,0(PP)		;3RD ARG
+	HRLM	1,@(PP)
+	JRST	FNOPN1
+
+; These are "fast" versions of the above functions.
+; they are called only by pushj from compiled code.
+; The first 2 args are pushed on PP and the 3rd arg is left
+; in ac1.  The caller is suppose to do all boxing and unboxing.
+
+FFNPOS:	EXCH	1,-1(PP)	;SAVE 3RD ARG AND GET 1ST
+	LDT	4,1
+	CAMN	4,HANDLT	;IS IT A HANDLE?
+	 CALL	RFNPOS		;YES GET IT IN.
+	POP	PP,2		;GET 2ND ARG(OFFSET)
+	ADDI	2,(1)		;ADD BASE
+	POP	PP,1		;PUT 3RD ARG IN 1.
+	RET			;EVERYTHING HAS BEEN POPPED OFF AT
+				;THIS POINT
+
+FFNOPR:	CALL	FFNPOS		;FAST FNOPENR
+	MOVE	1,(2)
+	JRST	FNOPN1
+
+FFNOPA:	CALL	FFNPOS		;FAST FNOPENRA
+	HRRZ	1,(2)
+	JRST	FNOPN1
+
+FFNOPD:	CALL	FFNPOS		;FAST FNOPENRD
+	HLRZ	1,(2)
+	JRST	FNOPN1
+
+FFNCLR:	CALL	FFNPOS		;FAST FNCLOSER
+	MOVEM	1,(2)
+	JRST	FNOPN1
+
+FFNCLA:	CALL	FFNPOS		;FAST FNCLOSERA
+	HRRM	1,(2)
+	JRST	FNOPN1
+
+FFNCLD:	CALL	FFNPOS		;FAST FNCLOSERD
+	HRLM	1,(2)
+	JRST	FNOPN1
+

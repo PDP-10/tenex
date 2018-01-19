@@ -1,0 +1,635 @@
+
+
+
+
+
+
+
+
+
+
+
+                                   SECTION 6
+
+                      LIST MANIPULATION AND CONCATENATION
+
+
+
+
+
+
+list[x1;x2;...;xn]           lambda-nospread function.  Its value is a list
+                             of the values of its arguments.
+
+
+
+append[x1;x2;...;xn]         Copies the top level of the list  x1 and
+                             appends this to a copy of top level list  x2
+                             appended to ... appended to  xn, e.g.
+                             append[(A B) (C D E) (F G)] = (A B C D E F G).
+
+                             Note that only the first n-1 lists are copied.
+                             However n=1 is treated specially; i.e.  append[x]
+                             can be used to copy the top level of a single
+                                  1
+                             list.
+
+
+
+                             The following examples illustrate the treatment of
+                             non-lists.
+
+
+                             append[(A B C);D] = (A B C . D)
+
+                             append[A;(B C D)] = (B C D)
+
+                             append[(A B C . D);(E F G)] = (A B C E F G)
+
+                             append[(A B C . D)] = (A B C . D)
+
+
+nconc[x1;x2;...;xn]          Returns same value as  append but actually
+                             modifies the list structure of x1 ... xn-1.
+
+
+
+Note that  nconc cannot change NIL to a list. In other words, if the value of
+ foo is NIL, then the value of (NCONC FOO (QUOTE (A B C))) is (A B C), but  foo
+
+
+
+**FOOTNOTES**
+1
+    To copy a list to all levels, use  copy.
+
+
+
+
+
+                                      6.1
+
+
+
+will not have been changed.  The 'problem' is that  nconc simply has a
+collection of pointers to work with, and does not know where they originally
+came from, i.e. does not know that this NIL is the value of  foo, and while it
+is possible to alter list structure using  rplaca, there is no way to change a
+non-list to a list.
+
+
+
+nconc1[lst;x]                Performs nconc[lst;list[x]].  The  cons will be
+                             on the same page as  lst.
+
+
+
+tconc[ptr;x]                  tconc is useful for building a list by adding
+                             elements one at a time at the end, i.e. its role
+                             is similar to that of  nconc1.  However, unlike
+                              nconc1,
+                                    ,  tconc does not have to search to the end
+                             of the list each time it is called.  It does this
+                             by keeping a pointer to the end of the list being
+                             assembled, and updating this pointer after each
+                             call.  The savings can be considerable for long
+                             lists.  The cost is the extra word required for
+                             storing both the list being assembled, and the end
+                             of the list.   ptr is that word: car[ptr] is the
+                             list being assembled, cdr[ptr] is last [car[ptr]].
+                             The value of  tconc is  ptr, with the appropriate
+                             modifications to  car and  cdr.  Example:
+
+
+                             _(RPTQ 5 (SETQ FOO (TCONC FOO RPTN)))
+                             ((5 4 3 2 1) 1)
+
+
+                              tconc can be initialized in two ways.  If  ptr
+                             is NIL,  tconc will make up a  ptr.  In this case,
+                             the program must set some variable to the value of
+                             the first call to  tconc.  After that, it is
+                             unnecessary to reset  ptr since  tconc physically
+                             changes it.  Thus:
+
+
+                             _(SET FOO (TCONC NIL 1))
+                             ((1) 1)
+                             _(RPTQ 4 (TCONC FOO RPTN))
+                             ((1 4 3 2 1) 1)
+
+
+                             If  ptr is initially (NIL), the value of  tconc is
+                             the same as for  ptr=NIL, but  tconc changes  ptr,
+                             e.g.
+
+
+                             _(SETQ FOO (CONS))
+                             (NIL)
+                             _(RPTQ 5 (TCONC FOO RPTN))
+                             ((5 4 3 2 1) 1)
+
+                             The latter method allows the program to
+                             initialize, and then call  tconc without having
+                             to perform  setq on its value.
+
+
+
+
+
+
+                                      6.2
+
+
+
+lconc[ptr;x]                 Where  tconc is used to add elements at the
+                             end of a list,  lconc is used for building a list
+                             by adding lists at the end, i.e. it is similar to
+                              nconc instead of  nconc1, e.g.
+
+
+                             _(SETQ FOO (CONS))
+                             (NIL)
+                             _(LCONC FOO (LIST 1 2))
+                             ((1 2) 2)
+                             _(LCONC FOO (LIST 3 4 5))
+                             ((1 2 3 4 5) 5)
+                             _(LCONC FOO NIL)
+                             ((1 2 3 4 5) 5)
+
+                             Note that
+
+                             _(TCONC) FOO NIL)
+                             ((1 2 3 4 5 NIL) NIL)
+                             _(TCONC FOO (LIST 3 4 5))
+                             ((1 2 3 4 5 NIL (3 4 5)) (3 4 5))
+
+
+                              lconc uses the same pointer conventions as  tconc
+                             for eliminating searching to the end of the list,
+                             so that the same pointer can be given to
+                              tconc and  lconc interchangeably.
+
+
+
+attach[x;y]                  Value is  equal to cons[x;y], but attaches  x
+                             to the front of  y by doing an  rplaca and
+                              rplacd, i.e.  the value of  attach is  eq to  y,
+                             which it physically changes.   y must be a list,
+                             or an error is generated, ILLEGAL ARG.
+
+
+
+remove[x;l]                  Removes all occurrences of  x from  list  l,
+                             giving a  copy of  l with  all elements  equal to
+                              x removed.
+
+
+
+Convention: Naming a function by prefixing an existing function with  d
+            frequently indicates the new function is a  destructive version
+            of the old one, i.e. it does not make any new structure but
+            cannibalizes its argument(s).
+
+
+
+dremove[x;l]                 Similar to  remove, but uses  eq instead of
+                              equal, and actually modifies the list  l when
+                             removing  x, and thus does not use any additional
+                             storage.  More efficient than  remove.
+
+
+
+Note that  dremove cannot change a list to NIL.  For example, if the value of
+ foo is (A), then (DREMOVE (QUOTE A) FOO) will return NIL, and not perform any
+conses, but the value of  foo will still be (A) because there is not way to
+change a list to a non-list.  See discussion following description of  nconc on
+page 6.2.
+
+
+
+                                      6.3
+
+
+
+copy[x]                      Makes a copy of the list  x.  The value of
+                              copy is the copied list.  All levels of  x are
+                                    2
+                             copied,  down to non-lists, so that if  x contains
+                             arrays and strings, the copy of  x will
+                             contain the same arrays and strings, not copies.
+                              Copy is recursive in the  car direction only, so
+                             that very long lists can be copied.
+
+
+
+reverse[l]                   Reverses (and copies) the top level of a
+                             list, e.g.  reverse[(A B (C D))] = ((C D) B A).
+                             If  x is not a list, value is  x.
+
+
+
+dreverse[l]                  Value is same as that of  reverse, but
+                              dreverse destroys the original list  l and
+                             thus does not use any additional storage.  More
+                             efficient than  reverse.
+
+
+
+subst[x;y;z]                 Value is the result of substituting the S-
+                             expression  x for all occurrences of the S-
+                             expression  y in the S-expression z.  Substitution
+                             occurs whenever  y is  equal to  car of some
+                             subexpression of  z, or when  y is both atomic and
+                             not NIL and  eq to  cdr of some subexpression of
+                              z.  For example:
+
+
+                             subst[A;B;(C B (X . B))] = (C A (X . A))
+
+                             subst[A;(B C);((B C) D B C)] = (A D B C),
+
+                                   not (A D . A).
+
+
+                             The value of  subst is a copy of  z with
+                             the appropriate changes.  Furthermore, if  x is a
+                             list, it is copied at each substitution.
+
+
+
+dsubst[x;y;z]                Similar to  subst, but does not copy  z, but
+                             changes the list structure  z itself. Like
+                              subst,  dsubst substitutes with a copy of  x.
+                             More efficient than  subst.
+
+
+
+lsubst[x;y;z]                Like  subst except  x is substituted as a
+                             segment, e.g.
+
+
+
+**FOOTNOTES**
+2
+    To copy just the top level of  x, do append[x].
+
+
+
+
+
+                                      6.4
+
+
+
+                             lsubst[(A B);Y;(X Y Z)] is (X A B Z).  Note that
+                             if  x is NIL, produces a copy of  z with all
+                              y's deleted.
+
+
+
+esubst[x;y;z;flg]            Similar to  dsubst, but first checks to see if
+                              y actually appears in  z.  If not, calls
+                              error! where  flg=T means print a message of
+                             the form  x ? This function is actually an
+                             implementation of the editor's R command (see
+                             Section 9), so that  y can use &, --, or alt-modes
+                             as with the R command.
+
+
+
+sublis[alst;expr;flg]         alst is a list of pairs:
+
+                             ((u1 . v1) (u2 . v2) ... (un . vn)) with each ui
+                             atomic.
+
+
+
+                             The value of sublis[alst;expr;flg] is the result
+                             of substituting each  v for the corresponding  u
+                                      3
+                             in  expr.  Example:
+
+                             sublis[((A . X) (C . Y));(A B C D)] = (X B Y D)
+
+                             New structure is created only if needed, or if
+                              flg=T, e.g. if  flg=NIL and there are no
+                             substitutions, value is  eq to  expr.
+
+
+
+subpair[old;new;expr;flg]    Similar to  sublis, except that elements of
+                              new are substituted for corresponding atoms of
+                              old in  expr.  Example:
+
+                             subpair[(A C);(X Y);(A B C D)]  = (X B Y D)
+
+                             As with  sublis, new structure is created only if
+                             needed, or if  flg=T, e.g. if  flg=NIL and there
+                             are no substitutions, the value is  eq to  expr.
+
+
+
+                             If  old ends in an atom other than NIL, the rest
+                             of the elements on  new are substituted for that
+                             atom.  For example, if  old=(A B . C) and
+                              new=(U V X Y Z), U is substituted for A, V for B,
+                             and (X Y Z) for C.  Similarly, if  old itself is
+                             an atom (other than NIL), the entire list  new is
+                             substituted for it.
+
+
+**FOOTNOTES**
+3
+    To remember the order on  alst, think of it as  old to  new, i.e.  ui -
+> vi.
+
+
+
+
+
+                                      6.5
+
+
+
+Note that  subst,  dsubst,  lsubst, and  esubst all substitute
+copies of the appropriate expression, whereas  subpair and  sublis
+substitute the identical structure (unless  flg=T).
+
+
+
+last[x]                      Value is a pointer to the last node in the
+                             list  x, e.g.  if  x=(A B C) then last[x] = (C).
+                             If  x=(A B . C) last[x] = (B . C).  Value is NIL
+                             if  x is not a list.
+
+
+
+flast[x]                     Fast version of  last that compiles open
+                             as a 5 instruction loop, terminating on a
+                             null-check.  Interpreted, generates an error,
+                             BAD ARGUMENT - FLAST, if  x ends in other than
+                             NIL.
+
+
+
+nleft[l;n;tail]               Tail is a tail of  l or NIL.  The value of
+                              nleft is the tail of  l that contains  n more
+                                                 4
+                             elements than  tail,  e.g., if
+                              x=(A B C D E), nleft[x;2]=(D E),
+                             nleft[x;1;cddr[x]]=(B C D E).  Thus  nleft can be
+                             used to work backwards through a list.  Value is
+                             NIL if  l does not contain  n more elements than
+                              tail.
+
+
+
+lastn[l;n]                   Value is cons[x;y] where  y is the last  n
+                             elements of  l, and  x is the initial segment,
+                             e.g.
+
+                             lastn[(A B C D E);2]=((A B C) D E)
+
+                             lastn[(A B);2]=(NIL A B).
+
+
+                             Value is NIL if  l is not a list containing at
+                             least  n elements.
+
+
+
+nth[x;n]                      Value is the tail of  x beginning with the
+                              nth element, e.g.  if  n=2, value is cdr[x], if
+                               th
+                              n=3, cddr[x], etc.  If  n=1, value is  x, if
+                              n=0, for consistency, value is cons[NIL;x].  If
+                              x has fewer than  n elements, value is NIL, e.g.
+                             nth[(A B);3]=NIL, as is nth[(A . B);3] Note that
+                             nth[(A . B);2]=B.
+
+
+**FOOTNOTES**
+4
+    If  tail is not NIL, but not a tail of  l, the result is the same as if
+     tail were NIL, i.e.   nleft operates by scanning  l looking for  tail, not
+    by computing the lengths of  l and  tail.
+
+
+
+
+
+                                      6.6
+
+
+
+fnth[x;n]                    Fast version of  nth that compiles open as a 3
+                             instruction loop, terminating on a null-check.
+                             Interpreted, generates an error, BAD ARGUMENT -
+                             FNTH, if  x ends in other than NIL.
+
+
+
+length[x]                    Value is the length of the list  x where
+                             length is defined as the number of  cdrs required
+                             to reach a non-list, e.g.
+
+                                  length[(A B C)] = 3
+
+                                  length[(A B C . D)] = 3
+
+                                  length[A] = 0
+
+
+
+flength[x]                   Fast version of  length that compiles open as
+                             a 4 instruction loop, terminating on a
+                             null-check.  Interpreted, generates an error,
+                             BAD ARGUMENT - FLENGTH, if  x ends in other than
+                             NIL.
+
+
+
+count[x]                     Value is the number of list words in the
+                             structure  x.  Thus,  count is like a  length that
+                             goes to all levels.  Count of a non-list is 0.
+
+
+
+ldiff[x;y;z]                  y must be a tail of  x, i.e.  eq to the
+                             result of applying some number of  cdrs to  x.
+                             ldiff[x;y] gives a list of all elements in  x up
+                             to  y, i.e., the  list  difference of  x and  y.
+                             Thus ldiff[x;member[FOO;x]] gives all elements in
+                              x up to the first FOO.
+
+
+
+Note that the value of  ldiff is always new list structure unless  y=NIL, in
+which case the value is  x itself.
+
+
+
+                             If  z is not NIL the value of  ldiff is
+                             effectively nconc[z;ldiff[x;y]], i.e. the list
+                             difference is added at the end of  z.
+
+
+
+                             If  y is not a tail of  x, generates an error,
+                             LDIFF: NOT A TAIL.  ldiff terminates on a
+                             null-check.
+
+
+
+intersection[x;y]            Value is a list whose elements are  members of
+                             both lists  x and  y.  Note that intersection[x;x]
+                             gives a list of all members of  x without any
+                             duplications.
+
+
+
+                                      6.7
+
+
+
+union[x;y]                   Value is a (new) list consisting of all
+                             elements included on either of the two original
+                             lists.  It is more efficient to make  x be the
+                                          5
+                             shorter list.
+
+
+
+                    6
+sort[data;comparefn]          data is a list of items to be sorted using
+                              comparefn, a predicate function of two arguments
+                             which can compare any two items on  data and
+                             return T if the first one belongs before the
+                             second.  If  comparefn is NIL,  alphorder is used;
+                             thus sort[data] will alphabetize a list.  If
+                              comparefn is T,  car's of items are given to
+                              alphorder; thus sort[a-list;T] will alphabetize
+                             by the  car of each item.  sort[x;ILESSP] will
+                             sort a list of integers.
+
+
+
+                             The value of  sort is the sorted list.  The sort
+                             is destructive and uses no extra storage.  The
+                             value returned is  eq to  data but elements have
+                             been switched around.  Interrupting with control
+                             D, E, or B may cause loss of data, but control H
+                             may be used at any time, and  sort will break at a
+                             clean state from which ^ or control characters are
+                             safe.  The algorithm used by  sort is such that
+                             the maximum number of compares is n*log2 n, where
+                              n is length[data].
+
+
+
+Note: if comparefn[a;b] = comparefn[b;a], then the ordering of  a and  b may or
+      may not be preserved.
+
+
+
+For example, if (FOO . FIE) appears before (FOO . FUM) in  x, sort[x;T] may or
+may not reverse the order of these two elements.  Of course, the user can
+always specify a more precise  comparefn.
+
+
+
+merge[a;b;comparefn]          a and  b are lists which have previously been
+                             sorted using  sort and  comparefn.  Value is a
+
+
+
+**FOOTNOTES**
+5
+    The value of  union is  y with all elements of  x not in  y  consed on the
+    front of it.  Therefore, if an element appears twice in  y, it will appear
+    twice in union[x;y].  Also, since union[(A);(A A)] = (A A), while
+    union[(A A);(A)] = (A),  union is non-commutative.
+
+
+6
+     Sort,  merge, and  alphorder were written by J. W. Goodwin.
+
+
+
+
+
+                                      6.8
+
+
+
+                             destructive merging of the two lists.  It does not
+                             matter which list is longerAfter merging both  a
+                             and  b are equal to the merged list In fact,
+                             cdr[a] is  eq to cdr[b]).  merge may be aborted
+                             after control H.
+
+
+
+alphorder[a;b]               A predicate function of two arguments, for
+                             alphabetizing.  Returns T if its arguments are in
+                             order, i.e. if  b does not belong before  a.
+                             Numbers come before literal atoms, and are ordered
+                             by magnitude (using  greaterp).  Literal atoms and
+                             strings are ordered by comparing the (ASCII)
+                             character codes in their pnames.  Thus
+                             alphorder[23;123] is T, whereas
+                             alphorder[A23;A123] is NIL, because the character
+                             code for the digit 2 is greater than the code for
+                             1.
+
+
+
+                             Atoms and strings are ordered before all other
+                             data types.  If neither  a nor  b are atoms or
+                             strings, the value of  alphorder is T, i.e. in
+                             order.
+
+
+
+Note:  alphorder does no  unpacks,  chcons,  conses or  nthchars.  It is
+      several times faster for alphabetizing than anything that can be written
+      using these other functions.
+
+
+
+cplists[x;y]                 compares  x and  y and prints their
+                             differences, i.e.  cplists is essentially a
+                             SRCCOM for list structures.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                      6.9
+
+
+

@@ -1,0 +1,4270 @@
+This file, MIDAS DOC, documents the MIDAS assembler.
+Each page is one of the files from the AI:MIDAS; directory.
+The file AI:MIDAS;CONCAT MACRO is a TECO macro to create
+this file from its components
+
+The pages of this file are:
+
+0	CNTNTS >	Table of contents
+1	INTRO >		Introduction to MIDAS
+2	MIDMAN >	MIDAS manual-in-the-making (incomplete but good)
+3	RECENT >	Chronological list of MIDAS changes
+4	COMMND >	MIDAS command format
+5	PSEUDO >	List of all MIDAS pseudo-ops
+6	CNSTRC >	List of all MIDAS constructs
+7	MACROS >	Description of MIDAS macros
+8	LOOPS >		Description of MIDAS iterations
+9	COND >		Description of MIDAS conditionals
+10	FASL >		How to assemble FASL files for MACLISP
+11	.I.F >		Description of arithmetic-statement pseudos .I and .F
+I. Introduction.
+
+	MIDAS is the symbolic assembly language used at the Artificial
+Intelligence Laboratory for the Digital Equipment Corporation PDP-6 and
+PDP-10 computers.  MIDAS normally operates in a two-pass mode.  The
+assembler processes the source program statements by translating
+mnemonic op-codes to the binary codes needed in machine instructions,
+relating symbols to numeric values, assigning relocatable or absolute
+core addresses for program instructions and data, and preparing several
+output files, containing the assembled binary, the assembly cross-
+reference input for the CREF program, the error log, and the assembly
+listing.
+
+	MIDAS also contains unique and powerful macro capabilities
+which allow the programmer to create new language elements, thus
+expanding and adapting the assembler to perform specialized functions
+for each unique programming task.
+
+II. MIDAS Statements.
+
+	MIDAS programs are usually prepared interactively, using a text
+editor, as a sequence of statements.  Each statement is normally written
+on a single line and terminated by a carriage-return/line-feed sequence.
+MIDAS statements are format-free, as are the other PDP-10 assemblers.
+
+	Three types of elements in a MIDAS statement exists which are
+separated by specific characters.  They are identified by the order of
+appearance in the statement and by the delimiting character which
+follows or precedes the element.
+
+	Statements are written in the general form:
+
+LABEL:	INSTRUCTION		; COMMENT <crlf>
+
+	The assembler interprets and processes these statements,
+generating one or more binary instructions or data words, or performing
+an assembly process.  A statment must contain at least one of these
+elements and may contain all three types(of course, a totally blank line
+is allowed).
+
+II.1 Labels.
+
+	A label is a symbolic name determined by the programmer to
+identify the statment.  If present, the label is written first in a
+statement, and is terminated by a colon (:).
+
+II.2 Instructions.
+
+	Several different forms of MIDAS instructions exist.  Whether
+or not an instruction generates code depends upon the instruction.
+
+	An expression in the instruction field will cause code to be
+generated at the address pointed to by the current location counter, and
+the current location counter to be incremented by the number of words
+generated.
+
+	Another form of an instruction is the pseudo-operation("pseudo-
+op").  Some pseudo-ops, such as .BP, return values and can be used in
+expressions, however, the bulk of them control assembly processing in
+some way.  The END pseudo-op is the only statement that is required in
+every program.  See the "PSEUDOS" chapter for more information on
+pseudo-ops.
+
+	The assignment statement is another type of instruction.  This
+statement defines a symbol from an expression rather than from the
+current counter, such as a label uses.
+
+	An instruction may also be a macro name, which calls a user-
+defined macro instruction.  Like pseudo-ops, macros direct assembly
+processing, but, because of their power to handle repetitions and to
+extend and adapt the language, macros are discussed in separate chapter
+("MACROS" and "LOOPS").
+
+	Instructions are terminated with a semicolon or a carriage
+return.
+
+II.3 Comments.
+
+	Comments may be added to a statement following a semicolon.
+Comments do not affect assembly processing or program execution, being
+ignored by the assembler, but are useful for later analysis or
+debugging.  It is unwise to have unbalanced brackets in a comment, as
+these can cause problems in the usage of conditionals.
+
+III. Symbols.
+
+	MIDAS symbols may be used as statement labels, operators, or
+operands.  A symbol contains from one to six characters from the
+following set:
+
+	The alphanumeric characters:  A-Z and 0-9
+	Special characters:  $, % and .
+
+If the first character is a digit, at least one alphabetic character,
+one $ or %, or two .'s MUST be in the symbol name to distinguish the
+symbol from a number.
+
+III.1 Symbolic Addresses.
+
+	A symbol used as a label to specify a symbolic address must
+appear first in the statement and must be immediately followed by a
+colon(:).  When used in this way, a symbol is said to be defined.  A
+defined symbol can reference an instruction or data word at any point in
+the program.  A symbol can be defined as a label only once.  If a
+programmer attempts to define a symbol as a label again, the
+redefinition attempt is ignored and an error message is generated.  The
+assembler recognizes only the first definition.
+All these are legal symbolic addresses:
+FOO:
+BAR:	BLETCH:		(both will be defined as having the same value)
+23SKDO:			(the alphabetics identify this as a symbol)
+The following are illegal:
+7.:			(attempted use of a number as a label)
+FOO :			(colon must immediately follow label)
+
+III.2 Symbolic References.
+
+	All symbols referenced in a program must be defined by either
+MIDAS or the program.  MIDAS defined symbols include the hardware
+operation codes, the local operating system calls, the operating system
+parameter bits(ITS version), and the MIDAS variables.  Program defined
+symbols are defined either by tags, assignment statements, or macro
+definitions.
+
+	The code generated by a symbolic reference, if any, depends upon
+the value of the symbol and the context or format in which the symbol is
+referenced.  In machine instructions, the delimiting space or tab
+between the operation code and the accumulator and/or address is what
+specifies the special format for normal machine instructions.  There is
+no special symbolic type for op-codes; therefore, user-defined op-codes
+are defined as ordinary symbols.  An exception is the I/O instructions,
+which are actually pseudo-ops that generate the special I/O instruction
+format.
+
+III.3 Assignments.
+
+	Symbols may be defined other than by usage of labels.  This is
+desireable when the defined symbol is to be something other than an
+address; for example, a bit mask.  For this, the assignment statement is
+used.  This takes the general form:
+
+	SYMBOL=VALUE  <crlf>
+
+where the value may be a number or expression.  Unlike labels, symbols
+defined with an assignment statement may be redefined with other
+assignment statments.  No code is generated in the object program other
+than an entry in the symbol table by any assignment statement.
+
+	Various special forms of the assignment statement exist.  Using
+two equals signs specifies that the symbol is to be half-killed to DDT.
+A colon after the equals specifies that the symbol, like a label, is
+non-redefinable.
+
+	Examples:
+
+A=1		; redefinable, fully available to DDT
+B==2		; redefinable, half killed
+C=:3		; non-redefinable, fully available to DDT
+D==:4		; non-redefinable, half-killed to DDT
+
+IV. Numbers
+
+	Numbers in MIDAS may be signed or unsigned, and are normally
+processed in octal.  To force decimal or decimal floating point
+processing, the number is either terminated by a period for decimal
+integer processing, or has a decimal fraction(for a floating point
+integer, a fraction of .0 is necessary) for decimal floating point.
+
+V. Address Assignments.
+
+	As source statements are processed, the assembler assigns
+consecutive memory addresses to the instruction and data words of the
+object program.  This is done by incrementing the location counter each
+time a memory location is assigned.  A statement which generates a
+single object program storage word increments the location counter by
+one.  Another statement may generate six storage words, incrementing the
+location counter by six.
+
+	Ordinary expressions generate a single storage word.  However,
+assignment statements and some pseudo-ops do not generate storage words
+and do not affect the location counter.  Other pseudo-ops and macros may
+generate any number of words in the object program.
+
+V.I. The Location Counter.
+
+	The location counter is a pointer to the absolute or relocatable
+address in which the next storage word would be generated.  If used in
+an expression which generates a storage word it has the value of the
+address where this storage word would be generated.
+
+	The symbol . references the location counter; it may be read or
+modified.  The location counter may also be modified by the LOC pseudo-
+op which is equivalent to ".=".
+Redo QUOTED CHARS.  Maybe call them quoted strings?
+       Remember to see .QMTCH .
+ * Should C be in the order fileds, words, syllables?
+	That way is not as logical, but puts the longest part last...
+   --- INDEX ---
+
+@. OVERVIEW
+A. INTRODUCTION
+  1. Machine Language
+  2. Simple examples of MIDAS
+  3. Output formats
+B. Basic Concepts
+C. WORDS, and their syntax
+  1.  Generalities:
+  2.  Syllables:
+    a.  NUMBERS
+    b.  SYMBOLS
+    c.  Quoted Characters:
+    d.  Bracketed words:
+    e. Pseudo-ops which return a value:
+  3.  Fields
+  4.  Words
+    a.  The Indirect bit
+    b.  The Index field
+
+
+
+
+@. OVERVIEW
+
+MIDAS is a PDP-10 assembler.  It takes as its input an ASCII file, and
+produces a binary file in any of several formats.  The language is
+"format-free," meaning that the value or use of a word in the input does
+not depend on its position on a line or in the page, but instead on the
+characters (such as colon, comma, and carriage-return) which delimit it.
+
+	MIDAS has many features to make assembly language programming clear
+and convenient.  These include:
+
+	1) PSEUDO-OPERATIONS.  Pseudo-ops are instructions to MIDAS
+	  about how the user wants the program assembled.  See the
+	  section on PSEUDO-OPS.
+
+	2) MACRO-INSTRUCTIONS.  When writing a program, certain code
+	  sequences are often used several times, with only some
+	  parameters changing.  It is convenient to only require
+	  the user to type these in once.  To do this, the sequence
+	  of code is defined with dummy arguments as a macro.  Once
+	  defined, then anywhere in the program, the user can invoke
+	  the macro, specifying its arguments.  See the section on
+	  Macros,
+
+	MIDAS output consists primarily of 36-bit storage words, which are
+intended for loading into memory locations of a job.  The output also
+includes a symbol table (a list of the names and values of all the symbols
+defined by the programmer), and some information on how to load the file
+into core memory.  The binary formats are documented in ITSDOC;BINFMT >,
+and the format of the symbol table in .INFO.;DDTORD >.  
+
+NOTE: Numbers used in this document are assumed to be octal, unless
+followed by a "." in which case they are decimal.  E.G. 12 = 10. = ten.
+
+
+
+A.  INTRODUCTION
+
+ 1.  Machine Language
+
+	The PDP-10 machine language instruction breaks down into five
+fields of bits: a nine bit opcode field, a four bit accumulator (AC) field,
+a one bit indirect field, a four bit index register field, and an 18 bit
+memory address field.  The instruction set is documented very clearly in
+the "DecSystem-10 System Reference Manual" (DEC-10-HGAC-D, and the later
+versions), which is published by the manufacturer, Digital Equiptment Corp.
+(PDP-10 means the same thing as DecSystem-10.)
+
+	####### this in appendix #####
+	The ITS machines use slightly modified versions of the standard
+machine code.  The modifications of interest to the user are:
+
+1)  An instruction called "CIRC" has been added to the AI and MC machines.
+   It is logically in the class of "shift and rotate" instructions, and is
+   documented below.
+
+2)  Some of the instructions which normally exist on only KL-10's
+    are not implemented on the MC KL-10.
+	##### that in appendix ######
+
+  2. Simple examples of MIDAS code
+
+	MOVE C,COUNTA
+	TLNE B,100
+	 SETZ C,
+	JUMPGE A,@DISTAB(B)
+	JRST LABEL1
+
+Each of these lines will generate one storage word in the output.
+The first line will generate a MOVE instruction that will load the
+contents of memory location COUNTA into accumulator C.  This is accomplished
+by putting the value of the symbol C in the instruction's AC field,
+and the value of the symbol COUNTA in the address field, and then adding
+the value of the symbol MOVE (which supplies the appropriate value in the
+op-code field).  The second line is similar, except that the address field
+is specified by the octal number 100 instead of a symbol.  That is a
+common thing to do with instructions like TLNE which use the address
+as a bit-mask.  The third line is a SETZ instruction.  The address field
+has been omitted, because the SETZ instruction ignores its address.
+In fact, the address field will be assembled as zero.  The SETZ has been
+indented one space as a note to humans that the preceding TLNE instruction
+can skip over it.  The fourth line
+is a JUMPGE instruction which demonstrates indexing and indirect addressing.
+The "@" turns on the instruction's indirect-bit, selecting indirect
+addressing.  The "(B)" puts B's value in the index field.  Presumably,
+B is the number of an accumulator which is to be used as an index register.
+The fifth line shows a JRST instruction, for which it is not necessary
+to specify an accumulator.  In fact, the accumulator field of the instruction
+will be assembled as zero;  but instructions that actually use accumulator
+zero should say so explicitly.
+	So in the simple cases, MIDAS agrees with the format used in the
+"DecSystem-10 System Reference Manual."
+
+  3. Output formats
+
+	MIDAS can produce its binary output in any of several different formats.
+The format used is specified by the user with pseudo-ops (see section on pseudo-ops).
+The currently available formats are:
+	
+	SBLK	the usual format in ITS.
+	FASL	used for programs which are meant to be loaded by LISP.
+	DECREL	compatible with the D.E.C. operating system.
+	RELOCATABLE	relocatable binary to be loaded by STINK.
+
+	These are explained in more detail in the section on OUTPUT.
+
+
+B.  Basic Concepts
+
+	A MIDAS input file consists mainly of LINES, separated by the
+characters <cr> (carriage return), <lf> (linefeed), <ff> (formfeed), and ?
+(question mark).  Lines should be terminated by <cr><lf>, <cr><lf><ff>, or
+?  (stray <cr>'s, <lf>'s, and <ff>'s should be avoided.
+ In addition, a semicolon tells MIDAS to ignore all characters up to the
+next <cr>, which will end the line as usual. That is the normal way to put
+comments in a MIDAS program.
+	Usually, a line contains a single WORD.  When MIDAS assembles a
+line which contains a WORD, it figures out the value of the WORD (see
+section C, WORDS and their syntax) and generates a STORAGE WORD, which is a
+36.  bit binary $$$$$ number (which is what a PDP-10 memory word contains).
+Consecutive storage words in the output will generally load into consecutive
+memory locations.  These storage words, along with some information to the loader,
+constitutes the output of MIDAS.
+	A blank line is perfectly legal, and is ignored.  Aside from that,
+lines may contain various things other than words, such as
+parameter-assignments, labels, and invocations of pseudo-ops.  They will be
+described individually later in the manual.
+	The separation into lines should not be thought of as a
+hard-and-fast rule.  The "line-separating" characters USUALLY have that
+effect, but in some contexts (such as text-string constants) they may have
+NO special effect. <cr> and ?  are both "line-separators", but in a
+semicolon-comment they do not act the same: a <cr> ends the comment, but a
+?  is ignored as "part" of the comment.  Thus,
+
+	MOVE A,B	;COMMENT ?	MOVE C,D
+
+assembles only a single instruction.  The moral is that the meaning of a
+character depends on its context, which depends on the characters IN FRONT
+of it.  MIDAS does not work by BNF-like grammatical rules ("a MUMBLE can be
+either a FOO or three BARs in a row") although a few constructs can be
+approximated by them.  It works like a finite-state machine: "In the usual
+input-reading state, if a <cr> is read, terminate the line and process it;
+if a question-mark is read, terminate the line and process it; if a
+semicolon is read, enter the comment-reading state.  In comment-reading
+state, if anything but a <cr> is read, ignore it; if a <cr> is read, return
+to the normal input-reading state and handle the <cr> (by terminating the
+line)".
+
+
+C.  WORDS, and their syntax
+
+ 1.  Generalities:
+	The most commonly used MIDAS construct is the STORAGE WORD. The
+term WORD is used to refer to the syntactic form of a STORAGE WORD, because
+the same syntactic form is used in other contexts to mean other things.
+This section of the manual describes how to put a WORD together. The
+concept of a WORD is tied closely to those of SYLLABLES and FIELDS, out of
+which WORDS are made.  Loosely, a syllable is a number or symbol, and a
+field is an arithmetic expression.  Words are made up of fields, and fields
+are made up of syllables.  Do not confuse a MIDAS field with a "field" of
+bits in a PDP-10 machine language word.
+
+ 2.  Syllables:
+
+	There are several types of MIDAS syllables.  A symbol may be a 
+NUMBER, a NUMERICALLY DEFINED SYMBOL, a QUOTED CHARACTER, a BRACKETED WORD,
+or a PSEUDO-OP (but see MACROS) (Note: only some pseudo-ops can by
+syllables).
+ Each syllable has a value, which is a 36.-bit quantity.
+
+ a.  NUMBERS
+
+	A string of digits in which no digit is preceeded by a period forms
+an INTEGER, a type of syllable whose value is the value of the number
+interpreted in the CURRENT RADIX (octal by default, but see PSEUDO-OPS).
+However, an integer followed by ' (single quote) is interpreted as octal,
+and one followed by .  (period) is interpreted as decimal, regardless of
+the current radix.  A string of digits with a .  (period) to the left of
+some digit forms a FLOATING-POINT NUMBER, interpreted in decimal.
+
+	Either of these may be followed by a ^ (uparrow) which works
+something like scientific notation.  An integer may be followed by an
+integer as
+
+		A^B
+
+ which would have the value of
+
+		   B
+		A*R
+
+where R is the radix in which A is expressed.  The result is fixed-point.
+A floating point number may also be followed by a ^ and an integer, as in
+
+		X.Y^A
+
+which is interpreted as
+
+		      A
+		X.Y*10.
+
+that is, as scientific notation.  The result is still floating-point.
+
+	Also, any of the preceeding numeric formats may be followed by a _
+(backarrow, or underscore) and an integer, which multiplies the value by
+		 integer
+		2 
+	The integer is interpreted in the current radix, but may
+be forced to decimal or octal by terminating it with .  or ' as explained
+above.  The result is always a fixed-point number, even if the first number
+was floating-point!
+
+Examples of NUMBERS:
+			(the current radix is taken to be octal)
+
+	Syllable			Value
+	========			=====
+
+	23				23 octal
+	23.				27 octal
+	3^3				3000 octal
+	3.^3				5760 octal (3000. decimal)
+	1_3				10 octal
+	23_10.				46000 octal
+	3.5				3.5 floating-point
+	3.5^4				35000.0 floating-point
+	3^3_4				60000 octal
+	1.5_3				14 octal (Note: NOT floating point!)
+
+
+    b.  SYMBOLS
+
+	A symbol is a string of SQUOZE characters which is not a
+number. More precisely, it is a string of characters from the
+SQUOZE character set of length 1 or greater which contains at
+least one letter, or at least one % (percent) or $ (dollarsign),
+or at least two .'s (periods). The SQUOZE set includes all 26.
+letters, all 10.  digits, and the characters $ (dollar sign), %
+(percent sign), and .  (period).  (Note that the symbol . (a
+single period) is special; see SPECIAL SYMBOLS).
+	Here are some examples of symbols:
+
+	LOC3
+	GOHERE
+	$END
+	A%LOCATION
+	.$Z%.G
+
+(The last example is NOT considered an example of good programming style.)
+A symbol has no length restriction, but MIDAS only looks at the first six
+characters, so the symbols THISLOCN and THISLO, for example, are
+effectively identical.
+	A symbol can have these types of definition (or none at all):
+numerically defined symbols, pseudo-operation names (see PSEUDO-OPS), and
+macroinstruction names (see MACROS).  If MIDAS ever tries to assemble an
+undefined symbol, it will generate an error message.  The programmer should
+define any symbol which he wants MIDAS to assemble.  Pseudo-ops are
+instructions to MIDAS, telling it how to assemble various things (see
+section E, which explains the most important psedo-ops, and the section on
+PSEUDO-OPS).  Macros are explained in the section on MACROS.
+
+	Numerically defined symbols are the type of syllable being discussed
+here.  The value of a numerically defined symbol may be declared explicitly
+by the programmer, and some symbols are already defined in MIDAS.  Some of
+MIDAS's predefined symbols are the PDP-10 instruction set, and certain special
+symbols used in the ITS time-sharing system.  Defining symbols is explained
+in section C, Defining Symbols.
+	An example of numerically defined symbols:
+In the word	MOVE B,FOO   , there are three symbols: MOVE, B, and FOO.
+The symbol MOVE is predefined; the other two must be defined by the programmer.
+
+    c.  Quoted Characters:
+
+	A quoted character starts with any one of the characters ' (single
+quote), " (double quote), or ^ (upasrrow) followed by a character.  The
+quote or uparrow and the character following are taken as a syllable.  A ' 
+followed by a character has the value of the SIXBIT representation of the
+character.  A " followed by a character has as its value the ASCII
+representation of the character.  ^ works the same way as " except that the
+ASCII value is ANDed with 77 octal; that is, only the low six bits are
+kept.  ^ is used for generating the ASCII code for "control" characters.
+	Examples of quoted characters:
+
+	Syllable			Value
+	========			=====
+
+	  'A				41 octal
+	  "+				53 octal
+	  ^C				3 octal
+
+    d.  Bracketed words:
+
+	A word surrounded by ( ) (parentheses), < > (angle brackets), or [ ]
+(square brackets) is a syllable called a BRACKETED WORD.  Each works in its own way:
+
+<word>	is simply a syllable whose value is that of the word between the brackets.
+	Angle brackets act much like algebra's parentheses, and are usually
+	used that way.
+
+(word)	works two different ways.  If the preceeding character is an arithmetic
+	operator, the value of the word has its halves swapped, and this becomes
+	the value of the syllable, on which the arithmetic operator acts.  If the
+	preceeding character is not an arithmetic operation, the value of the word
+	is swapped and saved, and at the end of the outer word, it is added into
+	the word being formed.  This quirk is so that (5) stuck at most places
+	in a word will put 5 in the index field.
+
+[word]	is a LITERAL, or CONSTANT.  These are explained in section F, LITERALS.
+	The value of the syllable is the location where MIDAS put the literal.
+
+	It is hard to give examples of ( ) and < > until some further concepts
+have been introduced, so these have been delayed.  Examples of [ ] can be found 
+in section F, LITERALS.
+
+    e. Pseudo-ops which return a value:
+
+	Pseudo-ops are instruction given by the programmer to MIDAS in the
+input ASCII file about how to assemble various things.  They are described
+in section E, "Pseudo-ops that every programmer needs," and in the section
+on pseudo-ops.
+	They are the "built-in functions" of the MIDAS assembly-time
+programming language.  Some pseudo-ops are used for their side-effects;
+some, to compute values.  Calls to value-returning pseudo-ops constitute
+syllables, whose value, of course, is the value returned by the pseudo-op.
+
+  3.  Fields
+
+	A field may be either a single syllable, or two or more syllables combined 
+arithmetic operators.  Many MIDAS pseudo-ops take arguments that are syntactically
+fields.  These are the operators, in their order by priority:
+
+		char.	operator
+		=====	========
+highest prior.	  _	left shift 1st operand by # of bits specified by 2nd
+			   operand. (Negative 2nd operand shifts right)
+		  &	bitwise AND
+		  #	bitwise XOR
+		  \	bitwise OR
+	       * and /	36. bit integer multiplication and subtraction
+lowest prior.  + and -	36. bit integer addition and subtraction
+
+
+	Thus all _'s are done first, then &'s, then #'s, then \'s, then *'s
+and /'s, and finally +'s and -'s.  Operators of the same priority will be
+performed in left-to-right order.  Examples: (assuming that A, B and FOO
+are numerically defined symbols with the values 1, 2, and 53 respectively.)
+
+	Field		Value
+	=====		=====
+	3+4		7
+	1+4&FOO+1	2
+	1+4&<FOO+1>	5
+
+	The first example is rather trivial.  The second and third
+demonstrate the use of angle brackets as algebraic parentheses.  In the
+second, 4 is anded with FOO, giving zero, then 1+0+1 equals 2.  In the
+third example, first FOO is added to 1, giving 54.  Then 54&4 gives 4, and
+then the 4 is added to the 1, giving 5.
+
+	Note that there may NOT be spaces within a field; so 4 * 5	is
+not the same as 4*5.
+
+  4.  Words
+
+	The word is a very important construct in MIDAS, as an ordinary
+assembler instruction is, syntactically, a word.
+	A word is one or more fields connected by field separators. There
+are two field separators, space (or horizontal tab) and comma. (Space and
+horizontal tab are identical and will both be referred to as space.) To
+improve readability, spaces before and after a word and spaces adjacent to
+a comma are ignored, and more than one space in a row are treated as one.
+	The values of the fields are combined to form the values of the
+word according to the number of fields and the pattern of separators. These
+formats are described in the following table, in which A, B, and C are
+fields.  "TR(x)" is used to represent the result of truncating x to 18. bits.
+
+
+pattern		format #	value
+		in octal	
+======		=======		=====
+
+,,C		13		MEANINGLESS
+,B		14		TR(B)
+,B C		15		MEANINGLESS
+,B,		16		MEANINGLESS
+,B,C		17		MEANINGLESS
+A		20		A
+A B		24		A+TR(B)
+A B C		25		A+TR(B)+TR(C)
+A B,		26		A+<B&17>_23.
+A B,C		27		A+<B&17>_23.+TR(C)
+A,		30		A
+A,,		32		<TR(A)>_18.
+A,,C		33		<TR(A)>_18.+TR(C)
+A,B		34		A+TR(B)
+A,B C		35		MEANINGLESS
+A,B,		36		MEANINGLESS
+A,B,C		37		MEANINGLESS
+
+	Here are some examples of what these formats are most useful for:
+
+A B,C	This is the normal instruction format, e.g., CAMN A,FOO
+A B	This is good for instructions with no accumulator field,
+		e.g., JRST BAR
+A B,	and this is for instructions with no address field, e.g.,
+		SETZ D,
+A,,C	This is the standard way to specify the contents of a
+		storage word by half-words, e.g., 
+		BLETCH: -PDL,,PDB
+
+NOTES:
+
+
+1)	All addition done here is special in that carry from bit 18 to bit
+17 is suppressed.  In other words, when the user specifies a field which is
+supposed to be a right half-word field, he can rest assured that his
+quantity didn't carry over into the left half.
+
+2)	A word may have more than three fields.  In that case, the
+fourth and following fields are added in with the third field.  Thus,
+if the third field is truncated to 18. bits and added in, so are the
+following fields.  Only spaces may be used for separating fields after
+the third field;  a comma after the third field is an error, but will
+be treated as a space.  Commas are flagged so as to catch places where
+the accidental omission of a <cr> has run two lines together.
+
+4)	The user can redefine these formats by using the .FORMAT pseudo-op.
+That is what the "Format number" of a format is used for.  See PSEUDO-OPS.
+
+    a.  The Indirect bit
+
+	The character @ (atsign) is a special character.  It may occur
+anywhere inside a word.  Whenever MIDAS encounters an @ inside a word, a 1
+is ORed into bit 22.  of the word, i.e., the indirect bit.  The @ does not
+terminate syllables or fields, nor is it taken as part of a syllable or
+field.
+	Its position in the word is totally irrelevant.  However, the
+normal convention is to put it in front of the field specifying the right
+half of the word (the address) if there is one; if not, put the @ where the
+address would go.
+
+    b.  The Index field
+
+	To get a certain quantity into the index field, the easy, convntional
+way is to use a bracketed word of the parentheses type.  For example,
+	MOVE A,FOO(D)
+will put the value of D into the storage word's index field.  As explained
+in section C.2.d, the parenthesis bracketed word works in its strange way
+because the index field of the machine word is the lowest four bits in the
+left halfword.
+	The index field, used this way, may appear anywhere in the word
+except in the middle of a syllable, but the normal convention is to put it
+at the end of the field specifying the right half of the word (the address)
+if there is one.
+
+
+  5.  Examples of how MIDAS parses WORDS
+
+	Here are some words, and how they would be parsed by MIDAS:
+
+	MOVE A,FOO	MOVE is a symbol (syllable),and forms one field.
+			The same is true of A and FOO.  The fields are in
+			the pattern A B,C so MIDAS assembles the word as
+			the value of MOVE, added to the value of A&17
+			shifted 23. places, added to the truncation
+			of the value of FOO.
+
+***** RMS: these are boring to write.  Maybe do two more, one
+		somewhat hairy and one very hairy? Any suggestions? *****
+
+D. Defining Symbols
+
+	Section C.2.b explained the rules for naming symbols.  This
+section explains how the user gives a symbol its value.
+	A symbol can have these types of definition (or none at all):
+numerically defined symbols, pseudo-operation names (see PSEUDO-OPS), and
+macroinstruction names (see MACROS).  Here we are concerned with numerically
+defined symbols; for macros, see MACROS.  Pseudo-ops cannot be defined by
+the user;  the initial supply is all you get.
+	There are basically two ways to numerically define a symbol: as a
+LABEL, and as a PARAMETER.
+
+  1.  Labels.
+
+	The primary use of symbols is to hold the address of an instruction
+or variable in the program.  MIDAS has a special construct, the LABEL, for
+defining such symbols.  A label is simply a symbol followed by a colon, and it
+can appear at the beginning of any line.  Its effect is to give the
+symbol a value equal to the address where the next storage word will go.
+A line can have several labels in it, but a label may not appear after
+any other construct has begun.  A label may be followed by anything at all,
+or it may be the only thing on its line.  An example is:
+
+	FOO:	MOVE A,TABLE(C)
+
+which assembles a storage word containing a MOVE instruction, and
+also defines FOO as the address of that instruction.
+
+	If a symbol is defined as a label, it can have only one value.
+If anything in the program tries to define the symbol with a different
+value, either before or after the symbol's appearance as a label, an
+error message will be typed.  It is legal to define the symbol again
+with the SAME value.  In fact, that happens to every label, since it
+is seen on both passes of the assembly.
+
+	The parameter assignment  "<symbol>=:."  has the exact same
+effect as the label  "<symbol>:", which is allowed for convenience's sake.
+
+  2.  Parameters.
+
+	There are other uses of numerically defined symbols besides
+their use as labels.  MIDAS also allows definition of symbols by
+PARAMETER ASSIGNMENT.  A parameter assignment is a line of the form
+	<symbol>=<word>   or   <symbol>==<word>
+which tells MIDAS to compute the value of <word> and make that the value
+of <symbol>.  This is similar to the "assignment" statement of most
+mathematical languages, such as FORTRAN.  Using the == construction
+makes the symbol half-killed in DDT (this is explained in the section
+on OUTPUT; for now, suffice to say that the == form is the one you
+probably want to use.)  Here is one of the ways to use this feature:
+
+	Say a programmer is writing a program which knows how to handle
+four FOOBAR's. If in the future he should want to modify the program
+to handle five or six FOOBAR's, there might be many places where the
+program would have to be changed.  Now if he had made the number of
+FOOBAR's an assembly parameter, by defining a symbol as in:
+	NFOOBR==4
+and writing all of the program to work for NFOOBR FOOBAR's 
+Whenever there is a table or block of data whose length must
+be referred to by the program, that length should be expressed
+by a numeric symbol.
+MIDAS 354:
+MRC 10/30/77 DEC, Tenex MIDAS
+MIDAS now has the SMALSW assembly switch to generate a small
+MIDAS.  Normally SMALSW is off except for DEC sites other than
+CMU or SAIL.  A SMALSW MIDAS does not have the bit definitions
+in DECBTS predefined, the FASL features, and has smaller symbol
+areas.
+There now exists a TNXSW to generate a MIDAS for Tenex and
+Twenex.  Currently it uses PA1050.
+
+MIDAS 299:
+RMS 9/12/76 Variable-size Literal Table, .OP.
+Just like the symbol table, the literal table can have its
+size declared by the program, in case the program needs a
+larger literal table than is normally allocated.  The second
+argument to .SYMTAB specifies the number of words of literal
+for the table to contain.  The literal table must be big
+enough to contain any one of the constants areas in the
+program;  the addresses of the beginnings and ends of
+all the constants areas, printed at the end of an assembly,
+can be used to compute the minimum size needed.  The default
+size in the ITS version of MIDAS is 3300 words, while in the
+DEC version it is usually 1000 words.  A second table, the
+"constants global table", has a size 1/4 the size of the
+literal table.  If it fills up, the literal table size should
+be increased.  Example:  .SYMTAB 4000.,3000. allocates
+room for 4000. symbols, and 3000. words of literal (twice
+the usual number).
+
+.OP and .AOP will now insert the appropriate AC field into
+the given instruction, unless it already has a nonzero
+AC field;  they will insert the appropriate address field
+unless the address field or index field is already nonzero
+(Recall that .OP insn,acdata,memdata executes insn, addressing
+an AC containing acdata and a memory location containing
+memdata, and returns the updated contents of the AC).
+In the past, if the AC, index or address field were nonzero,
+neither the AC nor the address was supplied.  As a result
+of this change, things like DATE=.OP .RDATE now work.
+
+
+MIDAS 290:
+RMS 9/1/76 Macro Arguments
+Two new macro-argument syntaxes are available:
+ * gets "strung" syntax.  A strung dummy is delimited with an
+arbitrary character both before and after.  The strung syntax
+is what ASCII and SIXBIT have always used for their arguments.
+ # gets "evaluated" syntax, in which a field is read in and
+evaluated, and the value is passed to the macro (by converting
+it to a numeral).  # passes the argument by value instead of
+by name.
+ For details, see AI:MIDAS;MACROS >
+
+
+MIDAS 283:
+RMS 8/22/76 Commands, .ABSP, .RELP, .RL1, better error checking
+Devices and SNAMEs are now sticky from output specs
+  to input specs.  Thus, FOO;_BAR assembles FOO;BAR >
+  giving FOO;BAR BIN.
+.ABSP <arg>, returns the absolute part of <arg>.
+.RELP <arg>, returns its relocation.
+.RL1 returns a relocatable 0 in a relocatable
+  assembly.  In an absolute assembly, it returns 0.
+Thus, IFN <.RELP .RL1>, is a test for a relocatable assembly.
+For all X, .ABSP X,+.RL1*.RELP X, equals X.
+An error message will now result if either argument to _
+  relocatable or external.  If * produces a relocation factor
+  other than 1, or if at least one of its args is external,
+  an error message results except in STINK format assemblies.
+  A relocatable quantity in a \'d macro argument is an error.
+.LDB <bp>,<word>, returns the result of LDBing out of the <bp>
+  field of <word>.  .DPB <byte>,<bp>,<word>, returns the result
+  of altering <word> by DPB'ing <byte> into the field <bp>.
+In the SAIL version, CTL-META-LF now means EOF on the TTY.
+
+
+MIDAS 255:
+RMS 5/16/76 .NTHWD <n>,<text string>
+returns just the <N>'th word of the text string.
+.1STWD is a special case of .NTHWD - namely, .NTHWD 1,.
+
+
+MIDAS 254:
+MRC 5/16/76 Lower case, COMPIL
+The DEC version now has a COMPIL interface.
+Error messages now use both cases.
+
+
+MIDAS 252:
+RMS 4/11/76 .SYMCNT says how big a symtab you need.
+.SYMCNT returns the number of symtab entries that are in use.
+The R switch will print out the value of .SYMCNT, as well as
+the run time, for use in determining what .SYMTAB arg to use.
+See AI:MIDAS;PSEUDO > for details.
+
+
+MIDAS 245:
+RMS 4/2/76 DEFINITIONS FILES
+Definition files on SYS: now have numeric 2nd names.  On a DEC
+system those files would have "MID" for their 2nd names.  That
+way, specifying just the first name in a .INSRT will work on
+all operating systems.  The files that exist are:
+FASDFS >	defining symbols for use when assembling a FASL file.
+ITSDFS >	defining ITS system calls (not necessary if assembling
+		 ITS programs on ITS, since they are predefined).
+ITSBTS >	defining supplemental symbols for use with ITS.
+		 Again, not normally necessary to .INSRT.
+DECDFS >	defining DEC system calls.  Not necessary to .INSRT
+		 when assembling a DEC program on teh DEC system.
+DECBTS >	defining supplemental symbols for use with the
+		 DEC system (such as are found in DEC's UUOSYM file
+		 for MACRO-10).  These symbols are not predefined
+		 even when running MIDAS on a DEC system.
+TNXDFS >	defining TENEX system calls.
+
+Note that ITSDFS, DECDFS, and TNXDFS do not directly define the symbols;
+they define macros to loop over the symbols, for greater versatility.
+However, the symbols can then be defined by calling the macro .ITSDF
+or .DECDF or .TNXDF, which is defined by the file.
+
+
+MIDAS 234:
+RMS 3/23/76 .OSMIDAS, .SITE, .DECREL, DEC VERSION.
+1) .OSMIDAS contains the sixbit name of the operating system
+  that MIDAS is running under.  Right now the possibilities are
+  "ITS", "SAIL", "CMU" or "DEC".
+  This is intended for use by programs that have versions to run
+  on different operating systems, so that they can by default
+  assemble to run on the one they are being assembled on.
+  However, that should be only the default.  do
+	IFNDEF RUNOS,RUNOS==.OSMIDAS
+  and from then on do IFE RUNOS-SIXBIT/ITS/, etc.
+2) .SITE is a pseudo that can be used to determine which machine
+  midas is running on.  .SITE <n>, returns word <n> of an
+  arbitrarily long sixbit string (origin 0 is used).  If <n> is
+  out of range, zero is returned.
+  The format of the string accessed by .SITE is operating system
+  dependent.
+  On I.T.S., .SITE 0, returns the standard I.T.S. machine name
+  ("AI", "ML", "DM" OR "MC").
+3) Running on I.T.S., the default FN2 for .DECREL assemblies
+  is now "REL", not "DECREL".  That is more convenient with
+  today's simulation software.
+4) The DEC version of MIDAS now ignores line numbers and
+  also undertands more DEC-like filename formats.
+
+
+MIDAS 217:
+RMS 3/17/76 .MLLIT=1, =:, .SCALAR, .VECTOR, ', ", KEYWORD MACRO ARGS
+1) THE WHO-LINE WILL NOW SAY WHERE MIDAS IS IN THE ASSEMBLY.
+2) MULTI-LINE MODE IS NOW THE DEFAULT (.MLLIT IS INITIALLY POSITIVE).
+3) ALL ERROR MESSAGES ARE NOW ENGLISH TEXT, NOT 3-CHARACTER CODES.
+ MANY ABSURD CONSTRUCTIONS THAT USED TO SCREW UP NOW GENERATE ERRORS
+ (FOR EXAMPLE, "X=.BYTE 4" AND "BLOCK Z=69").
+ A FORMFEED IN A LITERAL IS NOW AN ERROR (YOU PROBABLY FORGOT A "]").
+ SO IS A MACRO'S BEING ENDED BY "TERMINAL" OR "TERMINATOR" OR ANYTHING
+ BUT PLAIN "TERMIN".
+4) MACROS NOW CAN HAVE KEYWORD PARAMETERS (IBM STYLE).
+ SAY DEFINE FOO +A,B,C+ AND THEN CALL WITH FOO  A=4,C=6
+ SEE MIDAS;MACROS > AI: FOR DETAILS.
+5) IF A LABEL IS MULTIPLY DEFINED, ALL DEFINITIONS OF IT BECOME ERRORS
+ SO IT IS EASY TO FIND THEM ALL.
+ "=:" IS LIKE "=" BUT MAKES THE SYMBOL "UN-REDEFINABLE" JUST AS ":"
+ DOES.  THUS, "FOO=:." FULLY DUPLICATES THE EFFECT OF "FOO:".
+6) .SCALAR AND .VECTOR:
+ .SCALAR FOO  MAKES FOO BE A 1-WORD LONG VARIABLE.  IT IS JUST LIKE
+ USING FOO' EXCEPT THAT IT PROVIDES A PLACE TO PUT A COMMENT
+ DESCRIBING WHAT FOO CONTAINS.
+ .VECTOR FOO(SIZE) MAKES FOO BE SIZE WORDS LONG.
+7) ' AND " TEXT CONSTANTS HAVE A NEW ALTERNATE FORMAT, LIKE FAIL'S.
+ IF .QMTCH IS SET NONZERO, ' AND " CONSTANTS MUST BE TERMINATED BY A
+ ' OR " (THE SAME ONE THAT STARTED THE STRING).  THE PL/1 QUOTING
+ CONVENTION IS USED ("""" GENERATES THE ASCII FOR A DOUBLEQUOTE).
+ FOR MACROS WHERE IT IS NECESSARY TO BE ABLE TO GET THE ASCII VALUE
+ OF ANY CHARACTER WITHOUT KNOWING WHAT IT MIGHT BE, .ASCVL EXISTS.
+ SAY .ASCVL   *X TO GET THE ASCII VALUE OF X (NOTE THERE'S ONLY ONE *;
+ IT SERVES TO ALLOW THERE TO BE IGNORED SPACES/TABS AFTER THE .ASCVL
+ WITHOUT CAUSING .ASCVL TO SCREW UP IF X HAPPENS TO BE A SPACE OR TAB.
+ THE * DOES NOT NEED TO BE REPEATED AS A TRAILING DELIMITER BECAUSE
+ ONLY ONE CHARACTER IS USED AS THE ARGUMENT).
+8) MISCELLANY
+ .TYO N PRINTS THE CHAR WITH NUMERIC VALUE N (.TYO 61, PRINTS A  "1").
+ .TYO6 WRD  PRINTS  WRD  AS SIXBIT  (TRY  .TYO6  .FNAM1,.TYO  40,.TYO6
+ .FNAM2)
+ IF .HKALL IS NONZERO, ":" IS TREATED AS "::".
+ SUBTTL HAS BEEN DEFINED TO IGNORE A LINE,
+  AND .AUXIL TO DO NOTHING, FOR @'S SAKE.
+ .C" MAY BE USED TO SPECIFY THE USE OF THE CURRENT BLOCK ONLY IN 
+  EVALLING OR DEFINING A SYMBOL.  EG, IFNDEF .C"FOO TESTS WHETHER FOO
+  IS DEFINED IN THE CURRENT BLOCK (AS OPPOSED TO ANY BLOCK CONTAINING
+  THE CURRENT ONE, WHICH IS WHAT PLAIN IFNDEF FOO WOULD TEST).
+ .DOWN FOO MAKES FOO AUTOMATICALLY VISIBLE IN 1PASS MODE EVEN IN
+  SUBBLOCKS OF THE BLOCK IT IS IN (NORMALLY, SYMBOLS DEFINED IN
+  OUTER BLOCKS ARE NOT VISIBLE IN 1PASS, SINCE IT ISN'T KNOWN
+  WHETHER THE SYMBOL WILL BE DEFINED LATER IN THE SUBBLOCK ITSELF).
+ COMMENTS ON THE SAME LINE AS AN IRP NOW WORK.
+
+
+MIDAS 199:
+RMS 4/10/75
+1) Two new conditionals IFSQ "If all SQuoze" and
+IFNSQ "If Not all SQuoze" now exist.
+See MIDAS;COND > for details.
+2) A formfeed within <->, [-] or (-) groupings
+and not in a text string, macro arg etc.
+generates an error message. Also, many things
+which have long been errors inside literals
+(such as LOC, BLOCK, .BEGIN, CONSTA, END, etc)
+are now also illegal inside (-) and <-> groupings.
+3) .BP is no longer syntactically the same as
+.BM, .TZ, .LZ (the last three have been fixed).
+.BP (make Byte Pointer) does not ignore a space
+or comma that terminates its arg; it treats it as an
+ordinary space or comma, so that
+.BP FOO,BAR  is equivalent to  <.BP FOO>,BAR.
+It turns out that .BP FOO,BAR is exactly the construction
+that is most useful, since .BP returns the byte pointer
+info in the left half of its value; .BP FOO,BAR
+will be a pointer to the field FOO in the address BAR.
+.BM (make Byte Mask), .LZ (number of Leading Zeros)
+and .TZ (number of Trailing Zeros) now DO ignore any
+space or comma terminating the argument. Thus,
+.BM 350700,&MUMBLE is the same as <774000,,>&MUMBLE.
+.BM 600,,,FOO puts .BM 600 in the l.h., giving 77,,FOO.
+
+In addition, .BP (FOO),BAR now works - useful when FOO
+is a left-half flag.
+
+
+MIDAS 194:
+RMS 1/30/75 
+"Braced conditionals" now exist. They are like bracketed
+conditionals, but use braces instead of brackets.
+They do about the same jobs as bracketed conditionals,
+except that 1) they can safely be used to onditionalize
+.STOP, .ISTOP and .GO, and 2) MIDAS can't tell the user
+about unterminated successful bracketed conditionals.
+For most things the two types are equally good.
+
+
+MIDAS 185:   6/16/74
+
+1) MIDAS  can now assemble FASL files to be loaded
+by LISP.  See .INFO.; MIDAS FASL for details.
+2) A bug fixed in floating numeric input (!).
+3) An attempt will be made to give the page number and line number
+   on which the first unterminated successful conditional was
+  seen.
+ bugs or comments to rg
+
+
+MIDAS 142   5/1/74   .1STWD, ERROR MESSAGES.
+
+1) TO GET ONLY THE FIRST WORD OF AN ASSEMBLED TEXT STRING,
+PRECEDE THE TEXT PSEUDO-OP WITH ".1STWD". EG.
+.1STWD ASCII/12345ABCDE/   IS THE SAME AS   ASCII/12345/.
+
+2) THE ARGUMENTS TO .BP, .BM, .TZ AND .LZ,
+AND THE SECOND ARGUMENT TO .RADIX, MAY NOW BE UNDEFINED
+ON PASS 1 IF THE PSEUDO APPEARS IN A PLACE WHERE AN UNDEFINED
+SYMBOL WOULD BE ALLOWED ON PASS 1.
+
+3) IF THERE ARE UNTERMINATED SUCCESSFUL BRACKETED CONDITIONALS,
+A MESSAGE TO THAT EFFECT WILL BE PRINTED. ALSO, IF AN UNSUCCESSFUL
+CONDITIONAL IS UNTERMINATED, THE TYPE OF CONDITIONAL AND WHERE
+IT STARTED WILL BE PRINTED AT THE END OF THE ASSEMBLY.
+
+
+MIDAS 135   4/1/74
+
+0) SEE .INFO.;MACRO ORDER FOR COMPLETE DOCUMENTATION OF
+MACRO DEFINITIONS AND CALLS.
+
+1) INCOMPATABILITIES
+ A) IN COMMAND STRINGS, IF ONLY 1 FILENAME IS GIVEN FOR AN
+  OUTPUT FILE, IT IS THE FN1, AND THE FN2 IS DEFAULTED.
+  (THIS IS THE WAY INPUT FILES ARE TREATED). IT USED TO BE THAT
+  A SINGLE NAME WOULD BE THE FN2, WITH THE FN1 DEFAULTED.
+ B) DUE TO MULTI-WORD GROUPINGS, A MULTI-WORD ASCII OR SIXBIT
+  INSIDE ANGLEBRACKETS WILL RETURN ONLY THE LAST WORD, INSTEAD
+  OF ONLY THE FIRST WORD. TO GET ONLY THE FIRST WORD, USE IRPNC.
+  THIS APPLIES ONLY IN MULTI-LINE MODE (.MLLIT POSITIVE).
+  WHEN .MLLIT IS 0 (OLD MODE), THE FIRST WORD IS STILL RETURNED.
+  IN ERROR MODE (.MLLIT NEGATIVE), THE FIRST WORD IS RETURNED,
+  BUT AN ERROR MESSAGE "MULTI-LINE TEXT PSEUDO IN BRACKETS" IS
+  TYPED. THIS MAKES THE PROGRAM ASSEMBLE PROPERLY AND IDENTIFIES
+  THE PLACES THAT LOSE. ERROR MODE IS, OF COURSE, THE DEFAULT.
+ C) WHEN A SEMICOLON ENDS A MACRO CALL, ANY SPACES OR TABS
+  BEFORE IT ARE IGNORED. THIS IS TO PREVENT SCREWAGE.
+
+2) PARENS AND ANGLE BRACKETS.
+ A) (-) AND <-> GROUPINGS MAY NOW BE MULTI-LINE, JUST LIKE
+  [-] GROUPINGS (ONLY WHEN .MLLIT IS POSITIVE, OF COURSE).
+  ONLY THE LAST LINE OR WORD IN THE GROUPINGS MATTERS.
+  NOTE THAT IF THE LAST LINE IS BLANK, THE VALUE
+  OF THE (-) OR <-> WILL BE ZERO.
+ B) ONE WAY TO USE THIS FEATURE IS AROUND THE BODY OF
+  A MACRO THAT DOES PARAMETER ASSIGNMENTS IN ORDER TO COMPUTE
+  A NUMERIC VALUE TO RETURN. FOR EXAMPLE,
+	DEFINE FOOB(X)
+	< BAR$$==1+<X>
+	BAR$$*BAR$$>TERMIN
+  COMPUTES (LAMBDA (X) (TIMES (ADD1 X) (ADD1 X))). ALSO, .BYTE
+  MAY BE PUT IN A (-) OR <->, TAKING EFFECT ONLY WITHIN
+  THE GROUPING IT IS IN. THIS MAKES IT POSSIBLE TO CREATE A WORD
+  BYTE-WISE AND DO ARITHMETIC ON IT, ETC.
+ C) ERROR MESSAGES ASSOCIATED WITH GROUPINGS ARE IMPROVED:
+ "STRAY <X>" WHERE <X>=")", ">" OR "]" MEANS THERE
+   IS AN EXTRA CLOSE,
+ "<X> SEEN WHEN <Y> EXPECTED"
+   MEANS THAT THERE IS A MISMATCH (EG "<1)").
+ "NO<X>" PINPOINTS AN UNTERMINATED GROUPING
+   (THIS NORMALLY WON'T HAPPEN UNLESS .MLLIT IS NEGATIVE,
+   WHICH IS THE DEFAULT CASE).
+ D) SEVERAL PSEUDO-OPS SUCH AS CONSTA AND END, AS WELL AS
+  FATAL ERRORS AND "PDL" ERRORS DUE TO OVERLONG CONSTANTS
+  WILL TYPE OUT WHAT TYPES OF GROUPING ARE IN
+  PROGRESS, AND WHERE THEY STARTED. FOR EXAMPLE,
+	WITHIN GROUPINGS: ( AT 35-048, [ AT 35-048
+	FOO+8	...	60-010	PDL"
+
+3) WHEN A FATAL ERROR HAPPENS, THE BINARY, LISTING AND CREF FILES
+WILL BE FILED OUT, BUT WITHOUT RENAMING (THEY WILL BE CLOSED AS
+_MIDAS OUTPUT, _MIDAS LSTOUT AND _MIDAS CRFOUT).
+THE ERROR OUTPUT FILE WILL BE CLOSED AND RENAMED.
+THUS, AFTER ASSEMBLING, AN ERROR FILE WITH THE SPEC'D NAME
+IS CERTAIN TO EXIST EVEN IF THERE WAS A FATAL ERROR.
+FATAL ERROR MESSAGES NOW NOT ONLY INCLUDE A LIST OF GROUPINGS
+THAT ARE UNTERMINATED, BUT ALSO MENTION ANY UNFINISHED TEXT PSEUDO
+(EG ASCII, ASCIZ, .ASCII, ASCIC, SIXBIT) OR MACRO-DEFINING
+PSEUDO (EG DEFINE, IRP, .TTYMAC), AND WHERE IT STARTED.
+THE PSEUDO  .FATAL  CAUSES A FATAL ERROR. TO CAUSE THE OUTPUT FILE
+TO BE CLOSED (BUFFERS WRITTEN OUT), TYPE ^H TO GET TTY INSERTED
+AND THEN DO .FATAL.
+
+4) NEW MACRO FEATURES:
+ A) FOR CONVENIENCE, TABS AND SPACES PRECEDING A SEMICOLON THAT
+  ENDS A MACRO CALL ARE NOW IGNORED.
+ B) IT IS POSSIBLE TO GIVE A MACRO ARGUMENT A DEFAULT VALUE TO BE
+  USED WHEN THE ARG IS NULL. ALSO, BALANCED DUMMIES ARE AVAILABLE FOR
+  MACROS THAT WANT TO USE THE ARGUMENT SYNTAX THAT PSEUDOS LIKE XWD USE.
+ C) .TTYMAC HAS BEEN EXTENDED - IT MAY READ SEVERAL ARGUMENTS FROM THE
+  TTY, AND USE ANY OF THE FEATURES THAT MACROS MAY USE (SUCH AS DEFAULT
+  VALUES GENSYMMING, WHOLE-LINE AND BALANCED ARGUMENTS). .TTYMAC
+  WILL KEEP READING LINES FROM THE TTY UNTIL IT HAS READ
+  AS MUCH AS A SIMILAR MACRO CALL WOULD GOBBLE FROM THE FILE.
+
+5) TWO-SEGMENT DEC FORMAT OUTPUT.
+THE MIDAS PSEUDO ".DECTWO" IS LIKE THE MACRO-10 PSEUDO "TWOSEG".
+THE WAY TO USE IT IS:
+	.DECTWO HIBOT	;OR JUST ".DECTWO" IF HIBOT IS 400000 .
+	RL0==.		;SAVE A RELOCATABLE ZERO.
+	;ASSEMBLE LOW SEGMENT CODE
+	.=RL0+HIBOT
+	;ASSEMBLE HIGH SEGMENT CODE.
+	END
+IT IS O.K. TO INTERSPERSE HIGH AND LOW SEGMENT CODE BY
+SAVING AND RESTORING THE TWO LOCATION COUNTERS. ANYTHING ASSEMBLED
+AT A RELOCATABLE ADDRESS BELOW HIBOT WILL GO IN THE LOW SEGMENT;
+ANYTHING ASSEMBLED AT A RELOCATABLE ADDRESS ABOVE HIBOT WILL GO
+IN THE HIGH SEGMENT.
+
+6) ", ' AND ^ CHARACTER CONSTANTS ARE GENERALIZED.
+SIMPLY CONCATENATE THEM TO PRODUCE MORE THAT 1 CHARACTER
+OF RIGHT-JUSTIFIED TEXT. (EG, "A^B = "A_7+^B).
+ALSO, IF A CHARACTER OTHER THAN THE FIRST IS A SQUOZE CHARACTER,
+THE ", ' OR ^ IN FRONT OF IT MAY BE OMITTED
+'AB = 'A'B = 'A_6+'B. BUT 'A+1 = 1+'A WHILE 'A'+'1 = (SIXBIT/A+1/)
+
+7) COMMAND STRING CHANGES, INTERRUPT CHARACTERS.
+		(SEE .INFO.;MIDAS ORDER)
+ A) IF ONLY ONE NAME IS SPEC'D FOR AN OUTPUT FILE, IT IS
+  THE FIRST FILENAME, NOT THE SECOND. THUS, INPUT AND OUTPUT FILE
+  NAMES ARE TREATED ALIKE.
+ B) WHENEVER TTY: IS .INSRTED, FOR ANY REASON, MIDAS SAYS
+  "TTY: .INSRTED, END INPUT WITH ^C" (OR "^Z" IF DEC VERSION).
+ C) THE (W) SWITCH CAUSES AN ERROR OUTPUT FILE TO BE WRITTEN,
+  AND SUPPRESSES TYPEOUT ON THE TTY BY INCREMENTING .TTYFLG.
+ D) ^W TYPED ON THE TTY ALSO INCREMENTS .TTYFLG. ^V TYPED ON THE TTY
+  DECREMENTS .TTYFLG UNLESS IT IS 0. WHEN .TTYFLG IS NONZERO,
+  TYPEOUT ON THE TTY IS SUPPRESSED.
+ E) SINCE THE DEC SYSTEM DOES NOT HAVE INTERRUPT CHARACTERS,
+  TYPING ^H, ^V OR ^W ON THE TTY WORKS ONLY UNDER ITS.
+  HOWEVER, "^C REENTER" UNDER THE DEC SYSTEM WILL CAUSE A ^H-BREAK.
+
+8) NEW PSEUDOS:
+COMMENT		READS AND IGNORES A TEXT ARGUMENT.
+		THIS IS SO STANFORD'S TVEDIT DIRECTORIES
+		WILL BE IGNORED.
+.LZ <N>		RETURNS THE NUMBER OF LEADING ZEROS IN <N>.
+		".LZ 1" IS 35., AND ".LZ 1,+1" = "1+.LZ 1".
+.TZ <N>		SIMILAR, FOR NUMBER OF TRAILING ZEROS.
+.BP <N>		ASSUMING <N> IS A BIT MASK TO A BYTE IN A WORD,
+		RETURNS A WORD WHOSE LH IS A B.P. TO THAT BYTE.
+		".BP (77)" IS 220600,, .
+		".BP (77),FOO" = "220600,,FOO".
+.BM <N>		ASSUMING THAT THE LH OF <N> (OR THE RH, IF THE LH IS 0)
+		IS A B.P. TO A BYTE IN A WORD, AND RETURNS A WORD
+		CONTAINING 1'S ONLY IN THE BYTE POINTED TO.
+		".BM 220600" AND ".BM (220600)" BOTH ARE 77,, .
+.RADIX <R>,<N>	READS <N> USING <R> AS RADIX, AND RETURNS IT.
+		".RADIX 6,10,+100" IS 106 .
+.ASKIP		AFTER A .OP OR .AOP, .ASKIP
+		HAS THE VALUE -1 IFF THE EXECUTED INSN SKIPPED.
+.OFNM1		HAS THE SIXBIT OF THE OUTPUT FILE FN1.
+.OFNM2		SIMILAR, FOR THE FN2.
+.CURPG		HOLDS THE CURRENT INPUT PAGE # MINUS 1.
+.CURLN		HOLDS THE CURRENT INPUT LINE # MINUS 1.
+.TYPE <SYM>	IF <SYM> IS REALLY A NUMBER, .TYPE RETURNS -1.
+
+
+
+RMS 06/17/73 23:57:15  ! BEFORE A TERMIN
+THAT ENDS A MACRO-DEFINITION, ETC.,
+OR BEFORE A .QUOTE, WILL BE FLUSHED,
+JUST AS AN ! BEFORE A DUMMY ARGUMENT.
+
+
+MIDAS 123
+RMS 6/7/73 .BIND, .KILL, .HKILL, .INIT BLOCK.
+.BIND IS FOLLOWED BY A LIST OF SYMBOLS, AND CAUSES EACH TO HAVE
+  AN UNDEFINED ENTRY IN THE CURRENT BLOCK (OR THE BLOCK SPEC'D
+  WITH A " BEFORE THE SYMBOL) IF IT ISN'T ALREADY
+  DEFINED IN THAT BLOCK. THIS IS USEFUL TO SHADOW A DEFINITION THAT
+  OTHERWISE WOULD BE AN ERROR TO SHADOW, ETC.
+.KILL IS SIMILAR BUT ALSO FULLY KILLS THE SYMBOLS
+  (THAT IS, THEIR DEFINITIONS WILL NOT BE OUTPUT FOR DDT)
+.HKILL HALF KILLS THE SYMBOLS.
+THEY RESEMBLE .XCREF, WHICH SUPPRESSES CREFFING OF THE SYMBOLS.
+
+THERE IS NOW A SEPARATE BLOCK IN WHICH INITIAL SYMBOL DEFINITIONS 
+LIVE. IT IS THE SUPERIOR OF THE MAIN BLOCK (WHICH USED TO BE
+OUTERMOST) AND ITS NAME IS ALWAYS .INIT .  ALL PSEUDOS AND INSTRUCTIONS
+ARE DEFINED IN IT. SYMBOLS DEFINED IN IT ARE NEVER OUTPUT TO DDT,
+AND ARE THE ONLY ONES SAVED FROM ONE PROGRAM TO THE NEXT IN 1PASS
+MULTIPLE PROGRAM ASSEMBLY.
+
+SHADOWING A SYMBOL IN AN OUTER BLOCK BY DEFINING IT IN AN
+INNER ONE HAS THE FOLLOWING QUIRKS:
+ IF THE DEFINITION IS WITH =,
+  IF THE EXISTING DEFINITION IS A PSEUDO-SYMBOL LIKE .MLLIT
+  IN THE .INIT BLOCK, ITS VALUE WILL BE CHANGED;
+  IT WILL NOT BE SHADOWED.
+  IF IT IS ANY OTHER PSEUDO IN THE .INIT BLOCK,
+  THERE WILL BE A QPA ERROR BEFORE SHADOWING.
+ IF THE DEFINITION IS BY :, NO INITIAL SYMBOL MAY BE SHADOWED.
+  A RES ERROR WILL RESULT AND SHADOWING WILL NOT  BE DONE.
+ OTHER THINGS THAT DEFINE A SYMBOL MAY STILL SHADOW ANYTHING.
+ .BIND MAY BE USED TO FORCE SHADOWING.
+
+
+MIDAS 121
+RMS 4/20/73 IRPNC, .MRUNT, ERROR OUTPUT FILE, (E).
+IRPNC WILL NO LONGER IGNORE THE SECOND
+DUMMY IN A GROUP BUT WILL CAUSE THE REST OF THE STRING NOT YET
+PROCESSED TO BE SUBSTITUTED FOR IT.
+
+.MRUNT'S VALUE IS MIDAS'S RUNN TIME SINCE THE START OF THE ASSEMBLY,
+IN MILLISECONDS.
+
+MIDAS WILL NNOW PRODUCE A FILE CONTAINING ALL ERROR MESSAGES, ETC.
+(IN FACT, EVERYTHING TYPED OUT BY MIDAS)
+THE (E) SWITCH CAUSES THIS. THE ERROR FILE'S
+FN2 DEFAULTS TO ERR AND THE NAMES MAY BE
+SPECIFIED WITH THE THIRD OUTPUT FILESPEC - LISTING IS NOW FOURTH.
+SEE .INFO.;MIDAS ORDER
+
+
+MIDAS 119
+RMS 04/08/73 22:19:38  NEW COMMANND READER, IRPNC, LISTING.
+1) THERE IS A NEW COMMAND PROCESSOR, WHICH ALLOWS SPECIFICATION
+OF THE CREF AND LISTING FILES' NAMES. MOST COMMANDS WILL WORK THE SAME,
+THOUGH. SEE .INFO.;MIDAS ORDER
+
+2) IRPNC EXISTS. DO:
+IRPNC <#1>,<#2>,<#3>,<DUMMY1>,,<CHARS>
+<BODY> TERMIN
+
+<#1> IS THE NUMBER OF CHAS AT THE START OF <CHARS> TO BE IGNNORED..
+<#2> IS THE SIZE OF EACH GROUP OF CHARS.
+<#3> IF >= 0, IS THE MAXIMUM # TIMES THE IRPNC WILL CYCLE
+  (IT MAY STOP SOONER IF IT RUNS OUT OF CHARS)
+
+IRPNC IS LIKE IRPC BUT TAKES <#2> CHARS AT A TIME INSTEAD OF 1.
+(IF THERE ARE LESS THAN <#2> LEFT IT
+WILL TAKE ALL THERE ARE)
+
+3) PAGE NOS. IN THE SOURCE FILE, AND ERROR MESSAGES, NOW
+APPEAR IN THE LISTING FILE.
+
+4) IT IS AN ERROR TO DEFINE A SYMBOL
+WHICH HAS A NUMERIC DEFINITION OR WHICH HAS BEEN USED
+OTHER THAN IN A .XCREF TO BE A MACRO.
+(IT WILL STILL BECOME A MACRO, BUT THERE WILL BE A TYPEOUT)
+IF YOU REALLY WANT TO DO THAT, EXPUNGE THE SYMBOL FIRST.
+
+
+MIDAS 113   3/27/73
+
+1)  .SUCCESS IS -1 IF THE LAST CONDITIONAL
+SUCCEEDED; 0 IF IT FAILED.
+AFTER A ] ENDING A SUCCESSFUL CONDITIONAL IT WILL BE SET TO -1.
+.ELSE IS EQUIVALENT TO IFE .SUCCESS, ; .ALSO, TO IFN .SUCCESS, .
+NOTE THAT .ELSE AND .ALSO SET .SUCCESS, SO A SERIES OF
+.ELSE'S WILL ALTERNATELY SUCCEED AND FAIL.
+THUS:
+	IFN 1OFFSW, SOS FOO
+	PUSHJ P,BAR
+	.ALSO AOS FOO
+
+2)  LMIDAS NO LONGER EXISTS. GIVE MIDAS THE (L) SWITCH TO
+GET A LISTING AS DSK:<OUTPUT SNAME>;<OUTPUT FN1> LIST
+(LL) WILL GET A LISTING ON BOTH PASSES (USEFUL FOR FATAL
+ERRORS IN MACROS)
+
+3)  ^C TYPED ON THE TTY CAUSES EOF (IN CASE OF .INSRT TTY:, ETC)
+^U RUBS OUT A WHOLE LINE.
+
+4)  .SEE <SYMBOL>   GENERATES A CROSS REFERENCE TO <SYMBOL>. DOES NOTHING ELSE.
+
+
+MIDAS 108   3/6/73
+
+IN THE COMMAND STRING,  THE R SWITCH CAUSES THE RUN TIME
+TO BE TYPED OUT AFTER THE ASSEMBLY.
+THE T SWITCH CAUSES A .INSRT TTY: TO BE DONE BY THE TITLE
+PSEUDO-OP ON PASS 1, AFTER TITLE'S USUAL FUNCTIONS.
+TWO T SWITCHES MAKE THAT HAPPEN ON PASS 2 AS WELL AS PASS 1.
+IF YOU DO A .SYMTAB, IT OUGHT TO BE BEFORE THE TITLE
+FOR THIS FEATURE TO BE USEFUL.
+
+
+MIDAS 103   2/11/73
+
+SYMBOL TABLES IN ABSOLUTE ASSEMBLIES ARE NOW OUTPUT IN SORTED
+FORMAT SO THAT THEY CAN BE LOADED BY DDT WITHOUT A SORT.
+
+MIDAS CAN NOW GENERATE DEC'S LINKING LOADER'S FORMAT.
+THE PSEUDO OP .DECREL SELECTS THAT FORMAT.
+TO GENERATE DEC-STYLE RIGHT-JUSTIFIED SQUOZE, USE .RSQZ
+WHICH LOOKS JUST LIKE THE SQUOZE PSEUDO-OP, WHICH WILL
+GENERATE THE SAME STUFF IT NORMALLY DOES.
+
+BLOCK STRUCTURE IS NOW SUPPORTED IN RELOCATABLE ASSEMBLIES.
+
+MIDAS 98   8/13/72
+
+DYNAMICALLY ALLOCATED SYMBOL TABLE:
+
+  INITIALLY, MIDAS ALLOCATES ITS SYMBOL TABLE WITH A DEFAULT SIZE
+(EXCEPT THAT IF ITS JNAME IS 'MM' OR 'MMIDAS' IT
+ALLOCATES A LARGER SYMBOL TABLE TO BEGIN WITH)
+THE PSEUDO-OP .SYMTAB TAKES ONE ARG, AND MAKES SURE
+THE SYMBOL TABLE CAN HOLD AT LEAST ARG SYMBOLS.
+(DEFAULT SIZE IS 2200. OR SO, MMIDAS SIZE 8800. OR SO;
+EACH PAGE OF SYMBOLS AFTER A TECO LISTING HOLDS 360. SYMBOLS;
+THERE ARE 600. OR SO INITIAL SYMBOLS;
+THERE SHOULD BE TWICE AS MUCH SPACE IN THE SYMTAB AS SYMBOLS.)
+IF THE SYMBOL TABLE WAS ALREADY BIG ENOUGH, NOTHING IS DONE;
+OTHERWISE THE SYMBOL TABLE IS COMPLETELY RE-INITIALIZED
+(I.E. ALL SYMBOL DEFINITIONS ARE FLUSHED.)
+SINCE THE INITIALIZATION CODE LIVES IN THE MACRO TABLE,
+THIS PSEUDO-OP CANNOT BE EXECUTED AFTER ANY DEFINE,
+REPEAT, IRP!X OR .TTYMAC. (AN INI ERROR RESULTS)
+AN UNDEFINED SYMBOL IN THE ARG CAUSES A FATAL USS ERROR.
+
+
+MIDAS 96   8/10/72
+
+BLOCK STRUCTURE:
+(WORKS ONLY IN ABSOLUTE ASSEMBLIES FOR THE TIME BEING)
+
+  TO BEGIN A BLOCK, USE THE .BEGIN PSEUDO-OP.
+IT CREATES A BLOCK WITH A NAME WHICH MAY BE SPECIFIED WITH
+AN ARGUMENT TO .BEGIN, BUT WHICH WILL OTHERWISE BE THE NAME
+OF THE MOST RECENTLY DEFINED LABEL.  THE NEW BLOCK IS A
+SUBBLOCK OF THE BLOCK IN WHICH THE .BEGIN APPEARS.
+ATTEMPTING TO REENTER A .END'ED BLOCK CAUSES AN MDB ERROR.
+
+  BLOCK NAMES DO NOT CONFLICT WITH SYMBOL NAMES.
+THE NAME OF THE OUTERMOST BLOCK,
+IN WHICH THE ASSEMBLY STARTS, IS THE TITLE OF THE PROGRAM.
+
+  TO END A BLOCK, USE .END, WHICH WILL END THE CURRENT BLOCK
+AND POP INTO ITS FATHER.  AN ATTEMPT TO END THE OUTERMOST
+BLOCK DOES NOTHING AN CAUSES AN UMB ERROR;
+AN UMB ERROR ALSO RESULTS FROM AN END STATEMENT IN AN INNER BLOCK.
+.END MAY BE GIVEN AN ARGUMENT, IN WHICH CASE IF THE NAME OF THE BLOCK
+BEING ENDED DIFFERS FROM THE ARGUMENT AN UMB ERROR WILL BE GIVEN,
+WITH THE NAME OF THE BLOCK.
+
+  ALL SYMBOLS DEFINED NORMALLY WITHIN A BLOCK ARE LOCAL TO THAT BLOCK,
+AND SHADOW ANY DEFINITIONS IN CONTAINING BLOCKS
+(NOTE THAT MAKING A SYMBOL GLOBAL OR A VARIABLE "DEFINES" IT)
+AN ORDINARY SYMBOL REFERENCE FINDS THE DEFINITION
+IN THE INNERMOST BLOCK CONTAINING THE CURRENT BLOCK.
+IT IS, HOWEVER, POSSIBLE TO REFER TO OR DEFINE A SYMBOL IN ANY
+SPECIFIC BLOCK BY PREFIXING ITS NAME WITH THE NAME OF THE BLOCK
+AND A DOUBLE-QUOTE.  THE BLOCK TO BE USED WILL BE THE BLOCK
+OF THAT NAME THAT IS A SUBBLOCK OF THE CURRENT BLOCK AND HAS
+BEEN .BEGUN ALREADY; IF THERE IS NONE, ANY BLOCK OF THAT NAME
+THAT HAS BEEN .BEGUN; IF THERE IS NONE, ANY BLOCK OF THAT NAME
+IN WHICH A SYMBOL HAS ALREADY BEEN EXPLICITLY REFERED TO;
+OTHERWISE IT WILL BE A NEW (UNDEFINED) SUBBLOCK OF THE CURRENT BLOCK.
+HOWEVER, TO REFER TO A SUBBLOCK OF A PARTICULAR BLOCK,
+PREFIX IT WITH ITS FATHER'S NAME AND A DOUBLE-QUOTE, ETC.
+NOTE THAT IT IS POSSIBLE TO REFER TO A SYMBOL
+IN A BLOCK THAT HAS NOT YET BEEN "DEFINED" (IE .BEGUN)
+
+THE FOLLOWING NAMES ARE SPECIAL WHEN USED TO SPECIFY A BLOCK:
+.U   SPECIFIES THE FATHER OF THE CURRENT OR PREVIOUSLY SPEC'D BLOCK.
+.M   SPECIFIES THE OUTERMOST BLOCK.
+
+
+A FEATURE THAT HAS EXISTED BUT WAS LITTLE KNOWN:
+" AND ' MAY GENERATE MORE THAN ONE CHARCTER.
+THEY GOBBLE THE FIRST CHARACTER, AND ANY FOLLOWING SQUOZE CHARACTERS.
+THUS, 'DSK IS THE SAME AS (SIXBIT/DSK/) .
+
+
+.XCREFFING IS NO LONGER UNDONE BY REDEFINITIONS. IN FACT,
+A SYMBOL CAN BE .XCREFFED BEFORE BEING DEFINED, AND THEN WILL
+NEVER APPEAR IN A CREF.
+
+
+MIDAS WILL NOW TYPE THE NAME OF THE CURRENT INPUT FILE BEFORE
+AN ERROR MESSAGE IF IT HAS CHANGED SINCE THE PREVIOUS ERROR MESSAGE.
+
+
+NEW PSEUDO-SYMBOLS:
+
+.GSCNT   THE GENERATED-SYMBOL COUNTER.
+.STGSW   IF NONZERO, ASSEMBLY OF A STORAGE WORD
+	  IS AN ERROR (SET BY .YSTGW, .NSTGW)
+
+MIDAS 94     7/10/72
+
+MULTI-LINE LITERALS:
+
+  MIDAS NOW HAS THREE MODES - OLD MODE, NEW MODE AND ERROR MODE.
+THE MODE IS DETERMINED BY THE VALUE OF THE PSEUDO SYMBOL .MLLIT .
+  IN OLD MODE, (.MLLIT=0)  LITERALS ARE HANDLED AS THEY USED TO BE.
+  IN ERROR MODE, (.MLLIT < 0) (THE DEFAULT MODE, SET BEFORE EACH PASS)
+THE CODE PRODUCED WILL BE THE SAME AS IN OLD MODE,
+BUT AN ERROR MESSAGE (IPC, NO[, NO], OR ILC)
+WILL BE PRODUCED IF ANYTHING IS ENCOUNTERED WHICH WILL
+ASSEMBLE DIFFERENTLY IN NEW MODE.
+  IN NEW MODE, (.MLLIT > 0) CONSTANTS MAY CONTAIN ANY NUMBER OF LINES,
+AND ANY NUMBER OF WORDS. THE BYTE MODE STATUS IS SAVED AND RESTORED
+OVER CONSTANTS, AND INITIALIZED TO WORD MODE AT THE BEGINNING
+OF A CONSTANT; HOWEVER A .BYTE PSEUDO-OP IN THE CONSTANT
+IS LEGAL. A .WALGN WILL BE DONE AT THE END OF THE CONSTANT
+IF BYTE MODE IS IN EFFECT.
+SINCE CR AND LF WILL NO LONGER TERMINATE CONSTANTS IN NEW MODE,
+SQUARE BRACKETS MUST BE BALANCED. IF AN END OR CONSTA PSEUDO
+IS ENCOUNTERED IN A LITERAL IT IS ASSUMED THAT A ] WAS MISSING
+AND A NO] ERROR IS GENERATED. A STRAY ] CAUSES A NO[ ERROR.
+LOC, BLOCK, OFFSET OR .= INSIDE A LITERAL CAUSES AN IPC ERROR
+GIVING THE NAME OF THE PSEUDO BUT DOESN'T TERMINATE THE CONSTANT.
+. INSIDE A CONSTANT STILL REFERS TO THE CURRENT LOCATION OUTSIDE
+THE CONSTANT.
+
+PSEUDO-OP .ERR CAUSES AN ERROR, WITH THE REST OF THE LINE IT
+APPEARS ON USED AS THE ERROR MESSAGE.
+
+:MIDAS <COMMAND> <CR> FROM DDT NOW WORKS.
+
+PSEUDO-SYMBOLS SUCH AS .FNAM1, .FNAM2, .BYTC, .CRFIL, .RPCNT,
+ .IRPCNT, .AVAL1, .AVAL2, .IFNM1, .IFNM2
+ MAY NOW BE ASSIGNED WITH "=".
+
+MIDAS CAN NOW PRODUCE OUTPUT SUITABLE FOR CREF.
+THIS CAN BE REQUESTED WITH THE (C) SWITCH IN THE COMMAND STRING.
+A FILE NAMED  DSK: <BINARY'S SNAME>; <BINARY'S FN1> CREF
+IS PRODUCED. SEE .INFO.;CREF ORDER FOR THE FORMAT OF THAT FILE
+AND THE WAY TO TURN IT INTO A CROSS-REFERENCE.
+RELEVANT PSEUDO-OPS ARE:
+ .XCREF  SYM1, SYM2, SYM3	PREVENTS THOSE SYMS FROM BEING CREFFED.
+ .CRFON		TURNS ON GENERATION OF CREF OUTPUT.
+ .CRFOFF	TURNS IT OFF.
+ .CRFIL		PSEUDO-SYMBOL SAVED OVER .INSRT'S.
+		 WHILE IT IS SET, ANY NUMBER OF OCCURRENCES OF A
+		 SYMBOL WILL CREF AS ONE OCCURRENCE.
+
+GLOBALS AND RELOCATABLES MAY NOW BE USED IN .BYTE MODE
+PROVIDED THEY GO INTO PARTS OF A WORD IN WHICH THEY ARE NORMALLY
+LEGAL. (JSF WILL SAY WHICH PARTS THOSE ARE)
+
+DISOWNED MIDASES WILL LOG OUT RATHER THAN TRY TO .BREAK 16, .
+MIDAS WILL DELETE _MIDAS OUTPUT BEFORE STARTING AN ASSEMBLY.
+
+AI:MIDAS;COMMND >	MIDAS COMMAND FORMAT
+
+THERE ARE 5 FORMATS, BASICALLY:
+
+<SOURCE>
+<BIN> _ <SOURCE>
+<BIN> , <CREF> _ <SOURCE>
+<BIN> , <CREF> , <ERR> _ <SOURCE>
+<BIN> , <CREF> , <ERR> , <LIST> _ <SOURCE>
+
+
+THE DEVICE FOR <BIN> DEFAULTS TO DSK: UNLESS THE SOURCE COMES FROM TTY: 
+ AND THE <BIN> SPEC IS NULL, IN WHICH CASE IT DEFAULTS TO NUL:.
+ THE SNAME FOR <BIN> DEFAULTS TO MIDAS'S INITIAL SNAME.
+ THE FN1 DEFAULTS TO THE SOURCE FN1.
+ THE FN2 DEFAULTS TO "BIN", "REL" OR "DECREL",
+ FOR THE ABSOLUTE, STINK, AND DEC-LOADER OUTPUT FORMATS.
+ (THE DEC VERSION DEFAULTS ARE "BIN", "STK" AND "REL").
+ IF ONLY ONE NAME IS GIVEN IN <BIN>, IT IS THE FN1,
+ AND THE FN2 IS DEFAULTED. (LIKE DDT'S FILENAME READING)
+
+THE DEV FOR <CREF> DEFAULTS TO <BIN>'S DEV
+ UNLESS THAT IS NUL:, IN WHICH CASE <CREF> DEFAULTS TO DSK:
+ THE SNAME FOR <CREF> DEFAULTS TO <BIN>'S.
+ SO DOES THE FN1.
+ THE FN2 DEFAULTS TO "CREF" ("CRF" FOR THE DEC VERSION).
+ IF ONLY ONE NAME IS GIVEN, IT IS THE FN1.
+
+THE DEV, SNAME AND FN1 FOR <ERR> DEFAULT TO
+ THE ONES USED FOR THE CREF OUTPUT. THE FN2 DEFAULTS TO "ERR".
+ IF ONLY ONE NAME IS GIVEN IT IS THE FN1.
+
+THE DEV, SNAME AND FN1 FOR <LIST> DEFAULT TO
+ THE ONES USED FOR THE ERR OUTPUT.
+ THE FN2 DEFAULTS TO "LIST" ("LST" FOR THE DEC VERSION).
+ IF ONLY ONE NAME IS GIVEN, IT IS THE FN1.
+
+THE DEV FOR <SOURCE> DEFAULTS TO THE LAST OUTPUT SPEC'S DEVICE,
+ OR TO DSK: IF THERE WAS NO OUTPUT SPEC OR THE DEFAULT WOULD
+ OTHERWISE BE PTP: OR NUL:.
+ THE SNAME DEFAULTS TO THE LAST OUTPUT SNAME SPEC'D, OR TO
+ MIDAS'S INITIAL SNAME.
+ THE FN1 DEFAULTS TO THE FN1 MOST RECENTLY SPEC'D BEFORE THE _,
+ IF ANY; OTHERWISE TO "PROG" .
+ THE FN2 DEFAULTS TO ">" ("MID" FOR THE DEC VERSION).
+ IF ONLY ONE NAME IS GIVEN, IT IS THE FN1,
+ AND THE FN2 IS ">".
+
+
+A CREF FILE WILL BE PRODUCED IF ANY OF THE FOLLOWING:
+ 1) THE (C) SWITCH IS GIVEN.
+ 2) A NONNUL <CREF> SPEC IS GIVEN.
+ 3) THE THIRD FORMAT IS GIVEN, IE <BIN> , _<SOURCE>
+   (SINCE YOU COULD HAVE OMITTED THE COMMA
+    IF YOU DIDN'T WANT A CREF)
+AN ERROR OUTPUT FILE (CONTAINING EVERYTHING TYPED ON THE TTY)
+ WILL BE PRODUCED IF EITHER
+ 1) THE (E) OR (W) SWITCH IS GIVEN,
+ 2) A NONNULL <ERR> SPEC IS GIVEN,
+ 3) THE FOURTH FORMAT IS USED.
+A LISTING WILL BE PRODUCED IF EITHER:
+ 1) THE (L) SWITCH IS GIVENN
+ 2) A NONNULL <LIST> SPEC IS GIVEN.
+ 3) THE FIFTH FORMAT IS USED
+   (EG.  <BIN>,<CREF>,_<SOURCE>  )
+
+
+SWITCHES:
+
+SWITCHES SHOULD BE ENCLOSED IN PARENTHESES OR PRECEDED BY SLASHES,
+ AND MAY GO ANYWHERE IN THE COMMAND STRING. SWITCHES WHERE A SPEC
+ WOULD GO DO NOT BY THEMSELVES CONSTITUTE A NONNULL SPEC.
+ ANY NUMBER OF SWITCHES MAY BE ENCLOSED BY ONE PAIR OF PARENS,
+ EG.  (CEL) = (C)(E)(L).  WITH SLASHES, EACH SWITCH NEEDS ITS
+ OWN SLASH:  /C/E/L, BUT NOT /CEL.
+
+/C	PRODUCE A CREF FILE.
+/E	PRODUCE AN ERROR OUTPUT FILE.
+/L	PRODUCE A LISTING.
+(LL)	LIST ON 1ST PASS AS WELL AS 2ND.
+/T	.INSRT TTY: AFTER THE TITLE STATEMENT ON PASS 1.
+(TT)	DO SO ON BOTH PASSES.
+/W	INCREMENT THE VARIABLE .TTYFLG,
+	 THUS INITIALLY TURNING OFF TTY TYPEOUT.
+	 ALSO CAUSES AN ERROR OUTPUT FILE TO BE PRODUCED.
+
+
+TTY INTERRUPT CHARACTERS:
+(ONLY IN I.T.S. VERSION)
+(IN THE DEC VERSION, DO "^C REENTER" TO CAUSE A ^H-BREAK)
+
+^H	CAUSES AN ERROR MESSAGE "^H-BREAK"
+	(WHICH SAYS WHERE THE ASSEMBLY HAS REACHED)
+	FOLLOWED BY THE .INSRTION OF TTY:
+
+^V	DECREMENTS .TTYFLG
+	TTY TYPEOUT HAPPENS ONLY WHEN .TTYFLG IS <= 0.
+	(SOME VERY BAD ERRORS THAT .INSRT TTY:
+	ZERO .TTYFLG BEFORE TYPING AN ERROR MSG.)
+
+^W	INCREMENTS .TTYFLG, SUPPRESSING TTY OUTPUT.
+
+
+EXAMPLES (PRESUMABLY TYPED AT A DDT)
+
+:M FOO
+	ASSEMBLES DSK:<MSNAME>;FOO > INTO DSK:<MSNAME>;FOO BIN
+	 (WHERE <MSNAME> IS DDT'S MASTER SYSTEM NAME SET BY $$^S)
+:M TTY:
+	ASSEMBLES FROM THE TTY ON TO NUL:
+:M FOO_TTY:
+	ASSEMBLES FROM THE TTY TO DSK:<MSNAME>;PROG FOO
+:M FOO BAR_
+	ASSEMBLES DSK:<MSNAME>;FOO > INTO DSK:<MSNAME>;FOO BAR
+:M FOO BAR,_   OR   :M FOO BAR_(C)
+	ALSO MAKE A CREF NAMED DSK:<MSNAME>;FOO CREF
+:M A;_B;C
+	ASSEMBLES DSK:B;C >  INTO  DSK:A;C BIN
+:M A;_C
+	ASSEMBLES DSK:A;C >  INTO  DSK:A;C BIN
+:M ,,_TTY:FOO
+	ASSEMBLES FROM THE TTY, MAKING AN ERROR OUTPUT FILE
+	 DSK:<MSNAME>;FOO ERR
+:M FOO(W)
+	ASSEMBLES DSK:<MSNAME>;FOO > INTO DSK:<MSNAME>;FOO BIN,
+	 MAKING AN ERROR OUTPUT FILE DSK:<MSNAME>;FOO ERR,
+	 AND NOT TYPING ANYTHING ON THE TTY.
+
+AI:MIDAS;PSEUDO >	Alphabetical list of MIDAS pseudo-ops
+
+$.	??
+$L.	REAL LOCATION (WITHOUT OFFSET) (only in STINK format)
+$O.	GLOBAL OFFSET (only in STINK format)
+$R.	The relocation factor (only in STINK format)
+.	= address of current code word.  In a literal, . refers
+	to the location of the wrd containing the literal, not the
+	word in the literal.
+	The offset is included in the value of ..
+.1STWD	put before a text-generating pseudo (SIXBIT, ASCII,
+	ASCIZ, ASCIC, .ASCII) to throw away all but the first
+	word of text.
+.ABSP <arg>,
+	returns the "absolute part" of <arg>.
+.ALSO	conditional: "If the previous conditional succeeded".
+	See MIDAS;COND >.
+.AOP	is like .OP, but returns no value.  However, all the
+	information is still available in .AVAL1 and .AVAL2.
+.ARRAY	reference a lisp array (.FASL feature)
+.ASCII	/text/   !<exp> inserts numeric value of <exp>. Terminate <exp>
+	 with a space or comma, which unfortunately will become
+	 part of the assembled string.
+.ASCVL /<char>
+	(Yes, only one "/") returns the ascii code for <char>.
+.ASKIP	-1 if instruction executed by most recent .OP or .AOP
+	 skipped; 0 if it didn't skip.
+.ATOM <atomname>
+	refer to header of named LISP atom - see MIDAS;FASL >
+.AUXIL	does nothing - it exists for the sake of the listing program "@".
+.AVAL1	What was left in the ac by the instruction executed by
+	the most recent .OP or .AOP
+.AVAL2	What was left in the memory location by the .OP or .AOP.
+.BAI	block ascii input (for .OPEN). Has the value 2.
+.BAO	block ascii output (for .OPEN). Has the value 3.
+.BEGIN <blockname>
+	begin a symbol-scope block.  <blockname> defaults to
+	most recent label.
+.BII	block image input (for .OPEN). Has the value 6.
+.BIND <symbol1>,...
+	Create bindings for these symbols in the current block.
+	Must be used when it is desired to shadow a built-in
+	symbol under certain circumstances. Also sometimes needed
+	in 1-pass assemblies when symbol is defined in higher block
+	and will be defined later in current block, to force a
+	forward reference to be made.
+.BIO	block image output (for .OPEN). Has the value 7.
+.BM <bp>,
+	returns a mask to the byte pointed to by the specified
+	byte pointer (address field ignored). If arg's LH is 0,
+	the arg will be swapped first to get a byte pointer.
+	The comma is thrown away except for ending the arg.
+.BP <mask>,
+	returns a byte pointer to the byte which the argument is
+	a mask to. The address field of the value is 0. The comma
+	which terminates the argument is not flushed, so that
+	.BP <bit>,<addr> will produce a byte pointer to <bit> in
+	location <addr>.  For those who understand .FORMAT, that
+	contrives to use the format field-space-field rather than
+	the problematic field-comma-field format, which many users
+	like to redefine.
+.BYTC	The number of bytes assembled since .BYTE mode was entered.
+.BYTE	N   assemble N bit bytes.  That is, take the assembled "words"
+	and pack them into N-bit bytes to get what is really output.
+	When another byte won't fit in the current word, the word is
+	output and a new one is started.
+.BYTE M,N,O,P,...
+	assemble an M bit byte, then an N bit one, then an O bit one, etc.,
+	returning to an M bit one after using the last of the specified sizes.
+	If a negative "byte size" is specified, it causes a block of zero bits
+	to be assembled right after the previous byte;  the number of zero bits
+	is the abs. value of the specified number.  This can cause an extra
+	zero word to be assembled if .byte mode is left right away.
+	In byte mode, "." is a byte pointer which could be ILDB'd to get
+	the next byte.
+.BYTE	with no arg leaves byte mode, returning to the initial state.
+.C	Current block (as in .C"FOO).
+.CRFIL
+.CRFOFF	CREF off
+.CRFON	CREF on
+.CURLN	current line number minus 1
+.CURPG	current page number minus 1
+.DECRE	DEC relocatable output format
+.DECTW <hibot>
+	Two-segment DEC relocatable output format.
+	Arg is address of bottom of high segment (normally 400000).
+.DOWN <symbol1>,...
+	Causes the symbols to be visible in subblocks in 1PASS mode.
+	In 2-pass assemblies, symbols are always visible in subblocks
+	of the blocks they are defined in.  In 1PASS mode, they are
+	usually not (except for macros), in case the same name is
+	defined later on in the subblock itself.
+.DPB <newbyte>,<bp>,<word>,
+	deposits <newbyte> into the byte in <word> specified by <bp>,
+	and returns the result.  Thus, .DPB 0,30300,-1, returns -1,,777707
+.ELDC	End a load-time conditional - RELOCATABLE format only.
+.ELSE	conditional: "If the previous conditional failed". See MIDAS;COND >
+.END <blockname>
+	terminate symbol-scope block, if its name is <blockname>. Error
+	if the current block's name isn't <blockname>.
+.ENTRY	.FASL feature - declare a LISP entry point (SUBR beginning, etc).
+.ERR <line>
+	Causes an error with error message <line>
+.F	floating mode Fortran arithmetic statement.
+	Documented in AI memo 90.
+.FASL	Selects FASL output format, loadable by MACLISP.
+.FATAL <line>
+	Causes a fatal error with <line> as the error code.
+	The output buffers are written out and the output files
+	are closed, though only the error output file is renamed.
+.FNAM1	numeric value of first file name of current input file.
+.FNAM2	numeric value of second file name of current input file.
+.FORMAT	specify interpretation of fields in a word.
+	See the old MIDAS manual (AI memo 90).
+.FUNCT <function name>
+	refers to the specified function, in FASL format. See MIDAS;FASL >
+.GLOBAL	<symbol1>,...
+	Makes the specified symbols global.
+.GO <tag>
+	assembly continues at .TAG tag (within macro body)
+	Non-local .GO's outward are allowed.
+.GSCNT	The value of the generated symbol counter - may be read or set.
+.GSSET <count>
+	same as .GSCNT=<count>
+.HKALL	If nonzero, causes ":" to be treated as "::".
+.HKILL <symbol1>,...
+	Half-kills the specified symbols. Does not define them.
+	Acts only on the last pass.
+	Does shadow definitions in outer blocks, like .BIND.
+.I	integer mode Fortran arithmetic statement
+	Details documented in AI memo 90.
+.IFNM1	numeric value of first file name of insert file
+	(the file most recently .INSRT'ed by the current input file,
+	or the current file's name if it hasn't .INSRT'ed any others yet).
+.IFNM2	numeric value of second file name of insert file
+.INEOF	In an .INSRT file, acts just like EOF.
+.INIT	The outermost block (as in .INIT"MOVE).  All the predefined
+	symbols are defined in this block.  Symbol definitions in this
+	block are not output to the binary file.
+.INSRT <filespec>
+	Pushes the current input file and begins reading from the
+	specified file. After the end of that file, reading from
+	the inserting file will resume. If the sname of the file to
+	be inserted is not specified, that of the file being read
+	will be used. If the file is not found, the user will be
+	asked to respecify the names. .INSRT'ing the TTY is a
+	good way to let the user make arbitrary redefinitions at
+	some point in the assembly.
+.IRPCNT	# of completed iterations of innermost indefinite repeat
+.ISTOP	stop REPEAT or IRP - see MIDAS;LOOPS >
+.KILL <symbol1>,...
+	The specified symbols will not go in the symbol table.
+.LDB <bp>,<word>,
+	returns as a value the contents of the byte in <word>
+	specified by <bp>.  <bp> may be either a byte pointer
+	or the left half of one, as in .BM.
+.LENGTH	/text/
+	returns the number of characters in the specified string.
+.LIBRA	??
+.LIBRQ	??
+.LIFE, .LIFG, .LIFGE, .LIFL, .LIFLE, .LIFN, .LIFND, .LIFS
+	Load-time conditionals. Matched by .ELDC
+.LITSW	if nonzero, using a literal causes an error message.
+.LNKOT	??
+.LOP <op>,<C(ac)>,<C(mem)>
+	like .OP, but the instruction is executed in STINK rather
+	than in MIDAS. The results are available as the eventual
+	values of the global symbols .LVAL1 and .LVAL2.
+.LSTOF	listing off
+.LSTON	listing on
+.LVAL1	.LOP value left in accumulator.
+.LVAL2	.LOP value in memory location.
+.LZ <arg>,
+	the number of leading zeros in the value of <arg>.
+	The comma serves only to terminate <arg>.
+.M	Main block (as in .M"FOO)
+.MLLIT	set positive to allow multi-line [], (), and <>.
+	Set negative for the old-fashioned mode where they didn't
+	need to be terminated.  Zero selects "error mode" useful
+	in converting an old-fashioned program to multi-line mode.
+	Now initially positive.
+.MRUNT	MIDAS's runtime so far, in milliseconds.
+.NSTGW	sets .STGSW to cause error message if any storage words are assembled.
+.NTHWD <n>,<text string>
+	returns the <n>'th word of the text string.
+	Thus, .NTHWD 1, is equivalent to .1STWD.  By <text string>
+	is meant an invocation of ASCIZ, ASCII, ASCIC, .ASCII or SIXBIT.
+.OFNM1	 = SIXBIT/<output file's fn1>/
+.OFNM2	 = SIXBIT/<output file's fn2>/
+.OP <insn>,<acdata>,<memdata>
+	executes <insn> on an AC containing <acdata> and a memory
+	location containing <memdata>, and returns what this leaves
+	in the AC.  Thus, <.OP SUB,5,2> equals 3.  This value is also
+	made the value of .AVAL1, while .AVAL2 contains what was left
+	in the memory location:  .OP SUBM,5,2 sets .AVAL2 to 3, and
+	returns 5.  .ASKIP will be nonzero if the instruction skipped.
+	If an instruction is supplied with a nonzero AC field, that
+	AC field will be used unchanged, and the number of the AC
+	used for the argument and value will not be substituted.
+	Similarly, if the address field or index field in <insn> is
+	nonzero, the address of .AVAL2 will not be substituted.
+	This is useful for immediate instructions, including such
+	ITS UUOs as .RDATE which equals .OPER 46:  ASDATE=.OP .RDATE
+	sets ASDATE to today's date in SIXBIT.
+	Note that <insn> is read in as a field, and thus cannot contain
+	any spaces or commas (unless they are inside brackets).
+.OSMIDAS
+	is the sixbit name of the operating system MIDAS is running
+	under.  It is SIXBIT of ITS, SAIL, CMU or DEC.
+	Programs that have versions for more than one operating
+	system should by default assemble to run on the one
+	in .OSMIDAS, but they should make it possible to override
+	that default with the use of the T switch:
+		IFNDEF RUNOS, RUNOS==.OSMIDAS
+		DEFINE IFITS
+		IFE RUNOS-SIXBIT/ITS/TERMIN
+.PASS	is 1 or 2, depending on which pass MIDAS is in.
+.PPASS	is 1 in a 1-pass assembly; 2, in a 2-pass assembly.
+.QMTCH	if set nonzero, causes ' and " text constants to use the newer
+	fail-style syntax.
+.QUOTE	/text/ inhibit checking for TERMIN and macro dummies.
+.RADIX <rdx>,<value>,
+	evaluates <value>, using <rdx> as the radix.
+.RELP <arg>,
+	returns <arg>'s relocation.  Always 0 in an absolute
+	assembly.
+	For any X, X = .ABSP X,+.RL1*.RELP X,
+.RL1	in a relocatable assembly, returns a relocatable 0.
+	In an absolute assembly, returns 0.
+	.ABSP .RL1 is always 0.  .RELP RL1 is 0 iff the assembly is
+	absolute.
+.RPCNT	= # iterations of REPEAT completed
+.RSQZ <bits>,<symbol>
+	generates right-justified SQUOZE such as the DEC system likes.
+.SCALAR <symbol>
+	makes <symbol> a variable (like using <symbol> with a ')
+	causing it to have a storage word allocated for it later
+	(at the time of the next VARIAB or END)
+.SEE <symbol1>,...
+	Has no effect except to make cref entries for the specified symbols.
+.SITE <n>
+	returns word <n> (origin 0) of a SIXBIT string that says
+	the name of the machine MIDAS is running on.  If <n> is
+	out of range 0 is returned.  The format of the string is
+	operating system dependent;  on I.T.S. .SITE 0, will return
+	the standard I.T.S. "machine name" which is SIXBIT of
+	"AI", "ML", "DM", or "MC".
+	Programs with different versions for different sites should
+	by default assemble to run on the one specified by .SITE,
+	but they should make it possible to override that default
+	using the T switch:
+		IFNDEF RUNSITE,RUNSITE==.SITE 0,
+	then later on
+		IFE RUNSITE-SIXBIT/ML/,...
+.SLDR	selects SBLOCK output format, but outputs a loader in front
+	of the file.
+.SPECI	.FASL special variable reference.
+.STGSW	set nonzero => it is illegal to generate storage words.
+	.NSTGW and .YSTGW act by setting this flag.
+.STOP	stop current iteration of REPEAT or IRP, go on to next.
+.SUCCESS
+	flag, used to make .ELSE and .ALSO work.
+.SX	.FASL quoted S-expression reference.
+.SXE	.FASL S-expression load time evaluated and value assembled in.
+.SXEVA	.FASL S-expression load time evaluated and value thrown away.
+.SYMCNT returns the number of symbol table entries in use.  This is the
+	number of user-defined symbols plus the number of initial symbols
+	(not counting symbols that have been expunged).  It is useful for
+	determining what argument to give to .SYMTAB (below);
+.SYMTAB <nsyms>,<nlitwds>
+	makes sure the symbol table can hold <nsyms> symbols
+	and the literal table can hold <nlitwds> words of literal.
+	If either table actually needs to be enlarged, both are
+	re-initialized, so that all user symbol definitions are lost.
+	For this reason, a .SYMTAB should come at the beginning of the
+	program.  If both tables are already big enough (for example,
+	when the same .SYMTAB is seen on pass 2), .SYMTAB is a no-op.
+	The normal version of MIDAS starts out with space for 2700.
+	symbols, and has about 1200. initial symbols, so only
+	programs using more than 1500. symbols need a .SYMTAB.
+	To decide what symtab you need, try a very large value (10000.).
+	The number of symbols including initial symbols, printed at
+	the end of the assembly, is the minimum value you can use;
+	for best results choose an arg at least 20% larger.
+	The literal table size you need is usually the size of the largest
+	constants area;  this can be computed from the constants
+	area addresses printed at the end of the assembly.
+	Sometimes, that size may cause a "Constants Global Table Full"
+	error, and a larger size must be used.
+.TAG	see .GO
+.TTYFLG	if greater than zero, TTY typeout is inhibited
+	(but not output to error output file if any).
+.TTYMAC	allows the program to read a few arguments from the TTY at
+	assembly time, and refer to them as dummy arguments.
+	.TTYMAC is used the way DEFINE is used (see MIDAS;MACROS >)
+	but without a macro name; the macro definition is read in and
+	then immediately evaluated, with arguments read in from the TTY.
+	Try .TTYMAC FOO
+	BAR=FOO TERMIN
+.TYO <code>,
+	Like TYO n MACLISP;  prints on the TTY the character whose ASCII
+	code is <code>.  Thus, .TYO 61 prints a "1".
+.TYO6 <sixbit word>,
+	Prints the word, regarded as a sixbit.
+	Try .TYO6 .FNAM1,.TYO 40,.TYO6 .FNAM2,PRINTX/
+	/
+.TYPE <sym>,
+	is -1 if the "symbol" is really a number. Otherwise, it says
+	what the definition status of the symbol is.
+	(-1 number, 0 common, 1 pseudo/macro, 2 defined,
+	10 global and defined, 17 or other odd number undefined)
+.TZ <arg>,
+	is the number of trailing zeros in the value of <arg>.
+.U	containing block (as in .U"FOO)
+.UAI	unit ascii input (for .OPEN). Has the value 0.
+.UAO	unit ascii output (for .OPEN). Has the value 1.
+.UII	unit image input (for .OPEN). Has the value 4.
+.UIO	unit image output (for .OPEN). Has the value 5.
+.WALGN	word-align; in byte mode, move up to a word boundary.
+.VECTOR <symbol>(<size>)
+	Makes <symbol> be the name of a vector <size> words long.
+	The space is actually allocated by the next VARIAB, or by
+	the END statement.
+.XCREF <symbol1>,...
+	Suppress creffing of the specified symbols.
+.YSTGW	OK to generate storage words
+1PASS	one pass assembly. Implies RELOCA
+ASCIC /text/   like ASCIZ but fill with ^C.
+ASCII /text/   generate ascii character string.
+ASCIZ /text/   ascii character string, 0 byte at end.
+BLOCK <n>
+	reserve <n> words - increment "." by <n>.
+COMMEN /text/
+	ignores the text.
+CONSTA	dump out literals seen so far.
+DEFINE	define a macro. See MIDAS;MACROS >
+END <start>
+	terminates tha assembly, and sets the program starting address
+	to the argument (which is optional).
+EQUALS <sym1>,<sym2>
+	sym1 gets same meaning as sym2.
+EXPUNGE <symbol1>,...
+	forgets the definitions of the specified symbols.
+IF1	ifbody   assem if pass 1.
+IF2	ifbody   assem if pass 2.
+IFB	assemble if string blank (has no squoze chars).
+IFDEF	assemble if sym defined.
+IFE	exp, ifbody   assem if = 0.
+IFG	exp, ifbody   assem if > 0.
+IFGE	exp, ifbody   assem if >= 0.
+IFL	exp, ifbody   assem if < 0.
+IFLE	exp, ifbody   assem if <= 0.
+IFN	exp, ifbody   assem if ^= 0.
+IFNB	assemble if string not blank.
+IFNDEF	assemble if sym not defined.
+IFNSQ arg,
+	Assemble if arg is not all squoze chars.
+IFSE	string,string, ifbody   assem if strings equal.
+IFSN	string,string, ifbody   assem if strings not equal.
+IFSQ arg,
+	Assemble if arg is all squoze chars (that is, has no non-squoze).
+IRP	indefinite repeat (like macro args sort of).
+	see MIDAS; MIDAS LOOPS.
+IRPC	indefinite repeat (characters).
+IRPNC	indefinite repeat (groups of characters).
+IRPS	indefinite repeat (symbols).
+IRPW	indefinite repeat (words - i.e. code lines).
+LOC <arg>
+	set value of "." to <arg>.
+NOSYMS	don't put symbols in output.
+NULL	is a "conditional" that always fails.
+OFFSET <amount>
+	offset . and labels by specified amt (code to be moved before run).
+PRINTC /text/   type out the text
+PRINTX /text/   type out the text.
+RADIX <rdx>
+	set number radix to <rdx>.
+RELOCA	relocatable assembly.
+REPEAT <n>,[<body>]
+	repeat <body> <n> times.  See MIDAS;LOOPS >
+RIM	readin mode output format.
+RIM10	readin mode output format.
+SBLK	simple block loader output format (this is the default).
+SIXBIT /text/   generate sixbit character string.
+SQUOZE <code>,<symbol>
+	value is a word containing the squoze-code for <symbol>
+	with <code>/4 put in the top 4 bits.
+SUBTTL <line>
+	ignores the line. This pseudo is for @'s sake.
+TERMIN	terminate macro body or indefinite repeat.
+TITLE <pname> <junk>
+	specify name of program as <pname> (relocatable only).
+	Types <pname> and <junk> on the TTY.
+	It is at the TITLE that TTY will be .INSRT'ed by
+	the (T) switch.
+VARIAB	leave space for, and define, the "variables" seen so far.
+	"Variables" are symbols not defined and seen with singlequotes
+	and symbols seen in .INTEGER and .VECTOR pseudos.
+WORD <arg>
+	outputs the argument directly to the binary file.
+	Allows writing of nonstandard binary formats.
+XWD <lh>,<rh>
+	returns a word with the specified halfwords.
+
+AI:MIDAS;CNSTRC >	MIDAS constructs, in alphabetical order:
+
+!	is the concatenation character inside macro definitions,
+	IRP bodies, and .TTYMAC's.  An ! next to either a dummy name
+	or the final TERMIN will be thrown away.  For example,
+	inside DEFINE FOO A,B,  A!!B will concatenate A's value and B's,
+	as will just A!B.  A!!!B will leave one ! between them (the
+	middle ! is not adjacent to either A or B).  That may be what
+	you want to do if you are expanding an inner macro definition
+	and A or B wil expand into one of that definition's dummies.
+
+"	has four constructs:
+
+	<symbol>"
+		makes the <symbol> global, as well as referring
+		to the <symbol>'s value.
+	<block>"<symbol>
+		refers to the value of <symbol> in the specified
+		block.  Also, .C refers to the current block,
+		.M to the main block, and .U to the block containing
+		the current one.  Multiple use of this construct is
+		allowed:  FOO".U"BAR"BLETCH refers to BLETCH
+		in the block named BAR which is contained in the
+		block which is the father of the block FOO.
+	"<text>
+		assembles right-justified ASCII for <text>.
+		<text> contains at least one character in any case,
+		and all following squoze characters.
+		This construct exists only if .QMTCH is zero
+		(as it initially is);  otherwise, the next construct
+		exists instead:
+	"<text>"
+		assembles right-justified ASCII for <text>.
+		<text> may contain anything;  doublequotes may be
+		put in using the PL/1 quoting convention
+		("""" gives the ASCII for a doublequote).
+
+#	XOR operator.
+
+	<x>#<y>	gives the XOR of <x> and <y>.
+	#<x>	gives the complement of <x>.
+	#<x>#<y> therefore gives "neither <x> nor <y>".
+
+&	AND operator.
+
+'	has several constructs, syntactically distinguished.
+
+	<symbol>'
+		makes <symbol> a variable;  like
+		<  .SCALAR <symbol> ? <symbol> >
+		This construction is a bad one because it makes
+		it easy to assign a storage word without commenting
+		what its contents will mean.  It exists for historical
+		reasons.
+
+	<number>'
+		forces the use of base 8 in the number, regardless
+		of the current radix.
+
+	'<text>
+		like "<text>, but generates SIXBIT instead of ASCII.
+
+	'<text>'
+		like "<text>", but generates SIXBIT instead of ASCII.
+
+(,)	(<expression>) has the value of <expression> with its halves
+	swapped, if preceded by an arithmetic operator.
+	Otherwise, it takes that halves-swapped value and adds it into
+	the current word, and is invisible to its neighbors.
+	For example, 1(2)+3 == 1+3(2) == 4(2), and all are the same as
+	4 except that 2 is added to the left half of the current word.
+
+*	Multiplication operator.
+
++	Addition operator.
+
+,	Field terminator.  It is used for separating the fields of a word,
+	and also terminates the arguments to many pseudos and macros.
+
+-	Subtraction operator, and unary negation operator.
+
+/	Division operator.
+
+:	indicates a label.
+
+	<symbol>:
+		defined <symbol> to be equal to the current value of ".",
+		which is equal to the location being loaded into
+		plus the offset (normally 0, but see .OFFSET).
+		There may not be any spaces before the colon.
+		Once a symbol has been defined as a label, it is an error
+		to give it a different value in any way.
+	<symbol>::
+		is similar but "half-kills" <symbol>, so DDT will not
+		use it for type-out.
+
+;	begins a comment, which is ended by the following carriage return.
+	That carriage return is not gobbled; it has its normal effect.
+	";", like all other MIDAS constructs, is not recognized inside
+	of text strings;  also, it is recognized in macro argument scanning
+	only in certain specific situations (see MACROS >).
+
+<,>	in MIDAS are like parentheses in algebra.
+	They for a "grouping" (other groupings are made by (,) and [,]).
+	They are generalized to allow more than one expression to be
+	within them;  the last one's value is the value of the grouping.
+	This makes it possible to do assignments, etc. before computing
+	the ultimate value.
+
+=	is the assignment operator.
+
+	<symbol>=<expression>
+		sets <symbol>'s value to <expression>'s.
+		If there are undefined symbols in <expression> the
+		assignment is not performed.
+		This construct is illegal where a value is needed,
+		but if it is the last thing in a grouping it does
+		supply the value of the grouping.  Thus,
+		FOO=<BAR=1> is legal, though FOO=BAR=1 is not.
+	<symbol>==<expression>
+		is similar but half-kills <symbol>
+	<symbol>=:<expression>
+		is like "=" but makes it an error if <symbol> ever
+		gets (or previously had) a different value (this is
+		what labels do; <symbol>=:. is just like <symbol>:).
+	<symbol>==:<expression>
+		makes <symbol> half-killed and unredefinable.
+
+?	separates words.  ? is just as good as a carriage-return
+	for most purposes, the exceptions being termination of
+	macro arguments and conditionals (? does not terminate them).
+	That facilitates constructs like
+		IFN FOO, MOVE A,B ? JRST BAR
+	which conditionalizes both instructions.
+
+@	sets the indirect bit of the word it is in.
+
+[,]	delimit a literal.  Their value is the address of the space
+	MIDAS allocates to contain whatever is assembled inside them.
+	There may be any number of lines or words in the literal.
+	Example:	MOVEI A,[.BYTE 7 ? ^M ? ^J]
+	loads A with the address of a word containing the ASCII
+	for carriage-return linefeed.
+
+\	Inclusive-or operator.
+
+^	has several constructs:
+
+	^<char>
+		has the value of the control-character associated
+		with <char>.  Thus, ^M is 15 .
+
+	<number>^<expt>
+
+		multiplies <number> by <number>'s own radix to the
+		<expt> power.  Thus, 1.^6 is 1 million.
+		777^11 is the op-code field.
+		This construct works for floating point numbers as well:
+		1.0^6 = 1000000.0 .
+
+_	left-shift operator.
+
+AI:MIDAS;MACROS >	MIDAS macros
+
+@. GENERALITIES.
+
+It is often useful, when the text to be assembled
+has some pattern, to cause it to be computed, rather than
+putting it all in the file to be assembled. This reduces the number
+of possible typos and makes it easy to change all occurrences
+of a particular construct.
+
+To do this, one needs to be able to define a function which will
+be evaluated at assembly time, with the result being text to be assembled
+in place of the call to the function. Such a function is called a MACRO.
+
+In thes document, "EOL" means either CR or LF;
+"open" means "<", "(", "{" or "[";  "close" means ">", ")", "}" or "]".
+"the EOL or CRLF is thrown away" means that the EOL encountered as
+should have been previously described is thrown away, and if the EOL
+is a CR and the following character is a LF, the LF is also thrown away.
+Thus, either a CR alone, a LF alone, or a crlf may be used, and will be
+flushed at that point.
+
+
+A. MACRO DEFINITIONS.
+
+ 0. GENERALITIES.
+
+A function definition must specify the name of the function, the
+formal parameters (called DUMMY ARGUMENTS when macros are concerned)
+and the expression to be evaluated when the function is
+called - or in the case of a macro, the text to be assembled when
+the macro is called.
+
+In MIDAS, a macro definition is introduced by the pseudoop
+DEFINE, which should be followed by the macro name.
+After that, on the same line, come the names of the dummy
+arguments, perhaps followed by a comment.
+The text of the macro starts on the next line, and continues
+until the DEFINE is matched be a TERMIN.
+The character that ends the TERMIN is gobbled up.
+
+ 1. MACRO DEFINITION EXAMPLE.
+
+DEFINE FOOBR  AA,B
+	MOVE A,AA
+	CAIL A,B
+	 POPJ P,
+TERMIN
+
+A call to that macro might be:
+
+	FOOBR ZZZ,10
+
+which would assemble into
+
+	MOVE A,ZZZ
+	CAIL A,10
+	 POPJ P,
+
+
+ 2. THE DEFINE LINE
+
+The "DEFINE" line is the first component of a macro definition.
+It beginss with the "DEFINE" pseudo (which needn't actually be at the
+beginning of a line). Next comes the name of the macro to be defined,
+optionally preceded by an explicit block name (eg DEFINE FOO"BAR to
+define a macro BAR in the block named FOO, rather than in the
+current block). After the macro name come the dummy argument names,
+followed optionally by a comment. In any case, the define line
+extends through the first CRLF or EOL after the DEFINE.
+
+  a. bindclasses - semantics.
+
+Most higher level languages have several bind classes.
+The function definition specifies one of the bind classes for each formal parameter,
+which is used in decoding a call to the function,
+to decide what value to give to the formal parameter.
+Macro dummy arguments also have bind classes, which say three things:
+what to do if the dummy is UNSPECIFIED
+(that is, if, in a particular call, the argument list runs out before
+this dummy is reached)
+or NULLSPECIFIED (the argument for this dummy is left out),
+the alternatives being NULLIFIED, GENSYMMED and DEFAULTED
+(See B.7 for the meanings of the three options);
+which argument syntax to use for the dummy when
+processing calls to the macro (There are 5 different argument
+syntaxes available in MIDAS: NORMAL, WHOLELINE, BALANCED, STRUNG,
+and EVALUATED.  See B.2 through B.6 for descriptions of them.);
+and how the actual arguments are to be associated with the dummies,
+the alternatives being by ORDER and by KEYWORD.
+
+  b. bindclasses - syntax.
+
+In MIDAS, it is not necessary to specify the complete bindclass
+of each dummy with that dummy's name. Only the ways in which its
+bindclass differs from that of the preceding dummy are specified,
+by means of special delimiters between the names of the dummies.
+The first dummy is given the default bindclass (nullified normal by order)
+unless special delimiters precede it. The delimiters are:
+  {[(<	which cause following dummies to be balanced,
+  >)]}	which cause following dummies to have normal syntax,
+  *	which causes following dummies to be strung, or, if
+	 strung was already the selected syntax, causes them to
+	 be normal (This is called "turning strungness on or off"),
+  #	which turns evaluatedness on or off,
+  ?	which turns balancedness on or off,
+  -	which turns wholelineness on or off,
+  \	which complements gensymmedness,
+  +	which switches between by order and by keyword,
+  :	which reverts to the default in all ways (normal syntax,
+	 by order (not keyword), and not gensymmed).
+"/" is a delimiter which is like "-" except that if it follows
+a dummy immediately, wholelineness is complemented before the dummy
+rather than after. That is, "FOO/" is equivalent to "-FOO".
+This is mainly for compatability with older versions of MIDAS.
+A dummy is defaulted iff its name is followed by "=".
+The "=" should be followed by the desired default value,
+whose syntax is that of a normal macro argument.
+Beware: the dummy argument delimiters do not terminate default values,
+and default values are read in with the normal argument syntax
+regardless of the specified syntax of the dummy being defaulted.
+Thus, DEFINE FOO \(A,B=100)C makes B's default value be 100)C, which
+is probably not what you wanted.
+If a dummy is specified as gensymmed, and is also given an explicit
+default value, the explicit default overrides the gensymming.
+
+  c. DEFINE line example.
+
+DEFINE FOBR \A#B\C:D,+E=BAR,F,G(H,I=X,)*J*+-K
+
+would give FOBR the dummies A,B,C,D,E,F,G,H,I,J,K as follows:
+
+dummy	bindclass (argument syntax, what to do if unspecified).
+ the first few dummies are by order:
+  A	normal, gensymmed
+  B	evaluated, gensymmed
+  C	evaluated, nullified
+  D	normal, nullified
+ the next few dummies are by keyword:
+  E	normal, defaulted to "bar"
+  F	normal, nullified
+  G	normal, nullified
+  H	balanced, nullified
+  I	balanced, defaulted to "X"
+	(note that the comma after "I=X" is necessary because
+	the ")" would otherwise be part of the default
+	value of I. after dummy names not given default values
+	a comma is not necessary, although an extra one can't hurt.)
+  J	strung, nullified
+ the next dummy is by order.
+  K	wholeline, nullified
+
+ 3. THE MACRO BODY
+
+The macro body is the text string to be substituted in place
+of a call to the macro. The macro body specified in a macro
+definition starts with the first character after the CRLF or EOL
+that ends the define line, and continues through the character
+before the TERMIN that ends the macro definition. Remember that
+the character ending the symbol "TERMIN" is thrown away.
+
+WARNING:  ANY occurrence of "DEFINE" or "TERMIN" inside a macro body
+will affect MIDAS's determination of where the body ends.  This is
+true regardless of whether you intended them to or not.  Just because
+the "DEFINE" was in a text string or a comment does not change this.
+"Terminate" and "Terminal" must also be avoided.  If you need to put a
+"DEFINE" or "Terminal" into a macro body, use .QUOTE (See c., below).
+The same holds for any other MIDAS pseudo-ops that require a matching
+TERMIN, such as IRP and .TTYMAC.
+
+  a. dummy argument substitution.
+
+Whenever the name of one of the dummy arguments appears in the macro
+body specified in the definition, it represents a request for the value
+of tht dummy to be inserted at that point when a macro call
+is expanded. Dummy argument names are recognized only when surrounded
+by non-squoze characters, so neither of the dummy names "A" and "B" occurs
+in the string " AB ", but both occur in " A B ". The way dummy
+argument substitution is implemented is tht the dummy argument names
+are recognized when the macro is defined, and replaced by special
+characters. Therefore, if the name of a dummy argument is created by
+the expansion of a macro call (perhaps part of the name came from the
+substitution of the value of another dummy) that dummy-name will
+not be replaced by the dummy's value. In other words, text produced
+by substitution for dummy arguments is not rescanned for occurrences
+of dummy argument names.
+
+  b. concatenation.
+
+Suppose it is desired to have the substituted value of the dummy
+argument FOO followed immediately by the squoze character X.
+It will not do to put "FOOX" in the macro body, because "FOO" is
+not considered to occur in "FOOX". "FOO X" will cause the value
+of FOO to be substituted, but the space will remain between it
+and the "X". The way to win is to use the concatenation
+character "!". "!" can delimit the names of dummy arguments, as
+any other non-squoze character can, but it alone is thrown away after
+doing so. For example, "FOO!X" will cause FOO to be recognized,
+but followed immediately by an "X".
+Similarly, the TERMIN tht ends the macro definition must be
+preceded by a non-squoze character, which normally becomes part
+of the macro definition. If it is desired for the macro definiton
+to end with a squoze character, separate it from the TERMIN with
+an "!", which will be thrown away. "!"'s that appear in the macro
+body not adjacent to a dummy agument name, a .QUOTE, or the final TERMIN
+are not thrown away; this makes it possible to put "!"'s in macros.
+
+  c. .QUOTE
+
+It is possible to prevent recognition of dummy argument names
+in a part of the macro body by using the .QUOTE pseudoop. The
+pseudo is followed by a text string like the argument to ASCII et al.,
+which is not scanned for dummy argument names. The first character
+of the text string will follow the character before the "." of the
+.QUOTE, and the last character before the closing delimiter will
+come before the character after tht delimiter, in the macro as it
+will be defined. The .QUOTE, to be recognized, must be
+preceded by a non-squoze character, so in order to make it
+possible for a quoted string to follow a squoze character, an "!"
+before a .QUOTE is deleted.
+Not only dummy names, but TERMIN, .QUOTE, and the pseudos
+matched by TERMINs (DEFINE, .TTYMAC, and the various flavors of IRP)
+are not detected or treated specially when within a .QUOTE .
+
+  d. inner macro definitions.
+
+In order to make it possible to define a macro which will, when
+called, define another macro, it is possible to insert matching
+DEFINE - TERMIN pairs in a macro definition. A definition is
+ended not by the first TERMIN after the DEFINE, but by the first
+TERMIN that is unmatched by previous DEFINEs  (or other pseudos
+such as IRP and .TTYMAC that also expect to be  matched by TERMINs).
+(DEFINEs, TERMINs, etc. within .QUOTEs are ignored in the matching-up.)
+Remember that when the outer macro is called and the inner one is
+defined, its TERMIN will gobble up one character.
+For that reason, when a macro definition ends with an inner
+macro definition or an IRP, "TERMIN TERMIN" should be used,
+rather than "TERMIN!TERMIN". If the latter is used, the main
+macro will end with "TERMIN", so when it is called the inner
+"TERMIN" will gobble an extra character after the call.
+Using the space gives the inner TERMIN a character to gobble,
+thus protecting all the other characters from being gobbled.
+
+  e. .STOP
+
+The .STOP pseudo is used to exit from a macro.
+At macro expansion time, when .STOP is executed, the
+rest of the macro body will be ignored that time through.
+execution will continue with the first character after the macro
+call. For example,
+
+	DEFINE FOO A,B
+	1
+	IFE A,.STOP
+	2
+	TERMIN
+
+	FOO 1
+;	1
+;	2	;note the .STOP isn't exectuted.
+	FOO 0
+;	1	;and that's all, because of the .STOP.
+
+Beware of putting a .STOP inside brackets ("[" and "]").
+Because brackets are used for both literals and conditionals,
+MIDAS must keep a stack with an entry for each unmatched "["
+saying what is was for. If a .STOP, which is like a jump to
+the end of the macro body, is within brackets inside the macro,
+then although those bracket pairs will be exited, the bracket
+stack will not be updated because the closebrackets will
+not be encountered. When a "]" is next seen, MIDAS may
+treat it the wrong way (eg, may think it closes a literal
+when it was supposed to close a conditional).
+The way to win is to use braces
+("{" and "}") instead of brackets when conditionalizing
+a .STOP. Since braces are not used for anything but
+conditionals, there is no need for MIDAS to maintain such
+a stack, and thus no data base is invalidated if
+the brace depth is changed.
+Thus, this macro may cause problems:
+
+	DEFINE FOO A,B
+	1
+	IFE A,[.STOP ]
+	2
+	TERMIN
+
+and this one should be preferred:
+
+	DEFINE FOO A,B
+	1
+	IFE A,{.STOP }
+	2
+	TERMIN
+
+  f. .TAG and .GO
+
+These two pseudos provide arbitrary trasfers at macro
+expansion time. That is, they do not assemble into jump
+instructions; rather, they tell MIDAS to jump around
+while expanding the macro. That can cause parts of the
+macro to be expanded more than once or not at all.
+The way to use them is to put .GO <tag> at the place
+MIDAS should transfer from, and .TAG <tag> at the
+place it should transfer to. Thus, .GO FOO will
+transfer to a .TAG FOO . Nonlocal transfers are
+allowed; if a .GO does not find a matching TAG in the
+macro it is in, it will exit that macro and search the macro
+which called the macro containing the .GO. Any number
+of levels may be popped up this way but popping into a
+file will cause lossage. There should be a space after the
+<tag> in both the .GO and the .TAG to prevent lossage.
+Note that .GO and .TAG may be used in REPEAT's and
+IRP's just as in macros, and nonlocal .GO's in macros
+are allowed to find .TAG's in IRP's and REPEST's, etc.
+Transfering from one level in
+brackets to another has dangers associated with it, just as
+with .STOP - see the detailed explanation under e.
+For example,
+
+	DEFINE FOO
+	BAR==5
+	 .TAG BARF
+	BAR==BAR-1
+	BLETCH
+	IFN BAR,.GO BARF
+	TERMIN
+
+when called, will do BLETCH 5 times
+(of course, a REPEAT could have been used in this
+case, and would have meant a simpler macro).
+
+
+B. MACRO CALLS.
+
+ 0. GENERALITIES.
+
+A macro call is a request for the body of a macro to be substituted
+into the text to be assembled. The call must specify the name of the
+macro and the values to be given to the macro's dummy arguments
+(if it has any)
+
+ 1. MACRO CALL SYNTAX.
+
+Every macro call begins with name of the macro. In order for
+the macro name to be recognized as such, it must be evaluated.
+Therefore, macro calls are possible only in those places where
+a symbol will be evaluated. (For example, putting the macro's name
+in the middle of an ASCII will not cause the macro to be called).
+
+  a. macros with no dummies.
+
+A call to a macro without dummies consists of just the macro name.
+The character that terminates the name is left to be reprocessed after
+the text of the macro is processed.
+
+  b. degenerate calls.
+
+A degenerate call to a macro with dummies consists of the macro
+name followed by an EOL. The EOL or CRLF will be thrown away.
+All the dummies of the macro will be unspecified (see B.7).
+
+  c. normal calls.
+
+A normal call to a macro with dummies follows the macro name with
+anything but an EOL or OPEN. The character immediately after the macro
+name will be ignored. After it, the scanning for the values of the dummies
+will commence.
+MIDAS considers "by order" dummies one at a time, in the order
+they appeared in the macro definition. Each dummy is given a value
+obtained by scanning the text of the macro call according to the
+argument syntax determined by the dummy's bindclass (which is
+one of normal, balanced and wholeline).
+(See B.2 through B.6 for descriptions of the argument syntaxes).
+When a run of "by keyword" dummies is reached, MIDAS expects to
+see in the macro call expressions of the form <dummyname>=<value>.
+MIDAS reads the dummy name and checks that the "=" is there;  it then
+finds the dummy with that name and reads in the <value> using that
+dummy's bindclass.  When, instead of a dummy name, a terminator
+(comma, EOL, semicolon, CLOSE, etc) is seen, all the "by keyword"
+dummies in that particular run of them which have not been specified
+in the macro call are considered to be unspecified.  If there are
+by order dummies after the run of by keyword ones, MIDAS then proceeds
+to read in their values.
+If the scan for one dummy detects the "end of the call" (see B.2.d)
+then the scan for all following dummies becomes trivial: they are
+all unspecified, regardless of their designated argument syntaxes,
+and no more characters will be read from the input stream for any of them.
+If a normal call is ended in this fashion by an EOL, the EOL or CRLF
+is thrown away.
+
+  d. parenthesized calls.
+
+In these calls, the macro name is followed by an OPEN. The assignment
+of values to dummies procedes as in a normal call. At the end, though,
+characters are thrown away until and including a CLOSE that matches the
+OPEN. In the matching, parens and brackets within the values of
+dummies are not considered. Also, only the number of brackets seen is
+remembered - not what kind. There is nothing to stop a "(" from matching
+a ">" at this stage. Parenthesized calls are most useful with macros whose
+dummies are balanced - then the macro call is guaranteed
+to terminate precisely at that closeparen that matches the initial
+openparen, regardless of whether enough or too many argumentss
+are present in between. Note that where. below, the macro call is said
+to be "ended", in a parenthesized call that really means
+that scanning for the matching closeparen will begin.
+
+ 2. THE "NORMAL" ARGUMENT SYNTAX.
+
+MIDAS begins scanning for a normal argument by examining
+the first character.
+
+  a. first character is "[".
+
+All the text up to the matching "]", not including either of them, is part
+of the dummy's value, and the scanning of the next dummy
+begins with the character after the "]".
+If a normal argument is delimited by squarebrackets,
+it is never unspecified or nullspecified, even if the value
+between the squarebrackets is the null string.
+Thus, when a dummy has a default value, it is possible to specify
+the null string explicitly in the call, overriding the default.
+
+  b. first character is "\".
+
+A field is read (leading spaces ignored)
+and the field's value, converted to a string using MIDAS's current
+radix, is used as the value of the dummy. In this case the scan
+of the next argument begins with the character after the field terminator.
+Arguments specified in this way are never unspecified or nullspecified.
+
+  c. first char is ",".
+
+In this case, the dummy is nullspecified (see B.7).
+The scan for the next dummy, or the text to be handled after
+the macro call if there are no more dummies, starts after the comma.
+
+  d. first character is an EOL or semicolon.
+
+This dummy is unspecified (see B.7), and so are all remaining dummies.
+The scan for the remaining dummies will not attempt to read any
+characters. If the terminator was an EOL, and the call is a normal one,
+the EOL or CRLF will be thrown away at the end of macro call processing
+(see B.1.c).
+
+  e. otherwise.
+
+All text, including the first character,
+up to the first comma, semicolon or EOL goes into the argument,
+except that tabs and spaces before a semicolon are ignored.
+Then, depending on the terminating character, action is taken as
+in B.2.c or B.2.d, except that in neither case is the
+present dummy nullspecified or unspecified, since a nonnull value
+has already been specified for it.
+
+ 3. THE "BALANCED" ARGUMENT SYNTAX.
+
+When a dummy uses the balanced syntax, MIDAS insists that its
+value contain no unbalanced brackets.
+That is, while scanning for the end of the argument, MIDAS counts
+opens and closes, and will not let anything terminate the argument
+when the count is nonzero. Also, unmatched closes will not be allowed
+into the argument - they will terminate the argument and the macro
+call. When the bracket count is zero - that is, when it is permissible
+for the argument to terminate - a comma, semicolon, or EOL will
+do it, just as if the dummy used the normal syntax.
+That is, unspecification or nullspecification of the present dummy
+or the remaining dummies may happen, as described in B.2.c-B.2.e.
+Termination by an unmatched close is like termination by an EOL (B.2.d).
+For balanced dummies, "[" or "\" as the first character have
+no special significance.
+
+ 4. THE "WHOLELINE" ARGUMENT SYNTAX.
+
+The scan for  a wholeline argument stops only when an EOL is
+encountered. Thus, the value of a wholeline argument is everything
+up to but not including the first eol. While an EOL that
+terminates a normal or balanced argument ends the macro call, thus
+making all remaining dummies unspecified, the EOL that ends a
+wholeline argument does not do so. The EOL or CRLF is thrown away,
+and scanning for the next dummy starts on the next line.
+A wholeline dummy is never unspecified or nullspecified (except
+that it will of course be unspecified if the macro call is terminated
+by an EOL ending some previous non-wholeline dummy).
+
+ 5. THE "STRUNG" ARGUMENT SYNTAX.
+
+A strung argument looks just like the argument to ASCII or SIXBIT:
+it is bounded on both sides by an arbitrarily chosen delimiter.
+When the argument is scanned, first non-space character is taken
+to be the delimiter, and everything up to the second occurrence
+of that character is part of the argument's value.  Semicolon,
+EOL, comma, and closebrackets of various kinds, cannot be used as
+the delimiter, because if they are seen when the opening delimiter
+is expected they will nullspecify the argument and (except for comma)
+end the macro call, as they would in the balanced syntax.  The
+closing delimiter should be followed by an appropriate argument
+terminator such as comma, semicolon, EOL, or a closebracket (but
+spaces and tabs may intervene);  all except comma end the macro
+call, while comma allows more arguments to follow.
+
+ 6. THE "EVALUATED" ARGUMENT SYNTAX.
+
+An evaluated argument is passed by value instead of by name.
+When it is time to scan for such an argument, a field is read
+in and evaluated, and the value is converted to a string by
+expressing it as a number in the current radix.  This is exactly
+like the treatment of a normal argument whose value starts with
+"\", except that the "\" is not present itself in the call (see
+B.2.b).
+
+ 7. WHAT HAPPENS TO DUMMIES THAT ARE UNSPECIFIED.
+
+Whether a dummy is unspecified in a particular
+call depends on what came in the call before the place
+where the dummy's value should have been, and on the variety of
+argument syntax used by the dummy. Similarly, the criterion for
+being nullspecified depends on the argument syntax used. However,
+the consequences of being unspecified or nullspecified are independent of
+the argument syntax used. Instead, they depend on the other part
+of the bindclass of the dummy: whether it is to be nullified,
+gensymmed, or defaulted to a pre-specified value.
+
+  a. nullified dummies.
+
+When a dummy defined as nullified is unspecified or nullspecified,
+it is given the null string as its value. Most dummies of most macros
+used are of bindclass nullified.
+
+  b. gensymmed dummies.
+
+If a gensymmed dummy is unspecified,
+its value will be a GENERATED SYMBOL
+6 characters long - the first character "G"; the rest,
+a number in the current radix whose value equals that of .GSCNT,
+which starts out as 0 and is incremented before each gensymming.
+Thus, in each call, an unspecified gensymmed dummy
+will provide a unique label.
+If nullspecified, a gensymmed dummy has the null string as a value.
+Gensymmed dummies are treated differently when nullspecified
+or unspecified for compatability with old versions of MIDAS.
+In fact, the distinction between unspecification and nullspecification
+is made only to handle this case.
+
+  c. defaulted dummies.
+
+If a defaulted dummy is nullspecified or unspecified,
+  its default value will be used as its value in that call.
+
+
+C. EXAMPLES OF MACRO DEFINITIONS AND CALLS.
+
+ 1. NORMAL (NULLIFIED AND DEFAULTED) ARGUMENTS.
+
+DEFINE	MACRO1	A,B=FOO,C	;3 DUMMIES; SECOND DEFAULTED.
+	A ? B ? C TERMIN
+
+MACRO1 1,2,3
+;	1 ? 2 ? 3
+
+MACRO1 [FOO,,BAR]2,3
+;	FOO,,BAR ? 2 ? 3
+			;Showing how to put commas, etc. in args.
+
+MACRO1 1,,3	;2nd arg nullspecified and defaulted.
+;	1 ? FOO ? 3
+
+MACRO1 1,[]3	;2nd specified as null, not nullspecified.
+;	1 ?  ? 3
+
+MACRO1 1,2		;3rd arg unspecified.
+;	1 ? 2 ?
+
+MACRO1 1		;2nd and 3rd args unspecified; 2nd defaulted.
+;	1 ? FOO ?
+
+ 2. BALANCED ARGUMENTS.
+
+DEFINE	MAC2 ?A,B		;2 BALANCED DUMMIES.
+	A ? B ? BLETCH
+TERMIN
+
+DEFINE MAC2(A,,B,,),,	;another way to define the same macro.
+	A ? B ? BLETCH
+TERMIN
+
+DEFINE	MAC2A A,B		;SIMILAR BUT DUMMIES NOT BALANCED.
+	A ? B ? BLETCH
+TERMIN
+
+MAC2 <MOVE 1,2>,<MOVE 3,4>
+;	<MOVE 1,2> ? <MOVE 3,4> ? BLETCH
+
+MAC2A <MOVE 1,2>,<MOVE 3,4>
+;	<MOVE 1 ? 2> ? BLETCH
+;<MOVE 3,4>
+		;Note that the first dummy was bound to "<MOVE 1"
+		;and the second was bound to "2>".
+		;The "<MOVE 3,4>" wasn't even part of the call.
+
+MAC2(FOO,-1(P))+1
+;	FOO ? -1(P) ? BLETCH+1
+		;A parenthesized call. Note that the closeparen
+		;ends the second arg and the macro call, and is thrown away.
+
+MAC2 FOO,-1(P)+1
+;	FOO ? -1(P)+1 ? BLETCH
+
+DEFINE SQR  (X)
+<<X>*<X>>TERMIN		;this macro squares its arg.
+
+1+SQR(2)*3	;a parenthesized call.
+;1+<<2>*<2>>*3
+;note that 1+SQR(2>*3 would have the same effect.
+
+3*<1+SQR 2>-4
+;3*<1+<<2>*<2>>>-4
+		;Here we have, not a parenthesized call,
+		;but an ordinary call within parens.
+		;The ">" ends the argument to SQR and is not thrown away.
+
+ 3. GENSYMMING.
+
+DEFINE GENMAC \FOO,BAR
+	FOO,,BAR
+TERMIN
+
+GENMAC X+1,Y		;Both args specified nonnull.
+;	X+1,,Y
+
+GENMAC X+1,,		;Second arg nullspecified.
+;	X+1,,		;Nullspecified args are not gensymmed.
+
+GENMAC X+1		;Second arg unspecified.
+;	X+1,,G00001
+
+GENMAC X+1		;Note uniqueness of gensyms.
+;	X+1,,G00002
+
+GENMAC()		;Both args unspecified
+;	G00003,,G00004
+
+
+GENMAC(,)		;First arg nullspecified; second, unspecified.
+;	,,G00005
+
+ 4. WHOLELINE ARGUMENTS.
+
+DEFINE FOOWH A-B	;first arg normal; second, wholeline.
+	A
+	B
+TERMIN
+
+FOOWH 1,2,3,4
+;	1
+;	2,3,4
+
+FOOWH 1
+;	1
+;	
+
+DEFINE BARWH -A B	;both args wholeline.
+	A
+	B
+TERMIN
+
+BARWH 1,2,3	;note that each arg requires a line.
+4,5,6	;a comment on  the line is part of the arg.
+	;that is, semicolon isn't special.
+;	1,2,3	;note that each arg requires a line.
+;	4,5,6	;a comment on  the line is part of the arg.
+
+
+ 5. "BY KEYWORD" DUMMIES.
+
+DEFINE KWDM +A,B,C=FOO,+	;all three arguments by keyword.
+	A
+	B
+	C
+TERMIN
+
+KWDM   B=1,  A =2
+;	1
+;	2
+;	FOO
+
+KWDM C=1
+;	
+;	
+;	1
+
+DEFINE KWD1 A=1,+B=2,C=3,+D=4	;B and C are by keyword; A and D are by order.
+	A ? B ? C ? D
+TERMIN
+
+KWD1 100,,200			;both A and D but neither B nor C specified.
+;	100 ? 2 ? 3 ? 200
+
+KWD1 10,C=11			;A and C specified.
+;	10 ? 2 ? 11 ? 4
+
+KWD1 ,B=20,C=21,,40		;B, C and D specified; A was nullspecified.
+;	1 ? 20 ? 21 ? 40
+
+ 6. EVALUATED AND STRUNG DUMMIES.
+
+DEFINE TYPE *STR*		;STR is strung.
+	OUTUUO [ASCIZ ^@STR
+^@]TERMIN			;note ctrl-@ used as delimiter of ASCIZ.
+
+TYPE /UNDEFINED SYMBOL/
+;	OUTUUO [ASCIZ ^@UNDEFINED SYMBOL
+;^@]
+
+FOO==<TYPE /WHY FOO?/>		;Here a closebracket follows the string.
+;FOO==<	OUTUUO [ASCIZ ^@WHY FOO?
+;^@]>
+
+TYPE(:MYSTERIOUS ERROR:)	;A parenthesized call, and a strange delimiter.
+;	OUTUUO [ASCIZ ^@MYSTERIOUS ERROR
+;^@]
+
+DEFINE 2STRS *A=UGH,B*		;Two strung arguments, one defaulted.
+	ASCIZ /A,B/
+TERMIN
+
+2STRS =FOO=			;Call ended after 1st string
+;	ASCIZ /FOO,/
+
+2STRS .FOO.,-BAR-
+;	ASCIZ /FOO,BAR/
+
+2STRS ,/BAR/			;Here no 1st argument is given
+;	ASCIZ /UGH,BAR/
+
+2STRS //,/BAR/			;Here an explicit null string is given.
+;	ASCIZ /,BAR/
+
+
+DEFINE TYPECH #CHAR		;CHAR is evaluated.
+	MOVEI A,CHAR
+	PUSHJ P,TYO
+TERMIN
+
+TYPECH 40			;Print a space.
+;	MOVEI A,40
+;	PUSHJ P,TYO
+
+TYPECH ";			;Print a semicolon
+;	MOVEI A,73		;73 is the value of ";.
+;	PUSHJ P,TYO		;This would not be possible with normal
+				;or balanced syntax, since the ";" would
+				;be an argument terminator.
+
+DEFINE TYPEI (CHAR)		;CHAR balanced instead of evaluated
+	MOVEI A,CHAR
+	PUSHJ P,TYO
+TERMIN
+
+TYPECH "0(B)			;Print C(B) as a digit.
+;	MOVEI A,"0(B)		;This would not work with TYPECH,
+;	PUSHJ P,TYO		;Since CHAR would evaluate to B,,"0
+				;giving MOVEI A,<B,,"0> = MOVEI A,"0.
+
+D. THE "REMOTE MACRO" CONSTRUCTION.
+
+It is often desirable to use a macro as if it were a string variable,
+appending text to it little by little and then accessing the whole
+text as accumulated at some time. A way to do this is as follows:
+
+;initialization:
+
+	IF1 [DEFINE BNKBLK OP
+	OP
+	TERMIN ]		;BNKBLK accumulates text.
+
+	DEFINE BLCODE NEWCFT
+	BNKBLK [DEFINE BNKBLK OP
+	OP]NEWCFT
+	TERMIN
+	TERMIN			;BLCODE adds its arg to the end of BNKBLK.
+
+;add some text:
+
+	BLCODE [FOO]		;add FOO.
+	BLCODE [BAR]		;add BAR (note BLCODE inserts CRLF's, too).
+
+;assemble what has been accumulated:
+
+	BNKBLK			;which expands into ...
+;	FOO
+;	BAR
+
+In understanding this example, it is necessary to realize that MIDAS
+is a string-processing language that just happens to produce binary
+output as a side effect. It does not matter whether an expression
+appears to be properly nested with the various sorts of syntactic
+bracket (such as [-] and DEFINE-TERMIN) because the order the brackets
+are processed in may not be the order they appear in - especially
+since not all phases of processing look for all types of bracket.
+For example, when BLCODE is called, it calls BNKBLK with argument
+"DEFINE BNKBLK OP<crlf>OP". That there is an unmatched DEFINE in that
+argument does not matter because DEFINE is not special at macro
+call time or macro expansion time. Since BNKBLK substitutes its arg
+in, there will be an unmatched DEFINE in the expansion of BNKBLK.
+So, when MIDAS expands BNKBLK, it will begin processing the DEFINE,
+and it will keep on reading for the new macro definition past the
+end of BNKBLK. That is not a problem, because AFTER the call to
+BNKBLK, within BLCODE, there is a TERMIN that will make MIDAS
+end the new macro definition. The inner DEFINE and TERMIN appear
+to match in a simple minded way, which is necessary since otherwise
+it would be difficult to define BLCODE containing them, but when
+BLCODE is called they actually match up in a much more complicated way.
+To get a full understanding of exactly what expands into what,
+assemble such a segment of program with the (L) switch. The listing
+will show not only macro calls but what they expand into.
+
+Two other examples using this construct follow.
+They use a modification of the remote-macro hack
+to accumulate things in the reverse
+of the order they are put in.
+
+;Backwards IRP: to get the backwards version of
+;IRP FO,BA,[mumble]
+;	body!TERMIN
+;use
+;IRPB FO,BA,[mumble][body]
+
+	DEFINE IRPB X,Y,Z,BODY		;IRP BACKWARDS
+	DEFINE 1IRPB1 FOO
+	FOO!TERMIN
+	DEFINE 2IRPB2 BAR
+	1IRPB1 [DEFINE 1IRPB1 FOO
+	FOO
+	BAR]TERMIN
+	TERMIN
+	IRP X,Y,[Z]
+	2IRPB2 [BODY]
+	TERMIN
+	1IRPB1
+	TERMIN
+
+;LISP-style PROGs in MIDAS - use these macros as follows:
+;	PROG [X,Y,Z]		;X, Y, and Z are the locals.
+;	body of subroutine
+;	ENDPROG
+
+	DEFINE PROG VARS
+	IRP X,,[VARS]
+		PUSH P,X
+	TERMIN
+	DEFINE ENDPROG FOO
+	FOO
+	TERMIN
+	DEFINE 2PROG2 BAR
+	ENDPROG [DEFINE ENDPROG FOO
+	FOO
+	BAR]TERMIN
+	TERMIN
+	IRP X,,[VARS]
+	2PROG2 [POP P,X]
+	TERMIN
+	TERMIN
+
+AI:MIDAS;LOOPS >	MIDAS Canned Loops
+
+@. INTRODUCTION.
+
+Loops are useful for many reasons. One might merely wish to
+initialize the contents of a table in a simple pattern.
+One might also use a loop in conjuntion with macros, in
+all the ways loops are used in other programming languages.
+The loops that exist in MIDAS are REPEAT and
+the various kinds of IRP. Because MIDAS canned loops
+all begin with pseudoops, they will only be recognized and
+expanded where a symbol would be evaluated
+(not within comments, failing conditionals, macro definitions,
+text strings, etc.).
+
+
+
+A. REPEAT.
+
+ 0. REPEAT is used to assemble a single string (called
+the REPEAT string) several times - like a DO in PL-1
+or MACLISP. The REPEAT string need not assemble
+into the same thing each time, however,
+because each assembly of the string may have side effects
+that alter the action of the next.
+
+
+ 1. SYNTAX.
+
+The REPEAT pseudoop should be followed by a field whose
+value is the number of times the REPEAT string is to
+be repeated. That string follows immediately after the field.
+The syntax of the REPEAT string is the same as that
+of the string in a conditional. If the first character after
+the space or comma that ends the field is a "[", then all
+characters up to the matching "]", not including either of the
+brackets, make up the string to be repeated. Otherwise, that
+first character itself and all characters up to the next EOL
+make up the REPEAT string. The EOL or CRLF is
+thrown away, and a CRLF is added to the end of the REPEAT
+string, in the case that square brackets are not used.
+
+
+ 2. EXPANSION.
+
+A REPEAT expands by substituting the REPEAT string
+into the assembler input stream appropriately many times. For example,
+
+	REPEAT 5, SETZ ? 500<CRLF>
+
+is equivalent to
+
+	SETZ ? 500
+	SETZ ? 500
+	SETZ ? 500
+	SETZ ? 500
+	SETZ ? 500
+
+where the REPEAT string is "SETZ ? 500 <CRLF>".
+Each time through except the last, the last character
+of the string will be followed immediately by the first character
+of the string. To illustrate,
+
+	0,,REPEAT 3,[.+1
+	10,,]0
+
+expands into
+
+	0,,.+1
+	10,,.+1
+	10,,.+1
+	10,,0
+
+This example also shows that there is no need for the
+boundary between one pass through the string and the
+next to coincide with any logical
+division in the resulting concatenated text (such as a word
+or field boundary); the several passes through the string may
+all be part of one syllable if they do not contain any syllable
+separators! (for example, REPEAT 3,['A] = 'A'A'A = (SIXBIT/AAA/)).
+
+
+ 3. .RPCNT.
+
+During the expansion of a REPEAT, the symbol .RPCNT
+has the value of the number of completed passes through the REPEAT;
+that is, it is 0 the first time through, 1 the second, etc.
+When nested REPEATs are used, .RPCNT always refers to the innermost REPEAT.
+For example,
+
+	REPEAT X,[.RPCNT+]0   is   X*<X-1>/2  for  X >= 0.
+	REPEAT X,[<.RPCNT+1>*]1   is   FACTORIAL(X).
+
+
+ 4. .STOP.
+
+When the pseudoop .STOP is executed in a REPEAT, the
+pass through the REPEAT then in progress is ended. .STOP
+is like a jump to the label on the END of a DO in PL-1.
+The character after the "P" of .STOP is ignored; the next
+character asembled will be the first character of the REPEAT
+string (if there are more repetitions to go) or the one after
+the "]", EOL or CRLF that ended the REPEAT string.
+Thus,
+
+	REPEAT 5,[
+		FOO
+	IFE BAR,.STOP
+		<lots of garbage>
+	]
+
+is equivalent to (but assembles faster if BAR is 0 than)
+
+	REPEAT 5,[
+		FOO
+	IFN BAR,[
+		<lots of garbage>
+	]]
+
+Note that it currently loses to put .STOP (or .ISTOP) inside
+a bracketed conditional within the REPEAT. For details and
+reasons, see the documentation file on macros. The way to
+avoid this problem is to use braces instead of brackets in
+conditionals that surround .STOP's. The same applies to
+.ISTOP, .GO and .TAG.
+
+
+ 5. .ISTOP.
+
+.ISTOP is like .STOP, but also inhibits all further
+repetitions of the REPEAT string. It is like a jump to a
+label after the END of a DO in PL-1. The character after
+the "P" is ignored; the next character assembled is the one after
+the "]", EOL or CRLF that ended the REPEAT string.
+For example, 
+
+	REPEAT 36.,[
+	  FOO==.RPCNT
+	  IFN BAR&<1_.RPCNT>,.ISTOP
+	  ]
+
+sets FOO to the number of trailing zeros in BAR.
+
+ 6. .GO AND .TAG
+
+The pseudos .GO and .TAG may be used inside REPEAT's
+just as in macros. See the documentation file for macros.
+
+
+
+B. IRP'S IN GENERAL.
+
+ 0. IRP's in MIDAS are somewhat analogous to MAPCAR
+in LISP. In an IRP, a dummy name is supplied and also
+a string to repeat (called the IRP BODY) and a string
+(called the IRP STRING)  to
+take substrings from according to a prespecified syntactical
+rule which depends on which IRP pseudoop is used. The IRP
+body is assembled several times, with the dummy name bound to
+successive substrings of the string being IRP'ed over.
+For example,
+
+	IRP X,,[1,4,5]
+	FOO+X ? TERMIN
+
+expands into
+
+	FOO+1 ? FOO+4 ? FOO+5
+
+X is the dummy, "1,4,5" is the IRP string,
+"1", "4", and "5" are the substrings,
+and "FOO+X ? " is the IRP body.
+
+
+ 1. SYNTAX OF IRP'S.
+
+All kinds of IRP have the same syntax (except that IRPNC
+is slightly different). After the pseudoop itself come any
+number of IRP GROUPS, which make up the IRP HEADER
+(most IRP's have only one group).
+then comes the IRP body, which is just like a macro body
+(see MACROS A.3).
+
+
+ 2. IRP GROUPS.
+
+Each IRP group specifies one repetition to be done.
+It contains one string to take substrings from, and two
+dummies to put them in. The dummy names come first, and
+should be terminated by commas. If one of the dummies
+would not be referred to in the IRP body, it may be omitted
+from the IRP group, but the comma in its position may not
+be omitted (if a comma is missing, MIDAS will sometimes be
+able to detect that fact, in which case MIDAS will print an
+error message and assume there is no second dummy. However,
+a missing comma is not always detectable). The string to take
+substrings from comes after the second comma,
+and its syntax is that of a normal macro argument,
+except that "\" is not special as the first character.
+f the first character encountered after the string is read is
+a squoze character or a comma, MIDAS assumes that it begins
+another group. Otherwise, the group just ended is the last one.
+This means that if the string is terminated by a "]" or comma,
+the character following determines whether another group follows,
+while if the string is ended by an EOL or ";", there are
+automatically no more groups.
+The EOL or ";", or whatever character follows the comma or "]",
+is thrown away. If the next character is a LF, it too is discarded.
+A comment following the IRP header will lose. The best possibility is
+that it will merely go in the IRP body. The worst is that the ";"
+will be one of the characters thrown away and, causing total lossage.
+An example of an IRP with several groups is
+
+	IRP X,,[1,2,3]Y,,[4,5]
+		ASCIZ \X+Y\
+	TERMIN
+
+which expands into
+
+		ASCIZ \1+4\
+		ASCIZ \2+5\
+		ASCIZ \3+\
+
+
+ 3. THE IRP BODY.
+
+The body of an IRP is just like the body of a macro definition.
+The dummy arguments mentioned in the IRP header may be used
+in the IRP body, representing requests for the corresponding
+substrings of the IRP strings to be substituted in.
+Concatenation with "!", and .QUOTE, may be used as in
+macro definitions. The IRP body is ended by a TERMIN,
+just like a macro body. Because of this, the character after
+the "N" of the TERMIN wil be discarded. Also for that reason,
+IRP's are expected to be matched by TERMIN's within macro
+bodies and IRP bodies. For example, in
+
+	DEFINE INSIRP INSN,ADDR
+	IRP X,,[ADDR]
+		INSN,ADDR
+	TERMIN
+	TERMIN
+
+the first TERMIN matches the IRP; the second, the DEFINE.
+When the DEFINE executes, it increments its counter on seeing
+the IRP, and decrements it on seeing the first TERMIN, so the
+second TERMIN ends the macro body. A call to INSIRP
+expands into a string containing the IRP and the first TERMIN,
+which closes the IRP body when the IRP executes. The result is that in
+
+	INSIRP PUSH P,[A,B,C]
+
+NSN's value is "PUSH P" and ADDR's is "A,B,C".
+The macro call expands into
+
+	IRP X,,[A,B,C]
+		PUSH P,X
+	TERMIN
+
+which expands into
+
+	PUSH P,A
+	PUSH P,B
+	PUSH P,C
+
+
+ 4. IRP EXPANSION
+
+An IRP should be thought of as first defining an internal
+macro whose body is the IRP body, and whose dummy args are
+the dummies mentioned in the IRP header, and then calling that
+macro repeatedly  with arguments which are substrings
+of the IRP strings, chosen according to the rule for
+the particular IRP pseudoop that was used.
+Each call made to the internal macro constitutes one pass
+through the IRP.
+When an IRP has several groups, on every pass through the IRP
+each group is stepped to its next substring, independently of
+the other groups. The expansion of the IRP stops (that is, no
+more passes through it are made) only when ALL of the groups
+are exhausted (the ends of all the IRP strings have been
+reached).
+
+
+ 5. .STOP, .ISTOP, .GO AND .TAG.
+
+These pseudoops, when executed in an IRP expansion,
+act the way they do in REPEAT's. That is, .STOP ends only
+the current pass of the IRP, while .ISTOP also
+prevents any future passes from starting. See A.4 and A.5.
+
+
+ 6. .IRPCNT.
+
+While an IRP is being expanded, .IRPCNT has the value
+of the number of completed passes through the IRP
+(0 the first pass, 1 on the next, etc.). When nested
+IRP's are used, .IRPCNT refers to the innermost one. Thus,
+
+	IRP AC,,[NIL,A,B,C,D,E,F,G,H,I,J,K,L,M,N,P]
+	AC==.IRPCNT
+	TERMIN
+
+defines all the ACs with the specified names.
+
+
+
+C. PARTICULAR TYPES OF IRP.
+
+ 0. The previous section described what all the IRP pseudoops
+have in common. This section describes the peculiar details
+of each IRP pseudoop. The IRP pseudoops differ in how
+they divide the IRP strings into substrings, and in how they
+choose the values to be given to the two dummies of each group.
+
+
+ 1. IRPC (INDEFINITE REPEAT ON CHARACTERS).
+
+IRPC scans the IRP strings a character at a time.
+Each time through the IRP body, the first dummy of each group
+is set to the next successive character of the group's IRP string,
+(or to the null string if the IRP string is exhausted), and
+the second dummy is set to the remainder of the IRP string -
+the part that follows the character that the first dummy is set to.
+For example, in
+
+	IRPC X,Y,[ABCDE]A,B,1234,U,,[+-+-]
+	ASCIZ /X,Y,A!U!B/
+	TERMIN
+
+the dummies are X and Y in the first group, A and B in
+the second, and U in the third (which has no second dummy).
+The IRP strings are "ABCDE", "1234", and "+-+-".
+The expansion is
+
+	ASCIZ /A,BCDE,1+234/
+	ASCIZ /B,CDE,2-34/
+	ASCIZ /C,DE,3+4/
+	ASCIZ /D,E,4-/
+	ASCIZ /E,,/
+
+
+ 2. IRPW (INDEFINITE REPEAT ON WORDS).
+
+IRPW takes the IRP strings a line at a time (ignoring null lines).
+On each pass, the next nonnull line of every IRP string is used up.
+The first dummy of each group is set to the part of the line
+up to the first semicolon, and the second dummy is set
+to the part that follows the semicolon (or to the
+null string if there is no semicolon on the line).
+The semicolon, if any, does not become part of either dummy.
+Unfortunately there
+is no way to tell whether the line contained no semicolon, or there
+was only one semicolon and it was the last character - in either case
+the second dummy will be null. For example,
+
+	IRPW X,Y,[
+		FOO	;BAR
+		FOO1	;MUMBLE
+	]
+		[X]	;; Y
+	TERMIN
+
+expands into
+
+		[	FOO	]	;; BAR
+		[	FOO1	]	;; MUMBLE
+
+
+ 3. IRPS (INDEFINITE REPEAT ON SYLLABLES).
+
+IRPS attempts to scan the IRP strings a syllable at a time.
+However, it is not smart enough to duplicate the actions of the
+MIDAS syllable reader perfectly. In actuality, it divides the IRP
+string into syllables which are strings of consecutive squoze characters separated
+by strings of consecutive nonsquoze characters. On each pass,
+the first dummy of each group is set to the next string of
+consecutive squoze characters found in the IRP string of the group,
+or to the null string if the group's IRP string is exhausted,
+and the second dummy is set to the non-squoze character that
+terminates the run of squoze characters (or to the null string
+if there is none, because the first dummy's value reaches to the
+end of the IRP string or the IRP string is exhausted). For example,
+
+	IRPS X,Y,[A+B+C+ D+,E+ ,, &/!,F-G- H-I+]
+		X==Y!100
+	TERMIN
+
+sets A, B, C, D, E, and I to +100 and F, G, and H to -100.
+The extra spaces, commas, and "&/!" in the IRP string do not matter, because
+only the first non-squoze character after each syllable becomes the
+value of the second dummy Y. Extra CRLF's or + or - signs
+could also have been inserted at the same places without effect.
+
+
+ 4. IRP (INDEFINITE REPEAT (ON ELEMENTS)).
+
+IRP regards the IRP string as a list of elements
+separated by commas, and scans the IRP string an element at
+a time. An EOL or CRLF will also separate elements but since
+null elements are not ignored the CRLF or EOL should be used
+instead of a comma, not in addition to one.
+Square brackets are also special in the scan of the IRP string.
+The actual algorithm used by IRP to find the end of the next
+element is that a comma, EOL or CRLF (or the end of the IRP string)
+ends the element, and an "["
+is flushed but causes commas and EOLs (and therefore CRLFs)
+not to be special until the matching "]", which is flushed.
+Note that this resembles but is distinctly different from the
+normal macro argument syntax rules.
+On each pass through the IRP, the first dummy of each group is set
+to the next element in the IRP string of that group, and the second
+dummy is set to the rest of the IRP string (starting after the
+comma, EOL or CRLF that ended the element). Note that the commas, EOLs and
+CRLFs that separate the remaining elements will be present in the second
+dummy's value, as will square brackets that are doomed to be flushed when
+the elements they are part of are reached by the scan.
+For example,
+
+	IRP X,Y,[123 4,56789
+	ABCD[EF]GH,[IJ,],K]
+	ASCIZ /X:Y/
+	TERMIN
+
+expands into
+
+	ASCIZ /123 4:56789
+	ABCD[EF]GH,[IJ,],K/
+	ASCIZ /56789:ABCD[EF]GH,[IJ,],K/
+	ASCIZ /ABCDEFGH:[IJ,],K/
+	ASCIZ /IJ,:K/
+	ASCIZ /K/
+
+
+ 5. IRPNC (INDEFINITE REPEAT ON <n> CHARACTERS).
+
+IRPNC is similar to IRPC, but more general. It allows the
+characters of the IRP strings to be taken not only one at a time,
+but any fixed number at a time. Also, it may be told to
+ignore any number of characters at the beginning of each of the IRP
+strings, or to limit the number of passes to be made to
+a specified maximum value. IRPNC may be used to take an arbitrary
+substring of a string, or to index into a string.
+
+  a. Syntactic Differences between IRPNC and Other IRP's
+
+IRPNC's syntax differs from that described in B.1 in that after
+the IRPNC pseudoop itself, before the first IRP group, there come
+three numeric arguments, terminated by commas.
+They specify the number of characters
+to ignore at the beginning of each IRP string (to be referred to as
+<m>), the number of characters to take from each IRP string per pass
+(to be referred to as <n>), and the maximum number of passes allowed
+(to be referred to as <p>). <p> may be -1, meaning that the
+number of passes is not numerically limited. If <p> is 0,
+the IRPNC is not expanded at all. If <n> is less than 1, it is
+defaulted to 1. If <m> is negative, it is defaulted to 0.
+
+
+  b. Expansion.
+
+On each pass, the first dummy of each group is set to the next
+<n> characters of the group's IRP string (or the whole remainder
+of the IRP string if fewer than <n> characters remain).
+On the first pass, instead of using the first <n> characters of
+the IRP string, which would be like all the other kinds of IRP,
+<m> characters are skipped and the next <n> are used. (If the IRP string
+contained fewer than <m> characters to begin with, it is considered to
+be exhausted starting from the first pass). The second dummy
+is set to the remainder of the IRP string, following the <n> characters
+forming the first dummy's value, but containing only those
+characters that will eventually get into the first dummy. That is, if
+the number of passes has been limited, the characters of the IRP
+string that will never appear in the first dummy because it
+would take too many passes to get that far, will not appear in the
+value of the second dummy on any pass.
+
+  c. Applications.
+
+To take an arbitrary substring of a string, limit the IRPNC to
+a single pass. To select characters
+FOO through FOO+10 of the dummy name BAR,
+
+	IRPNC FOO,11,1,X,,[BAR]
+		;in here, use X to refer to the desired substring
+	TERMIN
+
+To convert a SIXBIT value to text, index into a string of all
+the SIXBIT characters in order. This IRPNC will
+type on the terminal the version number of the program (using .FNAM2).
+
+	REPEAT 6,[
+		IFE .FNAM2_<6*.RPCNT>,.ISTOP
+			;GIVE UP IF ONLY SPACES REMAIN.
+		TEMP==77&<.FNAM2_<6*<5-.RPCNT>>>
+			;ISOLATE THE NEXT CHAR TO BE TYPED
+		IRPNC TEMP,1,1,X,,[ !"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_]
+			PRINTX aXa	;NOTE LOWER CASE "a" IS NOT SIXBIT
+		TERMIN
+	]
+
+To XOR together all the words of an ASCII string,
+use this macro:
+
+	DEFINE FOO STRING
+	<
+	IRPNC 0,5,-1,BAR,,[STRING]
+	ASCII /BAR/#TERMIN
+	>TERMIN
+
+	
+ 6. A COMPLICATED IRP EXAMPLE
+
+This shows how to assign several symbols default values (that is,
+set them only if they haven't already been set). It allows
+each symbol to accompany its value, and either = or == may be
+used for each symbol independently.
+
+	IRPW X,,[
+		FOO==1	;mumble
+		BAR==500	;bletch
+	]
+	IRPS Y,,[X]
+	IFNDEF Y,X
+	.ISTOP
+	TERMIN TERMIN
+
+expands into
+
+	IRPS Y,,[	FOO==1	]
+	IFNDEF Y,	FOO==1
+	.ISTOP
+	TERMIN
+	IRPS Y,,[	BAR==500	]
+	IFNDEF Y,	BAR==500
+	.ISTOP
+	TERMIN
+
+which expands into
+
+	IFNDEF FOO,	FOO==1
+	IFNDEF BAR,	BAR==500
+
+Note that the expansion is described as a two-step process only
+to make it easier to understand the effects of the various IRP's.
+In fact, it all goes on at once, coroutine-style. The flow of
+control is approximately: read in the IRPW's arguments,
+set up the first pass through the IRPW, encounter the IRPS
+and read its arguments (which come out of the IRPW's body),
+begin the first pass through the IRPS, perform the IFNDEF,
+hit the .ISTOP which exits from the IRPS, preventing further
+passes through it, try again to read from the IRPW body, reach
+the end of it and then set up for the next pass through the IRPW.
+
+AI:MIDAS;COND >		Conditional Assembly in MIDAS
+
+@. OVERVIEW.
+
+It is often desirable to decide at assembly time, rather than at
+editing time, whether a particular piece of code is to be
+assembled. One might wish to assemble different versions of a
+program, usually based on the value of some symbol. Also, in
+order for arbitrary functions to be expressed by macros,
+conditionals are needed. When thinking about MIDAS conditionals,
+one should always remember that MIDAS is a string-processing
+language which simply happens to output the values of most
+expressions evaluated into the binary file.
+
+
+A. CONDITIONALS IN GENERAL.
+
+ 1. SYNTAX OF CONDITIONALS.
+
+Every MIDAS conditional construct begins with a pseudo which
+introduces the condition. This pseudo may require arguments
+which are part of the condition - a given conditionalizing
+pseudo always requires a particular number of arguments. After
+those arguments, if any, comes the text to be conditionalized,
+in a format independent of which condition was tested.
+
+ 2. WHERE CONDITIONALS MAY BE USED.
+
+Because the constructs begin with pseudos, they are only
+recognized as such in places where symbols' values are being
+examined. Those are exactly the places in which macro calls will
+be recognized. explicitly, something that looks like a
+conditional but appears inside a macro definition, a text
+string, a comment, a macro call, etc. will not be treated as a
+conditional but as part of the macro body, text string, comment,
+or macro argument, etc. Of course, if the conditional appears
+inside a macro definition, when the macro is called the
+conditional will be recognized unless there is something else to
+stop it. The point is that in
+
+	DEFINE FOO
+	IFN 0,TERMIN
+
+the TERMIN shown does end the definition of FOO even though it
+is inside what appears to be a failing conditional, because that
+conditional is not recognized at macro definition time. The
+definition of FOO is "IFN 0,". When the macro FOO is called, it
+will expand into a conditional, which WILL be recognized that
+time. Thus,
+
+	FOO BAR
+
+will not assemble the BAR because the BAR will be inside a
+failing conditional.
+
+ 3. SYNTAX OF THE CONDITIONALIZED TEXT.
+
+The conditional pseudo, together with arguments if any, are
+usually arranged to end with a field-terminator (SPACE or
+COMMA). The first character after that field-terminator is the
+beginning of the conditionalized text. The extent of the
+conditionalized text is determined in one of three ways, depending
+on whether that first character is one of "[" and "{".
+
+  a. one line conditionals.
+
+If the first character is not "[" or "{", then the
+conditionalized text is the rest of the line containing the
+conditional. For example,
+
+	IFN X,FOO+BAR
+
+conditionalizes the string "FOO+BAR" on the value of X. It does
+not matter how many "["'s or "]"'s there are in the line. There
+may be other conditionals in the line, but it isn't wise to have
+any multi-line bracketed ones start in the conditionalized line.
+
+  b. bracketed conditionals.
+
+If the first character is "[", the conditional is called
+"bracketed". In this case, the conditionalized text runs up to
+the "]" that matches the "[". The opening "[" and the closing
+"]" are ignored except for their function as delimiters of the
+conditionalized text. Other "["'s and "]"'s in the
+conditionalized text act as normal, as well as being counted to
+find the end of the conditional. The conditional may span many
+lines, or may be only a part of a line. For example,
+
+	IFN X,[BAR-]FOO
+
+assembles either FOO or BAR-FOO depending on the value of X.
+However,
+
+	IFN X, [BAR-]FOO
+
+conditionalizes the string " [BAR-]FOO" because the first
+character of the conditionalized text is not a "[".
+
+
+Note that though when the conditional fails, the brackets inside
+the conditional are just those that are visible, since macros,
+etc., are not expanded if the condition fails, if the condition
+succeeds the expansion of macros may cause other brackets to
+appear inside the conditionalized text. If such brackets are
+unbalanced, they may cause the opening "[" of the conditional to
+match a bracket other than the intended one, which may in
+obscure circumstances ruin the assembly.
+
+If the "]" of a failing bracketed conditional is missing, the
+assembly will by a complete loss. In that case, the error
+message will say where the beginning of the conditional was
+located. If  the "]" of a successful bracketed conditional is
+missing, no harm results unless a literal was in progress.
+However, it means that if in another assembly the same
+conditional failed (perhaps due to different parameter
+settings), lossage would occur. Therefore, MIDAS prints a
+message at the end of the assembly stating that there was
+an unterminated successful conditional, and says where the
+first one was. Fixing that one and reassembling will cause
+MIDAS to find the second one, if there are any more.
+
+The reason that MIDAS must remember unterminated successful
+bracketed conditionals is that a "]" in MIDAS may terminate
+a literal or a conditional, and MIDAS has to be able to
+decide which whenever a "]" is seen. This means that when
+a .STOP, .ISTOP, .GO or .TAG is inside "[" - "]" pairs,
+lossage can result because brackets are skipped over,
+causing the "[" stack to get out of phase with the position
+in the macro or loop. For this reason, bracketed conditionals
+should never be used to conditionalize those four pseudos.
+Braced conditionals should be used instead.
+
+  c. braced conditionals.
+
+Braced conditionals look just like bracketed conditionals
+except that braces ("{" and "}") are used instead of brackets.
+Braced conditionals count ONLY braces when matching up -
+brackets have no effect on them.
+
+Semantically, braced
+conditionals are almost the same as bracketed conditionals
+but the few differences are important in some situations.
+The differences come from the fact that MIDAS does not keep
+a stack of all unterminated successful braced conditionals,
+whereas for bracketed conditionals it does. MIDAS can get away
+without such a stack because braced conditionals cannot be
+confused with literals, unlike brackets. This has two
+consequences: first, MIDAS cannot warn the user about
+unintentionally unterminated successful braced conditionals;
+second, intentionally unterminated braced conditionals are
+possible. If that boggles your mind, note that in
+
+	IFE X,{.STOP }
+
+the conditional is unterminated if it is successful.
+Also, because brackets do not interfere with braced
+conditionals, constructions such as
+
+	IFE X,{ASCII/
+	[/}
+
+are possible. While overall unbalanced brackets are unwise,
+it may be reasonable to have such constructions
+in parts of a macro which as a whole has balanced brackets.
+
+There are reasonable constructions which can sometimes
+result in unmatched braces/brackets, and for which therefore
+only braces should be used. An example is the hack for OR'ing
+two condions:
+
+	IFN X,{IFNDEF A,} <stuff wanted if X=0 or A undefined>
+
+If the IFN succeeds but the IFNDEF fails, the "}" will not
+be assembled. If brackets were used, that might cause trouble.
+
+ 4. .SUCCESS, .ALSO, .ELSE.
+
+After the testing of the condition, when it has been decided
+whether the conditional has succeeded or failed, the symbol
+.SUCCESS is given a value automatically - 0 if the conditional
+failed, and -1 if it suceeded. Also, after the "]" terminating a
+bracketed conditional, .SUCCESS is again set to the same value.
+The conditionals .ALSO and .ELSE test the symbol .SUCCESS's
+value, and may be used to generate IF-THEN-ELSE constructs as
+follows:
+
+	IFN X,FOO
+	.ELSE BAR	;assembles either FOO or BAR.
+
+	IFN X,[ FOO ]
+	.ELSE [ BAR ]
+		;similar, but now it works even if
+		;"FOO" is a macro containing conditionals
+		;that clobber .SUCCESS.
+
+	IFN X,IFN Y,FOO
+	.ELSE BAR
+		;assembles FOO if both X and Y are nonzero.
+		;assembles BAR otherwise
+
+	IFN X,[IFN Y,[FOO]]
+	.ELSE BAR	;if X=1 and Y=0, assembles nothing.
+
+	IFN X,FOO	;assembles either FOO and MUMBLE, or BAR
+	.ELSE BAR	;because .ELSE sets .SUCCESS.
+	.ELSE MUMBLE
+
+	IFN X,FOO
+	.ALSO BAR	;assembles FOO and BAR, or nothing.
+
+B. THE CONDITIONS AVAILABLE.
+
+This section describes all the conditional pseudos in MIDAS and
+their conditions and arguments.
+
+ 1. ARITHMETIC CONDITIONALS.
+
+These conditionals all test the sign of an expression. They are:
+
+	IFN X,FOO	;assemble FOO if X is nonzero
+	IFG X,FOO	;assemble FOO if X is positive
+	IFGE X,FOO	;assemble FOO if X is nonnegative
+	IFL X,FOO	;assemble FOO if X is negative
+	IFLE X,FOO	;assemble FOO if X is nonpositive
+	IFE X,FOO	;assemble FOO if X is zero
+
+ 2. STRING CONDITIONALS.
+
+These take two string arguments and compare them for equality.
+IFSE succeeds if the strings are equal; IFSN, if they are not.
+The case of alphabetic characters is ignored, so "a" and "A" match.
+The syntax of the string arguments is the same as that of normal
+macro arguments except that "\" is not special as the first
+character. Examples:
+
+	IFSE FOO,BAR,[BLETCH]
+		;assembles BLETCH if FOO and BAR are equal
+		;strings (which obviously can't be the case
+		;unless either FOO or BAR is a macro dummy
+		;argument which will be replaced by something).
+
+	IFSE FOO,[BAR][BLETCH]
+		;has the same meaning, but now "[]" are used to
+		;delimit the second string argument. This makes
+		;it possible to win if BAR contains commas or
+		;CRLF's. Note that, as with bracketed macro
+		;arguments, a comma is not needed after [BAR].
+		;In fact, a comma there would be wrong:
+
+	IFSE FOO,[BAR],[BLETCH]
+		;conditionalizes the string ",[BLETCH]", because
+		;the first character of the conditionalized text
+		;is the comma, so the "[" in front of the
+		;"BLETCH" is not recognized.
+
+	IFSE [FOO][BAR][BLETCH]
+		;this is just like the first example, but now
+		;FOO and BAR may contain commas or CRLF's.
+
+ 3. CONDITIONALS ON SYMBOL DEFINITION.
+
+These conditionals test whether a specified symbol is defined.
+The symbol should follow the conditional name, ended by a
+field-terminator, which is followed by the conditionalized text.
+The pseudos are IFDEF, which succeeds if the symbol is defined,
+and IFNDEF, which has the opposite sense. For example,
+
+	IFNDEF FOO,FOO=1
+		;defines FOO to be 1 if it isn't defined
+		;already. it is a good idea to define all the
+		;assembly parameters of a program in this way so
+		;that it is not necessary to edit the program to
+		;assemble it with different settings - instead,
+		;just assemble the program with the "T" switch
+		;in the command string and then type the desired
+		;definitions in from the TTY.
+
+	IFNDEF FOO,.M"FOO=1
+		;if FOO isn't defined, defines it in the main
+		;block (the previous example would define it in
+		;the current block.
+
+	IFNDEF XX"FOO,XX"FOO=1
+		;if FOO isn't defined in block XX, defines it to
+		;be 1.
+
+	IFDEF FOOBAR,PUSHJ P,FOOBAR
+	.ELSE JFCL
+		;call the FOOBAR routine if the user has one.
+		;this might appear in a package that is
+		;.INSRT'ed by several programs.
+		;The .ELSE is needed because on pass 1 it will
+		;not in general be known yet whether the user
+		;has a FOOBAR routine.
+
+ 4. "BLANKNESS" CONDITIONALS.
+
+These conditionals take a single string argument, using macro
+argument syntax (just like IFSE), and test whether it contains
+any SQUOZE characters (letters, digits, and ".", "$", "%"). The
+string is "blank" if it has no SQUOZE characters. The
+conditionals are IFB "If Blank" and IFNB "If Not Blank".
+Examples:
+
+	IFB X,FOO	
+		;assembles FOO unless X contains a SQUOZE
+		;character. Since "X" IS a SQUOZE character, the
+		;conditional will always fail unless X is a
+		;macro dummy argument.
+
+	IFB [X]FOO
+		;has the same semantics, but X may now contain
+		;commas, CRLF's, etc.
+
+ 5. SQUOZENESS CONDITIONALS.
+
+These conditionals are somewhat like the blankness conditionals,
+but instead of testing whether any of the characters in the argument
+is squoze, they test whether all of the characters are squoze. The
+conditionals are IFSQ "If all SQuoze" and IFNSQ "If Not all SQuoze".
+Examples:
+
+	DEFINE FOO X
+		1+< IFSQ X,[1] >
+	TERMIN
+
+	FOO BAR		;assembles 2
+	FOO BAR BLETCH	;assembles 1
+
+ 6. PASS CONDITIONALS.
+
+These two conditionals allow different things to be assembled on
+pass 1 and pass 2. IF1 succeeds only on pass 1, and IF2 only on
+pass 2. Note that the conditionalized text starts with the
+character after the space or comma that ends the name of the
+pseudo. One use is to avoid defining macros on pass 2: if a
+macro is never to be redefined, there is no need to define it on
+pass 2, because it already has the correct definition, given to
+it on pass 1. Thus,
+
+	IF1 [	DEFINE FOO
+		....
+		TERMIN ]
+
+Another use might be: have a macro to make entries in the FOO
+table. On pass 1, simply have the macro count up the number of
+times it is called. Then, at the end of the file, allocate
+enough words for the table.  From then on, the address of the
+table is known, so on pass 2 the macro can actually assemble
+values into the words of the table.
+Caution is needed when using pass conditionals, because, by
+assembling more words on one pass than on the other, it is easy
+to cause all the labels in the rest of the program to yield
+"MDT" errors, because their addresses on pass 2 are not the same
+as they were on pass 1. Also, one should avoid using any literals
+on pass 2 that were not used on pass 1 (but doing the opposite
+can't do worse than make the constants area waste some space).
+
+ 7. .ELSE AND .ALSO.
+
+.ELSE and .ALSO exist to make a generalized IF-THEN-ELSE
+construction possible. They act just like "IFE .SUCCESS" and
+"IFN .SUCCESS" respectively. The conditionalized text starts
+after the space or comma that terminates the pseudo itself. See
+section A.4. for more details.
+
+AI:MIDAS;FASL >		FASL Feature In Midas.
+
+	Midas can now assemble FASL files that can be loaded
+by LISP in the same manner as LAP FASL output.  This mode is
+entered by the .FASL pseudo op, which must appear at the
+beginning of the file before any storage words.
+	After .FASL has been seen, the assembly becomes a
+two pass relocatable assembly.  However, certain
+restrictions and "changes of interpretation" apply.
+	Global symbols (declared as usual with " or .GLOBAL)
+are persmissible. However, since the output is to be loaded
+with FASLOAD using DDT's symbol table instead of STINK,
+there are quite a few differences in detail.
+	For symbols defined within the current assembly, the
+only effect of being declared GLOBAL is that the GLOBAL
+information is passed on to FASL when the symbol table is
+written at the end of pass 2.  This in combination with the
+SYMBOLS switch in FASLOAD determines whether the symbol gets
+loaded into DDT's symbol table.  If SYMBOLS is NIL, no
+symbols will be loaded; if SYMBOLS is EQ to SYMBOLS, only
+globals will be loaded; and if SYMBOLS is T, all symbols
+(local and global) will be loaded.  Once the symbol is
+loaded (or not), the information as to its GLOBALness is
+lost and, of course, makes no further difference. The
+initial state when LISP is loaded is NIL.
+	GLOBAL symbols not defined in the current assembly
+are also legal, but there are additional restrictions as to
+where in a storage word they may appear and what masking may
+be specified (as compared to a normal relocatable assembly).
+Briefly, they may appear as in a storage word as a full
+word, a right half, a left half, or an accumulator. They may
+be negated, but can not be operated on with any other
+operator.  Error printouts will be produced if they appear
+elsewhere.  When the symbol is encountered by FASLOAD, DDT's
+symbol table is consulted.  If it is defined at that time,
+OK, otherwise FASLOAD will generate an error.
+	Any sort of global parameter assignment or location
+assignment is Forbidden.  .LOP, .LVAL1, .LVAL2, etc are not
+available.
+
+
+New Pseudo OPs Available only in FASL assemblies.
+
+	The following pseudos are available to facilitate
+the communication between MIDAS assembled programs and LISP
+(particularily with regard to list structure).
+
+.ENTRY function type args
+
+	Function is an atom and is taken as the name of
+	a function beginning at the current location.  Type
+	should be one of SUBR, FSUBR or LSUBR, and has the
+	obvious interpretation.  Args is a numeric-valued field
+	which is passed thru to FASLOAD and used to construct
+	the args property of the function.  If it is zero, no
+	args property is created. Otherwise it is considered to
+	be a halfword divided into two 9 bit bytes, each of
+	which is converted as follows:
+		      byte    result
+			0	nil
+			777	777
+	otherwise	n	n-1
+	These two items are then CONSed and from the
+	args property.
+
+The following pseudos may appear in constants!!
+
+.ATOM atom
+
+	followed by a LISP atom in "MIDAS" format (see below). 
+	May only appear in right half (or entire word) of a
+	storage word.  Assembles into a pointer to the atom
+	header of the specified atom.
+
+.SPECI atom
+
+	similar to .ATOM but assembles into a pointer to the
+	SPECIAL value cell of the specified atom.
+
+.FUNCT atom
+
+	similar to .ATOM, but invokes special action by FASLOAD
+	in case the PURESW is on. Normally used in function
+	calls. Briefly, if FASLOAD is going to purify the
+	function it is loading, it must "snap the links" first.
+	If .FUNCT is used, the location will be examined by
+	FASLOAD and the link snapped if possible before
+	purification.
+     Typical usage:
+	CALL 2,.FUNCT EQUAL	;calls equal as a function of 2 args
+				; note: the CALL is not defined
+				; or treated specially by MIDAS.
+
+.ARRAY atom
+
+	similar to .ATOM, but assembles into a pointer to the
+	Array SAR.
+
+.SX S-expression
+
+	similar to .ATOM, but handles a LISP S-expression. 
+	(See below).
+
+.SXEVA S-expression
+
+	reads S expression. This S expression is EVALed (for
+	effect presumably) at FASLOAD time.  The resulting
+	value is thrown away. Does not form part of storage
+	word.
+
+.SXE S-expression
+
+	Similar to .SX but list is EVALed at FASLOAD time.  The
+	resulting value is assembled into storage word.
+
+
+The MIDAS "LISP READER"
+
+	By a conspiracy between MIDAS and FASLOAD, a version
+of the LISP reader is available.  However, due to historical
+reasons (mostly, i.e. the FASLOAD format was originally
+intended only to deal with COMPLR type output), there are a
+number of "glitches" (see below for list).  These will
+probably tend to go away in the fullness of time.
+
+a) numeric ATOM
+
+	The first character of a LISP atom is examined
+specially. If it is a # or &, the atom is declared to be
+numeric and either fixed (#) or floating (&).  Midas then
+proceeds to input a normal numberic field (terminated, note,
+by either space or comma). This value is then "stored" in
+the appropriate "space" (fixnum space or flonum space).
+
+b) other ATOMs (also known as PNAME atoms or (LISP) SYMBOLS)
+
+	If the first character of the  atom is not # or &,
+the atom is a "PNAME" atom. / becomes a single character
+quote character as in LISP.  The atom may be indefinitely
+long.  The atom will be terminated by an unquoted space,
+carrige return, tab, (, ), or semicolon. Unquoted linefeeds
+are ignored and do not become part of the atom.  The
+character that terminates the atom is "used up" unless it is
+a ( or ). Note that period is a legal constituent of a atom
+and does not terminate it or act specially.
+
+c) lists.
+
+	Work normally, but note following caution relative
+to dot notation: . does not terminate atoms.  Thus, to
+invoke dot notation, the dot must be left delimited by a
+space, tab, parenthesis, or other character that does
+terminate atoms.
+
+Glitches:
+
+     1) Restriction on pass dependant list
+	structure -- In any list reading operation, no new
+	atoms not previously encountered may be
+	encountered for the first time on pass 2. 
+	However, this restriction does not apply to
+	atom-only reading operations (.ATOM, .SPECI,
+	.FUNCT etc).
+     2) Single quote for quoting does not exist (no
+	other macro characters exist either.)
+     3) Numbers must be flagged as above always.
+		MOVEI A,.ATOM 123	;LOSES - gives pointer
+					; to PNAME type atom
+					; with PNAME 123. it is
+					; not numeric.
+	use:
+		MOVEI A,.ATOM #123	;WINS
+     4) No provision exists to reference "GLOBALSYMS"
+	in FASLOAD. This mostly means only that DDT must
+	be present to load a MIDAS assembled FASL file.
+	(some simple COMPLR and LAP FASL files can
+	successfully be FASLOADed by, for example, a
+	disowned LISP running without a DDT.
+     5) LOC is illegal in a FASL assembly.  BLOCK of a
+	non-relocatable quantity is ok.
+     6) Currently, symbol loading is VERY slow.  Thus
+	use SYMBOLS nil, (the initial state) unless
+	symbols are necessary.
+     7) Midas does not know about any LISP symbols or
+	UUOs specially. Use them as globals until someone
+	gets around to fixing up a .INSRT file with the
+	appropriate defs.
+     8) .ATOM "should" be a special case of .SX . 
+	However, it is handled separately because of the
+	following "reasons":
+	     a) The previously noted restriction on pass
+		dependent LISTS.
+	     b) Midas can do constants optimization on
+		atoms ppearing in constants (on both pass one
+		and pass two) but not on LISTS. Therefore,
+		each list is guaranteed to take a separate
+		word in the constants area even if it is
+		identical to some other list which also
+		appears in a constant.
+	     c) Each list takes an additional entry in
+		FASLOAD's "atom" table.  This is a temporary
+		table that is flushed after the FASLOADing is
+		complete.  Of course, .SX still works for
+		atoms modulo the above noted restrictions and
+		inefficencies.
+	The arithmetic-statement pseudo-ops: .I and .F
+			B.K.P. Horn
+
+	This is a feature of MIDAS which facilitates the rapid writing
+	and debugging of programs involving much nmerical calculation.
+	The statements used are ALGOL-like and easy to interpret.
+
+[ Note: This was originally written as AI Memo #179, Aug 1969, and
+has been copied into this file with as much verisimilitude as possible]
+---------------------------------------------------------------------------
+
+An arithmetic-statement expander:
+
+Since the Incompatible Timesharing System (ITS) does not support an
+ALGOL style compiler and LISP is so cumbersome in dealing with arithmetic
+statements, it is very tedious to perform even the simplest algorithms of
+numerical analysis.  To alleviate this problem without an inordinate amount
+of effort, two pseudo-ops were added to MIDAS (the macro-assembly language).
+
+The pseudo-ops are .F and .I.  The first of these will have the arithmetic
+in the arithmetic statement following it performed in floating point,
+the latter in fixed point.
+
+Each statement is treated without reference to any of the others.  Spaces
+may apear in a statement almost everywhere and are ignored.  Exceptions are
+in the continue part of a continuation statement and in a subscript. (see later
+on)
+
+Arithmetic statements are combinations of variable names, numbers, function
+names and operators.  Normally each statement specifies the calculation of
+one or more values and where they are to be stored.
+
+The operators are:
+	= ( ) < > ^ / * + - # $ ,
+
+A number is a character-string starting with a numberic character (0, 1 ... 9)
+followed by non-operators.  This number should make sense to MIDAS.  The
+operator ^ is permitted to appear in the number, being the separator used
+in MIDAS for the exponent of a number.
+
+A variable (or function) name is a character-string starting with a character
+which is neither numeric nor a operator and consists of up to six non-
+operators.
+
+/ * + - have the usual meaning of divide, multiply, add and subtract.  ^ is
+used for exponentiation.  ( and ) are used to force the precedence as usual,
+ie normal evalutaion proceeds from left to right, with exponentiation
+being performed first, then multiplications and divisions, and additions and
+subtractions last, except that expressions in parentheses are evaluated first.
+This is strictly adhered to and thus A^B^C = (A^B)^C unlike the FORTRAN
+convention A**B**C = A**(B**C).  Nested pairs of parentheses are evaluated from
+the inside out.
+
+Intermediate results are kept in a stack which has to be in the accumulators
+and is defined by the user.  These accumulators are called A0, A1, ... A9.
+If fixed point arithmetic is used, Ai must not be = Aj+1 if i<j.  Most commonly
+A0==1, A1==2 etc.  Usually only the first few accumulators in the stack are
+used.
+
+< and > surround the arguments of a function.  The arguments are separated by
+commas.  Thus a name as defined above is a function name if it is followed by
+a <.  For example:
+
+	MAX<A-B*CD,23.4> and RANDOM<>
+
+If used not directly following a name, < and > act exactly like ( and ).
+
+Functions return a single value in A0.  The assembled code includes a PUSHJ P,
+to the function, the user being responsible for providing a subroutine which
+accepts the arguments as presented in A0, A1, etc., does not disturb any
+accumulators other than those in which the arguments were passed and returns
+the result in A0 before executing a POPJ P, .
+
+A variable name followed directly by a ( is considered to be a vector.  The
+subscript between the ( and the matching ) can be of the following form:
+
+	ACxNUM
+	xNUM+AC   where "x" is either "+" or "-".
+
+Where AC is the variable name of an accumulator in which the subscript is
+assumed to have been loaded.  NUM is a number, acting as a displacement.
+
+= indicates that the value available at this point (as calculated by the
+portion of the arithmetic statement to he right) is to be stored as the
+value of the variable name to its left.  More than one = may thus appear
+in one arithmetic statement.  Fo example:
+
+.F A=B=ARM-LOSS=FOO*BARF
+
+This invokes the multiplication of FOO by BARF, storage of the result in LOSS.
+Next LOSS is subtracted from ARM and the result stored in both A and B.  More
+complicated constructs are possible by making use of parentheses.  Some care
+is required in arranging the right sequence of storage operations so as not
+to overwrite values needed further on. (perhaps a more intuitive structure
+could be given to multiple equals if one did not adopt the FORTRAN like
+convention of having the statement follow the equals).
+
+= permits the passing of arguments by name rather than value, ie it performs
+a quoting action. This is particularly useful for subroutines operating on
+vectors (dotproduct for example), or subroutines executed for their effect
+rather than their value.  It also permits the passing of a function address
+as a argument.  This is achieved by surrounding the variable name with [ and ].
+
+$ indicates a continuation and must be directly followed by a carriage-return
+and linefeed (usually supplied by TECO anyway) and either .I or .F
+(which is ignored), a space or tab and the continuation of the statement.
+For example:
+
+.F ZANSWER=273.0/T $
+.F -IN*VEST*MENT
+
+Unitary + and * are ignored.  Unitary / and - are interpreted as 1.0/ and 0.0-
+respectively.  = and ^ may not appear unitarily.
+
+Since @ and ' may be part of a variable name, one can make full use of MIDAS's
+indirect addressing and automatic variable storage assignment conventions.  The
+use of @ comes in very handy when working with multi-dimensional arrays
+addressed through margin-arrays.
+
+^ normally generates a call to a function called EXPLOG, which gets two
+arguments.  To facilitate generation of fast inline exponentiation one may
+follow the ^ directly by the single digits 1, 2, 3, or 4.  For example:
+
+.F R=SQRT<X^2 + Y^2>
+

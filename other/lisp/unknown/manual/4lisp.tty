@@ -1,0 +1,283 @@
+
+
+
+
+
+
+
+
+
+
+
+                                   SECTION 4
+
+                       FUNCTION TYPES AND IMPLICIT PROGN
+
+
+In INTERLISP, each function may independently have:
+
+
+
+    a.   its arguments evaluated or not evaluated;
+
+    b.   a fixed number of arguments or an indefinite number of arguments;
+
+    c.   be defined by an INTERLISP expression, by built-in machine code, or by
+         compiled machine code.
+
+
+
+Hence there are twelve function types (2 x 2 x 3).
+
+
+
+
+ 4.1  Exprs
+
+
+
+Functions defined by INTERLISP expressions are called  exprs.   Exprs must
+                                          1
+begin with either LAMBDA or NLAMBDA,  indicating whether the arguments to
+the function are to be evaluated or not evaluated, respectively. Following
+the LAMBDA or NLAMBDA in the  expr is the 'argument list', which is either
+
+
+
+    (1)  a list of literal atoms or NIL (fixed number of arguments); or
+
+    (2)  any literal atom other than NIL, (indefinite number of arguments).
+
+
+
+Case (1) corresponds to a function with a fixed number of arguments. Each
+atom in the list is the name of an argument for the function defined by this
+expression.  When the function is called, its arguments will be evaluated or
+not evaluated, as dictated by whether the definition begins with LAMBDA or
+
+
+
+
+**FOOTNOTES**
+1
+    Where unambiguous, the term  expr is used to refer to either the function,
+    or its definition.
+
+
+
+
+
+                                      4.1
+
+
+
+                                                   2
+NLAMBDA, and then paired with these argument names.  This process is called
+"spreading" the arguments, and the function is called a spread-LAMBDA or a
+spread-NLAMBDA.
+
+
+
+Case (2) corresponds to a function with an indefinite number of arguments.
+Such a function is called a  nospread function.  If its definition begins
+with NLAMBDA, the atom which constitutes its argument list is bound to the
+list of arguments to the function (unevaluated).  For example, if FOO is
+defined by (NLAMBDA X --), when (FOO THIS IS A TEST) is evaluated, X will be
+bound to (THIS IS A TEST).
+
+
+
+If a  nospread function begins with a LAMBDA, indicating its arguments are
+to be evaluated, each of its  n arguments are evaluated and their values stored
+on the pushdown list. The atom following the LAMBDA is then bound to the
+number of arguments which have been evaluated.  For example, if FOO is defined
+by (LAMBDA X --) when (FOO A B C) is evaluated, A, B, and C are evaluated and X
+is bound to 3.  A built-in function, arg[atm;m], is available for computing
+the value of the  mth argument for the lambda-atom variable  atm.   arg is
+described in section 8.
+
+
+
+
+ 4.2  Compiled Functions
+
+
+
+Functions defined by expressions can be compiled by the INTERLISP compiler,
+as described in section 18, "The Compiler and Assembler".  In INTERLISP-10,
+functions may also be written directly in machine code using the ASSEMBLE
+directive of the compiler.  Functions created by the  compiler, whether
+from S-expressions or ASSEMBLE directives, are referred to as compiled
+functions.  In INTERLISP-10, compiled functions may be resident or swappable,
+as described in section 3.
+
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+2
+    Note that the function itself can evaluate selected arguments by calling
+     eval.  In fact, since the function type can specify only that all
+    arguments are to be evaluated or none are to be evaluated, if it is
+    desirable to write a function which only evaluates some of its arguments,
+    e.g.  setq, the function is defined as an nlambda, i.e. no arguments are
+    evaluated in the process of calling the function, and then included in the
+    definition itself are the appropriate calls to  eval.  In this case, the
+    user should also put on the property list of the function under the
+    property INFO   the value EVAL to inform the various system packages
+    such as DWIM, CLISP, PRINTSTRUCTURE, etc., that this function in fact does
+    evaluate its arguments, even though it is an nlambda.
+
+
+
+
+
+                                      4.2
+
+
+
+ 4.3  Function Type
+
+
+
+The function  fntyp returns the function type of its argument.  The value
+of  fntyp is one of the following 12 types:
+
+
+
+              EXPR           CEXPR          SUBR
+
+              FEXPR          CFEXPR         FSUBR
+
+              EXPR*          CEXPR*         SUBR*
+
+              FEXPR*         CFEXPR*        FSUBR* 
+
+
+
+
+
+The types in the first column are all defined by expressions.  The types in the
+second column are compiled versions of the types in the first column, as
+indicated by the prefix  C.  In the third column are the parallel types for
+built-in subroutines.  Functions of types in the first two rows have a fixed
+number of arguments, i.e., are  spread functions.  Functions in the third and
+fourth rows have an indefinite number of arguments, as indicated by the
+suffix *.  The prefix  F indicates no evaluation of arguments.  Thus, for
+example, a CFEXPR* is a compiled form of a nospread-NLAMBDA.
+
+
+
+A standard feature of the INTERLISP system is that no error occurs if a spread
+function is called with too many or too few arguments. If a function is
+called with too many arguments, the extra arguments are evaluated but
+ignored.  If a function is called with too few arguments, the unsupplied
+ones will be delivered as NIL.  In fact, the function itself cannot distinguish
+between being given NIL as an argument, and not being given that argument,
+e.g., (FOO) and (FOO NIL) are  exactly the same for spread functions.
+
+
+
+
+ 4.4  Progn
+
+
+
+ progn is a function of an arbitrary number of arguments.   progn evaluates
+the arguments in order and returns the value of the last, i.e., it is an
+extension of the function  prog2 of LISP 1.5.  Both  cond and  lambda/nlambda
+expressions have been generalized to permit 'implicit progns' as described
+below.
+
+
+
+
+ 4.5  Implicit Progn
+
+
+
+The conditional expression has been generalized so that each clause may
+contain n forms (n >= 1) which are interpreted as follows:
+
+
+
+
+                                      4.3
+
+
+
+         (COND
+            (P1 E11 E12 E13)
+            (P2 E21 E22)                    [1]
+            (P3)
+            (P4 E41))
+
+
+will be taken as equivalent to (in LISP 1.5):
+
+
+
+         (COND
+            (P1 (PROGN E11 E12 E13))
+            (P2 (PROGN E21 E22))
+            (P3 P3)                         [2]
+            (P4 E41)
+            (T NIL))
+
+
+Note however that P3 is evaluated only once in [1], while it is evaluated a
+second time if the expression is written as in [2].  Thus a clause in a
+ cond with only a predicate and no following expression causes the value of
+the predicate itself, if non-NIL, to be returned.  Note also that NIL is
+returned if all the predicates have value NIL, i.e., the  cond 'falls off the
+end'.  No error is generated.
+
+
+
+LAMBDA and NLAMBDA expressions also allow implicit  progn's; thus for
+example:
+
+
+
+         (LAMBDA (V1 V2) (F1 V1) (F2 V2) NIL)
+
+
+
+is interpreted as:
+
+
+
+         (LAMBDA (V1 V2) (PROGN (F1 V1) (F2 V2) NIL))
+
+
+
+The value of the last expression following LAMBDA (or NLAMBDA) is returned as
+the value of the entire expression.  In this example, the function would always
+return NIL.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                      4.4
+
+
+

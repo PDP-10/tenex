@@ -1,0 +1,773 @@
+
+
+
+
+
+
+
+
+
+
+
+                              SECTION 12
+
+            VARIABLE BINDINGS AND PUSH DOWN LIST FUNCTIONS
+
+
+
+
+A number of schemes have been used in different implementations
+of LISP for storing the values of variables.  These include:
+
+
+
+    1.   Storing values on an association list paired with the
+         variable names.
+
+
+
+    2.   Storing values on the property list of the atom which is the
+         name of the variable.
+
+
+
+    3.   Storing values in a special value cell associated with the
+         atom name, putting old values on a pushdown list, and
+         restoring these values when exiting from a function.
+
+
+
+    4.   Storing values on a pushdown list.
+
+
+
+The first three schemes all have the property that values are
+scattered throughout list structure space, and, in general, in a
+paging environment would require references to many pages to determine
+the value of a variable.  This would be very undesirable in our
+system.  In order to avoid this scattering, and possibly excessive
+drum references, we utilize a variation on the fourth standard scheme,
+usually only used for transmitting values of arguments to compiled
+                                                               1
+functions; that is, we place these values on the pushdown list.  But
+since we use an interpreter as well as a compiler, the variable names
+must also be kept.  The pushdown list thus contains pairs, each
+consisting of a variable name and its value.  Each pair occupies one
+word or 'slot' on the pushdown list, with the name in the left half,
+i.e.  cdr, and the value in the right half, i.e.  car.  The
+interpreter gets the value of a variable by searching back up the
+
+
+
+**FOOTNOTES**
+1
+    Also called the stack.
+
+
+
+
+
+                                 12.1
+
+
+
+pushdown list looking for a 'slot' for which  cdr is the name of
+the variable.   car is then its value.
+
+
+
+One advantage of this scheme is that the current top of the pushdown
+stack is usually in core, and thus drum references are rarely required
+to find the value of a variable.  Free variables work automatically
+in a way similar to the association list scheme.
+
+
+
+An additional advantage of this scheme is that it is completely
+compatible with compiled functions which pick up their arguments on
+the pushdown list from known positions, instead of doing a search.  To
+keep complete compatibility, our compiled functions put the names of
+their arguments on the pushdown list, although they do not use them to
+reference variables.  Thus, free variables can be used between
+compiled and interpreted functions with no special declarations
+necessary.  The names on the pushdown list are also very useful in
+debugging, for they make possible a complete symbolic backtrace
+in case of error.  Thus this technique, for a small extra overhead,
+minimizes drum references, provides symbolic debugging information,
+and allows completely free mixing of compiled and interpreted
+routines.
+
+
+
+There are three pushdown lists used in INTERLISP: the first is called
+the parameter pushdown list, and contains pairs of variable names
+and values, and temporary storage of pointers; the second is called
+the control pushdown list, and contains function returns and other
+control information; and the third is called the number stack and
+is used for storing temporary partial results of numeric operations.
+
+
+
+However, it is more convenient for the user to consider the push-down
+list as a single "list" containing the names of functions that have
+been entered but not yet exited, and the names and values of the
+corresponding variables.  The multiplicity of pushdown lists in the
+actual implementation is for efficiency of operation only.
+
+
+
+ The Push-Down List and the Interpreter
+
+
+
+In addition to the names and values of arguments for functions,
+information regarding partially-evaluated expressions is kept on the
+push-down list.  For example, consider the following definition of the
+function  fact (intentionally faulty):
+
+
+
+(FACT
+  [LAMBDA (N)
+    (COND
+      ((ZEROP N)
+        L)
+      (T (ITIMES N (FACT (SUB1 N])
+
+
+
+
+                                 12.2
+
+
+
+In evaluating the form (FACT 1), as soon as  fact is entered, the
+interpreter begins evaluating the implicit  progn following the LAMBDA
+(see Section 4).  The first function entered in this process is  cond.
+ cond begins to process its list of clauses.  After calling  zerop and
+getting a NIL value,  cond proceeds to the next clause and evaluates
+T.  Since T is true, the evaluation of the implicit  progn that is the
+consequent of the T clause is begun (see Section 4).  This requires
+calling the function  itimes.  However before  itimes can be called,
+its arguments must be evaluated.  The first argument is evaluated by
+searching the stack for the last binding of N; the second involves a
+recursive call to  fact, and another implicit  progn, etc.
+
+
+
+Note that at each stage of this process, some portion of an expression
+has been evaluated, and another is awaiting evaluation.  The output
+below illustrates this by showing the state of the push-down list at
+the point in the computation of (FACT 1) when the unbound atom L is
+reached.
+
+
+
+_FACT(1)
+U.B.A.
+(L BROKEN)
+:BTV!
+
+   *FORM* (BREAK1 L T L NIL #34047)
+   #0 (L)
+
+   #0 (((ZEROP N) L) (T (ITIMES N (FACT (SUB1 N)))))            1
+COND
+
+   *FORM* (COND ((ZEROP N) L) (T (ITIMES N (FACT (SUB1 N)))))
+   #0 ((COND ((ZEROP N) L) (T (ITIMES N (FACT (SUB1 N))))))     2
+
+   N 0
+FACT
+
+   *FORM* (FACT (SUB1 N))
+   #2 ITIMES
+   #0 ((FACT (SUB1 N)))                                         3
+   #0 1                                                         4
+   *FORM* (ITIMES N (FACT (SUB1 N)))
+   #0 ((ITIMES N (FACT (SUB1 N))))                              5
+
+   #0 (((ZEROP N) L) (T (ITIMES N (FACT (SUB1 N)))))            6
+COND
+
+   *FORM* (COND ((ZEROP N) L) (T (ITIMES N (FACT (SUB1 N)))))
+   #0 ((COND ((ZEROP N) L) (T (ITIMES N (FACT (SUB1 N))))))     7
+
+   N 1
+FACT
+
+**TOP**
+
+
+
+
+Internal calls to  eval, e.g., from  cond and the interpreter, are
+marked on the push-down list by a special mark called an eval-blip.
+
+
+
+
+                                 12.3
+
+
+
+eval-blips are indicated by the appearance of (VAG 64) in the
+left-half, i.e. the variable name position, for that slot.  They are
+printed by the backtrace as *FORM*. The genealogy of *FORM*'s
+is thus a history of the computation.  Other temporary information is
+frequently recorded on the push-down list in slots for which the
+'variable name' is (VAG 0), which prints as #0. In this example,
+this information consists of (1) the tail of a list of  cond clauses,
+(2) the tail of an implicit  progn, i.e., the definition of  fact, (3)
+the tail of an argument list, (4) the value of a previously evaluated
+argument, (5) the tail of a cond clause whose predicate evaluated to
+true, and (6) and (7) same as (1) and (2).
+
+
+
+Note that a function is not actually entered and does not appear on
+                                                   2
+the stack, until its arguments have been evaluated.  Also note that
+the #0 'bindings' comprise the actual working storage.  In other
+words, in the above example, if a (lower) function changed the value
+of the binding at (1) (not recommended) the  cond would continue
+interpreting the new binding as a list of  cond clauses.  Similarly,
+if (4) were changed, the new value would be given to  itimes as its
+first argument after its second argument had been evaluated, and
+ itimes was actually called.
+
+
+
+ The Pushdown List and Compiled Functions
+
+
+
+Calls to compiled functions, and the bindings of their arguments, i.e.
+names and values, are handled in the same way as for interpreted
+functions (hence the compatibility between interpreted and compiled
+functions).  However, compiled functions treat free variables in a
+special way that interpreted functions do not.  Interpreted functions
+"look up" free variables when the variable is encountered, and may
+look up the same variable many times.  However, compiled functions
+                                     3
+look up each free variable only once.  Whenever a compiled
+function is entered, the pushdown list is scanned and the most recent
+binding for each free variable used in the function is found (or if
+there is no binding, the value cell is obtained) and stored in the
+right half of a slot on the stack (an unboxed 0 is stored in the left
+half to distinguish this 'binding' from ordinary bindings).  Thus,
+following the bindings of their arguments, compiled functions store on
+the pushdown list pointers to the bindings for each free variable used
+in the function.
+
+
+
+**FOOTNOTES**
+2
+    except for functions which do not have their arguments evaluated
+    (although they themselves may call  eval, e.g.  cond).
+
+
+3
+    A list of all free variables is generated at compile time, and
+    is in fact obtainable from the compiled definition.  See Section
+    18.
+
+
+
+
+
+                                 12.4
+
+
+
+In addition to the pointers to free variable bindings, compiled
+functions differ from interpreted functions in the way they treat
+locally bound variables, i.e.  progs and open  lambdas.  Whereas
+in interpreted functions  progs and open  lambdas are called in the
+ordinary way as functions, in compilation,  progs and open  lambdas
+disappear, although the variables bound by them are stored on the
+stack in the conventional manner so that functions called from inside
+them can reference the variables.  These variables appear on the stack
+following the arguments to the compiled function (if any) and the free
+variable pointers (if any).  The only way to determine dynamically
+what variables are bound locally by a compiled function is to search
+the stack from the first slot beyond the last argument to the function
+(which can be found with  stknargs and  stkarg described below), to
+the slot corresponding to the first argument of the next function.
+Any slots encountered that contain literal atoms in their left
+half are local bindings.
+
+
+
+ Pushdown List Functions
+
+
+
+NOTE: Unless otherwise stated, for all pushdown list functions,  pos
+is a position on the control stack. If  pos is a literal atom
+other than NIL, (STKPOS pos 1) is used.  In this case, if  pos is not
+found, i.e.,  stkpos returns NIL, an ILLEGAL STACK ARG error is
+generated.
+
+
+
+stkpos[fn;n;pos]              Searches the control stack
+                             starting at  pos for the  nth occurrence
+                             of  fn.  Returns control stack position
+                                                  4
+                             of that  fn if found,  else NIL.  If  n
+                             is positive, searches backward (normal
+                             usage).  If  n is negative, searches
+                             forward, i.e., down the control stack.
+                             For example, stkpos[FOO;-2;FIE] finds
+                             second call to FOO after (below) the last
+                             call to FIE.  If  n is NIL, 1 is used.
+                             If  pos is NIL, the search starts at the
+                             current position.  stkpos[] gives the
+                             current position.
+
+
+
+stknth[n;pos]                 Value is the stack position
+                             (control stack) of the  nth function call
+                             relative to position  pos.  If  pos is
+                             NIL, the top of stack is assumed for
+
+
+
+**FOOTNOTES**
+4
+    A stack position is a pointer to the corresponding slot on the
+    control or parameter stack, i.e., the address of that cell.  It
+    prints as an unboxed number, e.g., #32002, and its type is 2
+    (Section 10).
+
+
+
+
+
+                                 12.5
+
+
+
+                             n > 0, and the current position is
+                             assumed for n < 0, i.e., stknth[-1] is
+                             the call before  stknth, stknth[1] is the
+                             call to  evalgt at the top level.  Value
+                             of  stknth is NIL if there is no such
+                             call - e.g., stknth[10000] or stknth[-
+                             10;stknth[5]].
+
+
+
+fstknth[n;pos]           version of  stknth that compiles open.
+
+
+
+stkname[pos]                  Value is the name of the function at
+                             control stack position  pos.  In this
+                             case,  pos must be a real stack position,
+                             not an atom.
+
+
+
+In summary,  stkpos converts function names to stack positions,
+ stknth converts numbers to stack positions, and  stkname
+converts positions to function names.
+
+
+
+Information about the variables bound at a particular function call
+can be obtained using the following functions:
+
+
+
+stknargs[pos]                 Value is the number of arguments
+                             bound by the function at position  pos.
+
+
+
+stkarg[n;pos]                 Value is a pointer to the  nth
+                                                    5
+                             argument (named or not)  of the function
+                             at position  pos, i.e., the value is a
+                             parameter stack position.  car of
+                             this pointer gives the value of the
+                             binding,  cdr the  name.   n=1
+                             corresponds to the first argument at
+                              pos.   n can be 0 or negative, i.e.,
+                             stkarg[0;FOO] is a pointer to the slot
+                             immediately before the first argument to
+                             FOO, stkarg[-1;FOO] the one before that,
+                             etc.
+
+
+
+fstkarg[n;pos]           version of  stkarg that compiles open.
+
+
+
+
+**FOOTNOTES**
+5
+    Subrs do not store the names of their arguments.
+
+
+
+
+
+                                 12.6
+
+
+
+Note that the user can change (set) the value of a particular binding
+by performing an  rplaca on the value of  stkarg.  Similarly,  rplacd
+changes (sets) the name.
+
+
+
+The value of  stkarg is a position (slot) on the parameter stack.
+There is currently no analogue to  stknth for the parameter stack.
+However, the parameter stack is a contiguous block of memory, so
+to obtain the slot previous to a given slot, perform
+vag[sub1[loc[slot]]]; to obtain the next slot perform
+
+vag[add1[loc[slot]]], i.e.
+
+                                                  6
+    stkarg[2;pos] = vag[add1[loc[stkarg[1;pos]]]].
+
+
+
+As an example of the use of  stknargs and  stkarg:
+
+
+
+variables[pos]           returns list of variables bound at  pos.
+
+
+
+can be defined by:
+
+
+
+(VARIABLES
+  [LAMBDA (POS)
+    (PROG (N L)
+          (SETQ N (STKNARGS POS))
+      LP  (COND
+            ((ZEROP N)
+              (RETURN L)))
+          (SETQ L (CONS (CDR (STKARG N POS))
+                        L))
+          (SETQ N (SUB1 N))
+          (GO LP])
+
+
+
+The counterpart of  variables is also available.
+
+
+
+stkargs[pos]                  Returns list of  values of variables
+                             bound at  pos.
+
+
+
+The next three functions,  stkscan,  evalv, and  stkeval all involve
+
+
+
+**FOOTNOTES**
+6
+    See Section 13 for discussion of  vag and  loc.
+
+
+
+
+
+                                 12.7
+
+
+
+searching the parameter pushdown stack. For all three
+functions,  pos may be a position on the control stack, i.e., a value
+                              7
+of  stkpos or  stknth.  In this case, the search starts at
+stkarg[stknargs[pos];pos] i.e., it will include the arguments to
+the function at  pos but not any locally bound variables.   pos may
+also be a position on the parameter stack, in which case the
+search starts with, and includes that position.  Finally,  pos can be
+NIL, in which case the search starts with the current position on the
+parameter stack.
+
+
+
+stkscan[var;pos]              Searches backward on the parameter
+                             stack from  pos for a binding of  var.
+                             Value is the slot for that binding if
+                             found, i.e., a parameter stack
+                             position, otherwise  var itself (so
+                             that in the case of literal atoms,  car
+                             of  stkscan is always the value of  var).
+
+
+
+evalv[var;pos]           car[stkscan[var;pos]],i.e., returns the
+                             value of the atom  var as of position
+                              pos.
+
+
+
+stkeval[pos;form]             is a more general  evalv.  It is
+                             equivalent to eval[form] at position
+                              pos, i.e., all variables evaluated in
+                                                                 8
+                              form, will be evaluated as of  pos.
+
+
+
+Finally, we have two functions which clear the stacks:
+
+
+
+retfrom[pos;value]            clears the stack back to the
+                             function at position  pos, and effects a
+                             return from that function with  value as
+                             its value.
+
+
+
+
+
+**FOOTNOTES**
+7
+    or a function name, which is equivalent to stkpos[pos;1] as
+    described earlier.
+
+
+8
+    However, any functions in  form that specifically reference the
+    stack, e.g.,  stkpos,  stknth,  retfrom, etc., 'see' the stack as
+    it currently is.  (See page 12.9-11 for description of how
+     stkeval is implemented.)
+
+
+
+
+
+                                 12.8
+
+
+
+reteval[pos;form]             clears the stack back to the
+                             function at position  pos, then evaluates
+                              form and returns with its value to the
+                             next higher function.  In other words,
+                             reteval[pos,form] is equivalent to
+
+                                                            9
+                             retfrom[pos;stkeval[pos;form]].
+
+
+
+We also have:
+
+
+
+mapdl[mapdlfn;mapdlpos]       starts at position  mapdlpos
+                             (current if NIL), and applies  mapdlfn to
+                             the function  name at each pushdown
+                             position, i.e., to stkname[mapdlpos]
+                             until the top of stack is reached.  Value
+                             is NIL.   mapdlpos is updated at each
+                             iteration.
+
+
+
+For example, mapdl[(LAMBDA (X) (AND (EXPRP X) (PRINT X)))] will print
+all exprs on the push-down list.
+
+mapdl[(LAMBDA (X) (COND ((GREATERP (STKNARG MAPDLPOS) 2) (PRINT X]
+will print all functions of more than two arguments.
+
+
+
+searchpdl[srchfn;srchpos]     searches the pushdown list starting
+                             at position  srchpos (current if NIL)
+                             until it finds a position for which
+                              srchfn applied to the  name of the
+                             function called at that position is not
+                             NIL.  Value is (NAME . position) if such
+                             a position is found, otherwise NIL.
+                              srchpos is updated at each
+                             iteration.
+
+
+
+ The Pushdown List and Funarg
+
+
+
+The linear scan up the parameter stack for a variable binding can be
+interrupted by a special mark called a  skip-blip appearing on the
+stack in a name position (See Figure 12-1).  In the value position is
+a pointer to the position on the stack where the search is to be
+continued.  This is what is used to make  stkeval, page 12.8 work.
+It is also used by the  funarg device (Section 11).
+
+
+**FOOTNOTES**
+9
+    Provided  form does not involve any stack functions, as explained
+    in footnote 8.
+
+
+
+
+
+                                 12.9
+
+
+
+When a  funarg is applied, INTERLISP puts a  skip-blip on the
+parameter stack with a pointer to the  funarg array, and another
+ skip-blip at the top of the  funarg array pointing back to the stack.
+The effect is to make the stack look like it has a patch.  The names
+and values stored in the  funarg array will thus be seen before those
+higher on the stack.  Similarly, setting a variable whose binding is
+contained in the  funarg array will change only the array.  Note
+however that as a consequence of this implementation, the same
+ instance of a  funarg object cannot be used recursively.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                12.10
+
+
+
+                           Figure 12-1
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                12.11
+
+
+

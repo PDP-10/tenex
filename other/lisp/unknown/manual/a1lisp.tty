@@ -1,0 +1,913 @@
+
+
+
+
+
+
+                                   APPENDICES
+
+
+
+
+Appendix 1
+
+
+
+ Transor
+
+
+
+ Introduction
+
+
+
+ transor is a LISP-to-LISP translator intended to help the user who has a
+program coded in one dialect of LISP and wishes to carry it over to another.
+The user loads  transor along with a file of transformations.  These
+transformations describe the differences between the two LISPs, expressed in
+terms of INTERLISP editor commands needed to convert the old to new, i.e. to
+edit forms written in the source dialect to make them suitable for the target
+dialect.   transor then sweeps through the user's program and applies the edit
+transformations, producing an object file for the target system.  In addition,
+ transor produces a file of translation notes, which catalogs the major changes
+made in the code as well as the forms that require further attention by the
+user.  Operationally, therefore,  transor is a facility for conducting massive
+edits, and may be used for any purpose which that may suggest.
+
+
+
+Since the edit transformations are fundamental to this process, let us begin
+with a definition and some examples.  A transformation is a list of edit
+commands associated with a literal atom, usually a function name.   transor
+conducts a sweep through the user's code, until it finds a form whose  car is a
+literal atom which has a transformation.  The sweep then pauses to let the
+editor execute the list of commands before going on.  For example, suppose the
+order of arguments for the function  tconc must be reversed for the target
+system.  The transformation for  tconc would then be: ((SW 2 3)).  When the
+sweep encounters the form (TCONC X (FOO)), this transformation would be
+retrieved and executed, converting the expression to (TCONC (FOO) X).  Then the
+sweep would locate the next form, in this case (FOO), and any transformations
+for  foo would be executed, etc.
+
+
+
+Most instances of  tconc would be successfully translated by this
+transformation.  However, if there were no second argument to  tconc, e.g. the
+form to be translated was (TCONC X), the command (SW 2 3) would cause an error,
+which  transor would catch.  The sweep would go on as before, but a note would
+appear in the translation listing stating that the transformation for this
+particular form failed to work.  The user would then have to compare the form
+and the commands, to figure out what caused the problem.  One might, however,
+anticipate this difficulty with a more sophisticated transformation:
+((IF (## 3) ((SW 2 3)) ((-2 NIL)))), which tests for a third element and does
+(SW 2 3) or (-2 NIL) as appropriate.  It should be obvious that the translation
+process is no more sophisticated than the transformations used.
+
+
+
+
+
+                                     A1.1
+
+
+
+This documentation is divided into two main parts.  The first describes how to
+use  transor assuming that the user already has a complete set of
+transformations.  The second documents  transorset, an interactive routine
+for building up such sets.   transorset contains commands for writing and
+editing transformations, saving one's work on a file, testing transformations
+by translating sample forms, etc.
+
+
+
+Two transformations files presently exist for translating programs into
+INTERLISP.  <LISP>SDS940.XFORMS is for old BBN LISP (SDS 940) programs, and
+<LISP>LISP16.XFORMS is for Stanford AI LISP 1.6 programs.  A set for LISP 1.5
+is planned.
+
+
+
+
+
+ Using  Transor
+
+The first and most exasperating problem in carrying a program from one
+implementation to another is simply to get it to read in.  For example, SRI
+LISP uses / exactly as INTERLISP uses %, i.e. as an escape character.  The
+function  prescan exists to help with these problems: the user uses  prescan
+to perform an initial scan to dispose of these difficulties, rather than
+attempting to  transor the foreign sourcefiles directly.
+
+
+
+ prescan copies a file, performing character-for-character substitutions.  It
+is hand-coded and is much faster than either  readc's or text-editors.
+
+
+
+prescan[file;charlst]        Makes a new version of  file, performing
+                             substitutions according to  charlst.  Each element
+                             of  charlst must be a dot-pair of two character
+                             codes, (OLD . NEW).
+
+
+
+For example, SRI files are  prescan'ed with  charlst = ((37 . 47) (47 . 37)),
+which exchanges slash (47) and percent-sign (37).
+
+
+
+The user should also make sure that the treatment of doublequotes by the source
+and target systems is similar.  In INTERLISP, an unmatched double-quote (unless
+protected by the escape character) will cause the rest of the file to read in
+as a string.
+
+
+
+Finally, the lack of a STOP at the end of a file is harmless, since  transor
+will suppress END OF FILE errors and exit normally.
+
+
+
+
+ Translating
+
+
+
+
+
+
+                                     A1.2
+
+
+
+ transor is the top-level function of the translator itself, and takes one
+argument, a file to be translated.  The file is assumed to contain a sequence
+of forms, which are read in, translated, and output to a file called file.TRAN.
+The translation notes are meanwhile output to file.LSTRAN.  Thus the usual
+sequence for bring a foreign file to INTERLISP is as follows:  prescan the
+file; examine code and transformations, making changes to the transformations
+if needed;  transor the file; and clean up remaining problems, guided by the
+notes.  The user can now make a pretty file and proceed to exercise and check
+out his program.  To export a file, it is usually best to  transor it, then
+ prescan it, and perform clean-up on the foreign system where the file can be
+loaded.
+
+
+
+transor[sourcefile]       Translates  sourcefile.  Prettyprints translation
+                             on file.TRAN: translation listing on file.LSTRAN.
+
+
+
+transorform[form]              Argument is a LISP form.  Returns the
+                             (destructively) translated form.  The translation
+                             listing is dumped to the primary output file.
+
+
+
+transorfns[fnlst]              Argument is a list of function names whose
+                             interpreted definitions are destructively
+                             translated.  Listing to primary output file.
+
+
+
+ transform and  transorfns can be used to translate expressions that are
+already in core, whereas  transor itself only works on files.
+
+
+
+
+ The Translation Notes
+
+
+
+The translation notes are a catalog of changes made in the user's code, and
+of problems which require, or may require, further attention from the user.
+This catalog consists of two cross-indexed sections: an index of forms and an
+index of notes.  The first tabulates all the notes applicable to any form,
+whereas the second tabulates all the forms to which any one note applies.
+Forms appear in the index of forms in the order in which they were encountered,
+i.e. the order in which they appear on the source and output files.  The index
+of notes shows the name of each note, the entry numbers where it was used, and
+its text, and is alphabetical by name.  The following sample was made by
+translating a small test file written in SRI LISP.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                     A1.3
+
+
+
+    LISTING FROM TRANSORING OF FILE TESTFILE.;5
+    DONE ON 1-NOV-71 20:10:47
+
+                   INDEX OF FORMS
+
+1. APPLY/EVAL at
+  [DEFINEQ
+     (FSET (LAMBDA &
+             (PROG ...3...
+                   (SETQ Z (COND
+                       ((ATOM (SETQ --))
+                         (COND
+                           ((ATOM (SETQ Y (NLSETQ "(EVAL W)")))
+                             --)
+                           --))
+                       --))
+              --  ]
+2. APPLY/EVAL at
+  [DEFINEQ 
+     (FSET (LAMBDA &
+              (PROG ...3...
+                    (SETQ Z (COND
+                        ((ATOM (SETQ --))
+                          (COND
+                            ((ATOM (SETQ --))
+                              "(EVAL (NCONS W))")
+                            --))
+                        --))
+              --  ]
+3. MACHINE-CODE at
+  [DEFINEQ 
+     (LESS1 (LAMBDA &
+              (PROG ...3...
+                    (COND
+                      ...2...
+                      ((NOT (EQUAL (SETQ X2 "(OPENR (MAKNUM & -))"
+                                     )
+                                   --))
+                        --))
+              --   ]
+4. MACHINE-CODE at
+  [DEFINEQ 
+     (LESS1 (LAMBDA &
+              (PROG ...3...
+                    (COND
+                      ...2...
+                      ((NOT (EQUAL & (SETQ Y2
+                                     "(OPENR (MAKNUM & --))")))
+
+                        --))
+                --   ]
+
+                                INDEX OF NOTES
+
+APPLY/EVAL at 1, 2.
+     TRANSOR will translate the arguments of the APPLY or EVAL expression, but
+the user must make sure that the run-time evaluation of the arguments returns a
+BBN-compatible expression.
+MACHINE-CODE at 3, 4.
+     Expression dependent on machine-code.  User must recode.
+
+
+
+
+
+
+                                     A1.4
+
+
+
+The translation notes are generated by the transformations used, and therefore
+reflect the judgment of their author as to what should be included.
+Straightforward conversions are usually made without comment; for example, the
+DEFPROP's in this file were quietly changed to DEFINEQ's.   transor found four
+noteworthy forms on the file, and printed an entry for each in the index of
+forms, consisting of an entry number, the name of the note, and a printout
+showing the precise location of the form.  The form appears in double-quotes
+and is the last thing printed, except for closing parentheses and dashes.  An
+ampersand represents one non-atomic element not shown, and two or more elements
+not shown are represented as ...n..., where n is the number of elements.  Note
+that the printouts describe expressions on the output file rather than the
+source file; in the example, the DEFPROP's of SRI LISP have been replaced with
+DEFINEQ's.
+
+
+
+ Errors and Messages
+
+
+
+ transor records its progress through the source file by teletype printouts
+which identify each expression as it is read in.  Progress within large
+expressions, such as a long DEFINEQ, is reported every three minutes by a
+printout showing the location of the sweep.
+
+
+
+If a transformation fails,  transor prints a diagnostic to the teletype which
+identifies the faulty transformation, and resumes the sweep with the next form.
+The translation notes will identify the form which caused this failure, and the
+extent to which the form and its arguments were compromised by the error.
+
+
+
+If the transformation for a common function fails repeatedly, the user can type
+control-H.  When the system goes into a break, he can use  transorset to repair
+the transformation, and even test it out (see TEST command, page A1.7).  He
+may then continue the main translation with OK.
+
+
+
+ Transorset
+
+
+
+To use  transorset, type  transorset() to INTERLISP.   transorset will
+respond with a + sign, its prompt character, and await input.  The user is now
+in an executive loop which is like  evalqt with some extra context and
+capabilities intended to facilitate the writing of transformations.
+ transorset will thus progress  apply and  eval input, and execute history
+commands just as  evalqt would.  Edit commands, however, are interpreted as
+additions to the transformation on which the user is currently working.
+ transorset always saves on a variable named  currentfn the name of the
+last function whose transformation was altered or examined by the user.
+ currentfn thus represents the function whose transformation is currently being
+worked on.  Whenever edit commands are typed to the + sign,  transorset will
+add them to the transformation for  currentfn.  This is the basic mechanism for
+writing a transformation.  In addition,  transorset contains commands for
+printing out a transformation, editing a transformation, etc., which all assume
+that the command applies to  currentfn if no function is specified.  The
+following example illustrates this process.
+
+
+
+
+
+                                     A1.5
+
+
+
+_TRANSORSET()
++FN TCONC                                        [1]
+TCONC
++(SW 2 3)                                        [2]
++TEST (TCONC A B)                                [3]
+P
+(TCONC B A)
++TEST (TCONC X)                                  [4]
+TRANSLATION ERROR: FAULTY TRANSFORMATION
+TRANSFORMATION: ((SW 2 3))                       [5]
+OBJECT FORM:    (TCONC X)
+
+
+1. TRANSFORMATION ERROR AT                       [6]
+  "(TCONC X)"
+
+
+(TCONC X)
++(IF (## 3) ((SW 2 3)) ((-2 NIL]                 [7]
++SHOW
+TCONC
+  [(SW 2 3)
+   (IF (## 3)                                    [8]
+       ((SW 2 3))
+       ((-2 NIL]
+TCONC
++ERASE                                           [9]
+TCONC
++REDO IF                                        [10]
++SHOW
+TCONC
+  [(IF (## 3)
+       ((SW 2 3))
+       ((-2 NIL]
+TCONC
++TDST
+=TEST                                           [11]
+(TCONC NIL X)
++
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                     A1.6
+
+
+
+In this example, the user begins by using the FN command to set  currentfn to
+TCONC [1].  He then adds to the (empty) transformation for  tconc a command to
+switch the order of the arguments [2] and tests the transformation [3].  His
+second TEST [4] fails, causing an error diagnostic [5] and a translation note
+[6].  He writes a better command [7] but forgets that the original SW command
+is still in the way [8].  He therefore deletes the entire transformation [9]
+and redoes the IF [10].  This time, the TEST works [11].
+
+
+
+
+
+ Transorset Commands
+
+
+
+The following commands for manipulating transformations are all  lispxmacros
+which treat the rest of their input line as arguments.  All are undoable.
+
+
+
+FN                            Resets  currentfn to its argument, and
+                             returns the new value.  In effect FN says you are
+                             done with the old function (as least for the
+                             moment) and wish to work on another.  If the new
+                             function already has a transformation, the message
+                             (OLD TRANSFORMATIONS) is printed, and any
+                             editcommands typed in will be added to the end of
+                             the existing commands.  FN followed by a carriage
+                             return will return the value of  currentfn without
+                             changing it.
+
+
+
+SHOW                     Command to prettyprint a transformation.  SHOW
+                             followed by a carriage return will show the
+                             transformation for  currentfn, and return
+                              currentfn as its value.  SHOW followed by one or
+                             more function names will show each one in turn,
+                             reset  currentfn to the last one, and return the
+                             new value of  currentfn.
+
+
+
+EDIT                     Command to edit a transformation.  Similar to SHOW
+                             except that instead of prettyprinting the
+                             transformation, EDIT gives it to  edite.  The user
+                             can then work on the transformation until he
+                             leaves the editor with OK.
+
+
+
+ERASE                         Command to delete a transformation.
+                             Otherwise similar to SHOW.
+
+
+
+TEST                     Command for checking out transformations.  TEST
+                             takes one argument, a form for translation.  The
+                             translation notes, if any, are printed to the
+                             teletype, but in an abbreviated format which omits
+                             the index of notes.  The value returned is the
+
+
+
+
+                                     A1.7
+
+
+
+                             translated form.  TEST saves a copy of its
+                             argument on the free variable  testform, and if no
+                             argument is given, it uses  testform, i.e. tries
+                             the previous test again.
+
+
+
+DUMP                     Command to save your work on a file.  DUMP takes
+                             one argument, a filename.  The argument is saved
+                             on the variable  dumpfile, so that if no argument
+                             is provided, a new version of the previous file
+                             will be created.
+
+
+
+The DUMP command creates files by  makefile.  Normally fileFNS will be unbound,
+but the user may set it himself; functions called from a transformation by the
+E command may be saved in this way.  DUMP makes sure that the necessary command
+is included on the fileVARS to save the user's transformations.  The user may
+add anything else to his fileVARS that he wishes.  When a transformation file
+is loaded, all previous transformations are erased unless the variable  merge
+is set to T.
+
+
+
+EXIT                      transorset returns NIL.
+
+
+
+
+ The REMARK Feature
+
+
+
+The translation notes are generated by those transformations that are actually
+executed via an editmacro called REMARK.  REMARK takes one argument, the
+name of a note.  When the macro is executed, it saves the appropriate
+information for the translation notes, and adds one entry to the index of
+forms.  The location that is printed in the index of forms is the editor's
+location when the REMARK macro is executed.
+
+
+
+To write a transformation which makes a new note, one must therefore do two
+things: define the note, i.e. choose a new name and associate it with the
+desired text; and call the new note with the REMARK macro, i.e. insert the edit
+command (REMARK name) in some transformation.  The NOTE command, described
+below, is used to define a new note.  The call to the note may be added to a
+transformation like any other edit command.  Once a note is defined, it may be
+called from as many different transformations as desired.
+
+
+
+The user can also specify a remark with a new text, without bothering to think
+of a name and perform a separate defining operation, by calling REMARK with
+more than one argument, e.g. (REMARK text-of-remark).  This is interpreted to
+mean that the arguments are the text.   transorset notices all such expressions
+as they are typed in, and handles naming automatically; a new name is
+
+
+
+
+
+
+
+
+                                     A1.8
+
+
+         1
+generated  and defined with the text provided, and the expression itself is
+edited to be (REMARK generated-name).  The following example illustrates the
+use of REMARK.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+1
+    The name generated is the value of  currentfn suffixed with a colon, or
+    with a number and a colon.
+
+
+
+
+
+                                     A1.9
+
+
+
+_TRANSORSET()
++NOTE GREATERP/LESSP (BBN'S GREATERP AND LESSP ONLY        [1]
+TAKE TWO ARGUMENTS, WHEREAS SRI'S FUNCTIONS TAKE AN
+INDEFINITE NUMBER. AT THE PLACES NOTED HERE, THE SRI CODE
+USED MORE THAN TWO ARGUMENTS, AND THE USER MUST RECODE.]
+GREATERP/LESSP
++FN GREATERP
+GREATERP
++(IF (IGREATERP (LENGTH (##))3) NIL ((REMARK GREATERP/LESSP] [2]
++FN LESSP
+LESSP
++REDO IF                                                   [3]
++SHOW
+LESSP
+  [(IF (IGREATERP (LENGTH (##))
+                  3)
+       NIL
+       ((REMARK GREATERP/LESSP]
+LESSP
++FN ASCII
+(OLD TRANSFORMATIONS)
+ASCII
++(REMARK ALTHOUGH THE SRI FUNCTION ASCII IS IDENTICAL      [4]
+TO THE BBN FUNCTION CHARACTER, THE USER MUST MAKE SURE THAT
+THE CHARACTER BEING CREATED SERVES THE SAME PURPOSE ON BOTH
+SYSTEMS, SINCE THE CONTROL CHARACTERS ARE ALL ASSIGNED
+DIFFRENTLY.]
++SHOW                                                      [5]
+ASCII
+  ((1 CHARACTER)
+   (REMARK ASCII:))
+ASCII
++NOTE ASCII:                                               [6]
+EDIT
+*NTH -2
+*P
+... ASSIGNED DIFFRENTLY.)
+*(2 DIFFERENTLY.)
+OK
+ASCII:
++
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                     A1.10
+
+
+
+In this example, the user defines a note named GREATERP/LESSP by using the NOTE
+command [1], and writes transformations which call this note whenever the sweep
+encounters a GREATERP or LESSP with more than two arguments [2-3].  Next, the
+implicit naming feature is used [4] to add a REMARK command to the
+transformation for ASCII, which has already been partly written.  The user
+realizes he mistyped part of the text, so he uses the SHOW command to find the
+name chosen for the note [5].  Then he uses the NOTE command on this name,
+ASCII:, to edit the note [6].
+
+
+
+NOTE                     First argument is note name and must be a literal
+                             atom.  If already defined, NOTE edits the old
+                             text; otherwise it defines the name, reading the
+                             text either from the rest of the input line or
+                             from the next line.  The text may be given as a
+                             line or as a list.  Value is name of note.
+
+
+
+                            2
+The text is actually stored.  as a comment, i.e. a * and %% are added in front
+when the note is first defined.  The text will therefore be lower-cased the
+first time the user DUMPs (see Section 14).
+
+
+
+DELNOTE                       Deletes a note completely (although any calls
+                             to it remain in the transformations).
+
+
+
+
+ Controlling the Sweep
+
+
+
+ transor's sweep searches in print-order until it finds a form for which a
+transformation exists.  The location is marked, and the transformation is
+executed.  The sweep then takes over again, beginning from the marked location,
+no matter where the last command of the transformation left the editor.  User
+transformations can therefore move around freely to examine the context,
+without worrying about confusing the translator.  However, there are many cases
+where the user wants his transformation to guide the sweep, usually in order to
+direct the processing of special forms and FEXPR's.  For example, the
+transformation for QUOTE has only one objective: to tell the sweep to skip over
+the argument to QUOTE, which is (presumably) not a LISP form.  NLAM is an
+editmacro to permit this.
+
+
+
+NLAM                     An atomic editmacro which sets a flag which causes
+                             the sweep to skip the arguments of the current
+                             form when the sweep resumes.
+
+
+
+
+**FOOTNOTES**
+2
+    On the global list  usernotes.
+
+
+
+
+
+                                     A1.11
+
+
+
+Special forms such as  cond,  prog,  selectq, etc., present a more difficult
+problem.  For example, (COND (A B)) is processed just like (FOO (A B)): i.e.
+after the transformation for  cond finishes, the sweep will locate the "next
+form," (A B), retrieve the transformation for the function A, if any, and
+execute it.  Therefore, special forms must have transformations that preempt
+the sweep and direct the translation themselves.  The following two atomic
+editmacros permit such transformations to process their forms, translating or
+skipping over arbitrary subexpressions as desired.
+
+
+
+DOTHIS                        Translates the editor's current expression,
+                             treating it as a single form.
+
+
+
+DOTHESE                       Translates the editor's current expression,
+                             treating it as a list of forms.
+
+
+
+                                                            3
+For example, a transformation for  setq might be (3 DOTHIS).  This translates
+the second argument to a  setq without translating the first.  For  cond, one
+might write (1 (LPQ NX DOTHESE)), which locates each clause of the COND in
+turn, and translates it as a list of forms, instead of as a single form.
+
+
+
+The user who is starting a completely new set of transformations must begin by
+writing transformations for all the special forms.  To assist him in this and
+prevent oversights, the file <LISP>SPECIAL.XFORMS contains a set of
+transformations for LISP special forms, as well as some other transformations
+which should also be included.  The user will probably have to revise these
+transformations substantially, since they merely perform sweep control for
+INTERLISP, i.e. they make no changes in the object code.  They are provided
+chiefly as a checklist and tutorial device, since these transformations are
+both the first to be written and the most difficult, especially for users new
+to the INTERLISP editor.
+
+
+
+                         *             *              *
+
+
+
+When the sweep mechanism encounters a form which is not a list, or a form  car
+of which is not an atom, it retrieves one of the following special
+transformations.
+
+
+
+NLISTPCOMS                    Global value is used as a transformation for
+                             any form which is not a list.
+
+
+
+**FOOTNOTES**
+3
+    Recall that a transformation is a list of edit commands.  In this case,
+    there are two commands, 3 and DOTHIS.
+
+
+
+
+
+                                     A1.12
+
+
+
+For example, if the user wished to make sure that all strings were quoted, he
+might set  nlistpcoms to
+
+((IF (STRINGP (##)) ((ORR ((_ QUOTE))((MBD QUOTE)))) NIL)).
+
+
+
+LAMBDACOMS                    Global value is used as a transformation for
+                             any form,  car of which is not an atom.
+
+
+
+These variables are initialized by <LISP>SPECIAL.XFORMS and are saved by the
+DUMP command.   nlistpcoms is initially NIL, making it a NOP.   lambdacoms is
+initialized to check first for open LAMBDA expressions, processing them without
+translation notes unless the expression is badly formed.  Any other forms with
+a non-atomic  car are simply treated as lists of forms and are always mentioned
+in the translation notes.  The user can change or add to this algorithm simply
+by editing or resetting  lambdacoms.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                     A1.13
+
+
+

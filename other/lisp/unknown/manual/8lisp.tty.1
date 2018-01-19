@@ -1,0 +1,634 @@
+
+
+
+
+
+
+
+
+
+
+
+                                   SECTION 8
+
+                      FUNCTION DEFINITION AND EVALUATION
+
+
+
+
+ General Comments
+
+
+
+A function definition in INTERLISP is stored in a special cell called the
+function definition cell, which is associated with each literal atom.  This
+cell is directly accessible via the two functions  putd, which  puts a
+ definition in the cell, and  getd which  gets the  definition from the
+cell.  In addition, the function  fntyp returns the function type, i.e.,
+EXPR, EXPR* ... FSUBR* as described in Section 4.   Exprp,  ccodep, and
+ subrp are true if the function is an expr, compiled function, or subr
+respectively;  argtype returns 0, 1, 2, or 3, depending on whether the
+function is a spread or nospread (i.e., its  fntyp ends in *), or
+evaluate or no-evaluate (i.e., its  fntyp begins with F or CF);  arglist
+returns the list of arguments; and  nargs returns the number of
+arguments.   fntyp,  exprp,  ccodep,  subrp,  argtype,  arglist, and  nargs can
+be given either a literal atom, in which case they obtain the function
+definition from the atom's definition cell, or a function definition itself.
+
+
+
+ Subrs
+
+
+
+                  1
+Because subrs,  are called in a special way, their definitions are stored
+differently than those of compiled or interpreted functions.  In INTERLISP-10,
+in the right half of the definition cell is the address of the first
+instruction of the subr, and in the left half its  argtype: 0, 1, 2, or 3.
+ getd of a subr returns a dotted pair of  argtype and address.  Note
+that this is not the same word as appears in the definition cell, but a new
+ cons; i.e., each  getd of a subr performs a  cons.  Similarly,  putd of a
+definition of the form (number . address), where  number = 0, 1, 2, or 3, and
+ address is in the appropriate range, stores the definition as a subr, i.e.,
+takes the  cons apart and stores  car in the left half of the definition cell
+and  cdr in the right half.
+
+
+
+
+**FOOTNOTES**
+1
+    Basic functions, handcoded in machine language, e.g.  cons,  car,  cond.
+    The terms  subr includes spread/nospread, eval/noeval functions, i.e.  the
+    four  fntyp's SUBR, FSUBR, SUBR*, and FSUBR*.
+
+
+
+
+
+                                      8.1
+
+
+
+ Validity of Definitions in INTERLISP-10
+
+
+
+Although the function definition cell is intended for function definitions,
+ putd and  getd do not make thorough checks on the validity of definitions that
+"look like" exprs, compiled code, or subrs.  Thus if  putd is given an array
+pointer, it treats it as compiled code, and simply stores the array pointer in
+the definition cell.   getd will then return the array pointer.  Similarly, a
+call to that function will simply transfer to what would normally be the entry
+point for the function, and produce random results if the array were not
+compiled function.
+
+
+
+Similarly, if  putd is given a dotted pair of the form (number . address) where
+ number is 0, 1, 2, or 3, and  address falls in the subr range,  putd
+assumes it is a subr and stores it away as described earlier.   getd would
+then return  cons of the left and right half, i.e., a dotted pair  equal
+(but not  eq) to the expression originally given  putd.  Similarly, a call to
+this function would transfer to the corresponding address.
+
+
+
+Finally, if  putd is given any other list, it simply stores it away.  A call to
+this function would then go through the interpreter as described in the
+appendix.
+
+
+
+Note that  putd does not actually check to see if the s-expression is valid
+definition, i.e., begins with LAMBDA or NLAMBDA.  Similarly,  exprp
+is true if a definition is a list and not of the form (number . address),
+number = 0, 1, 2, or 3 and address a subr address;  subrp is true if it is
+of this form.   arglist and  nargs work correspondingly.
+
+
+
+Only  fntyp and  argtype check function definitions further than that
+described above: both  argtype and  fntyp return NIL when  exprp is true but
+                                                2
+ car of the definition is not LAMBDA or NLAMBDA.  In other words, if the user
+uses  putd to put (A B C) in a function definition cell,  getd will
+return this value, the editor and prettyprint will both treat it as a
+definition,  exprp will return T,  ccodep and  subrp NIL,
+ arglist B, and  nargs 1.
+
+
+
+getd[x]                       gets the function  definition of  x.  Value
+
+
+
+
+
+**FOOTNOTES**
+2
+    These functions have different value on LAMBDAs and NLAMBDAs and hence must
+    check.  The compiler and interpreter also take different actions for
+    LAMBDAs and NLAMBDAs, and therefore generate errors if the definition is
+    neither.
+
+
+
+
+
+                                      8.2
+
+
+
+                                               3
+                             is the definition.  Value is NIL if  x is not a
+                             literal atom, or has no definition.
+
+
+
+fgetd[x]                     fast version of  getd that compiles open.
+                             Interpreted, generates an error, BAD ARGUMENT -
+                                                                4
+                             FGETD, if  x is not a literal atom. 
+
+
+
+putd[x;y]                     puts the  definition  y into  x's function
+                             cell.  Value is  y.  Generates an error, ILLEGAL
+                             ARG - PUTD, if  x is not a literal atom, or  y is
+                             a string, number, or literal atom other than
+                             NIL.
+
+
+
+putdq[x;y]                    nlambda version of  putd; both arguments are
+                             considered quoted.  Value is  x.
+
+
+
+movd[from;to;copyflg]        Moves the definition of  from to  to, i.e.,
+                             redefines  to.  If  copyflg=T, a  copy of the
+                             definition of  from is used.   copyflg=T is only
+                             meaningful for exprs, although  movd works for
+                             compiled functions and subrs as well.  The value
+                             of  movd is  to.
+
+
+
+Note:  fntyp,  subrp,  ccodep,  exprp,  argtype,
+       nargs, and  arglist all can be given either the name of a
+      function, or a definition.
+
+
+
+fntyp[fn]                    Value is NIL if  fn is not a function
+                             definition or the name of a defined function.
+                             Otherwise  fntyp returns one of the following as
+                             defined in the section on function types:
+
+
+
+
+
+**FOOTNOTES**
+3
+    Note that in INTERLISP-10,  getd of a subr performs a  cons, as described
+    on page 8.1.  See footnote on  fgetd below.
+
+
+4
+     Fgetd is intended primarily to check whether a function has a definition,
+    rather than to obtain the definition.  Therefore, for subrs,  fgetd returns
+    just the address of the function definition, not the dotted pair returned
+    by  getd, page 8.1, thereby saving the  cons.
+
+
+
+
+
+                                      8.3
+
+
+
+                                       EXPR      CEXPR     SUBR
+
+                                       FEXPR     CFEXPR    FSUBR
+
+                                       EXPR*     CEXPR*    SUBR*
+
+                                       FEXPR*    CFEXPR*   FSUBR*
+ 
+
+
+
+                             The prefix  F indicates unevaluated arguments, the
+                             prefix  C indicates compiled code, and the suffix
+                             * indicates an indefinite number of arguments.
+
+
+
+                              fntyp returns FUNARG if  fn is a funarg
+                             expression.  See Section 11.
+
+
+
+subrp[fn]                    is true if and only if fntyp[fn] is either
+                             SUBR, FSUBR, SUBR*, or FSUBR*,
+                             i.e., the third column of fntyp's.
+
+
+
+ccodep[fn]                   is true if and only if fntyp[fn] is either
+                             CEXPR, CFEXPR, CEXPR*, or CFEXPR*,
+                             i.e., second column of fntyp's.
+
+
+
+exprp[fn]                    is true if fntyp[fn] is either EXPR,
+                             FEXPR, EXPR*, or FEXPR*, i.e., first
+                             column of fntyp's.  However, exprp[fn] is also
+                             true if  fn is (has) a list definition that is not
+                             a SUBR, but does not begin with either
+                             LAMBDA or NLAMBDA.  In other words,  exprp
+                             is not quite as selective as  fntyp.
+
+
+
+argtype[fn]                   fn is the name of a function or its
+                             definition.  The value of  argtype is the argtype
+                             of  fn, i.e., 0, 1, 2, or 3, or NIL if  fn is not
+                             a function.  The interpretation of the argtype is:
+
+
+                             0    eval/spread function
+                                     (EXPR, CEXPR, SUBR)
+
+
+                             1    no-eval/spread functions
+                                     (FEXPR, CFEXPR, FSUBR)
+
+
+                             2    eval/nospread functions
+                                     (EXPR*, CEXPR*, SUBR*)
+
+
+                             3    no-eval/nospread functions
+
+
+
+                                      8.4
+
+
+
+                                     (FEXPR*, CFEXPR*, FSUBR*)
+
+
+
+                             i.e.,  argtype corresponds to the rows of  fntyps.
+
+
+
+nargs[fn]                    value is the number of arguments of  fn, or
+                                                          5
+                             NIL if  fn is not a function.   nargs uses
+                              exprp, not  fntyp, so that
+                             nargs[(A (B C) D)]=2.  If  fn is a nospread
+                             function, the value of  nargs is 1.
+
+
+
+arglist[fn]                  value is the 'argument list' for  fn.  Note
+                             that the 'argument list' is an atom for nospread
+                             functions.  Since NIL is a possible value for
+                              arglist, an error is generated,
+                             ARGS NOT AVAILABLE, if  fn is not a
+                                      6
+                             function. 
+
+
+
+If fn is a SUBR or FSUBR, the value of  arglist is (U), (U V), (U V
+W), etc. depending on the number of arguments, if a SUBR* or FSUBR*,
+the value is U. This is merely a 'feature' of  arglist,  subrs do not
+actually store the names of their arguments(s) on the stack.  However, if the
+user breaks or traces a SUBR (Section 15), these will be the argument names
+used when an equivalent EXPR definition is constructed.
+
+
+
+define[x]                    The argument of  define is a list.  Each
+                             element of the list is itself a list either of the
+                             form (name definition) or (name arguments ...).
+                             In the second case, following 'arguments' is the
+                             body of the definition.  As an example, consider
+                             the following two equivalent expressions for
+                             defining the function  null.
+
+                             1)  (NULL (LAMBDA (X) (EQ X NIL)))
+
+                             2)  (NULL (X) (EQ X NIL))
+
+
+
+
+
+**FOOTNOTES**
+5
+    i.e., if  exprp,  ccodep, and  subrp are all NIL.
+
+
+6
+    If  fn is a compiled function, the argument list is constructed, i.e.  each
+    call to  arglist requires making a new list.  For interpreted functions,
+    the argument list is simply  cadr of  getd.
+
+
+
+
+
+                                      8.5
+
+
+
+ define will generate an error on encountering an atom where a defining list is
+expected.  If  dfnflg=NIL, an attempt to redefine a function  fn will
+cause  define to print the message (fn REDEFINED) and to save the old
+definition of  fn using  savedef before redefining it.  If  dfnflg=T, the
+function is simply redefined.  If  dfnflg=PROP or ALLPROP, the new
+definition is stored on the property list under the property EXPR.
+(ALLPROP affects the operation of  rpaqq and  rpaq, section 5).   dfnflg is
+initially NIL.
+
+
+
+ dfnflg is reset by  load to enable various ways of handling the defining of
+functions and setting of variables when loading a file.  For most applications,
+the user will not reset  dfnflg directly himself.
+
+
+
+Note:  define will operate correctly if the function is already defined and
+       broken,  advised, or  broken-in.
+
+
+
+defineq[x1;xi;...;xn]         nlambda nospread version of  define, i.e.,
+                             takes an indefinite number of arguments which are
+                             not evaluated.  Each xi must be a list, of the
+                             form described in  define.   defineq calls
+                              define, so  dfnflg affects its operation the
+                             same as  define.
+
+
+
+savedef[fn]                  Saves the definition of  fn on its property
+                             list under property EXPR, CODE, or
+                             SUBR depending on its  fntyp.  Value is
+                             the property name used.  If getd[fn] is non-
+                             NIL, but fntyp[fn] is NIL, saves on property name
+                             LIST.  This situation can arise when a
+                             function is redefined which was originally defined
+                             with LAMBDA misspelled or omitted.
+
+
+
+                             If  fn is a list,  savedef operates on each
+                             function in the list, and its value is a list of
+                             the individual values.
+
+
+
+unsavedef[fn;prop]           Restores the definition of  fn from its
+                             property list under property  prop (see  savedef
+                             above).  Value is  prop.  If nothing saved under
+                              prop, and  fn is defined, returns
+                             (prop NOT FOUND), otherwise generates an
+                             error, NOT A FUNCTION.
+
+
+
+                             If  prop is not given, i.e. NIL,  unsavedef looks
+                             under EXPR, CODE, and SUBR, in that
+                             order.  The value of  unsavedef is the property
+                             name, or if nothing is found and  fn is a
+                             function, the value is (NOTHING FOUND);
+                             otherwise generates an error, NOT A FUNCTION.
+
+
+
+                                      8.6
+
+
+
+                             If  dfnflg=NIL, the current definition of
+                              fn, if any, is saved using  savedef.  Thus
+                             one can use  unsavedef to switch back and forth
+                             between two definitions of the same function,
+                             keeping one on its property list and the other in
+                             the function definition cell.
+
+
+
+                             If  fn is a list,  unsavedef operates on each
+                             function of the list, and its value is a list of
+                             the individual values.
+
+
+
+       7
+eval[x]                       eval evaluates the expression  x and returns
+                             this value i.e.  eval provides a way of calling
+                             the interpreter.  Note that  eval is itself a
+                              lambda type function, so its argument is first
+                             evaluated, e.g.,
+
+
+                             _SET(FOO (ADD1 3))
+                             (ADD1 3)
+                             _(EVAL FOO)
+                             4
+                             _EVAL(FOO)  or  (EVAL (QUOTE FOO))
+                             (ADD1 3)
+
+
+
+e[x]                          nlambda nospread version of  eval.  Thus it
+                             eliminates the extra pair of parentheses for the
+                             list of arguments for  eval.  i.e., e x is
+                             equivalent to eval[x].  Note however that in
+                             INTERLISP, the user can type just  x to get  x
+                             evaluated.  (See Section 3.)
+
+
+
+apply[fn;args]                apply applies the function  fn to the
+                             arguments  args.  The individual elements of  args
+                             are not evaluated by  apply,  fn is simply called
+                                                             8
+                             with  args as its argument list.   Thus for the
+
+
+
+**FOOTNOTES**
+7
+     eval is a  subr so that the 'name'  x does not actually appear on the
+    stack.
+
+
+8
+    Note that  fn may still explicitly evaluate one or more of its arguments
+    itself, as in the case of  setq. Thus
+    (APPLY (QUOTE SETQ) (QUOTE (FOO (ADD1 3)))) will set FOO to 4, whereas
+    (APPLY (QUOTE SET) (QUOTE (FOO (ADD1 3)))) will set FOO to the expression
+    (ADD1 3).
+
+
+
+
+
+                                      8.7
+
+
+
+                             purposes of  apply,  nlambda's and  lambda's are
+                             treated the same.  However like  eval,  apply is a
+                              lambda function so its arguments are evaluated
+                             before it is called e.g.,
+
+
+
+                             _SET(FOO1 3)
+                             3
+                             _SET(FOO2 4)
+                             4
+                             _(APPLY (QUOTE IPLUS) (LIST FOO1 FOO2]
+                             7
+
+
+                             Here,  fool and  foo2 were evaluated when the
+                             second argument to  apply was evaluated.  Compare
+                             with:
+
+
+                             _SET(FOO1 (ADD1 2))
+                             (ADD1 2)
+                             _SET(FOO2 (SUB1 5))
+                             (SUB1 5)
+                             _(APPLY (QUOTE IPLUS) (LIST FOO1 FOO2]
+
+                             NON-NUMERIC ARG
+                             (ADD1 2)
+
+
+
+apply*[fn;arg1;...;argn]     equivalent to apply[fn;list[arg1;...;argn]]
+                             For example, if  fn is the name of a functional
+                             argument to be applied to  x and  y, one can
+                             write (APPLY* FN X Y), which is equivalent to
+                             (APPLY FN (LIST X Y)).  Note that (FN X Y)
+                             specifies a call to the function FN itself, and
+                             will cause an error if FN is not defined.  (See
+                             Section 16.)  FN will not be evaluated.
+
+
+
+evala[x;a]                   Simulates a-list evaluation as in LISP
+                             1.5.  x is a form,  a is a list of dotted pairs of
+                             variable name and value.   a is 'spread' on the
+                             stack, and then  x is evaluated, i.e., any
+                             variables appearing free in  x, that also appears
+                             as  car of an element of  a will be given the
+                             value in the  cdr of that element.
+
+
+
+rpt[rptn;rptf]               Evaluates the expression  rptf  rptn times.
+                             At any point,  rptn is the number of evaluations
+                             yet to take place.  Returns the value of the last
+                             evaluation.  If  rptn <= 0,  rptf is not
+                             evaluated, and the value of  rpt is NIL.
+
+
+
+Note:  rpt is a  lambda function, so both its arguments are evaluated before
+       rpt is called.  For most applications, the user will probably want
+      to use  rptq.
+
+
+
+                                      8.8
+
+
+
+rptq[rptn;rptf]               nlambda version of  rpt:  rptn is evaluated,
+                              rptf is not, e.g. (RPTQ 10 (READ)) will perform
+                             ten calls to  read.   rptq compiles open.
+
+
+
+arg[var;m]                   Used to access the individual arguments of a
+                              lambda nospread function.   arg is an  nlambda
+                             function used like  set
+                                                   :.  var is the name of the
+                             atomic argument list to a lambda-nospread
+                             function, and is not evaluated;  m is the number
+                             of the desired argument, and is evaluated.  For
+                             example, consider the following definition of
+                              iplus in terms of  plus.
+
+
+
+                             [LAMBDA X
+                               (PROG ((M 0)
+                                      (N 0))
+                                 LP  (COND
+                                       ((EQ N X)
+                                         (RETURN M)))
+                                     (SETQ N (ADD1 N))
+                                     [SETQ M (PLUS M (ARG X N)))
+                                     (GO LP]
+
+
+                             The value of  arg is undefined for  m less
+                             than or equal to 0 or greater than the value of
+                                  9
+                              var.  Lower numbered arguments appear earlier in
+                             the form, e.g. for (IPLUS A B C),
+
+                             arg[X;1]=the value of A,
+
+                             arg[X;2]=the value of B, and
+
+                             arg[X;3]=the value of C.
+
+
+
+                             Note that the  lambda variable should never be
+                             reset.  However, individual arguments can be reset
+                             using  setarg described below.
+
+
+
+setarg[var;m;x]               sets to  x the  mth  argument for the lambda
+                             nospread function whose argument list is  var.
+                              var is considered quoted,  m and  x are
+                             evaluated; e.g. in the previous example,
+                             (SETARG X (ADD1 N)(MINUS M)) would be an example
+                             of the correct form for  setarg.
+
+
+
+**FOOTNOTES**
+9
+    For lambda nospread functions, the lambda variable is bound to the number
+    of arguments actually given to the function.  See Section 4.
+
+
+
+
+
+                                      8.9
+
+
+

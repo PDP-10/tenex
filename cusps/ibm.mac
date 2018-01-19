@@ -1,0 +1,1012 @@
+	title	ibm - convert industry compatible tapes to tenex files
+
+	search	stenex
+
+f==0
+;	bits in left half of f
+	f.wrt==400000	;on if writing tape, off if reading
+	f.acr==200000	;ascii cr seen
+	f.den==100000	;tape density, 0=1600, 1=800
+	f.nff==040000	;omit form feeds on writing tape
+	f.tab==020000	;tabs to spaces out to tape, vice versa from tape
+a==1
+b==2
+c==3
+d==4
+
+i==11
+j==12
+k==13
+l==14
+m==15
+n==16
+
+p==17
+
+ndump==^d10		;number of dump buffers (defined in IO.MAC)
+dmpbuf==200000		;dumpi/o mag tape buffer
+filbuf==dmpbuf+ndump*^d512 ;sin/sout disk buffer (may be larger than
+			;dmpbuf due to insertion of crlf's)
+
+ebcspc==100		;EBCDIC space
+ebcsub==173		;EBCDIC char to use when no equivalence
+ebcnl==25		;EBCDIC new line
+ebccr==15		;EBCDIC carriage return
+ebclf==45		;EBCDIC line feed
+ascspc==40		;ASCII space
+ascsub=="#"		;ASCII char to use when no equivalence
+asceol==37		;ASCII end of line char
+asccr==15		;ASCII carriage return
+asclf==12		;ASCII line feed
+ascff==14		;ASCII form feed
+asctab==11		;ASCII tab
+;mtopr functions
+mtanop==0		;nop, clear errors
+mtarew==1		;rewind
+mtawef==3		;write eof
+mtarun==11		;rewind and unload
+mtafsf==16		;forward space one file
+mtabsf==17		;back space one file
+mtaind==101		;set industry compatible mode
+
+;mta device dependent bits returned in 2 on GDSTS
+;note that these are almost but not exactly the same as in TOPS10
+io.imp==1b18		;illegal write
+io.der==1b19		;device error
+io.dte==1b20		;data error
+io.eof==1b22		;device EOF mark
+io.bkt==1b23		;length error
+io.err==io.imp!io.der!io.dte!io.eof!io.bkt	;all errors
+io.bot==1b24		;beginning of tape
+io.eot==1b25		;end of tape
+
+	opdef	call	[pushj	p,]
+	opdef	ret	[popj	p,]
+
+	define	type(string),<
+	call	[push	p,a
+		hrroi	a,[asciz\string\]
+		psout
+		pop	p,a
+		ret]
+> ;end define type
+
+lpdl==100
+start:	move	p,[iowd	lpdl,pdl]
+	call	init			;do global initialization
+
+rorw:	type	<
+Read or Write tape (R or W) >
+	pbin
+	trz	a,40			;off the lc bit
+	cain	a,"R"
+	 jrst	[tlz	f,f.wrt		;note direction
+		type	<ead
+>
+		jrst	mtaask]
+	cain	a,"W"
+	 jrst	[tlo	f,f.wrt
+		type	<rite
+>
+		jrst	mtaask]
+	jrst	rorw			;invalid response
+	
+mtaask:	type	<Enter mag tape unit (MTA0: or MTA1:) >
+	movsi	a,3			;ac2 are jfns, short
+	move	b,[100,,101]
+	gtjfn
+	 jrst	[call	jsyser
+		 jrst	mtaask]
+	movem	a,mtajfn
+	move	b,[17b9+1b19]		;dump mode, read only
+	tlne	f,f.wrt			;skip if reading
+	move	b,[17b9+1b20]		;else set write for openf
+	openf
+	 jrst	[call	jsyser
+		move	a,mtajfn
+		rljfn
+		 jfcl
+		jrst	mtaask]
+
+denask:	tlnn	f,f.wrt			;no need to ask density if reading
+	 jrst	skpask
+	type	<Enter density (800 or 1600 bpi) >
+	call	decin
+	tlz	f,f.den			;assume 1600
+	cain	b,^d1600		;were we right?
+	 jrst	skpask			;yes
+	cain	b,^d800
+	 tloa	f,f.den			;set for 800
+	jrst	denask			;invalid, ask again
+skpask:	type	<Enter number of file marks to skip >
+	call	decin
+	caig	b,^d1000
+	caige	b,0
+	jrst	[type	<That's just not reasonable...
+>
+		jrst	skpask]
+	movem	b,skpcnt
+
+logask:	type	<Enter logical record size on mag tape >
+	call	decin
+	caig	b,4*^d512*ndump
+	caig	b,0
+	jrst	[type	<That's just not reasonable...
+>
+		jrst	logask]
+	movem	b,logsiz
+
+maxask:	type	<Enter blocking factor on mag tape >
+	call	decin
+	imul	b,logsiz		;compute physical block size
+	camle	b,[4*^d512*ndump]	;make sure it fits in 10x dump area
+	 jrst	[type	<Too big, max physical record size = >
+		move	b,[4*^d512*ndump]
+		call	decout
+		call	crlf
+		jrst	maxask]
+	movem	b,blkmax
+	addi	b,3
+	lsh	b,-2			;convert to words for iolist
+	movns	b			;negate it
+	hrlm	b,iolist		;and fill in the iolist
+
+	tlnn	f,f.wrt			;only process forms feeds out to tape
+	jrst	ffa.1
+ffask:	type	<Omit form feeds? (Y or N) >
+	call	yorn			;get response
+	 jrst	[call	crlf		;illegal response
+		jrst	ffask]
+ffa.1:	tlza	f,f.nff			;negative response
+	tlo	f,f.nff			;positive response
+
+;note - I originally tried to allow conversion of multiple
+;EBCDIC spaces to tabs but found that I couldn't tell whether
+;in some cases, I should convert a single space to a tab or not.
+;The problem showed up when copying a file to tape and back, then
+;SRCCOM'ing them. Tabs are not generally used in EBCDIC files,
+;but may appear in certain TP applications...
+;Therefore, when coping from EBCDIC tape to ASCII disk the only
+;special action taken is to remove trailing spaces (i.e. spaces 
+;between the last non space char and the crlf that gets inserted at eor)
+
+tabask:	tlnn	f,f.wrt			;ask in the right way
+	 jrst	filask			;reading tape, nothing to ask
+	type	<Convert ASCII tabs to multiple EBCDIC spaces? (Y or N) >
+	call	yorn			;get response
+	 jrst	[call	crlf		;illegal response
+		jrst	tabask]
+	tlza	f,f.tab			;negative response
+	tlo	f,f.tab			;positive response
+
+filask:	type	<Enter disk file specification >
+	movsi	a,460003		;output, confirm, etc
+	tlne	f,f.wrt			;skip if reading
+	movsi	a,160003		;old file, confirm, etc.
+	move	b,[100,,101]
+	gtjfn
+	 jrst	[call	jsyser
+		 jrst	filask]
+	movem	a,filjfn
+	move	b,[070000,,100000]	;7 bit, output
+	tlne	f,f.wrt			;skip if reading
+	move	b,[070000,,200000]	;7 bit, input
+	openf
+	 jrst	[call	jsyser
+		move	a,filjfn	;release the jfn
+		rljfn
+		 call	jsyser		;report but ignore
+		jrst	filask]
+	tlnn	f,f.wrt			;skip if writing to tape
+	 jrst	ibm.1			;else go do it
+	move	b,[25,,0]		;count,,offset
+	movei	c,fdb			;where to store the fdb info
+	gtfdb				;get the fdb
+	ldb	b,[point 6,fdb+11,11]	;get the byte size
+	skipn	c,fdb+12		;& the byte which would address eof
+	 jrst	[type	<Empty file
+>
+		jrst	filask]
+	cain	b,^d36			;last written as 36 bit bytes?
+	 imuli	c,5			;yes, 5 times as many 7 bit bytes
+	caie	b,7			;only allow 7 or 36
+	cain	b,^d36
+	 caia
+	jrst	[type	<Byte size not 7 or 36
+>
+		jrst	filask]
+	movem	c,filcnt
+;	jrst	ibm.1			fall through
+ibm.1:	move	a,mtajfn		
+	movei	b,mtarew
+	mtopr				;to load point 
+	skipn	c,skpcnt		;num file marks to skip
+	jrst	ibm.15
+	movei	b,mtafsf
+	mtopr
+	sojg	c,.-1
+
+ibm.15:	hlre	b,iolist		;check byte counts
+	movms	b			;back to positive
+	lsh	b,2			;back to byte count
+	camn	b,blkmax		;multiple of 4?
+	 jrst	ibm.16			;yes, no sweat
+	sub	b,blkmax		;compute extra
+	move	i,b			;save
+	move	a,mtajfn
+	gdsts
+	dpb	i,[point 3,b,31]	;stuff in character count field
+	sdsts				;tell 10x
+ibm.16:	tlne	f,f.wrt			;skip if reading tape
+	tlnn	f,f.den			;writing, skip if 800 bpi
+	 jrst	ibm.17			;reading or 1600
+	gdsts				;get current device dependent bits
+	movei	c,1
+	dpb	c,[point 2,b,28]	;set for 800
+	sdsts				;tell tenex
+
+ibm.17:	movei	b,mtaind
+	mtopr				;set ibm mode
+	setzm	nblocks			;initialize some counters
+	setzm	nrecs
+	
+	tlne	f,f.wrt			;skip if reading
+	 jrst	ibm.6			;else off to write code
+
+ibm.2:	move	a,mtajfn
+	movei	b,iolist		;pointer to dumpi i/o list
+	dumpi
+	 call	dmperr			;go check err or eof
+ibm.25:	aos	nblocks			;another block read
+	move	a,mtajfn		;recover the jfn in case dmperr
+	gdsts
+	move	i,b			;save possible length error in i
+	hlre	b,c			;num bytes xferred
+	movem	b,blksiz		;save as actual blocksize
+	trne	i,io.bkt		;skip if no length error
+	jrst	[camle	b,blkmax	;see if actual xfer was less
+		jrst	[type	<
+Huh? Length error from GDSTS, max block size given is smaller than actual>
+			jrst	exit]
+		jrst	.+1]		;short record, probably last
+	idiv	b,logsiz		;compute number of logical records
+	jumpn	c,[type	<
+Huh? Block size not a multiple of logical record size>
+		type	<
+Actual block size was >
+		move	b,blksiz
+		call	decout
+		type	<, for block >
+		move	b,nblocks
+		call	decout
+		jrst	exit]
+	addm	b,nrecs
+
+ibm.3:	move	i,[point 8,dmpbuf]
+	move	j,[point 7,filbuf]
+	move	k,blksiz		;num bytes in input buffer
+	setz	l,			;counts blanks
+	setz	m,			;counts up to logsiz then
+					;causes insertion of crlf
+	setz	n,			;counts output including crlf's
+
+ibm.4:	
+	ildb	a,i			;get EBCDIC
+
+	skipge	b,ebcasc(a)		;get ASCII, skip if legal
+	jrst	[movsi	b,ascsub	;substitute char if illegal
+		aos	nsubs		;count occurrences
+		jrst	.+1]
+	hlrz	b,b			;position to rh
+	cain	b,ascspc		;a space character?
+	 aoja	l,ibm.48		;increment number of consec spaces
+					;but don't necessarily put it out
+	jumpe	l,ibm.45		;not a space and we haven't skipped
+
+	push	p,b			;save this char
+ibm.42:	movei	b,ascspc
+	call	put
+	sojg	l,ibm.42
+	pop	p,b			;restore original char
+
+ibm.45:	call	put			;stuff in output buffer
+
+ibm.48:	aoj	m,			;increment logsiz counter
+	camn	m,logsiz		;skip if not EOR
+	jrst	[setzb	m,l		;reset logsiz counter and blanks
+		movei	b,asccr
+		call	put		;insert cr
+		movei	b,asclf
+		call	put		;and lf
+		jrst	.+1]
+	sojg	k,ibm.4			;back for next EBCDIC char
+
+ibm.5:	move	a,filjfn		;output jfn
+	hrroi	b,filbuf
+	movn	c,n			;neg count for SOUT
+	sout
+	jrst	ibm.2			;infinite loop til EOF reached
+	
+put:	idpb	b,j			;put ASCII
+	aoj	n,			;increment output counter
+	ret
+ibm.6:	move	i,[point 8,dmpbuf]	;initial output pointer
+	setz	k,			;counts up to block size
+	setz	m,			;counts up to logsiz
+
+ibm.62:	call	getch			;get a char
+	 jrst	ibm.7			;none left, empty output
+
+	jumpe	a,ibm.62		;throw away nulls
+
+;Note - the order of test from here down to
+	cain	a,asclf			;is it an ASCII lf?
+	 jrst	[tlzn	f,f.acr		;skip if previous char was cr
+		call	filout		;fill out if it wasn't
+		jrst	ibm.62]
+
+	cain	a,asccr			;is it an ASCII carriage return?
+	 jrst	[tlo	f,f.acr		;flag a cr seen
+		call	filout		;fill out with EBCDIC spaces
+		jrst	ibm.62]		;back for next char
+	tlz	a,f.acr			;after this clear this flag
+;here is important, do not reorder
+
+	cain	a,asceol		;is it an ASCII eol?
+	 jrst	[call	filout		;fill out with spaces
+		jrst	ibm.62]		;and back
+
+	cain	a,ascff			;is it an ASCII ff?
+	 jrst	[aos	numff		;incr number of form feeds seen
+		tlnn	f,f.nff		;skip if ignoring form feeds
+		jrst	.+1		;not ignoring, proceed as normal
+		jrst	ibm.62]		;ignoring, throw away
+
+	cain	a,asctab		;is it an ASCII tab?
+	 jrst	[tlnn	f,f.tab		;skip if processing tabs
+		jrst	.+1		;not, go on
+		call	tabout		;fill out with spaces instead
+		jrst	ibm.62]		;next char
+	hrrz	a,ebcasc(a)		;get the EBCDIC equivalent
+	trne	a,400000		;skip if direct replacement
+	 jrst	[aos	nsubs		;count substitutions
+		movei	a,ebcsub	;use the substitution char
+		jrst	.+1]
+
+	movei	b,1(m)			;incr num chars in this line
+	caml	b,logsiz		;skip if it'll fit in this log rec
+	 jrst	[move	b,nrecs		;log rec num
+		skipn	ntrunk		;skip if not 1st truncation
+		jrst	[aos	ntrunk	;incr number of truncations
+			movem	b,ftrunk;remember 1st line truncated
+			movem	b,ltrunk;remember last also
+			jrst	ibm.61]	;put 1st char over out
+		came	b,ltrunk	;skip if still on same line
+		jrst	[aos	ntrunk	;incr num truncated lines
+			movem	b,ltrunk;remember last
+			jrst	ibm.61]
+		jrst	ibm.62]		;avoid call to putch
+	
+ibm.61:	call	putch			;put a char
+	jrst	ibm.62			;infinite loop til no more chars
+
+ibm.7:	jumpe	k,endup			;fini if nuthin in this phys rec
+	move	i,k			;save bytes
+	addi	k,3			;round to words
+	ash	k,-2
+	movns	k			;get negative count in last block
+	hrlm	k,iolist		;write last record short
+	movms	k			;make positive again
+	lsh	k,2			;back to bytes
+	camn	k,i			;multiple of 4?
+	 jrst	[setz	k,		;yes
+		jrst	ibm.72]
+	sub	k,i
+ibm.72:	move	a,mtajfn
+	gdsts
+	dpb	k,[point 3,b,31]	;stuff in char count field
+	sdsts
+	move	a,mtajfn
+	movei	b,mtanop
+	mtopr				;clear any previous errors
+	movei	b,iolist
+	dumpo				;out you go
+	 call	dmperr			;huh? file protect maybe
+	aos	nblocks			;one more block written
+	jrst	endup
+
+filout:	move	n,logsiz		;compute how many EBCDIC spaces
+	sub	n,m			;leave in n
+fil.0:	jumpe	n,cpopj			;exact fit
+fil.1:	movei	a,ebcspc		;an EBCDIC space
+	call	putch
+	sojg	n,fil.1			;fill to end of logical record
+	ret
+
+tabout:	movei	n,^d8(m)		;tabs set every 8 columns
+	trz	n,7
+	camle	n,logsiz		;don't tab past eor
+	move	n,logsiz
+	sub	n,m			;number spaces req'd (one at least)
+	jrst	fil.0			;use common code
+
+getch:	sosge	sincnt			;skip if chars in buffer
+	 jrst	ge.1			;go fill another (or first) buffer
+	ildb	a,j			;get the char
+
+cpopj1:	aos	0(p)			;success return
+cpopj:	ret
+
+ge.1:	skipn	filcnt			;skip if any left
+	 ret				;give fail return to getch
+	move	a,filjfn		;the file
+	hrroi	b,filbuf		;sin into here
+	movei	c,^d512*5		;page at a time (may chage to PMAP)
+	caml	c,filcnt		;are there that many left?
+	move	c,filcnt		;no, only do as many as there are
+	movem	c,sincnt		;remember for ildb loop
+	movns	c			;neg byte count for sin
+	addm	c,filcnt		;update number of bytes left after
+	sin				;the sin
+	 jumpn	c,[type	<
+Strange count returned by SIN from file>
+		jrst	exit]
+	move	j,[point 7,filbuf]	;set ildp ptr
+	jrst	getch			;and retry the getch
+
+putch:	idpb	a,i			;into the output buffer
+	aos	m			;plus 1 in the logical record
+	camn	m,logsiz		;end of logical record?
+	 jrst	[aos	nrecs		;yes, bump record counter
+		setz	m,		;set to count up again
+		jrst	.+1]		;and go on
+	aos	k			;plus 1 in the physical block
+	came	k,blkmax		;skip if block full
+	 ret				;not yet
+	move	a,mtajfn
+	movei	b,mtanop		;clear any previous errors
+	mtopr
+	movei	b,iolist
+	dumpo				;out you go
+	 call	dmperr			;huh? file protect maybe
+	setz	k,			;reset counter
+	aos	nblocks			;one more block written
+	move	i,[point 8,dmpbuf]	;reestablish output pointer
+	ret
+dmperr:	caie	a,iox5			;data error?
+	 jrst	dmpe.1			;no, check other errors
+;When Tenex gets a length error on dumpi it sets data error also
+;therefore check the device status and see if only length error.
+;If so, ignore here, as the code following the dumpi will take care of it.
+	move	a,mtajfn		;get the tape jfn
+	gdsts
+	trnn	b,io.err-io.bkt		;check all but length error
+	 ret				;return following the dumpi
+	movei	a,iox5			;set back error code
+
+dmpe.1:	cain	a,iox4			;eof?
+	jrst	endup			;yes, go type stats and exit
+	push	p,a			;save error code
+	type	<DUMPI/O error - >
+	movei	a,101
+	pop	p,b			;restore error code
+	hrli	b,400000		;this fork
+	setz	c,
+	erstr
+	 jfcl
+	 jfcl				;mumble, erstr gives double skip
+	type	< in block >
+	move	b,nblock		;previous block number
+	aos	b
+	call	decout
+	type	<
+GDSTS device dependent error bits - >
+	move	a,mtajfn
+	gdsts				;get device dependent bits in 2
+	push	p,c			;save count
+	tlz	b,-1			;only right half bits
+	call	octout
+	trne	b,io.imp
+	type	<
+Illegal write (File protect)>
+	trne	b,io.der
+	type	<
+Device error (Hung or data late)>
+	trne	b,io.dte
+	type	<
+data error>
+	trne	b,io.eof
+	type	<
+EOF (End of file mark)>
+	trne	b,io.bkt
+	type	<
+Incorrect record length>
+	trne	b,io.bot
+	type	<
+Beginning of tape>
+	trne	b,io.eot
+	type	<
+End of tape>
+	type	<
+Count in bytes >
+	hlre	b,0(p)			;returned negative on error
+	movms	b
+	call	decout
+	pop	p,c
+errask:	type	<
+Enter "I" to ignore, "S" to skip over, or "Q" to quit >
+	pbin
+	trz	a,40			;turn off possible lower case bit
+	cain	a,"Q"			;quit
+	jrst	endup			;go finish up
+	cain	a,"I"			;ignore
+	ret				;return following the DUMPI
+	cain	a,"S"			;skip this record
+	jrst	ibm.2			;return to the DUMPI
+	jrst	errask			;ask again
+endup:	tlnn	f,f.wrt			;skip if writing to tape
+	jrst	end.1
+	move	a,mtajfn
+	movei	2,mtawef
+	mtopr				;write 2 file marks
+	mtopr				;write 2 file marks
+	movei	b,mtabsf
+	mtopr				;and back up over last
+
+end.1:	type	<
+Finished - copied >
+	move	b,nblock		;num phys blocks on tape
+	call	decout
+	type	< blocks (containing >
+	move	b,nrecs
+	call	decout
+	type	< logical records)
+>
+	skipn	b,nsubs			;num illegal chars found
+	 jrst	end.2
+	call	decout
+	type	< illegal chars found (# used as substitute)
+>
+end.2:	skipn	b,ntrunk		;number of lines truncated
+	 jrst	end.3
+	call	decout
+	type	< lines in the file were longer than the logical record size
+>	
+	type	<and were therefore continued on the next record, the 1st was line >
+	move	b,ftrunk
+	addi	b,1			;line numbers start at 1 usually
+	call	decout
+	type	<
+and the last was at line >
+	move	b,ltrunk
+	addi	b,1
+	call	decout
+	call	crlf
+end.3:	skipe	b,numff			;skip if no form feeds seen
+	tlnn	f,f.nff			;skip if ignoring them
+	jrst	end.4
+	call	decout
+	type	< ASCII form feeds were thrown away
+>
+	jrst	end.4
+	
+end.4:;	jrst	exit
+
+exit:	movei	a,400000
+	clzff				;close and release all jfns
+	haltf
+	jrst	start			;resume at the beginning
+
+;Yes or No routine returns
+;	+1	illegal
+;	+2	negative
+;	+3	positive
+yorn:	push	p,a			;preserve regs
+	push	p,b
+	movei	a,101
+	bin
+	trz	b,40			;off the lc bit
+	cain	b,"N"
+	 jrst	[type	<o
+>
+		pop	p,b
+		pop	p,a
+		aos	0(p)		;single skip on negative
+		ret]
+	cain	b,"Y"
+	 jrst	[type	<es
+>
+		pop	p,b
+		pop	p,a
+		aos	0(p)		;double skip on positive
+		aos	0(p)		;double skip on positive
+		ret]
+	ret				;no skip on illegal
+
+crlf:	type	<
+>
+	ret
+
+tab:	type	<	>
+	ret
+octout:	push	p,c
+	movei	c,10
+	call	numout
+	pop	p,c
+	ret
+
+decout:	push	p,c
+	movei	c,^d10
+	call	numout
+	pop	p,c
+	ret
+
+decin:	push	p,[^d10]		;arg to numin
+	caia
+octin:	push	p,[^d8]
+numin:	push	p,a			;preserve regs
+	push	p,c
+num.1:	movei	a,101			;primary input
+	move	c,-2(p)			;pick up radix
+	nin
+	 jrst	numie			;some kind of nin error
+	push	p,b			;save the number input
+	bkjfn				;back up a char
+	 jrst	numib
+	bin				;and see what he terminated with
+	caie	b,asceol		;eol or
+	cain	b,asccr			;carriage return?
+	 jrst	num.2			;yes, adjust stack and return
+numib:	pop	p,b			;no, throw away input
+numie:	move	b,-2(p)			;get radix requested
+	cain	b,^d10
+	 type	<
+Decimal number please >
+	cain	b,^d8
+	 type	<
+Octal number please >
+	jrst	num.1
+num.2:	pop	p,b			;restore number input
+	pop	p,c			;and other regs
+	pop	p,a
+	pop	p,0(p)			;remove radix from stack
+	ret
+
+numout:	push	p,a
+	movei	a,101
+	nout
+	 jrst	[type	<
+NOUT error at loc >
+		hrrz	b,-2(p)
+		subi	b,1
+		movei	c,10
+		nout
+		 jrst	[call	jsyser
+			type	<type CONTINUE to resume>
+			jrst	.+1]	;impossible
+		haltf
+		jrst	.+1]
+	pop	p,a
+	ret
+jsyser:	push	p,a			;preserve all regs
+	push	p,b
+	push	p,c
+	type	<
+JSYS error - >
+	movei	a,101
+	hrloi	b,400000		;this fork, most recent error
+	setz	c,
+	erstr
+	 jfcl
+	 jfcl
+	call	crlf
+	pop	p,c
+	pop	p,b
+	pop	p,a
+	ret
+	
+;program initialization
+init:	reset
+	setz	f,			;clear flag register
+	move	a,[sixbit/ibm/]
+	setnm
+	setzm	s.zero
+	move	a,[s.zero,,s.zero+1]
+	blt	a,e.zero		;locs to clear on startup
+
+	aosn	titmsg			;only type once per session
+	type	<
+
+IBM - Copy IBM EBCDIC mag tapes to/from Tenex ASCII files
+>
+	ret
+; Indexed by ASCII code, RH gives EBCDIC
+; Indexed by EBCDIC code, LH gives ASCII 
+
+EBCASC:	0,,^D0
+	1,,^D1
+	2,,^D2
+	3,,^D3
+	24,,^D55
+	11,,^D45
+	16,,^D46
+	177,,^D47
+	400000,,^D22
+	400000,,^D5
+	400000,,^D37
+	400000,,^D11
+	14,,^D12		;form feed
+	400000,,^D13
+	400000,,^D14
+	400000,,^D15
+	400000,,^D16
+	400000,,^D17
+	400000,,^D18
+	34,,^D4
+	400000,,^D60
+	12,,^D61
+	10,,^D23
+	26,,^D38
+	30,,^D24
+	31,,^D25
+	400000,,^D63
+	400000,,^D39
+	400000,,^D34
+	400000,,^D29
+	400000,,^D53
+	400000,,^D31
+	400000,,^D64
+	400000,,^D90
+	34,,^D127
+	400000,,^D123
+	400000,,^D91
+	12,,^D108
+	36,,^D80
+	33,,^D125
+	400000,,^D77
+	400000,,^D93
+	20,,^D92
+	400000,,^D78
+	400000,,^D107
+	5,,^D96
+	6,,^D75
+	7,,^D97
+	400000,,^D240
+	400000,,^D241
+	26,,^D242
+	400000,,^D243
+	22,,^D244
+	23,,^D245
+	17,,^D246
+	4,,^D247
+	400000,,^D248
+	400000,,^D249
+	400000,,^D122
+	400000,,^D94
+	24,,^D76
+	25,,^D126
+	400000,,^D110
+	32,,^D111
+	40,,^D124
+	400000,,^D193
+	400000,,^D194
+	400000,,^D195
+	400000,,^D196
+	400000,,^D197
+	400000,,^D198
+	400000,,^D199
+	400000,,^D200
+	400000,,^D201
+	135,,^D209
+	56,,^D210
+	74,,^D211
+	50,,^D212
+	53,,^D213
+	136,,^D214
+	46,,^D215
+	400000,,^D216
+	400000,,^D217
+	400000,,^D226
+	400000,,^D227
+	400000,,^D228
+	400000,,^D229
+	400000,,^D230
+	400000,,^D231
+	400000,,^D232
+	41,,^D233
+	44,,^D173		;ebcdic [
+	52,,^d224		;ebcdic \
+	51,,^D189		;ebcdic ]
+	73,,^D30		;ebcdic ^
+	133,,^D109
+	55,,400000
+	57,,^D129
+	400000,,^D130
+	400000,,^D131
+	400000,,^D132
+	400000,,^D133
+	400000,,^D134
+	400000,,^D135
+	400000,,^D136
+	400000,,^D137
+	400000,,^D145
+	54,,^D146
+	45,,^D147
+	137,,^D148
+	76,,^D149
+	77,,^D150
+	400000,,^D151
+	400000,,^D152
+	400000,,^D153
+	400000,,^D162
+	400000,,^D163
+	400000,,^D164
+	400000,,^D165
+	400000,,^D166
+	400000,,^D167
+	400000,,^D168
+	72,,^D169
+	43,,^D192		;ebcdic {
+	100,,^D79
+	47,,^D208		;ebcdix }
+	75,,400000
+	42,,400000
+	400000,,400000
+	141,,400000
+	142,,400000
+	143,,400000
+	144,,400000
+	145,,400000
+	146,,400000
+	147,,400000
+	150,,400000
+	151,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	152,,400000
+	153,,400000
+	154,,400000
+	155,,400000
+	156,,400000
+	157,,400000
+	160,,400000
+	161,,400000
+	162,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	163,,400000
+	164,,400000
+	165,,400000
+	166,,400000
+	167,,400000
+	170,,400000
+	171,,400000
+	172,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	77,,400000
+	101,,400000
+	102,,400000
+	103,,400000
+	104,,400000
+	105,,400000
+	106,,400000
+	107,,400000
+	110,,400000
+	111,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	72,,400000
+	112,,400000
+	113,,400000
+	114,,400000
+	115,,400000
+	116,,400000
+	117,,400000
+	120,,400000
+	121,,400000
+	122,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	123,,400000
+	124,,400000
+	125,,400000
+	126,,400000
+	127,,400000
+	130,,400000
+	131,,400000
+	132,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	60,,400000
+	61,,400000
+	62,,400000
+	63,,400000
+	64,,400000
+	65,,400000
+	66,,400000
+	67,,400000
+	70,,400000
+	71,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	400000,,400000
+	137,,400000
+titmsg:	-1				;flag title msg given once
+
+iolist:	iowd	.-.,dmpbuf		;mag tape DUMPI/O iolist
+					;(count gets stuffed)
+	0				;iolists always end on a zero
+
+pdl:	block	lpdl
+
+s.zero:
+
+filcnt:	block	1			;num 7 bit bytes in input file
+sincnt:	block	1			;num 7 bit bytes in last SIN
+skpcnt:	block	1			;num file marks to skip
+logsiz:	block	1			;logical record size on mag tape
+blkmax:	block	1			;max block size on mag tape
+blksiz:	block	1			;actual block size (short if
+					;last record written short)
+nblock:	block	1			;num physical blocks read
+nrecs:	block	1			;num logical records read
+nsubs:	block	1			;number of bad EBCDIC chars
+numff:	block	1			;number of ASCII form feeds seen
+ntrunk:	block	1			;number of lines truncated
+ftrunk:	block	1			;first line truncated
+ltrunk:	block	1			;last line truncated
+mtajfn:	block	1			;jfn of the mag tape
+filjfn:	block	1			;jfn of the dsk file
+fdb:	block	25			;fdb of the disk file involved
+
+e.zero==.-1
+
+	end	start

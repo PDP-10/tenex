@@ -1,0 +1,713 @@
+
+
+
+
+
+
+
+
+
+
+
+
+                                                  1
+                               THE SPAGHETTI STACK
+
+
+
+The  Bobrow/Wegbreit  paper,  "A  Model  for  Control  Structures  for  Artificial
+Intelligence Programming  Languages," presented at  IJCAI-73, describes  an access
+and control mechanism more general than the simple pushdown stack.  The access and
+control mechanism now used by INTERLISP is a slightly modified version of  the one
+proposed by Bobrow and Wegbreit.  This mechanism is called the "spaghetti stack."
+
+The spaghetti  system presents the  access and control  stack as a  data structure
+composed of  "frames." The  functions described below  operate on  this structure.
+These  primitives  allow user  functions  to  manipulate the  stack  in  a machine
+independent way.  Backtracking, coroutines, and more sophisticated control schemes
+can  be  easily implemented  with  these  primitives.  Below  we  present  a brief
+description of the spaghetti system.
+
+
+Overview
+
+The evaluation of a function requires the allocation of storage to hold the values
+of its local variables during the computation.  In addition to  variable bindings,
+an activation of a function requires a return link (indicating where control is to
+go after the completion of the computation) and room for temporaries needed during
+the  computation.  In  the previous  implementation of  INTERLISP,  three distinct
+stacks were used for this information: the parameter stack, the control stack, and
+the number stack.  In the spaghetti system, one "stack" is used, but it is best to
+view this stack  as a tree  of linked objects  called frame extensions  (or simply
+frames).
+
+A frame extension is a variable sized block of storage containing a frame  name, a
+pointer to  some variable bindings  (the blink), and  two pointers to  other frame
+extensions  (the alink  and  clink).  In  addition  to these  components,  a frame
+extension contains  other information (such  as temporaries and  reference counts)
+that does not interest us here.
+
+The block of  storage holding the  variable bindings is  called a basic  frame.  A
+basic frame is essentially  an array of pairs,  each of which contains  a variable
+name and  its value.  The  reason frame extensions  point to basic  frames (rather
+than just  having them "built  in") is so  that two frame  extensions can  share a
+
+
+
+----------------------------------------------------------------------------------
+1
+    This note is meant as an interim description of the functions manipulating the
+    spaghetti stack.  More complete documentation is forthcoming.
+
+
+
+
+                                       1.1
+
+
+
+
+common basic frame.  This allows two processes to communicate via  shared variable
+bindings.
+
+The chain of frame extensions which can be reached via the successive  alinks from
+a given frame  is called the access  chain of the frame.   The first frame  in the
+access chain is the starting frame.  The chain through successive clinks is called
+the control chain.
+
+A  frame  extension  completely  specifies  the  variable  bindings   and  control
+information necessary for the evaluation  of a function.  Whenever a  function (or
+in  fact, any  form which  generally binds  local variables)  is evaluated,  it is
+associated with some frame extension.
+
+In the beginning there is precisely one frame extension in existence.  This is the
+frame in which the top-level call to the interpreter is being run.  This  frame is
+called the "top-level" frame.
+
+Since precisely one function is  being executed at any instant, exactly  one frame
+is distinquished as having the "control  bubble" in it.  This frame is  called the
+active  frame.   Initially, the  top-level  frame  is the  active  frame.   If the
+computation in the  active frame invokes another  function, a new basic  frame and
+frame extension are built.  The frame name of this basic frame will be the name of
+the function being called.  The b-, a-, and clinks of the new frame all  depend on
+precisely how the function is invoked.   The new function is then run in  this new
+frame by passing control to that frame, i.e., it is made the active frame.
+
+If the  active computation  needs the  value of  some variable  it is  obtained by
+searching the access chain of the active frame.  Each blink along the access chain
+is scanned for the variable name.  If a binding is found, the associated  value is
+used.  If none is found, the top-level value is used.
+
+Once the active  computation has been completed,  control normally returns  to the
+frame pointed  to by the  clink of the  active frame.  That  is, the frame  in the
+clink becomes the active frame.
+
+In most cases the storage associated with the basic frame and frame extension just
+abandoned can  be reclaimed.  However,  it is  possible to obtain  a pointer  to a
+frame extension  and to "hold  on" to this  frame even after  it has  been exited.
+This pointer can be used later to run another computation in that  environment, or
+even "continue" the exited computation.
+
+A new data  type, called a  stack pointer, has been  introduced to point  to frame
+extensions.  A  stack pointer  is just  a cell  that literally  points to  a frame
+extension.   Stack  pointers  are  returned  by  many  of  the  stack manipulating
+functions described below.  Except  for certain abbreviations (such as  "the frame
+with  such-and-such  a  name"), stack  pointers  are  the only  way  the  user can
+reference  a frame  extension.  As  long as  the user  has a  stack  pointer which
+references a  frame extension,  that frame extension  (and all  those that  can be
+reached from it) may not (will not) be garbage collected.
+
+
+Releasing Stack Pointers
+
+The creation  of a single  stack pointer can  result in the  retention of  a large
+amount  of stack  space.  Careless  creation  of stack  pointers can  use  all the
+available stack  space very  quickly.  For  this reason  the user  should consider
+
+
+
+
+                                       1.2
+
+
+
+
+releasing a stack pointer when the environment referenced by the stack  pointer is
+no longer needed.
+
+The effects of releasing a stack pointer are:
+
+1.  The link  between the stack  pointer and  the stack is  broken by  setting the
+    contents of the stack pointer to the "released mark" (currently unboxed 0).
+
+2.  If this stack pointer was  the last remaining reference to a  frame extension;
+    that is,  if no  other stack pointer  references the  frame extension  and the
+    extension is  not contained  in the  activecontrol or  access chain,  then the
+    extension may be reclaimed, and is reclaimed immediately.  The process repeats
+    for the access and control chains of the reclaimed extension so that all stack
+    space that was reachable only from the released stack pointer is reclaimed.
+
+A stack pointer  may be released  using the function  relstk.  But there  are some
+cases for which relstk is not  sufficient.  For example, if a function  contains a
+call to retfrom in which a stack  pointer was used to specify where to  return to,
+it would not be possible  to simultaneously release the stack pointer.   (A relstk
+appearing in the function following the call to retfrom would not be executed!) To
+permit release  of a  stack pointer in  this situation,  the stack  functions that
+relinquish control have optional flag  arguments to denote whether or not  a stack
+pointer is to  be released.  Note  that in this  case releasing the  stack pointer
+will  not cause  the stack  space to  be reclaimed  immediately because  the frame
+referenced by the stack pointer will have become part of the active environment.
+
+
+Reusing Stack Pointers
+
+Another way  of avoiding creating  new stack pointers  is to reuse  stack pointers
+that  are  no longer  needed.   The  stack functions  that  create  stack pointers
+(stkpos, stknth, and stkscan) have  an optional argument which is a  stack pointer
+to reuse.  When  a stack pointer  is reused, two  things happen.  First  the stack
+pointer is released (see above).  Then  the pointer to the new frame  extension is
+deposited in the stack pointer.  The old stack pointer (with its new  contents) is
+the value of the  function.  Note that the  reused stack pointer will  be released
+even if the function does not find the specified frame.
+
+
+Stack Descriptors
+
+In the  descriptions of the  stack functions, when  we refer to  an argument  as a
+stack  descriptor, we  mean  that it  is  either a  stack  pointer or  one  of the
+following abbreviations:
+
+    1.  NIL  means the  active frame;  that is,  the frame  of the  stack function
+itself.
+
+    2.  T means the top-level frame.
+
+    3.  Any other literal atom is equivalent to (STKPOS ATOM -1)
+
+    4.  A number is equivalent to (STKNTH number)
+
+
+
+
+
+
+
+                                       1.3
+
+
+
+
+Errors
+
+In the stack functions described below, the following errors can occur.
+
+
+illegal stack arg (19)       Occurs when  a stack descriptor  is expected  and the
+                             supplied  argument  is  either  not  a   legal  stack
+                             descriptor (i.e.,  not a  stack pointer,  litatom, or
+                             number), or is a litatom or number for which there is
+                             no corresponding stack frame (e.g.  (STKNTH -1 (QUOTE
+                             FOO)) where there is no frame named FOO in the active
+                             control chain or (STKNTH -10 'EVALQT)).
+
+
+stack pointer
+has been released            Occurs whenever a released stack pointer  is supplied
+                             as a stack descriptor argument for any  purpose other
+                             than as a stack pointer to re-use.
+
+
+Stack Functions
+
+stackp[x]                    Returns x if x is a stack pointer,  otherwise returns
+                             NIL.
+
+
+stkpos[framename;n;ipos;opos]Search for  the nth frame  with name  framename.  The
+                             search begins with (and includes) the frame specified
+                             by the stack descriptor ipos (initial position).  The
+                             search proceeds along the control chain from  ipos if
+                             n  is negative,  or along  the access  chain if  n is
+                             positive.  If n is NIL, -1 is used.  Returns  a stack
+                             pointer  to  the  frame  if  such  a   frame  exists,
+                             otherwise returns NIL.  If opos is supplied and  is a
+                             stack pointer, it is reused.  If opos is not  a stack
+                             pointer  it is  ignored.  (Note  that  (STKPOS (QUOTE
+                             STKPOS)) causes  an error, ILLEGAL  STACK ARG;  it is
+                             not possible to create a stack pointer to  the active
+                             frame.)
+
+
+stknth[n;ipos;opos]          Returns a  stack pointer to  the nth frame  back from
+                             the frame specified by the stack descriptor ipos.  If
+                             n  is  negative,  the  control  chain  from  ipos  is
+                             followed.   If  n  is positive  the  access  chain is
+                             followed.  If n equals 0, returns a stack  pointer to
+                             ipos,  i.e.,  this provides  a  way to  copy  a stack
+                             pointer.   Returns  NIL  if there  are  fewer  than n
+                             frames in the appropriate chain.  If opos is supplied
+                             and is a stack pointer, it is reused.  If opos is not
+                             a stack pointer it is ignored.  (Note that (STKNTH 0)
+                             causes an error; it is not possible to create a stack
+                             pointer to the active frame.)
+
+
+relstk[pos]                  Release the stack pointer pos.  If pos is not a stack
+                             pointer, does nothing.  The value is pos.
+
+
+
+                                       1.4
+
+
+
+
+enveval[form;apos;cpos;aflg;cflg]uates form in  the Environment specified  by apos
+                             Eval
+                             and cpos.   That is,  a new  active frame  is created
+                             with the frame specified by the stack descriptor apos
+                             as its  alink, and the  frame specified by  the stack
+                             descriptor  cpos   as  its   clink.   Then   form  is
+                             evaluated.  If aflg is  not NIL, and apos is  a stack
+                             pointer, then apos  will be released.   Similarly, if
+                             cflg is not  NIL, and cpos  is a stack  pointer, then
+                             cpos will be released.
+
+
+envapply[fn;args;apos;cpos;aflg;cflg]
+                             APPLYs  fn to  args in  the environment  specified by
+                             apos and cpos.
+
+
+retfrom[pos;val;flg]         Return  from  the   frame  specified  by   the  stack
+                             descriptor pos,  with the value  val.  If flg  is not
+                             NIL,  and  pos  is  a  stack  pointer,  then  pos  is
+                             released.  An attempt to retfrom the top  level (e.g.
+                             (RETFROM  T))  causes an  error,  ILLEGAL  STACK ARG.
+                             Retfrom  can  be  written  in  terms  of  enveval  as
+                             follows:
+
+    (RETFROM
+      (LAMBDA (POS VAL FLG)
+        (ENVEVAL (LIST (QUOTE QUOTE) VAL)
+                  NIL
+                  (COND
+                    ((STKNTH -1 POS (COND (FLG POS))))
+                    (T (ERROR (QUOTE "ILLEGAL STACK ARG")
+                              POS)))
+                  NIL T)))
+
+clearstk[flg]                If flg  is NIL, releases  all active  stack pointers,
+                             and returns NIL.  If flg is T, returns a list  of all
+                             the active (unreleased) stack pointers.
+
+
+clearstklst                  Is  a  (global) variable  used  by  top-level evalqt.
+                             Every  time  evalqt  is  re-entered  (e.g., following
+                             errors,  or control-D),  clearstklst is  checked.  If
+                             its  value  is  T,  all  active  stack  pointers  are
+                             released  using clearstk.   If its  value is  a list,
+                             then all  stack pointers on  that list  are released.
+                             If   its   value  is   NIL,   nothing   is  released.
+                             Clearstklst is initially T.
+
+
+noclearstklst                is a  global variable used  by top-level  evalqt.  If
+                             clearstklst  is  T  (see  above)  all   active  stack
+                             pointers except those on noclearstklst  are released.
+                             Noclearstklst is initially NIL.
+
+Thus if one  wishes to use multiple  environments that survive  through control-D,
+either clearstklst should be set to T, or else those stack pointers to be retained
+should be explicitly added to noclearstklst!.
+
+
+
+                                       1.5
+
+
+
+
+stkscan[var;ipos;opos]       Searches beginning  at ipos  for a  frame in  which a
+                             variable named var is bound.  The search  follows the
+                             access chain.  Returns  a stack pointer to  the frame
+                             if found, otherwise returns NIL.  If opos is  a stack
+                             pointer it is reused, otherwise it is ignored.
+
+
+stkname[pos]                 Returns the frame name of the frame specified  by the
+                             stack descriptor pos.
+
+
+stknthname[n;ipos]           Returns the  frame name  of the  nth frame  back from
+                             ipos.  Equivalent  to (STKNAME  (STKNTH n  ipos)) but
+                             avoids creation of a stack pointer.
+
+
+stknargs[pos]                Returns the  number of arguments  bound in  the basic
+                             frame of the frame specified by the  stack descriptor
+                             pos.
+
+
+The following five functions are used for accessing and changing the bindings in a
+basic  frame.   Some of  the  functions take  an  argument, n,  which  specifies a
+particular binding in the basic frame.  If  n is a literal atom, it is  assumed to
+be the  name of a  variable bound in  the basic frame.   If n is  a number,  it is
+assumed to reference the nth binding in the basic frame.  The first binding  is 1.
+If the basic frame contains no binding with the given name or if the number is too
+large or too small, the error ILLEGAL ARG results.
+
+
+framescan[atom;pos]          Returns the relative position of the binding  of atom
+                             in the basic frame of pos.
+
+
+stkarg[n;pos]                Returns the  value of the  binding specified by  n in
+                             the basic frame of  the frame specified by  the stack
+                             descriptor pos.  n can be a literal atom or number.
+
+
+stkargname[n;pos]            Returns the  name of the  binding specified by  n, in
+                             the basic frame of  the frame specified by  the stack
+                             descriptor pos.  n can be a literal atom or number.
+
+
+setstkarg[n;pos;value]       Sets the value of  the binding specified by n  in the
+                             basic  frame  of  the frame  specified  by  the stack
+                             descriptor pos.  n can be a literal atom or a number.
+                             Returns value.
+
+
+setstkargname[n;pos;name]    Sets the name  of the binding  specified by n  in the
+                             basic  frame  of  the frame  specified  by  the stack
+                             descriptor pos.  n can be a literal atom or a number.
+                             Returns name.
+
+
+
+
+
+
+                                       1.6
+
+
+
+
+copystk[pos1;pos2]           Copies the  stack, including  basic frames,  from the
+                             frame specified by  the stack descriptor pos1  to the
+                             frame specified by  the stack descriptor  pos2.  That
+                             is, copies the  frame extensions and basic  frames in
+                             the access chain from pos2 to pos1 (inclusive).  Pos1
+                             must be  in the access  chain of pos2,  i.e., "above"
+                             pos2.  Returns the new pos2.  This provides a  way to
+                             save   an  entire   environment   including  variable
+                             bindings.
+
+
+function[fn;env]             If env is NIL,  function is equivalent to  quote when
+                             interpreted and is also a signal to the compiler that
+                             fn should  be compiled.  If  env is a  stack pointer,
+                             then the value of function is the  expression (FUNARG
+                             fn env).  When a  funarg expression is apply'd  or is
+                             car of a form  being eval'd, the apply or  eval takes
+                             place  in the  access environment  specified  by env.
+                             For example, FOO is a funarg expression,  then (APPLY
+                             FOO FIE)  is equivalent to  (ENVAPPLY (CADR  FOO) FIE
+                             (CADDR FOO)).   Env can  also be  a list  of variable
+                             names.  In this case, a new frame is created with the
+                             values of the specified variables in the basic frame.
+                             The  variables  are evaluated  in  the  active access
+                             environment (the environment of function).  The alink
+                             of the  new frame is  the active  access environment,
+                             and clink is the top level.  The value of function is
+                             (FUNARG fn pos), where pos is a stack pointer  to the
+                                         2
+                             new frame.  
+
+
+The following  functions have been  included for compatibility  with the  old non-
+spaghetti system.  They are easily written in terms of the new primitives.
+
+
+evalv[x;pos]                 Evaluates x, where x  is assumed to be a  litatom, in
+                             the   access  environment   specifed  by   the  stack
+                             descriptor  pos.   While evalv  could  be  defined as
+                             (ENVEVAL  X  POS)  it  is in  fact  a  subr  which is
+                             somewhat faster.
+
+
+stkeval[pos;form;flg]        Evaluates form in the access environment of the frame
+                             specified by the stack descriptor pos.  If flg is not
+
+
+
+----------------------------------------------------------------------------------
+2
+    Note that the effect of  funarg in the spaghetti system is  somewhat different
+    from what it was previously  in non-spaghetti system.  Now when the  funarg is
+    apply'd or eval'd we see  in the access environment first the  variables given
+    in  the list,  and then  the access  environment at  the time  the  funarg was
+    created.  Formerly we saw the variables in the list (the "own"  variables) and
+    then the access environment at the time the funarg was used.
+
+
+
+
+                                       1.7
+
+
+
+
+                             NIL and  pos is a  stack pointer, releases  pos.  The
+                             definition of stkeval is (ENVEVAL FORM POS NIL FLG).
+
+
+reteval[pos;form;flg]        Evaluates form in the access environment of the frame
+                             specified  by  the  stack  descriptor  pos,  and then
+                             returns from pos with that value.  If flg is  not NIL
+                             and pos  is a  stack pointer,  then pos  is released.
+                             The  definition  of  reteval  is  (ENVEVAL  FORM  POS
+                             (STKNTH -1 POS) FLG T).
+
+
+The following functions have been augmented:
+
+
+eqp[x y]                     Now also returns T if x and y are both stack pointers
+                                                                           3
+                             and both reference the same frame extension.  
+
+
+backtrace[ipos;epos;falgs]   Performs a backtrace beginning at the frame specified
+                             by  the stack  descriptor ipos,  and ending  with the
+                             frame specified by the stack descriptor  epos.  Flags
+                             is a number in which the options of the BACKTRACE are
+                             encoded.   If  a   bit  is  set,   the  corresponding
+                             information is included in the backtrace.
+
+    bit 0 - print arguments of non-subrs
+    bit 1 - print temporaries of the interpreter
+    bit 2 - print subr arguments and all temporaries
+    bit 3 - omit printing of UNTRACE: and function names
+    bit 4 - follow access chain instead of control chain.
+
+For example: if flags=7, everything  is printed; if flags=21Q, follows  the access
+chain, prints arguments.
+
+
+              4
+Blip Functions
+
+The temporaries of the interpreter are not bound variables, but they are stored on
+the stack.  We have assigned pseudo-names to these temporaries.  The  pseudo names
+are printed  by backtrace and  can be  used in the  following functions  to access
+these temporaries.  The names or bliptyps are:
+
+    *FN*      the name of a function about to be called
+
+
+----------------------------------------------------------------------------------
+3
+    Note that two stack pointers referencing the same frame extension need  not be
+    eq, i.e., (EQ (STKPOS 'FOO) (STKPOS 'FOO))=NIL.
+
+4
+    The following  functions are provided  for use by  dwim, and are  probably not
+    generally useful.
+
+
+
+
+                                       1.8
+
+
+
+
+    *ARGVAL*  an argument for a function about to be called
+    *FORM*    a form in the process of evaluation
+    *TAIL*    the tail of a cond clause, implicit progn, prog, etc.
+
+
+blipval[bliptyp;ipos;flg]    Returns  the  value  of the  specified  blip  of type
+                             bliptyp.  If flg is  a number, finds the nth  blip of
+                             the  desired   type,  searching  the   control  chain
+                             beginning  at  the  frame  specified  by   the  stack
+                             descriptor ipos.  If flg  is NIL, 1 is used.   If flg
+                             is T,  returns the number  of blips of  the specified
+                             type at ipos.
+
+
+setblipval[bliptyp;ipos;n;value]
+                             Sets the value of the specified blip of type bliptyp.
+                             Searches  for  the  nth  blip  of  the  desired type,
+                             beginning  with  the  frame  specified  by  the stack
+                             descriptor ipos, and following the control chain.
+
+
+blipscan[bliptyp;ipos]       Returns a stack pointer to the frame in which  a blip
+                             of  type bliptyp  is located.   Search begins  at the
+                             frame  specified  by the  stack  descriptor  ipos and
+                             follows the control chain.
+
+
+Spaghetti and the Block Compiler
+
+In  order  that the  stack  discipline be  consistent,  it is  necessary  that all
+bindings  that  are either  used  freely  or are  used  for  communication between
+processes,  be contained  in some  basic frame.   Basic frames  are  never copied,
+except explicitly  and presumably intentionally  by copystk.  If  we have  a stack
+structure such as:
+
+                        A
+                        |
+                  -------------
+                 |             |
+                 B1-----B------B2
+
+where frame extensions B1 and B2 share  the basic frame B, then if B1  changes the
+value of one of its  variables (in basic frame B),  the new value will be  seen by
+B2.  If a binding were stored in a frame extension, which is copied, then  the two
+processes, B1 and B2 would each  have their own copies of the binding.   The block
+compiler produces speedy code by  avoiding function calls (and hence  the creation
+of frames).  Bindings of variables (including specvars) in block compiled code are
+contained in  the frame  extension.  Therefore  one should  not block  compile any
+function that binds a "state variable" of some multi-process computation.  We hope
+to restructure the block compiler to  eliminate this problem - but for  the moment
+it is a problem.  For example, if we have the following two functions:
+
+
+
+
+
+
+
+
+
+                                       1.9
+
+
+
+
+(MARK (LAMBDA NIL
+    (SETQ MARKPOS (STKNTH -1 (QUOTE MARK)))))
+
+(FOO (LAMBDA (Y)
+    (SETQ Y 3)
+    (MARK)
+    (SETQ Y 4)
+    ENVEVAL (QUOTE Y) MARKPOS)))
+
+If FOO is interpreted or compiled individually (not block compiled) then the value
+of the enveval is 4.  However, if FOO is a function in a compiled block and Y is a
+specvar, then the value of the enveval will be 3 because the active frame  for the
+block containing FOO and the frame retained by mark have their own  private copies
+of the binding of Y.
+
+
+Converting Programs to Spaghetti System
+
+By and large, if your programs do not perform any stack manipulations at all, they
+will run in the spaghetti system the same as they did in the non-spaghetti system.
+The only exception to this is that in the spaghetti system, Prog's that  "fall off
+the end" return NIL, whereas in the non-spaghetti system, they returned  the value
+of  the last  expression, (even  though the  October, 1974  version of  the manual
+stated that such prog's were supposed to return NIL).
+
+If your programs do any stack manipulations, you should be aware of  the following
+differences:
+
+1.  There is  now an  extra frame  below each prog  or open  lambda whose  name is
+    *prog*lam.  Thus (PROG  NIL (RETURN (STKNAME  (STKNTH -1)))) returned  prog in
+    non-spaghetti, but returns *prog*lam in spaghetti.
+
+2.  There is an extra frame for each call to a retfn within a block.
+
+3.  The creation  of a single  stack pointer can  tie up a  large amount  of stack
+    space which is not freed until the next garbage collection, even if  the stack
+    pointer  is no  longer being  used, unless  that stack  pointer  is explicitly
+    released with  a relstk, or  reused by  passing it to  a stack  function which
+    creates a stack pointer.  If there is sufficient amount of stack space tied up
+    in this fashion, a STACK OVERFLOW condition can occur, even in the simplest of
+    computations.   Thus,  in the  above  example of  (PROG  NIL  (RETURN (STKNAME
+    (STKNTH -1)))), a stack  pointer was created by  the call to stknth,  and this
+    stack pointer would persist until the next garbage collection, or until it was
+               5
+    released.  
+
+4.  Even if the stack pointers are being released, creation of many stack pointers
+    can cause  garbage collections of  stack pointer space,  GC:5.  If  the user's
+    application requires creating many  stack pointers, he definitely  should take
+    advantage of reusing stack pointers.
+
+
+----------------------------------------------------------------------------------
+5
+    In this  particular case,  the user could  avoid creating  a stack  pointer by
+    simply using the function stknthname instead of stkname and stknth.
+
+
+
+
+                                       1.10
+
+
+
+
+**INDEX**
+(BEGIN spaghetti stacks 1)
+(frame extension 1)
+(frame name 1)
+(blink 1)
+(alink 1)
+(clink 1)
+(basic frame 1)
+(access chain 2)
+(control chain 2)
+(active frame 2)
+(frame name 2)
+(stack pointer 2)
+(Releasing Stack Pointers 2)
+(Reusing Stack Pointers 3)
+(stack descriptor 3)
+(illegal stack arg 4)
+(stack pointer has been released 4)
+(stackp 4)
+(stkpos 4)
+(stknth 4)
+(relstk 4)
+(enveval 5)
+(envapply 5)
+(retfrom 5)
+(clearstk 5)
+(clearstklst 5)
+(noclearstklst 5)
+(stkscan 6)
+(stkname 6)
+(stknthname 6)
+(stknargs 6)
+(basic frame 6)
+(bindings in a basic frame 6)
+(ILLEGAL ARG 6)
+(framescan 6)
+(stkarg 6)
+(stkargname 6)
+(setstkarg 6)
+(setstkargname 6)
+(copystk 7)
+(function 7)
+(evalv 7)
+(stkeval 7)
+(reteval 8)
+(eqp 8)
+(backtrace 8)
+(Blip Functions 8)
+(*FN* 8)
+(*ARGVAL* 9)
+(*FORM* 9)
+(*TAIL* 9)
+(blipval 9)
+(setblipval 9)
+(blipscan 9)
+(Spaghetti and the Block Compiler 9)
+**ENDINDEX**
+

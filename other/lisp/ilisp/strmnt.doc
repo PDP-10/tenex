@@ -1,0 +1,77 @@
+		ILISP String Facility
+
+	A much more flexible string facility has been added
+to UCI-TENEX LISP.  These new strings allow concatenation,
+substringing, and ordering tests.  In addition, they require
+only one word per 5 characters (rather than 2 words, as
+required by the old implementation).
+
+	In order to implement this wonder, a new data space
+was added to LISP.  String space resides at the top of
+LISP low core, between full word space and the PDLs.
+All concerned parties (GC, reallocation, read and print
+routines, etc.) know about this new space and treat it
+properly.  It may be expanded at reallocation time if
+desired.
+
+	String space is garbage collected only when
+necessary, or when the user program requests an explicit
+garbage collection via GC.  When it is collected, it is
+compacted so that all free space is at the top of string
+space.  (Inefficient, but then this IS a quick and dirty
+implementation.)
+
+	The format of a string is as follows:
+
++-------+-------+   +-------+-------+   +-------+-------+
+|       |       |   |       |       |   |       |       |
+|  -1   |   .---|-->| PNAME |  .----|-->|strhdr |  NIL  |
+|       |       |   |       |       |   |       |       |
++-------+-------+   +-------+-------+   +-------+-------+
+
+
+	The strhdr resides in string space, and has the
+following format:
+
++-------+-------+
+|       |       |
+|bck ptr|  len  |
+|       |       |
++-------+-------+
+
+The back pointer field contains the address of the word which
+points to this header (the PNAME value word shown above).
+Len is the length of the string, in WORDS.  In addition, the
+high order bit of the right half is reserved as GC mark bit.
+This header is followed by (len) contiguous words, containing
+the string in seven bit ascii.  For convenience, the string
+is terminated by a null byte, unless this would use an extra
+word.  In any case, the SOS-LINE-NUMBER bit is set in the last
+word of the string.
+	There are several global cells associated with
+the new strings.  They are:
+
+	STFREE:	address of the header for the (one) free
+		string.  This string is at the high end
+		of string space, and has length equal
+		to the number of data words remaining.
+	SSO:	string space origin.  Defines the lowest
+		address of string space.
+	SSS:	total number of words in string space.
+
+	Words of warning to the hacker:
+
+    NEVER attempt to save the address of a string header
+    over a string garbage collection...it will move.  
+    Good practice to decide how much space you want and
+    be sure you have it before doing this type of thing.
+
+    There is a routine, GETSS, which will handle allocation
+    of a string for you.  Calling sequence:
+	C:  number of data words desired.
+	PUSHJ	P,GETSS
+    On return, A contains the address of a correctly formatted
+    string header (assuming that enough space was available).
+    You must, however, create the 'atom' and fix up the
+    left half appropriately.
+

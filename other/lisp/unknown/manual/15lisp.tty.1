@@ -1,0 +1,1543 @@
+
+
+
+
+
+
+
+
+
+
+
+                                  SECTION 15
+
+                                                     1
+                        DEBUGGING - THE BREAK PACKAGE
+
+
+
+
+
+ 15.1  Debugging Facilities
+
+
+
+Debugging a collection of LISP functions involves isolating problems
+within particular functions and/or determining when and where incorrect data
+are being generated and transmitted.  In the INTERLISP system, there are three
+facilities which allow the user to (temporarily) modify selected function
+definitions so that he can follow the flow of control in his programs, and
+obtain this debugging information.  These three facilities together are called
+the break package.  All three redefine functions in terms of a system function,
+ break1 described below.
+
+
+
+ Break modifies the definition of its argument, a function  fn, so that if a
+break condition (defined by the user) is satisfied, the process is halted
+temporarily on a call to  fn.  The user can then interrogate the state of the
+machine, perform any computation, and continue or return from the call.
+
+
+
+ Trace modifies a definition of a function  fn so that whenever  fn is
+called, its arguments (or some other values specified by the user) are printed.
+When the value of  fn is computed it is printed also.  ( trace is a special
+case of  break).
+
+
+
+ Breakin allows the user to insert a breakpoint inside an expression
+defining a function.  When the breakpoint is reached and if a break condition
+(defined by the user) is satisfied, a temporary halt occurs and the user can
+again investigate the state of the computation.
+
+
+
+The following two examples illustrate these facilities.  In the first example,
+the user traces the function  factorial.   trace redefines  factorial so that
+
+
+
+**FOOTNOTES**
+1
+    The break package was written by W. Teitelman.
+
+
+
+
+
+                                     15.1
+
+
+
+it calls  break1 in such a way that it prints some information, in this case
+the arguments and value of  factorial, and then goes on with the computation.
+When an error occurs on the fifth recursion,  break1 reverts to interactive
+mode, and a full break occurs.  The situation is then the same as though the
+user had originally performed BREAK(FACTORIAL) instead of TRACE(FACTORIAL), and
+the user can evaluate various INTERLISP forms and direct the course of the
+computation.  In this case, the user examines the variable  n, and instructs
+ break1 to return 1 as the value of this cell to  factorial.  The rest of the
+tracing proceeds without incident.  The user would then presumably edit
+ factorial to change L to 1.
+
+
+
+In the second example, the user has constructed a non-recursive definition of
+ factorial.  He uses  breakin to insert a call to  break1 just after
+the PROG label LOOP.  This break is to occur only on the last two iterations,
+i.e., when  n is less than 2.  When the break occurs, the user looks at the
+value of  n.  mistakenly typing NN.  However, the break is maintained and no
+damage is done.  After examining  n and  m the user allows the computation to
+continue by typing OK.  A second break occurs after the next iteration, this
+time with N=0.  When this break is released, the function  factorial returns
+its value of 120.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                     15.2
+
+
+
+_PP FACTORIAL
+
+(FACTORIAL
+  [LAMBDA (N)
+    (COND
+      ((ZEROP N
+        L)
+      (T (ITIMES N (FACTORIAL (SUB1 N])
+FACTORIAL
+_TRACE(FACTORIAL)
+(FACTORIAL)
+_FACTORIAL(4)
+
+FACTORIAL:
+N = 4
+
+   FACTORIAL:
+   N = 3
+
+      FACTORIAL:
+      N = 2
+
+         FACTORIAL:
+         N = 1
+
+            FACTORIAL:
+            N = 0
+
+U.B.A.
+L
+(FACTORIAL BROKEN)
+:N
+0
+:RETURN 1
+            FACTORIAL = 1
+         FACTORIAL = 1
+      FACTORIAL = 2
+   FACTORIAL = 6
+FACTORIAL = 24
+24
+_
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                     15.3
+
+
+
+_PP FACTORIAL
+
+(FACTORIAL
+  [LAMBDA (N)
+    (PROG ((M 1))
+      LOOP(COND
+            ((ZEROP N)
+              (RETURN M)))
+          (SETQ M (ITIMES M N))
+          (SETQ N (SUB1 N))
+          (GO LOOP])
+FACTORIAL
+_BREAKIN(FACTORIAL (AFTER LOOP) (ILESSP N 2]
+SEARCHING...
+FACTORIAL
+_FACTORIAL(5)
+
+((FACTORIAL) BROKEN)
+:NN
+U.B.A.
+NN
+(FACTORIAL BROKEN AFTER LOOP)
+:N
+1
+:M
+120
+:OK
+(FACTORIAL)
+
+((FACTORIAL) BROKEN)
+:N
+0
+:OK
+(FACTORIAL)
+120
+_
+
+
+
+ 15.2  Break1
+
+
+
+The basic function of the break package is  break1.  Whenever INTERLISP
+types a message of the form (- BROKEN) followed by ':' the user is then
+'talking to'  break1, and we say he is 'in a break.'  break1 allows the
+user to interrogate the state of the world and affect the course of the
+computation.  It uses the prompt character ':' to indicate it is ready to
+accept input(s) for evaluation, in the same way as  evalqt uses '_'. The
+user may type in an expression for evaluation as with  evalqt, and the value
+will be printed out, followed by another :. Or the user can type in one of
+the commands specifically recognized by  break1 described below.
+
+
+
+Since  break1 puts all of the power of INTERLISP at the user's command, he can
+do anything he can do at  evalqt.  For example, he can insert new breaks on
+subordinate functions simply by typing:
+
+
+
+              (BREAK fn1 fn2 ...)
+
+
+
+
+                                     15.4
+
+
+
+or he can remove old breaks and traces if too much information is being
+supplied:
+
+
+
+              (UNBREAK fn3 fn4 ...)
+
+
+
+He can edit functions, including the one currently broken:
+
+
+
+              EDITF(fn)
+
+
+
+For example, the user might evaluate an expression, see that the value was
+incorrect, call the editor, change the function, and evaluate the expression
+again, all without leaving the break.
+
+
+
+Similarly, the user can prettyprint functions, define new functions or redefine
+old ones, load a file, compile functions, time a computation, etc.  In short,
+anything that he can do at the top level can be done while inside of the break.
+In addition the user can examine the pushdown list, via the functions described
+in Section 12, and even force a return back to some higher function via the
+function  retfrom or  reteval.
+
+
+
+It is important to emphasize that once a break occurs, the user is in complete
+control of the flow of the computation, and the computation will not proceed
+without specific instruction from him.  If the user types in an expression
+whose evaluation causes an error, the break is maintained.  Similarly if the
+                         2
+user aborts a computation  initiated from within the break, the break is
+maintained.  Only if the user gives one of the commands that exits from the
+break, or evaluates a form which does a  retfrom or  reteval back out of
+                                       3
+ break1, will the computation continue.
+
+
+
+Note that  break1 is just another INTERLISP function, not a special system
+feature like the interpreter or the garbage collector.  It has arguments which
+are explained later, and returns a value, the same as  cons or  cond or  prog
+or any other function.  The value returned by  break1 is called 'the value of
+the break.' The user can specify this value explicitly by using the RETURN
+
+
+
+**FOOTNOTES**
+2
+    By typing control-E, see Section 16.
+
+
+3
+    Except that  break1 does not 'turn off' control-D, i.e. a control-D
+    will force an immediate return back to the top level.
+
+
+
+
+
+                                     15.5
+
+
+
+command described below.  But in most cases, the value of a  is given
+implicitly, via a GO or OK command, and is the result of evaluating
+'the break expression,'  brkexp, which is one of the arguments to  break1.
+
+
+
+The break expression is an expression equivalent to the computation that
+would have taken place had no break occurred.  For example, if the user breaks
+on the function FOO, the break expression is the body of the definition of FOO.
+When  the user types OK or GO, the body of FOO is evaluated, and its value
+returned as the value of the break, i.e.  to whatever function called FOO.  The
+effect is the same as though no break had occurred.  In other words, one can
+think of  break1 as a fancy  eval, which permits interaction before and after
+evaluation.  The break expression then corresponds to the argument to  eval.
+
+
+
+
+ Break Commands
+
+
+
+GO                            Releases the break and allows the computation
+                             to proceed.   break1 evaluates  brkexp, its
+                             first argument, prints the value of the break.
+                              brkexp is set up by the function that created the
+                             call to  break1.  For  break or  trace,
+                              brkexp is equivalent to the body of the
+                             definition of the broken function.  For
+                              breakin, using BEFORE or AFTER,
+                              brkexp is NIL.  For  breakin AROUND,
+                              brkexp is the indicated expression.  See
+                              breakin, page 15.18.
+
+
+OK                            Same as GO except the value of  brkexp is not
+                             printed.
+
+
+EVAL                     Same as GO or OK except that the break is
+                             maintained after the evaluation.  The user can
+                             then interrogate the value of the break which is
+                             bound on the variable  !value, and continue
+                             with the break.  Typing GO or OK following
+                             EVAL will not cause reevaluation but another EVAL
+                             will.  EVAL is a useful command when the user is
+                             not sure whether or not the break will produce the
+                             correct value and wishes to be able to do
+                             something about it if it is wrong.
+
+
+RETURN form                   The value of the indicated computation is
+                             returned
+    or                       as the value of the break.
+RETURN fn[args]              For example, one might use the EVAL command and
+                             follow this with RETURN (REVERSE !VALUE).
+
+
+^                             Calls  error! and aborts the break.  i.e.
+                             makes it "go away' without returning a value.
+                             This is a useful way to unwind to a higher level
+                             break.  All other errors, including those
+
+
+
+
+                                     15.6
+
+
+
+                             encountered while executing the GO, OK, EVAL, and
+                             RETURN commands, maintain the break.
+
+
+!EVAL                         function is first unbroken, then the break
+                             expression is evaluated, and then the function is
+                             rebroken.  Very useful for dealing with recursive
+                             functions.
+
+
+!OK                           Function is first unbroken, evaluated,
+                             rebroken, and then exited, i.e. !OK is equivalent
+                             to !EVAL followed by OK.
+
+
+!GO                           Function is first unbroken, evaluated,
+                             rebroken, and exited with value typed, i.e., !EVAL
+                             followed by GO.
+
+
+UB                            unbreaks  brkfn, e.g.
+
+                             (FOO BROKEN)
+                             :UB
+                             FOO
+                             :
+
+                             and FOO is now unbroken
+
+
+@                             resets the variable  lastpos, which
+                             establishes a context for the commands ?=,
+                             ARGS, BT, BTV, BTV*, and EDIT,
+                             and IN? described below.   lastpos is the
+                             position of a function call on the push-down
+                             stack.  It is initialized to the function just
+                             before the call to  break1, i.e. stknth[-1;BREAK1]
+
+                             @ treats the rest of the teletype line as its
+                             argument(s).  It first resets  lastpos to
+                             stknth[-1;BREAK1] and then for each atom on the
+                             line, @ searches backward, for a call to that
+                             atom.  The following atoms are treated specially:
+
+                             @         do not reset  lastpos to
+                                       stknth[-1;BREAK1] but leave it as it
+                                       was, and continue searching from that
+                                       point.
+
+                             numbers   if negative, move  lastpos back that
+                                       number of calls, if positive, forward,
+                                       i.e. reset  lastpos to stknth[n;lastpos]
+
+                             _         search  forward for next atom
+
+                             /         the next atom is a number and can be
+                                       used to specify more than one call e.g.
+                                       @ FOO / 3 is equivalent to
+                                       @ FOO FOO FOO
+
+
+
+
+
+
+
+                                     15.7
+
+
+
+                             Example:
+
+                             if the push-down stack looks like
+
+                                       BREAK1    (13)
+                                       FOO       (12)
+                                       SETQ      (11)
+                                       COND      (10)
+                                       PROG       (9)
+                                       FIE        (8)
+                                       COND       (7)
+                                       FIE        (6)
+                                       COND       (5)
+                                       FIE        (4)
+                                       COND       (3)
+                                       PROG       (2)
+                                       FUM        (1)
+
+                             then @ FIE COND will set  lastpos to the
+                             position corresponding to (7); @ @ COND will then
+                             set  lastpos to (5); @ FUM _ FIE to (4); and
+                             @ FIE / 3 -1 to (3).
+
+                             If @ cannot successfully complete a search, it
+                             types (fn NOT FOUND), where fn is the name of
+                             the function for which it was searching.
+
+                             When @ finishes, it types the name of the function
+                             at  lastpos, i.e.  stkname[lastpos]
+
+                             @ can be used on  brkcoms.  In this case,
+                             the  next command on  brkcoms is treated the same
+                             as the rest of the teletype line.
+
+
+?=                            This is a multi-purpose command.  Its most
+                             common use is to interrogate the value(s) of the
+                             arguments of the broken function, e.g. if FOO has
+                             three arguments (X Y Z), then typing ?= to a break
+                             on FOO, will produce:
+
+                             :?=
+                             X =       value of X
+                             Y =       value of Y
+                             Z =       value of Z
+                             :
+
+                             ?= operates on the rest of the teletype line as
+                             its arguments.  If the line is empty, as in the
+                             above case, it prints all of the arguments.  If
+                             the user types ?= X (CAR Y), he will see the
+                             value of X, and the value of (CAR Y).  The
+                             difference between using ?= and typing X and
+                             (CAR Y) directly to  break1 is that ?= evaluates
+                             its inputs as of  lastpos, i.e. it uses
+                              stkeval.  This provides a way of examing
+                             variables or performing computations as of a
+                             particular point on the stack.  For example,
+                             @ FOO / 2 followed by ?= X will allow the user to
+                             examine the value of X in the previous call to
+                             FOO, etc.
+
+
+
+
+
+                                     15.8
+
+
+
+                             ?= also recognizes numbers as refering to the
+                             correspondingly numbered argument, i.e. it uses
+                              stkarg in this case.  Thus
+
+                             :@ FIE
+                             FIE
+                             :?= 2
+
+                             will print the name and value of the second
+                             argument of FIE.
+
+                             ?= can also be used on  brkcoms, in which case
+                             the next command on  brkcoms is treated as the
+                             rest of the teletype line.  For example, if
+                              brkcoms is (EVAL ?= (X Y) GO),  brkexp will
+                             be evaluated, the values of X and Y printed, and
+                             then the function exited with its value being
+                             printed.
+
+
+BT                            Prints a backtrace of function names only
+                             starting at  lastpos.  (See discussion of @
+                             above) The several nested calls in system packages
+                             such as break, edit, and the top level executive
+                             appear as the single entries **BREAK**,
+                             **EDITOR**, and **TOP** respectively.
+
+
+BTV                           Prints a backtrace of function names with
+                             variables beginning at  lastpos.
+
+
+BTV*                     Same as BTV except also prints arguments of
+                             internal calls to  eval.  (See Section 12)
+
+
+BTV!                     Same as BTV except prints everything on stack.
+                             (See Section 12).
+
+
+BT, BTV, BTV*, and BTV! all permit an optional functional argument which is a
+predicate that chooses functions to be skipped on the backtrace, e.g., BT SUBRP
+will skip all SUBRs, BTV (LAMBDA (X) (NOT (MEMB X FOOFNS))) will skip all but
+those functions on FOOFNS.  If used as a  brkcom the functional argument is no
+longer optional, i.e. the next brkcom must either be the functional argument,
+or NIL if no functional argument is to be applied.
+
+
+
+For BT, BTV, BTV*, and BTV!, if control-P is used to change a printlevel
+during the backtrace, the printlevel will be restored after the backtrace is
+completed.
+
+
+
+ARGS                     Prints the names of the variables bound at
+                              lastpos, i.e.  variables[lastpos]
+                             (Section 12).  For most cases, these are the
+                             arguments to the function entered at that
+                             position, i.e. arglist[stkname[lastpos]].
+
+
+
+
+
+
+                                     15.9
+
+
+
+The following two commands are for use only with unbound atoms or undefined
+function breaks (see Section 16).
+
+
+
+= form, = fn[args]           only for the break following an unbound atom
+                             error.  Sets the atom to the value of the form, or
+                             function and arguments, exits from the break
+                             returning that value, and continues the
+                             computation, e.g.
+
+                             U.B.A.
+                             (FOO BROKEN)
+                             := (COPY FIE)
+
+                             sets FOO and goes on.
+
+
+-> expr                       for use either with unbound atom error, or
+                             undefined function error. Replaces the
+                                                                       4
+                             expression containing the error with  expr  (not
+                             the value of  expr) e.g.,
+
+                             U.D.F.
+                             (FOO1 BROKEN)
+                             :-> FOO
+
+                             changes the FOO1 to FOO and continues the
+                             computation.
+
+                              expr need not be atomic, e.g.
+
+                             U.B.A.
+                             (FOO BROKEN)
+                             :-> (QUOTE FOO)
+
+                             For U.D.F. breaks, the user can specify a function
+                             and initial arguments, e.g.
+
+                             U.D.F.
+                             (MEMBERX BROKEN)
+                             :-> MEMBER X
+
+                             Note that in the case of a U.D.F. error occurring
+                             immediately following a call to  apply, e.g.
+                             (APPLY X Y) where the value of  x is FOO and FOO
+                             is undefined, or a U.B.A. error immediately
+                             following a call to  eval, e.g. (EVAL X), where
+                             the value of  x is FOO and FOO is unbound, there
+                              is no expression containing the offending atom.
+                             In this case, -> cannot operate, so ? is printed
+                             and no action taken.
+
+
+
+**FOOTNOTES**
+4
+    -> does not change just  brkexp; it changes the function or
+    expression containing the erroneous form.  In other words, the user does
+    not have to perform any additional editing.
+
+
+
+
+
+                                     15.10
+
+
+
+EDIT                     designed for use in conjunction with breaks caused
+                             by errors.  Facilitates editing the expression
+                             causing the break:
+
+                             NON-NUMERIC ARG
+                             NIL
+                             (IPLUS BROKEN)
+                             :EDIT
+                             IN FOO...
+                             (IPLUS X Z)
+                             EDIT
+                             *(3 Y)
+                             *OK
+                             FOO
+                             :
+
+                             and user can continue by typing OK, EVAL, etc.
+
+
+This command is very simple conceptually, but complicated in its implementation
+by all of the exceptional cases involving interactions with compiled functions,
+breaks on user functions, error breaks, breaks within breaks, et al.
+Therefore, we shall give the following simplified explanation which will
+account for 90% of the situations arising in actual usage.  For those others,
+EDIT will print an appropriate failure message and return to the break.
+
+
+
+EDIT begins by searching up the stack beginning at  lastpos (set by @
+command, initially position of the break) looking for a form, i.e. an internal
+call to  eval.  Then EDIT continues from that point looking for a call to
+an interpreted function, or to  eval.  It then calls the editor on either the
+EXPR or the argument to  eval in such a way as to look for an expression  eq to
+the form that it first found.  It then prints the form, and permits interactive
+editing to begin.  Note that the user can then type successive 0's to the
+editor to see the chain of superforms for this computation.
+
+
+
+If the user exits from the edit with an OK, the break expression is reset,
+if possible, so that the user can continue with the computation by simply
+               5
+typing OK.  However, in some situations, the break expression cannot be
+reset. For example, if a compiled function FOO incorrectly called  putd
+and caused the error ARG NOT ATOM followed by a break on  putd, EDIT might be
+able to find the form headed by FOO, and also find that form in some higher
+interpreted function.  But after the user corrected the problem in the FOO-
+form, if any, he would still not have in any way informed EDIT what to do about
+the immediate problem, i.e. the incorrect call to  putd.  However, if FOO were
+interpreted EDIT would find the  putd form itself, so that when the user
+corrected that form, EDIT could use the new corrected form to reset the break
+expression.  The two cases are shown below:
+
+
+
+
+**FOOTNOTES**
+5
+    Evaluating the new  brkexp will involve reevaluating the form that
+    causes the break, e.g. if (PUTD (QUOTE (FOO)) big-computation) were handled
+    by EDIT, big-computation would be reevaluated.
+
+
+
+
+
+                                     15.11
+
+
+
+     ARG NOT ATOM                           ARG NOT ATOM
+     (FUM)                                  (PUTD BROKEN)
+     (PUTD BROKEN)                          :EDIT
+     :EDIT                                  IN FOO...
+     IN FIE...                              (PUTD X)
+     (FOO X)                                EDIT
+     EDIT                                   *(2 (CAR X))
+     *(2 (CAR X))                           *OK
+     *OK                                    FOO
+     NOTE: BRKEXP NOT CHANGED               :OK
+     FIE                                    PUTD
+     :?=
+     U = (FUM)
+     :(SETQ U (CAR U))
+     FUM
+     :OK
+     PUTD
+
+
+IN?                          similar to EDIT, but just prints parent form, and
+                             superform, but does not call editor, e.g.
+
+                             ATTEMPT TO RPLAC NIL
+                             T
+                             (RPLACD BROKEN)
+                             :IN?
+                             FOO: (RPLACD X Z)
+
+
+Although EDIT and IN? were designed for error breaks, they can also
+be useful for user breaks.  For example, if upon reaching a break on his
+function FOO, the user determines that there is a problem in the call to FOO,
+he can edit the calling form and reset the break expression with one operation
+by using EDIT.  The following two protocol's with and without the use of EDIT,
+illustrate this:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                     15.12
+
+
+
+     (FOO BROKEN)                           (FOO BROKEN)
+     :?=                                    :?=
+     X = (A B C)                            X = (A B C)
+     Y = D                                  Y = D
+     :BT                                    :EDIT
+                                            IN FIE...
+     FOO                                    (FOO V U)
+     SETQ                                   EDIT
+     COND          find which function      *(SW 2 3)
+     PROG          FOO is called from       *OK
+                                                      6
+     FIE                                    FIE
+                   (aborted with ^E)        :OK
+     :EDITF(FIE)                            FOO
+     EDIT
+     *F FOO P
+     (FOO V U)     edit it
+     *(SW 2 3)
+     *OK
+     FIE
+     :(SETQ Y X)   reset X and Y
+     (A B C)
+     :(SETQQ X D)
+     D
+     :?=
+     X = D
+     Y = (A B C)   check them
+     :OK
+     FOO 
+
+
+REVERT                       goes back to position  lastpos on stack and
+                             reenters the function called at that point with
+                                                              7
+                             the arguments found on the stack.
+
+
+
+REVERT is useful for continuing a computation in the situation where a bug is
+discovered at some point below where the problem actually occurred.  REVERT
+                                                 8
+essentially says "go back there and start over." 
+
+
+
+
+**FOOTNOTES**
+6
+     x and  y have not been changed, but  brkexp has.  See previous
+    footnote.
+
+
+7
+    REVERT can also be given the position using the conventions described for @
+    on page 15.7, e.g.  REVERT FOO -1 is equivalent to @ FOO -1 followed by
+    REVERT.
+
+
+8
+    REVERT will work correctly if the names or arguments to the function, or
+    even its function type, have been  changed.
+
+
+
+
+
+                                     15.13
+
+
+
+?                       prints the names of the break commands.
+
+
+
+
+ Brkcoms
+
+
+
+The fourth argument to  break1 is  brkcoms, a list of break commands
+that  break1 interprets and executes as though they were teletype input.  One
+can think of  brkcoms as another input file which always has priority over the
+teletype.  Whenever  brkcoms=NIL,  break1 reads its next command from the
+teletype.  Whenever  brkcoms is not NIL,  break1 takes as its next command
+                                                    9
+car[brkcoms] and sets  brkcoms to cdr[brkcoms].  For example, suppose the
+user wished to see the value of the variable  x after a function was evaluated.
+He would set up a break with  brkcoms=(EVAL (PRINT X) OK), which
+would have the desired effect.  The function  trace uses  brkcoms: it sets
+up a break with two commands; the first one prints the arguments of the
+function, or whatever the user specifies, and the second is the command
+GO, which causes the function to be evaluated and its value printed.
+
+
+
+If  brkcoms is not NIL, the value of a break command is not printed.  If
+you desire to see a value, you must print it yourself, as in the above example
+with the command (PRINT X).
+
+
+
+Note: whenever an error occurs,  brkcoms is set to NIL, and a full interactive
+      break occurs.
+
+
+
+
+ Brkfile
+
+
+
+The break package has a facility for redirecting ouput to a file.  The variable
+ brkfile should be set to the name of the file, and the file must be
+opened.  All output resulting from  brkcoms will be output to  brkfile,
+e.g. output due to TRACE.  Output due to user typein is not affected, and will
+always go to the terminal.   brkfile is initially T.
+
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+9
+    Normally, when a user breaks or traces a function, the value of  brkcoms
+    for the corresponding call to  break1 will be defaulted to NIL.  However,
+    it is possible to specify a list of break commands, as described in the
+    discussion of  break and  break1 below.
+
+
+
+
+
+                                     15.14
+
+
+
+ Breakmacros
+
+
+
+Whenever an atomic command is given  break1 that it does not recognize, either
+via  brkcoms or the teletype, it searches the list  breakmacros for
+the command.  The form  of  breakmacros is
+( ... (macro command1 command2 ... commandn) ...).  If the command is defined
+as a macro,  break1 simply appends its definition, which is a sequence of
+commands, to the front of  brkcoms, and goes on.  If the command is not
+                                                                             10
+contained in  breakmacros, it is treated as a function or variable as before.
+
+
+
+Example: the command ARGS could be defined by including on  breakmacros:
+(ARGS (PRINT (VARIABLES LASTPOS T)))
+
+
+
+ Breakresetforms
+
+
+
+If the user is developing programs that change the way a user and INTERLISP
+normally interact, e.g. change or disable the interrupt or line-editing
+characters, turn off echoing, etc., debugging them by breaking or tracing may
+be difficult, because INTERLISP might be in a 'funny' state at the time of the
+break.  breakresetforms is designed to solve this problem. The user puts on
+ breakresetforms expressions suitable for use in conjunction with  resetform
+            11
+(section 5).   When a break occurs,  break1 evaluates each expression on
+ breakresetforms before any interaction with the terminal, and saves the
+values.  When the break expression is evaluated via an EVAL, OK, or GO,  break1
+first restores the state of the system with respect to the various expressions
+on  breakresetforms.  When (if) control returns to  break1, the expressions on
+                                                             12
+ breakresetforms are again evaluated, and their values saved.   When the break
+
+
+
+
+**FOOTNOTES**
+10
+    If the command is not the name of a defined function, bound variable, or
+     lispx command,  break1 will attempt spelling correction using
+     breakcomslst as a spelling list.   If spelling correction
+    is unsuccessful,  break1 will go ahead and call  lispx anyway, since the
+    atom may also be a misspelled history command.
+
+
+11
+    i.e. the value of each form is its 'previous state,' so that the effect of
+    evaluating the form can be undone by applying  car of the form to the
+    value, e.g.  radix,  printlevel,  linelength,  setreadtable,
+     interruptchar, etc., all have this property.
+
+
+12
+    Because a lower function might have changed the state of the system with
+    respect to one of the these expressions!
+
+
+
+
+
+                                     15.15
+
+
+
+                                     
+is exited via an OK, GO, RETURN, or  command,  break1 again restores state.
+Thus the net effect is to make the break invisible with respect to the user's
+programs, but nevertheless allow the user to interact in the break in the
+normal fashion.  
+
+
+
+
+ 15.3  Break Functions
+
+
+
+break1[brkexp;brkwhen;brkfn;brkcoms;brktype]
+
+                             is an  nlambda.   brkwhen determines whether
+                             a break is to occur.  If its value is NIL,
+                              brkexp is evaluated and returned as the
+                             value of  break1.  Otherwise a break occurs and an
+                             identifying message is printed using  brkfn.
+                             Commands are then taken from  brkcoms or the
+                             teletype and interpreted.  The commands, GO,
+                             !GO, OK, !OK, RETURN and
+                             ^, are the only ways to leave  break1.  The
+                             command EVAL causes  brkexp to be
+                             evaluated, and saves the value on the variable
+                              !value. Other commands can be defined for
+                              break1 via  breakmacros.   brktype
+                             is NIL for user breaks, INTERRUPT for control-H
+                             breaks, and ERRORX for error breaks.
+
+
+
+For error breaks, the input buffer is cleared and saved.  (For control-H
+breaks, the input buffer was cleared at the time the control-H was typed,
+see Section 16.) In both cases, if the break returns a value, i.e., is not
+aborted via ^ or control-D, the input buffer will be restored (see Section
+14).
+
+
+
+break0[fn;when;coms]         sets up a break on the function  fn by
+                             redefining  fn as a call to  break1 with
+                              brkexp an equivalent definition of  fn, and
+                              when,  fn, and  coms, as  brkwhen,
+                              brkfn,  brkcoms.  Puts property
+                             BROKEN on property list of  fn with value a
+                              gensym defined with the original definition.
+                             Puts property BRKINFO on property list of  fn
+                             with value (BREAK0 when coms) (For use in
+                             conjunction with  rebreak).  Adds  fn to the
+                             front of the list  brokenfns.  Value is  fn.
+
+
+
+                             If  fn is non-atomic and of the form
+                             (fn1 IN fn2),  break0 first calls a
+                             function which changes the name of  fn1 wherever
+                             it appears inside of  fn2 to that of a new
+                             function, fn1-IN-fn2, which it initially
+                             defines as  fn1.  Then  break0 proceeds to break
+                             on fn1-IN-fn2 exactly as described above.  This
+
+
+
+
+                                     15.16
+
+
+
+                             procedure is useful for breaking on a function
+                             that is called from many places, but where one is
+                             only interested in the call from a specific
+                             function, e.g. (RPLACA IN FOO), (PRINT IN FIE),
+                             etc.  It is similar to  breakin described
+                             below, but can be performed even when FN2 is
+                             compiled or blockcompiled, whereas  breakin
+                             only works on interpreted functions.
+
+
+
+                             If  fn1 is not found in  fn2,  break0 returns
+                             the value (fn1 NOT FOUND IN fn2).
+
+
+
+                             If  fn1 is found in  fn2, in addition to breaking
+                              fn1-IN-fn2 and adding  fn1-IN-fn2 to the
+                             list  brokenfns,  break0 adds  fn1 to the
+                             property value for the property NAMESCHANGED
+                             on the property list of  fn2 and adds the property
+                             ALIAS with the value (fn2 . fn1) to the
+                             property list of  fn1-IN-fn2.  This will
+                             enable  unbreak to recognize what changes
+                             have been made and restore the function  fn2 to
+                             its original state.
+
+
+
+                             If  fn is nonatomic and not of the above form,
+                              break0 is called for each member of  fn using the
+                             same values for  when,  coms, and  file specified
+                             in this call to  break0.  This distributivity
+                             permits the user to specify complicated break
+                             conditions on several functions without excessive
+                             retyping, e.g.,
+
+                             break0[(FOO1 ((PRINT PRIN1) IN (FOO2 FOO3)));
+                                        (NEQ X T);(EVAL ?= (Y Z) OK)]
+
+
+                             will break on FOO1, PRINT-IN-FOO2, PRINT-IN-FOO3,
+                             PRIN1-IN-FOO2 and PRIN1-IN-FOO3.
+
+
+
+                             If  fn is non-atomic, the value of  break0 is
+                             a list of the individual values.
+
+
+
+break[x]                     is a nospread  nlambda.  For each atomic
+                             argument, it performs break0[atom;T].  For each
+                             list, it performs apply[BREAK0;list].  For
+                             example, break[FOO1 (FOO2 (GREATERP N 5) (EVAL))]
+                             is equivalent to break0[FOO1,T] and
+                             break0[FOO2; (GREATERP N 5); (EVAL)]
+
+
+
+trace[x]                     is a nospread  nlambda.  For each atomic
+                             argument, it performs
+
+
+
+
+                                     15.17
+
+
+
+                                                             13
+                             break0[atom;T;(TRACE ?= NIL GO)]   For each list
+                             argument,  car is the function to be traced, and
+                              cdr the forms the user wishes to see, i.e.
+                              trace performs:
+
+
+                             break0[car[list];T;list[TRACE;?=; cdr[list],GO]]
+
+
+                             For example, TRACE(FOO1 (FOO2 Y)) will cause both
+                             FOO1 and FOO2 to be traced.  All the arguments of
+                             FOO1 will be printed; only the value of Y will be
+                             printed for FOO2.  In the special case that the
+                             user wants to see only the value, he can perform
+                             TRACE((fn)).  This sets up a break with commands
+                             (TRACE ?= (NIL) GO).
+
+
+
+Note: the user can always call  break0 himself to obtain combination of
+options of  break1 not directly available with  break and
+ trace.  These two functions merely provide convenient ways of calling
+ break0, and will serve for most uses.
+
+
+
+ Breakin
+
+
+
+ Breakin enables the user to insert a break, i.e. a call to  break1,
+at a specified location in an interpreted function.  For example, if  foo calls
+ fie, inserting a break in  foo before the call to  fie is similar to breaking
+ fie.  However,  breakin can be used to insert breaks before or after prog
+labels, particular SETQ expressions, or even the evaluation of a variable.
+This is because  breakin operates by calling the editor and actually inserting
+a call to  break1 at a specified point inside of the function.
+
+
+
+The user specifies where the break is to be inserted by a sequence of editor
+commands.  These commands are preceded by BEFORE, AFTER, or
+AROUND, which  breakin uses to determine what to do once the editor has
+found the specified point, i.e. put the call to  break1 BEFORE that point,
+AFTER that point, or AROUND that point.  For example, (BEFORE COND) will insert
+a break before the first occurrence of  cond, (AFTER COND 2 1) will insert a
+break after the predicate in the first  cond clause, (AFTER BF (SETQ X &))
+after the last place X is set.  Note that (BEFORE TTY:) or (AFTER TTY:)
+permit the user to type in commands to the editor, locate the correct point,
+and verify it for himself using the P command if he desires, and exit from the
+
+
+
+
+
+
+**FOOTNOTES**
+13
+    The flag TRACE is checked for in  break1 and causes the message
+    'function :' to be printed instead of (function BROKEN).
+
+
+
+
+
+                                     15.18
+
+
+
+               14
+editor with OK.    breakin then inserts the break BEFORE, AFTER, or AROUND that
+point.
+
+
+
+For  breakin BEFORE or AFTER, the break expression is NIL, since the
+value of the break is irrelevant.  For breakin AROUND, the break
+expression will be the indicated form.  In this case, the user can use the
+EVAL command to evaluate that form, and examine its value, before allowing
+the computation to proceed.  For example, if the user inserted a break after a
+ cond predicate, e.g. (AFTER (EQUAL X Y)), he would be powerless to alter the
+flow of computation if the predicate were not true, since the break would not
+be reached.  However, by breaking (AROUND (EQUAL X Y)), he can evaluate the
+break expression, i.e. (EQUAL X Y), look at its value, and return something
+else if he wished.
+
+
+
+The message typed for a  breakin break, is ((fn) BROKEN), where  fn is the name
+of the function inside of which the break was inserted.  Any error, or typing
+control-E, will cause the full identifying message to be printed, e.g.
+(FOO BROKEN AFTER COND 2 1).
+
+
+
+A special check is made to avoid inserting a break inside of an expression
+headed by any member of the list  nobreaks, initialized to (GO QUOTE *),
+since this break would never be activated.  For example, if (GO L) appears
+before the label L,  breakin (AFTER L) will not insert the break inside of the
+GO expression, but skip this occurrence of L and go on to the next L, in this
+case the label L.  Similarly, for BEFORE or AFTER breaks,  breakin checks to
+make sure that the break is being inserted at a "safe" place.  For example, if
+the user requests a break (AFTER X) in (PROG -- (SETQ X &) --), the break will
+actually be inserted AFTER (SETQ X &), and a message printed to this effect,
+e.g. BREAK INSERTED AFTER (SETQ X &).
+
+
+
+breakin[fn;where;when;coms]   breakin is an  nlambda.   when and  coms are
+                             similar to  when and  coms for  break0,
+                             except that if  when is NIL, T is used.   where
+                             specifies where in the definition of  fn the call
+                             to  break1 is to be inserted.  (See earlier
+                             discussion).
+
+
+
+                             If  fn is a compiled function,  breakin returns
+                             (fn UNBREAKABLE) as its value.
+
+
+
+
+
+**FOOTNOTES**
+14
+    A STOP command typed to TTY: produces the same effect as an
+    unsuccessful edit command in the original specification, e.g., (BEFORE
+    CONDD).  In both cases, the editor aborts, and  breakin types (NOT
+    FOUND).
+
+
+
+
+
+                                     15.19
+
+
+
+                             If  fn is interpreted,  breakin types
+                             SEARCHING... while it calls the editor.  If
+                             the location specified by  where is not found,
+                              breakin types (NOT FOUND) and exits.  If it
+                             is found,  breakin adds the property BROKEN-
+                             IN with  value T, and the property BRKINFO
+                             with value (where when coms) to the property list
+                             of  fn, and adds  fn to the front of the list
+                              brokenfns.
+
+
+
+                             Multiple break points, can be inserted with a
+                             single call to  breakin by using a  list of the
+                             form ((BEFORE ...) .. (AROUND ...)) for  where.
+                             It is also possible to call  break or
+                              trace on a function which has been modified
+                             by  breakin, and conversely to  breakin a function
+                             which has been redefined by a call to  break or
+                              trace.
+
+
+
+unbreak[x]                    unbreak is a nospread  nlambda.  It takes an
+                             indefinite number of functions modified by
+                              break,  trace, or  breakin and
+                             restores them to their original state by calling
+                              unbreak0.  Value is list of values of  unbreak0.
+
+
+
+                             unbreak[] will unbreak all functions on
+                              brokenfns, in reverse order.  It first sets
+                              brkinfolst to NIL.
+
+
+
+                             unbreak[T] unbreaks just the first function
+                             on  brokenfns, i.e., the most recently broken
+                             function.
+
+
+
+unbreak0[fn]                 restores  fn to its original state.  If  fn
+                             was not broken, value is (NOT BROKEN) and no
+                             changes are made.  If  fn was modified by
+                              breakin,  unbreakin is called to edit it
+                             back to its original state.  If  fn was created
+                             from (fn1 IN fn2), i.e. if it has a property
+                             ALIAS, the function in which  fn appears is
+                             restored to its original state.  All dummy
+                             functions that were created by the break are
+                             eliminated.  Adds property value of BRKINFO
+                             to (front of)  brkinfolst.
+
+
+
+                             Note: unbreak0[(fn1 IN fn2)] is allowed:
+                              unbreak0 will operate on fn1-IN-fn2
+                             instead.
+
+
+
+
+
+
+                                     15.20
+
+
+
+unbreakin[fn]                performs the appropriate editing operations
+                             to eliminate all changes made by  breakin.
+                              fn may be either the name or definition of a
+                             function.  Value is  fn.   Unbreakin is
+                             automatically called by  unbreak if  fn has
+                             property BROKEN-IN with value T on its
+                             property list.
+
+
+
+rebreak[x]                   is an  nlambda, nospread function for
+                             rebreaking functions that were previously broken
+                             without having to respecify the break information.
+                             For each function on  x,  rebreak searches
+                              brkinfolst for break(s) and performs the
+                             corresponding operation.  Value is a list of
+                             values corresponding to calls to  break0 or
+                              breakin.  If no information is found for a
+                             particular function, value is
+                             (fn - NO BREAK INFORMATION SAVED).
+
+
+
+                             rebreak[] rebreaks everything on  brkinfolst,
+                             i.e., rebreak[] is the inverse of unbreak[].
+
+
+
+                             rebreak[T] rebreaks just the first break on
+                              brkinfolst, i.e., the function most recently
+                             unbroken.
+
+
+
+changename[fn;from;to]       changes all occurrences of  from to  to in
+                              fn.   fn may be compiled or blockcompiled.
+                             Value is  fn if  from was found, otherwise NIL.
+                             Does not perform any modifications of property
+                             lists.  Note that  from and  to do not have to be
+                             functions, e.g. they can be names of variables, or
+                             any other literals.
+
+
+
+virginfn[fn;flg]             is the function that knows how to restore
+                             functions to their original state regardless of
+                             any amount of breaks, breakins, advising,
+                             compiling and saving exprs, etc.  It is used by
+                              prettyprint,  define, and the compiler.  If
+                              flg=NIL, as for  prettyprint, it does not modify
+                             the definition of  fn in the process of producing
+                             a "clean" version of the definition, i.e. it works
+                             on a copy.  If  flg=T as for the  compiler and
+                              define, it physically restores the function to
+                             its original state, and prints the changes it is
+                             making, e.g.
+                             FOO UNBROKEN, FOO UNADVISED, FOO NAMES
+                             RESTORED, etc.  Value is the virgin function
+                             definition.
+
+
+
+
+
+
+
+                                     15.21
+
+
+
+baktrace[pos1;pos2;skipfn;varsflg;*form*flg;allflg]   prints
+                             backtrace from  pos1 to  pos2.  If  skipfn is
+                             not NIL, and skipfn[stkname[pos]] is T,  pos is
+                             skipped (including all variables).
+
+                              varsflg=T for backtrace a la BTV
+
+                              varsflg=T,  *form*flg=T - BTV*
+
+                              varsflg=T,  allflg=T - BTV!
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                     15.22
+
+
+

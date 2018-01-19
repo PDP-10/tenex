@@ -1,0 +1,193 @@
+<LISP>NNLISP.INFO
+This file contains information relavant to systems dated
+May 26, 1975
+or later.
+
+
+The latest release is a spaghetti system. There will be 
+documentation available soon telling you how to take advantage of 
+the spaghetti features. This file simply explains the 
+incompatibilities between the new loadup and the old one. 
+
+I. non-spaghetti related incompatibilities
+
+1. CAR/CDR of ATOMS
+-------------------
+
+Because of the increasing number of implementations of INTERLISP
+on different machines, we have had to define an INTERLISP
+virtual machine which standardizes the kernel system
+upon which all programs written in LISP depend. We have
+tried to apply maximal inertia in this process,
+i.e. to resist the temptation to change things simply to make
+them cleaner, or more elegant, when this would introduce 
+incompatibilities.
+
+Nevertheless, there are a few changes which are not upwards
+compatible. 
+
+While CAR/CDR of NIL has been defined to be NIL in all INTERLISPs,
+CAR and CDR of an atom are no longer guaranteed to be the
+top level value and property list of an atom, although they
+will continue to be so in INTERLISP-10, at least
+for the near foreseeable future. (When we go to shallow bindings,
+CAR of an atom will not contain its value.) However, it is in
+your interest to remove specific references to CAR/CDR of an atom,
+simply so your code will run on other machines, and also for
+clarity.
+
+There are four new functions for accessing the top level
+value of an atom and its property list:
+GETTOPVAL[atm]    returns top level value of atm (including NOBIND)
+
+GETPROPLIST[atm]
+
+SETTOPVAL[atm;val] sets top level value of atm to be val. 
+		   returns val
+SETPROPLIST[atm;lst]
+
+all four functions generate errors when called
+interpretively and their first arguments are not atoms.
+all four compile open without any error checks.
+
+CAR and CDR of an atom will continue to work as it did before. 
+However, error checks have been installed in RPLACA and RPLACD. If 
+you attempt to call RPLACA or RPLACD giving as its first argument 
+something other than a list, an error will be generated. RPLACA and 
+RPLACD are only to be used for lists. In addition, when DWIM 
+converts a CLISP construct involving :'s and numbers to a 
+corresponding CAR/CDR chain by virtue of evaluation, i.e. as 
+opposed to DWIMIFYing, it will check to make sure that the car/cdr 
+chain does not go through a non-list. If it does, an error will be 
+generated. Note that this check is performed only once,i.e. at 
+translation time. 
+
+The function /SETTOPVAL and /SETPROPLIST are also provided.
+In order to provide compatibility with pre-existing files,
+RPAQQ and RPAQ will now operate by calling
+/SETTOPVAL rather than /RPLACA.
+
+
+2.  SFPTR
+---------
+
+SFPTR has been replaced by two functions:
+
+GETFILEPTR[fl] returns current file position, i.e. equivalent
+  to SFPTR[fl,NIL] in old system
+
+SETFILEPTR[fl;adr]  sets file pointer to adr. returns adr.
+
+note that latter is a change from current definition of SFPTR.
+(Note that in this interim system the value of setfileptr
+is the old position, instead of the new one. this will
+be fixed shortly.)
+
+
+3. PROG
+-------
+
+The value of progs that 'fall off the end' is now defined
+to be NIL. Previously, the value has been "undefined", although
+99% of the time, it actually was the value of the last expression.
+If you have PROGs that exit without a RETURN, and you are using
+its value, your program will work differently. This has turned
+out to be the most major incompatibility with the new system.
+
+II.  Spaghetti related incompatibilities
+----------------------------------------
+
+There are many incompatibiliies between the spaghetti system
+and current one in the area of stack discipline. If the user
+has programs that depend on what the stack looks like, or
+directly massages the stack, they will probably need a lot
+of work. However, the straightforward use of RETFROM's, EVALV's,
+etc. will work fine with the following exceptions:
+
+(1) STKSCAN - the value of STKSCAN if the atom is not bound is
+now NIL rather than the atom itself.
+
+(2) STKARG - value of STKARG is the value of the
+corresonding stkarg, NOT the slot. i.e. what used to be
+car[stkarg[x;y]] now should be written as just stkarg[x;y].
+To get the name of the corresonding binding, use stkargname.
+Similarly, to change a particular binding,
+use SETSTKARG or SETSTKARGNAME. (previously you could get the slot
+by using STKARG, and then RPLACA or RPLACD it.)
+
+(3) it is no longer the case that all subrs have
+three arguments. NARGS will return the accurate number. ARGLIST
+is defined to return (U), (U V), (U V W) etc. depending on the
+number of arguments. (SMARTARGLIST continues to work as it does 
+now.)
+
+(4) There is no number stack in the spaghetti system. As a
+consequence, all references to NP in ASSEMBLE statements
+must be changed. See <LISP>NUMBERSTACK.INFO for details
+
+>>>> IN PARTICULAR, THE COMPILED CODE FOR THIS RELEASE IS NOT,	<<<
+>>>> REPEAT NOT, COMPATIBLE WITH PREVIOUS VERSIONS		<<<
+>>>> (NEITHER UPWARD NOR DOWNWARD). YOU MUST RECOMPILE.		<<<
+[ Users who wish to move back and forth between systems might take
+advantage of the COMPILE.EXT feature: The default extention
+for files of compiled code is taken from the value of the
+variable COMPILE.EXT; the initial value is the atom COM. If
+you want to maintain files compiled both for spaghetti and
+for the old lisp, you can put into your initialization an
+expression: (AND SPAGHETTIFLG (RPAQQ COMPILE.EXT SCOM)), and
+then all files compiled for the new system will have extention
+SCOM rather than COM.						]
+
+
+III. Miscelaneous
+----------------
+
+(1) the functions /SETSYNTAX, /SETBRK, /SETSEPR, /DELETECONTROL,
+/ECHOCONTROL, and /ECHOMODE are now defined (undoable versions
+of the unslashed functions). Typing in calls
+to SETSYNTAX etc. will be undoable.
+
+(2) A*B_C+D in clisp now parses as A*(B_C+D). It used
+to parse as  A*(B_C)+D. CLISPIFY now may insert a few
+more parentheses then it used to, e.g.
+(ITIMES A (SETQ B (IPLUS C D))) will clispify to
+A*(B_(C+D)).
+
+(3)There are two new variables in DWIM, LPARKEY and RPARKEY,
+initially 8 and 9 respectively. they are the lowercase
+character for left and right parentheses respectively.
+the user can reset these when operatng on a different
+terminal, e.g. if left parenthesis is over 9 and right 
+parenthesis over 0.
+
+(4) setting CLISPI.S.GAG to T will turn off the 
+ POSSIBLE NON-TERMINATING ITERATIVE STATEMENT
+messages that occur when you have a loop which
+is terminated by an error or a RETFROM
+
+(e.g. (DO (expression)) or (FOR I FROM 1 DO (EXPRESSION)))
+
+(5) HELPSYS has been greatly improved. Many subjects previously
+missing have been found. Spelling correction and alt-mode
+correction is also available, e.g. if you don't remember
+the name of a particular flag, you can say
+ TELL ME ABOUT CLISP$FLG and get the list of the possible
+topics, and select which one you want.
+
+(6) There have been a few modifications to ASKUSER: see the
+new version of <LISP>ASKUSER.INFO.
+
+(7) There is a new feature in FILES? and MAKEFILES which
+allows you to specify what file to put various new things
+that you have defined and have not yet put onto a file.
+See <LISP>NEWFILEPKG.INFO.
+
+
+--------------------------------------------------------
+
+ 'QUIET' LOADING OF FILES
+
+If you set (e.g. RESETVAR) PRETTYHEADER to NIL
+while loading a file, nothing will be printed,
+i.e. the FILECREATED and FOOCOMS messages will be suppressed.
+

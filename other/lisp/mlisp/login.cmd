@@ -1,0 +1,27 @@
+TAB
+LOW
+NO R
+WI 79
+
+TYPE <*>*.*,
+NO PAGE
+NO HEADING
+NOTE
+ABORT
+
+LIST <*>*.*,
+PRETTYPRINT
+NO CONFIRM
+FORMFEED
+NOTE
+ABORT
+
+SYSTAT,
+CLEAR
+SUBSYS
+NUMBER
+HOST
+NOTE
+ABORT
+
+set path conn login faught subsys usesys

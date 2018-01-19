@@ -1,0 +1,313 @@
+(FILECREATED "15-OCT-74 23:21:48" SWAP.;1 10051  
+
+     changes to:  MKSWAP
+
+     previous date: "24-SEP-74 11:08:44" <NEWLISP>SWAP.;13)
+
+
+  (LISPXPRINT (QUOTE SWAPCOMS)
+	      T T)
+  [RPAQQ SWAPCOMS
+	 ((FNS * SWAPFNS)
+	  (BLOCKS * SWAPBLOCKS)
+	  [VARS (MKSWAPSIZE 128)
+		(NOSWAPFNS (QUOTE (LAPRD BINRD FNTYP NOLINKDEF 
+					 LISPXPRINT LISPXPRIN1 
+					 LISPXPRIN2 LISPXSPACES 
+					 LISPXTERPRI ADDSPELLBLOCK 
+					 SAVESET /PUT DCHCONBLOCK 
+					 MKSWAP2BLOCK]
+	  (DECLARE: DOEVAL@COMPILE (PROP MACRO ASSEM))
+	  (DECLARE: DOEVAL@COMPILE (PROP GLOBALVAR NOSWAPFNS MKSWAPSIZE 
+					 NOSWAPFLG))
+	  (P (* TEMPORARY, HANDLEP BEING PHASED OUT.)
+	     (MOVD (QUOTE HANDLEP)
+		   (QUOTE SWPARRAYP]
+  (RPAQQ SWAPFNS (MKSWAP MKUNSWAP MKSWAP1 MKUNSWAP1 MKSWAP2 MKUNSWAP2 
+			 BREGIFY DO.CODE.MODS BLT MKSWAPP))
+(DEFINEQ
+
+(MKSWAP
+  [LAMBDA (X)
+    (COND
+      ((ARRAYP X)
+	(MKSWAP1 X))
+      ([OR (NOT (LITATOM X))
+	   (NOT (ARRAYP (GETD X]
+	(ERROR (QUOTE "MKSWAP -- Arg illegal:")
+	       X))
+      (T (PUTD X (MKSWAP1 (GETD X)))
+	 X])
+
+(MKUNSWAP
+  [LAMBDA (X)
+    (COND
+      ((SWPARRAYP X)
+	(MKUNSWAP1 X))
+      ((NOT (SCODEP X))
+	(ERROR (QUOTE "MKUNSWAP -- Arg illegal:")
+	       X))
+      (T [PUTD X (VAG (IPLUS 2 (LOC (MKUNSWAP1 (GETD X]
+	 X])
+
+(MKSWAP1
+  [LAMBDA (ARR)
+
+          (* This function takes a regular, resident array ARR, and 
+          returns a swapped array (i.e. return is a handle, type 4) 
+          which is appropriately relocated, etc.)
+
+
+    (PROG (SIZE HANDLE)
+          (SETQ ARR (ARRAYBEG ARR))
+          (SETQ SIZE (ARRAYSIZE ARR))
+          (SETQ HANDLE (SWPARRAY SIZE))
+          (SWPPOS HANDLE (FUNCTION MKSWAP2))
+          (RETURN HANDLE])
+
+(MKUNSWAP1
+  [LAMBDA (HANDLE)                              (* Inverse to MKSWAP, q.v.)
+    (PROG (ARR SIZE)
+          [SETQ ARR (ARRAY (SETQ SIZE (ARRAYSIZE HANDLE]
+          (SWPPOS HANDLE (FUNCTION MKUNSWAP2))
+          (RETURN ARR])
+
+(MKSWAP2
+  [LAMBDA (BFPOS)
+    [BLT ARR BFPOS (VAG (IPLUS 1 SIZE (LOC BFPOS]
+                                                (* Copy header and data into 
+                                                array.)
+    (COND
+      ((NEQ (CDR ARR)
+	    (VAG 0))
+
+          (* If the NEQ is T, ARR contained no relocation bits 
+          (e.g. was a data array) so there is nothing more to do.)
+
+
+	(RELOC BFPOS (IMINUS (LOC ARR)))        (* Otherwise is code array, 
+                                                stuff indexing bits into 
+                                                relocated instructions.)
+	(BREGIFY BFPOS ARR)                     (* convert "JSP 7,ENTERF" to 
+                                                "JSP 7,ENTERB")
+	(DO.CODE.MODS BFPOS)))                  (* Relocate to zero.
+                                                Assumes that BREG addresses 
+                                                header, not the JSP.)
+    ])
+
+(MKUNSWAP2
+  [LAMBDA (BFPOS)
+    [BLT BFPOS ARR (VAG (IPLUS 1 SIZE (LOC ARR]
+    (COND
+      ((NEQ (CDR BFPOS)
+	    (VAG 0))
+	(RELOC ARR (LOC ARR))
+	(BREGIFY BFPOS ARR T)
+	(DO.CODE.MODS ARR T])
+
+(BREGIFY
+  [LAMBDA (SWPARR ARR UNFLG)
+
+          (* If UNFLG is NIL then SWPARR is a half-swapped array being 
+          constructed from ARR, and SWPARR has been relocated to zero 
+          using Alice's subr, RELOC, but indexing bits must now be 
+          OR'D into the relocatable instructions.
+          We can tell which instructions are relocatable very easily 
+          now, no messing around with bit tables in the bottom of the 
+          array: just pick out the instructions which were changed by 
+          RELOC. -
+          If UNFLG is T, then ARR is a half-unswapped array 
+          (a half-wasp deejay?) being constructed from SWPARR, and 
+          everything works pretty much the same except we're clearing 
+          the index field to zeros. -
+          Special cases -
+          Code always starts with JSP to ENTERF 
+          (changed to be to ENTERB later) followed by two data words, 
+          some of which are relocated by RELOC but should be left 
+          alone by BREGIFY. -
+          There may follow a JSP to BLKENT with two XWD's, similarly.
+          -
+          AC assignments: -
+          SWPTR is stepping pointer for SWPARR.
+          -
+          CPTR is stepping pointer for ARR.
+          -
+          LIMIT is first literal addr in SWPARR.
+          -
+)
+
+
+    (ASSEM ((R SWPTR 7)
+	    (R CPTR 6)
+	    (R LIMIT 5))
+           (MOVEI 2 , 3)
+           (CQ SPAGHETTIFLG)
+           (CAME 1 , KNIL)
+           (MOVEI 2 , 4)
+           (PUSHN 2)
+           (CQ ARR)
+           (HRRZI CPTR , 5 (1))                 (* Skips two header words, JSP, 
+                                                2 xwds.)
+           (CQ SWPARR)
+           (HRRZI SWPTR , 5 (1))
+           (HRRZ LIMIT , 1 (1))
+           (ADDI LIMIT , 0 (1))
+
+          (* Now make sure the first instruction isn't that JSP to 
+          SBLKNT or BLKENT. If it is, skip it and its two XWD's.)
+
+
+           (CQ UNFLG)
+           (CAME 1 , KNIL)                      (* If unswapping, compare)
+           (SKIPA 1 , JSP.TO.SBLKNT)            (* This, otherwise)
+           (MOVE 1 , JSP.TO.BLKENT)             (* This instruction, to)
+           (CAME 1 , 0 (SWPTR))                 (* The first code word,)
+           (JRST DISPATCH)                      (* If not blockcompiled, go 
+                                                ahead.)
+           (NREF (ADD SWPTR , 0))               (* Else skip over BLKENT stuff.)
+           (NREF (ADD CPTR , 0))
+
+          (* Main loops. Any instructions not the same must have been 
+          changed by RELOC, should therefore have indexing field set 
+          or cleared.)
+
+
+       DISPATCH
+           (CQ UNFLG)
+           (CAME 1 , KNIL)
+           (JRST UNSWPLP)
+       SWPLP
+           (MOVE 1 , 0 (SWPTR))
+           (CAMN 1 , 0 (CPTR))
+           (JRST SWPNOP)
+           (TLNE 1 , 17Q)
+           (JRST ERROR)                         (* If indexing bits not zero 
+                                                then error, you can't index 
+                                                twice.)
+           (TLO 1 , BR)                         (* Index by BR.)
+           (MOVEM 1 , 0 (SWPTR))                (* Put back.)
+       SWPNOP
+           (ADDI SWPTR , 1)
+           (CAML SWPTR , LIMIT)
+           (JRST OUT)
+           (AOJA CPTR , SWPLP)
+       ERROR
+           (PUSH CP , CPTR)
+           [CQ (ERROR (QUOTE "Unrelocatable instruction at location: ")
+		      (ASSEMBLE NIL
+			        (POP CP , 1]
+       UNSWPLP
+           (MOVE 1 , 0 (CPTR))
+           (CAMN 1 , 0 (SWPTR))                 (* If RELOC changed this 
+                                                instruction,)
+           (JRST UNSWPNOP)
+           (TLZ 1 , 17Q)                        (* Unconditionally clear index 
+                                                field.)
+           (MOVEM 1 , 0 (CPTR))
+       UNSWPNOP
+           (ADDI SWPTR , 1)
+           (CAML SWPTR , LIMIT)
+           (JRST OUT)
+           (AOJA CPTR , UNSWPLP)
+       JSP.TO.BLKENT
+           (JSP 7 , BLKENT)                     (* Used as a literal here.)
+       JSP.TO.SBLKNT
+           (JSP 7 , SBLKNT)
+       OUT (POPNN 1])
+
+(DO.CODE.MODS
+  [LAMBDA (ADDR FLG)
+
+          (* ADDR is address of code block.
+          FLG=NIL means we're in MKSWAP , FLG=T means in MKUNSWAP.
+          -
+          -
+          JSP 7,ENTERF must be changed to JSP 7,ENTERB.
+          -
+          JSP 7,BLKENT must be changed to JSP 7,SBLKNT, if it is 
+          present, i.e. if code was created by blockcompiler.)
+
+
+    (COND
+      (FLG (ASSEMBLE NIL
+		     (CQ ADDR)
+		     (HRRZI 2 , ENTERF)
+		     (HRRM 2 , 2 (1))
+		     (MOVE 2 , 5 (1))
+		     (HRRZI 3 , BLKENT)
+		     (CAMN 2 , JSP.TO.SBLKNT)
+		     (HRRM 3 , 5 (1))
+		     (JRST OUT)
+		 JSP.TO.SBLKNT
+		     (JSP 7 , SBLKNT)
+		 OUT))
+      (T (ASSEMBLE NIL
+	           (CQ ADDR)
+	           (HRRZI 2 , ENTERB)
+	           (HRRM 2 , 2 (1))             (* Smash ENTERF to be ENTERB.)
+	           (MOVE 2 , 5 (1))             (* 1st wd after JSP to ENTERF.)
+	           (HRRZI 3 , SBLKNT)
+	           (CAMN 2 , JSP.TO.BLKENT)
+	           (HRRM 3 , 5 (1))             (* Smash BLKENT to be SBLKNT.)
+	           (JRST OUT)
+	       JSP.TO.BLKENT
+	           (JSP 7 , BLKENT)             (* Used as literal.)
+	       OUT])
+
+(BLT
+  [LAMBDA (FROM TO HIWRITE)
+    (ASSEMBLE NIL
+	      (VAR (HRL 2 , FROM))
+	      (VAR (HRR 2 , TO))
+	      (VAR (HRRZ 1 , HIWRITE))
+	      (BLT 2 , @ 1])
+
+(MKSWAPP
+  [LAMBDA (NM DF)
+    (AND (LITATOM NM)
+	 (NOT (FMEMB NM NOSWAPFNS))
+	 (NULL NOSWAPFLG)
+	 [ARRAYP (OR DF (SETQ DF (GETD NM]
+	 (IGREATERP (ARRAYSIZE DF)
+		    MKSWAPSIZE])
+)
+  [RPAQQ SWAPBLOCKS ((MKSWAPBLOCK MKSWAP MKUNSWAP MKSWAP1 MKUNSWAP1
+				  (ENTRIES MKSWAP MKUNSWAP)
+				  (SPECVARS ARR SIZE))
+	  (MKSWAP2BLOCK MKSWAP2 MKUNSWAP2 BREGIFY DO.CODE.MODS BLT
+			(ENTRIES MKSWAP2 MKUNSWAP2]
+[DECLARE: DONTEVAL@LOAD DOEVAL@COMPILE DONTCOPY
+  (BLOCK: MKSWAPBLOCK MKSWAP MKUNSWAP MKSWAP1 MKUNSWAP1 (ENTRIES MKSWAP 
+							   MKUNSWAP)
+	  (SPECVARS ARR SIZE))
+  (BLOCK: MKSWAP2BLOCK MKSWAP2 MKUNSWAP2 BREGIFY DO.CODE.MODS BLT
+	  (ENTRIES MKSWAP2 MKUNSWAP2))
+]
+  (RPAQ MKSWAPSIZE 128)
+  (RPAQQ NOSWAPFNS
+	 (LAPRD BINRD FNTYP NOLINKDEF LISPXPRINT LISPXPRIN1 LISPXPRIN2 
+		LISPXSPACES LISPXTERPRI ADDSPELLBLOCK SAVESET /PUT 
+		DCHCONBLOCK MKSWAP2BLOCK))
+[DECLARE: DOEVAL@COMPILE 
+(DEFLIST(QUOTE(
+  [ASSEM (MACROAS (EDITE [CONS (QUOTE ASSEMBLE)
+			       (CONS NIL (COPY (CDR MACROAS]
+			 (CAR MACROAS]
+))(QUOTE MACRO))
+]
+[DECLARE: DOEVAL@COMPILE 
+(DEFLIST(QUOTE(
+  (NOSWAPFNS T)
+  (MKSWAPSIZE T)
+  (NOSWAPFLG T)
+))(QUOTE GLOBALVAR))
+]
+  (* TEMPORARY, HANDLEP BEING PHASED OUT.)
+  (MOVD (QUOTE HANDLEP)
+	(QUOTE SWPARRAYP))
+(DECLARE: DONTCOPY
+  (FILEMAP (NIL (831 8951 (MKSWAP 843 . 1067) (MKUNSWAP 1071 . 1291)
+(MKSWAP1 1295 . 1733) (MKUNSWAP1 1737 . 1977) (MKSWAP2 1981 . 2960)
+(MKUNSWAP2 2964 . 3165) (BREGIFY 3169 . 7422) (DO.CODE.MODS 7426 .
+8590) (BLT 8594 . 8758) (MKSWAPP 8762 . 8948)))))
+STOP

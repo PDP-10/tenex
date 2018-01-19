@@ -1,0 +1,3085 @@
+
+
+
+
+
+
+
+
+
+
+
+                              SECTION 18
+
+                                               1
+                     THE COMPILER AND ASSEMBLER
+
+
+
+
+
+ 18.1  The Compiler
+
+
+
+The compiler is available in the standard INTERLISP system.  It may
+be used to compile individual functions as requested or all function
+definitions in a standard format LOAD file.  The resulting code may be
+stored as it is compiled, so as to be available for immediate use, or
+it may be written onto a file for subsequent loading.  The compiler
+also provides a means of specifying sequences of machine
+instructions via ASSEMBLE.
+
+
+
+The most common way to use the compiler is to compile from a symbolic
+( prettydef) file, producing a corresponding file which contains a set
+of functions in compiled form which can be quickly loaded.  An
+alternate way of using the compiler is to compile from functions
+already defined in the user's INTERLISP system.  In this case, the
+user has the option of specifying whether the code is to be saved on a
+file for subsequent loading, or the functions redefined, or both.  In
+either case, the compiler will ask the user certain questions
+concerning the compilation.  The first question is:
+
+
+
+          LISTING?
+
+
+
+The answer to this question controls the generation of a listing and
+is explained in full below.  However, for most applications, the user
+will want to answer this question with either  ST or  F, which
+will also specify an answer to the rest of the questions which would
+otherwise be asked.   ST means the user wants the compiler to  STore
+
+
+
+**FOOTNOTES**
+1
+    The compiler itself, i.e. the part that actually generates code,
+    was written and documented by, and is the responsibility of A.K.
+    Hartley.  The user interfaces, i.e.  tcompl,  recompile,  bcompl,
+    and  brecompile, were written by W. Teitelman.
+
+
+
+
+
+                                 18.1
+
+
+
+the new definitions;  F means the user is only interested in compiling
+to a  File, and no storing of definitions is performed.  In both
+cases, the compiler will then ask the user one more question:
+
+
+
+          OUTPUT FILE:
+
+
+
+to which the user can answer:
+
+
+
+          N or NIL      no output file.
+
+          File name     file is opened if not already opened, and
+                        compiled code is written on the file.
+
+
+
+Example:
+
+
+          _COMPILE((FACT FACT1 FACT2))
+          LISTING? ST
+          OUTPUT FILE: FACT.COM
+          (FACT COMPILING)
+              .
+              .
+                          2
+          (FACT REDEFINED)
+              .
+              .
+              .
+          (FACT2 REDEFINED)
+          (FACT FACT1 FACT2)
+          _
+
+
+
+This process caused the functions FACT, FACT1, and FACT2 to be
+compiled, redefined, and the compiled definitions also written on the
+file FACT.COM for subsequent loading.
+
+
+
+
+ 18.2  Compiler Questions
+
+
+
+The compiler uses the free variables  lapflg,  strf,  svflg,
+ lcfil and  lstfil which determines various modes of
+
+
+
+**FOOTNOTES**
+2
+    compiler output and error messages are explained on page
+    18.41-44.
+
+
+
+
+
+                                 18.2
+
+
+
+operation.  These variables are set by the answers to the 'compset'
+questions.  When any of the top level compiling functions are called,
+the function  compset is called which asks a number of questions.
+Those that can be answered 'yes' or 'no' can be answered with YES, Y,
+or T for YES; and NO, N, or NIL for NO.  The questions are:
+
+
+
+          1.   LISTING?
+
+
+
+The answer to this question controls the generation of a listing.
+Possible answers are:
+
+
+
+                                                               3
+          1    Prints output of pass 1, the LAP macro code.
+
+          2    Prints output of pass 2, the machine code.
+
+          YES  Prints output of both passes.
+
+          NO   Prints no listings.
+
+
+
+The variable  lapflg is set to the answer.  If the answer is
+affirmative,  compset will type FILE: to allow the user to
+indicate where the output is to be written.  The variable  lstfil
+is set to the answer.
+
+
+
+There are three other possible answers to LISTING? - each of which
+specifies a complete mode for compiling.  They are:
+
+
+
+          S Same as last setting.
+
+          FCompile to  File (no definition of functions).
+
+          ST
+                STore new definitions.
+
+
+
+Implicit in these three are the answers to the questions on
+disposition of compiled code and expr's, so questions 2 and 3 would
+not be asked if 1 were answered with S, F, or ST.
+
+
+
+
+
+
+**FOOTNOTES**
+3
+    The LAP and machine code are usually not of interest but can be
+    helpful in debugging macros.
+
+
+
+
+
+                                 18.3
+
+
+
+          2.   REDEFINE?
+
+
+
+          YES  Causes each function to be redefined as it is compiled.
+               The compiled code is stored and the function definition
+               changed.  The variable  strf is set to T.
+
+
+
+          NO   Causes function definitions to remain unchanged.  The
+               variable  strf is set to NIL.
+
+
+
+The answer ST for the first question implies YES for this
+question, F implies NO, and S makes no change.
+
+
+
+          3.   SAVE EXPRS?
+
+
+
+If answered YES,  svflg is set to T, and the exprs are saved on
+the property list of the function name.  Otherwise they are discarded.
+The answer ST for the first question implies YES for this
+question, F implies NO, and S makes no change.
+
+
+
+          4.   OUTPUT FILE:
+
+
+
+If the compiled definitions are to be written for later loading, you
+should provide the name of a file on which you wish to save the code
+that is generated.  If you answer T or TTY:, the output will be typed
+on the teletype (not particularly useful).  If you answer N, NO, or
+NIL, output will not be done.  If the file named is already open, it
+will continue to be used.  The free variable  lcfil is set to the
+name of the file.
+
+
+
+
+ 18.3  Nlambdas
+
+
+
+When compiling the call to a function, the compiler must prepare
+the arguments to the function in one of three ways:
+
+
+
+    1.   Evaluated (SUBR, SUBR*, EXPR, EXPR*, CEXPR, CEXPR*)
+
+    2.   Unevaluated, spread (FSUBR, FEXPR, CFEXPR)
+
+    3.   Unevaluated, not spread (FSUBR*, FEXPR*, CFEXPR*)
+
+
+
+
+
+
+                                 18.4
+
+
+
+In attempting to determine which of these three is appropriate, the
+compiler will first look for a definition among the functions in the
+file that is being compiled.  If the function is not contained there,
+the compiler will look for other information which can be supplied by
+the user by including nlambda nospread functions on the list
+ nlama (for  nlambda  atoms), and including nlambda spread
+functions on the list  nlaml (for  nlambda  list), and including
+                                       4
+lambda functions on the list  lams.  If the function is not
+                      5
+contained in the file,  or on the list  nlama,  nlaml, or  lams, the
+compiler will look for a current definition.  If the function is
+defined, its function type is assumed to be the desired type.  If it
+is not defined, the compiler assumes that the function is of type 1,
+                                       6 7
+i.e. its arguments are to be evaluated.    In other words, if there
+are type 2 or 3 functions called from the functions being compiled,
+and they are only defined in a separate file, they must be included on
+ nlama or  nlaml, or the compiler will incorrectly assume that their
+arguments are to be evaluated, and compile the calling function
+correspondingly.  Note that this is only necessary if the compiler
+does not 'know' about the function.  If the function is defined at
+compile time, or is handled via a macro, or is contained in the same
+group of files as the functions that call it, the compiler will
+automatically handle calls to that function correctly.
+
+
+
+
+
+
+**FOOTNOTES**
+4
+    Including functions on  lams is only necessary to override in-core
+    nlambda definitions, since in the absence of other information,
+    the compiler assumes the function is a lambda.
+
+
+5
+    The function can be defined anywhere in any of the files given as
+    arguments to  bcompl,  tcompl,  brecompile or  recompile.
+
+
+6
+    Before making this assumption, if the value of  compileuserfn
+    is not NIL, the compiler calls (the value of)  compileuserfn
+    giving it as arguments  cdr of the form and the form itself, i.e.
+    the compiler does (APPLY* COMPILEUSERFN (CDR form) form).  If a
+    non-NIL value is returned, it is compiled instead of form.  If NIL
+    is returned, the compiler compiles the original expression as a
+    call to a lambda-spread that is not yet defined.  CLISP
+    (Section 23) uses  compileuserfn to tell the compiler how to
+    compile iterative statements, IF-THEN-ELSE statements, and pattern
+    match constructs.
+
+
+7
+    The names of functions so treated are added to the list  alams
+    (for  assumed  lamda s).   alams is not used by the compiler; it
+    is maintained for the user's benefit, i.e. so that the user can
+    check to see whether any incorrect assumptions were made.
+
+
+
+
+
+                                 18.5
+
+
+
+ 18.4  Globalvars
+
+
+
+Another top level free variable that affects compilations is
+ globalvars.  Any variables that appear on the list  globalvars,
+and are used freely in a compiled function, are always accessed
+through their value cell.  In other words, a reference to the value of
+this variable is equivalent to (CAR (QUOTE variable)), regardless of
+whether or not it appears on the stack, i.e., the stack is not even
+searched for this variable when the compiled function is entered.
+Similarly, (SETQ variable value) is equivalent to (RPLACA (QUOTE
+variable) value); i.e., it sets the top-level value.
+
+
+
+All system parameters, unless otherwise specified, are GLOBALVARS,
+i.e. are members of the list  globalvars, e.g.  brokenfns,
+                                      8
+ editmacros,  #rpars,  dwimflg, et al.  Thus, rebinding these
+variables will not affect the behavior of the system: instead, the
+variables must be reset to their new values, and if they are to be
+restored to their original values, reset again.  For example, the user
+might write ...(SETQ globalvar new-value) form
+(SETQ globalvar old-value).  Note that in this case, if an error
+occurred during the evaluation of  form, or a control-D was typed,
+the global variable would not be restored to its original value.  The
+function  resetvar (described in Section 5) provides a convenient
+way of resetting global variables in such a way that their values
+are restored even if an error occurred or control-D is typed.
+
+
+
+
+ 18.5  Compiler Functions
+
+
+
+Note: when a function is compiled from its in core definition,
+i.e., via  compile (and certain calls to  recompile), as
+opposed to  tcompl (which uses the definitions on a file), and the
+function has been modified by  break,  trace,  breakin, or  advise, it
+is restored to its original state, and a message printed out, e.g.,
+FOO UNBROKEN.  Then, if the function is not defined as an expr,
+its property list is searched for the property EXPR (see  savedef,
+Section 8).  If there is a property EXPR, its value is used for the
+compilation, otherwise, the compiler prints (fn NOT COMPILEABLE),
+and goes on to the next function.
+
+
+
+compile[x;flg]            x is a list of functions (if atomic,
+                             list[x] is used).   compile first asks
+
+
+
+**FOOTNOTES**
+8
+    Since the stack does not have to be searched to find the values of
+    these variables, a considerable savings in time is achieved,
+    especially for deep computations.
+
+
+
+
+
+                                 18.6
+
+
+
+                             the standard compiler questions, and then
+                             compiles each function on  x, using its
+                             in-core definition.  Value is  x.
+
+
+
+                             If compiled definitions are being dumped
+                             to a file, the file is closed unless
+                              flg=T.
+
+
+
+compile1[name;def]            compiles  def, redefining  name if
+                                         9
+                              strf=T.   compile1 is used by
+                              compile,  tcompl, and
+                              recompile.  If  dwimifycompflg
+                             is T, or  def contains a CLISP
+                             declaration,  def is dwimified before
+                             compiling.  See Section 23.
+
+
+
+tcompl[files]                  tcompl is used to 'compile
+                             files', i.e., given a symbolic  load
+                             file (e.g., one created by  prettydef),
+                             it produces a file that contains the same
+                             S-expressions as the original symbolic
+                             file, except that every  defineq is
+                             replaced by the corresponding compiled
+                             definitions.  This 'compiled' file
+                             can be loaded into any INTERLISP system
+                             with  load.
+
+
+
+                              files is a list of symbolic files to be
+                             compiled (if atomic, list[files] is
+                             used).   tcompl asks the standard
+                             compiler questions, except for
+                             OUTPUT FILE: Instead, the output from the
+                             compilation of each symbolic file is
+                             written on a file of the same name
+                             suffixed with COM, e.g.,
+                             tcompl[(SYM1 SYM2)] produces two files,
+                                                   10
+                             SYM1.COM and SYM2.COM.
+
+
+
+
+**FOOTNOTES**
+9
+     strf is one of the variables set by  compset, described
+    earlier.
+
+
+10
+    The file name is constructed from the name field only, e.g.
+    tcompl[<BOBROW>FOO.TEM;3] produces FOO.COM on the connected
+    directory.  The version number will be the standard  default.
+
+
+
+
+
+                                 18.7
+
+
+
+                              tcompl processes each file one at a
+                             time, reading in the entire file.  Then,
+                             for each DEFINEQ,  tcompl adds any
+                             NLAMBDA's in the DEFINEQ to  nlama or
+                                        11
+                              nlaml,   and adds lambdas to the
+                                            12
+                             list  lams,   so that calls to these
+                             functions will be compiled correctly.
+                             Expressions beginning with DECLARE
+                             can be used to affect the compilation,
+                             e.g. set up MACROS.   tcompl evaluates
+                             each expression in ( cdr of) the DECLARE,
+                                                   13
+                             presumably for effect.    tcompl then
+                             compiles each function in the DEFINEQ's.
+                             Finally, all other expressions in the
+                             file, e.g. RPAQQ's, DEFLIST's, etc., are
+                                                          14
+                             written onto the output file.
+
+
+
+                             The value of  tcompl is a list of the
+                             names of the output files.  All files are
+                             properly terminated and closed.
+
+
+
+ Recompile
+
+
+
+The purpose of  recompile is to allow the user to update a
+compiled file without recompiling every function in the file.
+ Recompile does this by using the results of a previous compilation.
+
+
+
+**FOOTNOTES**
+11
+    described earlier, page 18.5.
+
+
+12
+     nlama,  nlaml, and  lams are rebound to their top level values
+    (using  resetvar) by  tcompl,  recompile,  bcompl,  brecompile,
+     compile, and  blockcompile, so that any additions to these lists
+    while inside of these functions will not propagate outside.
+
+
+13
+    DECLARE is defined the same as QUOTE, so it will have no
+    effect when the symbolic file is loaded.   tcompl,  recompile,
+     bcompl, and  brecompile also evaluate any DEFLIST expression
+    that was output by a COMPROP or COMPROP*  prettydef
+    command (see Section 14).
+
+
+14
+    except for DEFLISTs output by a COMPROP*  prettydef command.
+
+
+
+
+
+                                 18.8
+
+
+
+It produces a compiled file similar to one that would have been
+produced by  tcompl, but at a considerable savings in time by
+compiling selected functions and copying from an earlier  tcompl or
+ recompile file the compiled definitions for the remainder of the
+functions in the file.  Even more savings can be achieved if the
+symbolic file being recompiled is currently in-core, i.e., was
+previously loaded, or was made from the user's current system.  In
+this case,  recompile will not have to read in the file, but can work
+                             15
+from the in-core definitions.
+
+
+
+If the functions to be recompiled are currently defined as exprs, then
+ recompile can be called with just one argument, the symbolic file;
+the rest of the arguments will be set appropriately.  In other words,
+the most common usage of  recompile is in the following sequence,
+load[file;PROP], edit some functions (thus  unsavedefing them),
+makefile[file], and recompile[file], producing a new compiled file
+exactly equivalent to tcompl[file].  The rest of the discussion of
+ recompile explains nonstandard usages, e.g., the symbolic file has
+not been loaded, some of the functions that have been changed are
+currently not unsaved, etc.
+
+
+
+recompile[pfile;cfile;fns;coreflg]  pfile is the name of the
+                              pretty  file to be compiled,  cfile is
+                             the name of the  compiled  file
+                             containing compiled definitions that may
+                             be copied.   fns is a list of the
+                             functions in  pfile that are to be
+                             recompiled, i.e., they have been changed
+                             (or defined for the first time) since
+                              cfile was made.  Note that  pfile, not
+                              fns, drives  recompile, so that extra
+                             functions may appear on  fns.  If  fns=T,
+                             all function in  pfile currently defined
+                             as exprs (after unbreaking and
+                             unadvising) are recompiled.
+
+
+
+                              recompile asks the standard compiler
+                             questions, except for OUTPUT FILE: As
+                             with  tcompl, the output automatically
+
+
+
+
+**FOOTNOTES**
+15
+    This requires that the user observe the conventions of the 'file
+    package' described in Section 14 when making the symbolic file,
+    i.e., he used  makefile or else used  prettydef with arguments
+    of the form fileFNS, file, and fileVARS.
+
+
+
+
+
+
+
+
+
+
+                                 18.9
+
+
+
+                                                16
+                             goes to  pfile.COM.    recompile then
+                             reads in  pfile.  As with  tcompl, for
+                             each DEFINEQ, the NLAMBDAs are added to
+                              nlama and  nlaml, and LAMBDAs
+                             are added to  lams.  Similarly,
+                             DECLAREs and DEFLISTs are treated the
+                             same as with  tcompl.  Then each function
+                             is compiled if it appears on  fns, or
+                              fns=T and the function is an  expr.
+                             Otherwise,  recompile reads from  cfile
+                             until it finds  the compiled version of
+                             the function it is working on, and then
+                             copies it (and all compiler generated
+                             subfunctions) to  pfile.COM.  Finally,
+                             all other expressions are written onto
+                              pfile.COM.
+
+
+
+Note that the user can thus modify an old compiled file so as to add
+new functions by prettydefing them in  pfile and then including them
+on  fns.  Similarly, he can delete functions by simply not
+prettydefing them, since if they do not appear in  pfile, they will
+never be compiled or copied to  pfile.COM.  Note, however that the
+entire process depends on the order of those functions in  cfile that
+are to be copied being the same as those in  pfile.  For example, if
+FOO appears before FIE in  cfile, but the order is reversed in  pfile,
+then when  recompile attempts to copy FIE, it will skip over FOO.
+Then when it attempts to copy FOO, it will read to the end of  cfile
+and not find it.  In this case, it will generate an error FOO NOT
+FOUND.
+
+
+
+                             If the file  pfile is in core, i.e., has
+                             been loaded, or else was  prettydefed
+                             from this system, the user can take
+                             advantage of this by calling  recompile
+                             with  coreflg=T.  In this case, the
+                             procedure is the same as described above,
+                             but  recompile 'fakes' reading  pfile,
+                             instead determining what is on  pfile
+                                                          17
+                             from  pfilefns and  pfilevars
+                             ( recompile does read the date from
+                              pfile, which it copies to the output
+                             file.)
+
+
+
+**FOOTNOTES**
+16
+    In general, all constructions of the form pfile.COM, pfileFNS, and
+    pfileVARS are performed using the name field only.  For example,
+    if  pfile=<BOBROW>FOO.TEM;3, pfile.COM means FOO.COM, pfileFNS
+    means FOOFNS, etc.
+
+
+17
+    See footnote on page 18.10.
+
+
+
+
+
+                                18.10
+
+
+
+                              recompile will work correctly even for
+                             functions written via the third argument
+                             to  prettydef using a FNS command.  (See
+                             Section 14).
+
+
+
+                             If  cfile=NIL,  pfile.COM is used for
+                                          18
+                             copying from.    In addition, if both
+                              fns and  coreflg are NIL, they are set
+                             to T.  This is the most common usage.
+
+
+
+                             The value of  recompile is the new
+                             compiled file,  pfile.COM.
+
+
+
+
+ 18.6  Open Functions
+
+
+
+When a function is called from a compiled function, a system
+routine is invoked that sets up the parameter and control push lists
+as necessary for variable bindings and return information.  As a
+result, function calls can take up to 350 microseconds per call.  If
+the amount of time spent inside the function is small, this function
+calling time will be a significant percentage of the total time
+required to use the function.  Therefore, many 'small' functions,
+e.g.,  car,  cdr,  eq,  not,  cons are always compiled 'open', i.e.,
+they do not result in a function call.  Other larger functions such as
+ prog,  selectq,  mapc, etc. are compiled open because they are
+frequently used.  It is useful to know exactly which functions are
+compiled open in order to determine where a program is spending its
+time.  Therefore below is a list of those functions which when
+compiled do not result in function calls.  Note that the next section
+tells how the user can make other functions compile open via MACRO
+            19
+definitions.
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+18
+    In other words, if  cfile, the file used for obtaining compiled
+    definitions to be copied, is NIL, pfile.COM is used, i.e., same
+    name as output but a different version number (one less) than the
+    output file.
+
+
+19
+    The user can also affect the compiled code via  compileuserfn,
+    described in footnote on page 18.5.
+
+
+
+
+
+                                18.11
+
+
+
+
+The following functions compile open:
+
+
+
+AC, ADD1, AND, APPLY*, ARG, ARRAYP, ASSEMBLE, ATOM, BLKAPPLY,
+BLKAPPLY*, CAR, CDR, CAAR, ... CDDDAR, CDDDDR, CLOSER, COND, CONS, EQ,
+ERSETQ, EVERY, EVQ, FASSOC, FCHARACTER, FDIFFERENCE, FGTP, FIX, FIXP,
+FLAST, FLENGTH, FLOAT, FLOATP, FMEMB, FMINUS, FNTH, FPLUS, FQUOTIENT,
+FRPLACA, FRPLACD, FSTKARG, FSTKNTH, FTIMES, FUNCTION, GETHASH, GO,
+IDIFFERENCE, IGREATERP, ILESSP, IMINUS, IPLUS, IQUOTIENT, IREMAINDER,
+ITIMES, LIST, LISTP, LITATOM, LLSH, LOC, LOGAND, LOGOR, LOGXOR, LRSH,
+LSH, MAP, MAPC, MAPCAR, MAPCON, MAPCONC, MAPLIST, MINUSP, NEQ, NLISTP,
+NLSETQ, NOT, NOTEVERY, NOTANY, NULL, NUMBERP, OPENR, OR, PROG, PROG1,
+PROGN, RESETFORM, RESETVAR, RETURN, RPTQ, RSH, SELECTQ, SETARG, SETN,
+SETQ, SMALLP, SOME, STRINGP, SUB1, SUBSET, UNDONLSETQ, VAG, ZEROP
+
+
+
+
+ 18.7  Compiler Macros
+
+
+The INTERLISP compiler includes a macro capability by which
+the user can affect the compiled code.  Macros are defined by placing
+the macro definition on the property list of the corresponding
+                                       20
+function under the property MACRO.   When the compiler begins
+compiling a form, it retrieves a macro definition for  car of the
+                                                    21
+form, if any, and uses it to direct the compilation.   The three
+different types of macro definitions are given below.
+
+
+
+(1) Open macros - (LAMBDA ...) or (NLAMBDA ...)
+
+
+A function can be made to compile open by giving it a macro
+definition of the form (LAMBDA ...) or (NLAMBDA ...), e.g.,
+
+(LAMBDA (X) (COND ((GREATERP X 0) X) (T (MINUS X)))) for  abs.  The
+effect is the same as though the macro definition were written in
+place of the function wherever it appears in a function being
+
+
+
+**FOOTNOTES**
+20
+    An expression of the form (DECLARE (DEFLIST ... (QUOTE MACRO)))
+    can be used within a function to define a MACRO.  DECLARE is
+    defined the same as QUOTE and thus can be placed so as to have no
+    effect on the running of the function.
+
+
+21
+    The compiler has built into it how to compile certain basic
+    functions such as  car,  prog, etc., so that these will not be
+    affected by macro definitions.  These functions are listed above.
+    However, some of them are themselves implemented via macros, so
+    that the user could change the way they compile.
+
+
+
+
+
+                                18.12
+
+
+
+compiled, i.e., it compiles as an open LAMBDA or NLAMBDA expression.
+This saves the time necessary to call the function at the price of
+more compiled code generated.
+
+
+
+(2) Computed macros - (atom expression)
+
+
+A macro definition beginning with an atom other than LAMBDA,
+NLAMBDA, or NIL, allows computation of the INTERLISP expression that
+is to be compiled in place of the form.  The atom which starts the
+macro definition is bound to  cdr of the form being compiled.  The
+expression following the atom is then evaluated, and the result of
+this evaluation is compiled in place of the form.  For example,  list
+could be compiled this way by giving it the macro definition:
+
+
+                   [X (LIST (QUOTE CONS)
+                            (CAR X)
+                            (AND (CDR X)
+                                 (CONS (QUOTE LIST)
+                                       (CDR X]
+
+
+This would cause (LIST X Y Z) to compile as
+(CONS X (CONS Y (CONS Z NIL))).  Note the recursion in the macro
+          22
+expansion.    Ersetq,  nlsetq,  map,  mapc,  mapcar,  mapconc, and
+ some, are compiled via macro definitions of this type.
+
+
+
+If the result of the evaluation is the atom INSTRUCTIONS, no code
+will be generated by the compiler.  It is then assumed the evaluation
+was done for effect and the necessary code, if any, has been added.
+This is a way of giving direct instructions to the compiler if you
+understand it.
+
+
+
+(3) Substitution macro - (NIL expression) or (list expression)
+
+
+
+Each argument in the form being compiled is substituted for the
+corresponding atom in  car of the macro definition, and the result of
+the substitution is compiled instead of the form, i.e.,
+
+(SUBPAIR (CAR macrodef) (CDR form) (CADR macrodef)).  For example, the
+macro definition of  add1 is ((X) (IPLUS X 1)).  Thus, (ADD1 (CAR Y))
+is compiled as (IPLUS (CAR Y) 1).  The functions  add1,  sub1,  neq,
+ nlistp,  zerop,  flength,  fmemb,  fassoc,  flast, and  fnth are all
+compiled open using substitution macros.  Note that  abs could be
+compiled open as shown earlier or via a substitution macro.  A
+substitution macro, however, would cause (ABS (FOO X)) to compile as
+
+
+**FOOTNOTES**
+22
+     list is actually compiled more efficiently.
+
+
+
+
+
+                                18.13
+
+
+
+(COND ((GREATERP (FOO X) 0) (FOO X)) (T (MINUS (FOO X)))) and
+consequently (FOO X) would be evaluated three times.
+
+
+
+
+ 18.8  FUNCTION and Functional Arguments
+
+
+
+Expressions that begin with FUNCTION will always be
+                              23
+compiled as separate functions   named by attaching a  gensym to the
+end of the name of the function in which they appear, e.g.,
+         24
+FOOA0003.   This  gensym function will be called at run time.
+Thus if FOO is defined as
+
+(LAMBDA (X) ... (FOO1 X (FUNCTION ...)) ...) and compiled, then when
+                                                                    25
+FOO is run, FOO1 will be called with two arguments, X, and FOOA000n,
+and then FOO1 will call FOOA000n each time it must use its functional
+argument.
+
+
+
+Note that a considerable savings in time could be achieved by defining
+FOO1 as a computed macro of the form:
+
+         (Z (LIST (SUBST (CADADR Z) (QUOTE FN) def) (CAR Z)))
+
+
+
+where  def is the definition of FOO1 as a function of just its first
+argument and FN is the name used for its functional argument in its
+definition.  The expression compiled contains what was previously the
+functional argument to FOO1, as an open LAMBDA expression.  Thus you
+save not only the function call to FOO1, but also each of the function
+calls to its functional argument.  For example, if FOO1 operates on a
+list of length ten, eleven function calls will be saved.  Of course,
+this savings in time cost space, and the user must decide which is
+more important.
+
+
+
+
+**FOOTNOTES**
+23
+    except when they are compiled open, as is the case with most of
+    the mapping functions.
+
+
+24
+     nlsetq and  ersetq expressions also compile using
+     gensym functions.  As a result, a  go or  return cannot be used
+    inside of a compiled  nlsetq or  ersetq if the corresponding  prog
+    is outside, i.e. above the  nlsetq or  ersetq.
+
+
+25
+    or an appropriate  funarg expression, see Section 11.
+
+
+
+
+
+                                18.14
+
+
+
+ 18.9  Block Compiling
+
+
+
+Block compiling provides a way of compiling several functions
+into a single block.  Function calls between the component functions
+of the block are very fast, and the price of using a free variable,
+namely the time required to look up its value on the stack, is paid
+only once - when the block is entered.  Thus, compiling a block
+consisting of just a single recursive function may be yield great
+savings if the function calls itself many times, e.g.,  equal,  copy,
+and  count are block compiled in INTERLISP.
+
+
+
+The output of a block compilation is a single, usually large,
+function.  This function looks like any other compiled function; it
+can be broken, advised, printstructured, etc.  Calls from within the
+block to functions outside of the block look like regular function
+calls, except that they are usually linked (described below).  A block
+can be entered via several different functions, called entries.
+                                                   26
+These must be specified when the block is compiled.   For example, the
+error block has three entries,  errorx,  interrupt, and  fault1.
+Similarly, the compiler block has nine entries.
+
+
+
+
+ Specvars
+
+
+
+One savings in block compiled functions results from not having to
+store on the stack the names of the variables bound within the block,
+since the block functions all 'know' where the variables are stored.
+However, if a variable bound in a block is to be referenced outside
+                                                          27
+the block, it must be included on the list  specvars.   For
+example,  helpclock is on  specvars, since it is rebound inside of
+ lispxblock and  editblock, but the error functions must be able to
+obtain its latest value.
+
+
+
+
+
+**FOOTNOTES**
+26
+    Actually the block is entered the same as every other function,
+    i.e., at the top.  However, the entry functions call the main
+    block with their name as one of its arguments, and the block
+    dispatches on the name, and jumps to the portion of the block
+    corresponding to that entry point.  The effect is thus the same as
+    though there were several different entry points.
+
+
+27
+    Arguments to the block that are referenced freely outside the
+    block must also be SPECVARS if they are reset within the
+    block, or else the new value will not be obtained.
+
+
+
+
+
+                                18.15
+
+
+
+ Localfreevars
+
+
+
+Localfreevars is a feature designed for those variables which are used
+freely by one or more of the block functions, but which are always
+bound (by some other block function) before they are referenced, i.e.
+their free values above the block are never used.  Normally, when a
+block is entered, all variables which are used freely by any function
+in the block are looked up and pointers to the bindings are stored on
+the stack.  When any of these variables are rebound in the block, the
+old pointer is saved and a pointer to the new binding is stored in the
+original stack position.  It frequently happens that variables used
+freely within a block are in fact always bound within the block prior
+to the free reference.  The unnecessary lookup of the value of the
+free variable at the time of entry to the block can be avoided by
+putting the variable name on the list  localfreevars.  If a
+variable is on  localfreevars, its value will not be looked up at the
+time of entry.  When the variable is bound, the value will be stored
+in the proper stack position.  Should the variable in fact be
+referenced before it is bound, the program will still work correctly.
+Invisible to the user, a rather time-comsuming process will take
+place.  The reference will cause a trap which will invoke code to
+determine which variable was referenced and look up the value.  Future
+references to that variable during this call to the block will be
+normal, i.e. will not cause a trap.
+
+
+
+trapcount[x]                 is a function to monitor the
+                             performance of block compiled code with
+                             respect to  localfreevars.  If  x is NIL,
+                              trapcount returns the cumulative number
+                             of traps caused by  localfreevars that
+                             were not bound before use.  If  x is a
+                             number, the  trapcount is reset to that
+                             number.
+
+
+
+ evq is another compiler artifice for free variables references.
+(EVQ X) has the effect of (EVAL (QUOTE X)) without the call to  eval
+(if X is an atom).   evq is intended primarily for use in conjunction
+with  localfreevars.  For example, suppose a block consists of
+three functions, FOO1, FOO2, and FOO3, with FOO1 and FOO2 being
+entries, and FOO3 using X freely, where X is bound in FOO1, but not in
+FOO2, i.e. FOO1 rebinds X, but when entered via FOO2, the user intends
+X to be used freely, and its higher value obtained.  If X is on
+ localfreevars, then each time the block is entered via FOO2, a trap
+will occur when FOO3 first references X.  In order to avoid this, the
+user can insert (EVQ X) in FOO2.  This will circumvent the trap by
+explicitly invoking the routine that searches back up the stack for
+the last binding of X.  Thus, when used with  localfreevars,  evq
+does two things: it returns the value of its argument, and also stores
+that value in the binding slot for the variable so that no future
+references to that variable (in this call) will cause traps.  Since
+the time consumed by the trap can greatly exceed the time required for
+a variable lookup, using  evq in these situations can result in a
+considerable savings.
+
+
+
+
+
+
+
+                                18.16
+
+
+
+ Retfns
+
+
+
+Another savings in block compilation arises from omitting most of the
+information on the stack about internal calls between functions in the
+block.  However, if a function's name must be visible on the stack,
+e.g., if the function is to be returned from  retfrom, it must be
+included on the list  retfns.
+
+
+
+
+ Blkapplyfns
+
+
+
+Normally, a call to  apply from inside a block would be the same as a
+call to any other function outside of the block.  If the first
+argument to  apply turned out to be one of the entries to the block,
+the block would have to be reentered.   blkapplyfns enables a
+program to compute the name of a function in the block to be called
+next, without the overhead of leaving the block and reentering it.
+This is done by including on the list  blkapplyfns those functions
+which will be called in this fashion, and by using  blkapply in
+place of  apply, and  blkapply* in place of  apply*.
+For example, the calls to the functions handling RI, RO, LI, LO, BI,
+and BO in the editor are handled this way.  If  blkapply or  blkapply*
+is given a function not on  blkapplyfns, the effect is the same as a
+call to  apply or  apply* and no error is generated.  Note however,
+that  blkapplyfns must be set at compile time, not run time, and
+furthermore, that all functions on  blkapplyfns must be in the block,
+or an error is generated (at compile time), NOT ON BLKFNS.
+
+
+
+
+ Blklibrary
+
+
+
+Compiling a function open via a macro provides a way of eliminating a
+function call.  For block compiling, the same effect can be achieved
+by including the function in the block.  A further advantage is that
+the code for this function will appear only once in the block, whereas
+when a function is compiled open, its code appears at each place where
+it is called.
+
+
+
+The block library feature provides a convenient way of including
+functions in a block.  It is just a convenience since the user can
+always achieve the same effect by specifying the function(s) in
+question as one of the block functions, provided it has an expr
+definition at compile time.  The block library feature simply
+eliminates the burden of supplying this definition.
+
+
+
+To use the block library feature, place the names of the functions of
+interest on the list  blklibrary, and their EXPR definition
+on the property list of the function under the property
+
+
+
+
+                                18.17
+
+
+
+BLKLIBRARYDEF.  When the block compiler compiles a form, it first
+check to see if the function being called is one of the block
+functions.  If not, and the function is on  blklibrary, its definition
+is obtained from the property value of BLKLIBRARYDEF, and it is
+automatically included as part of the block.  The functions  assoc,
+ equal,  getp,  last,  length,  lispxmatch,  memb,  nconc1,  nleft,
+ nth, and  /rplnode already have BLKLIBRARYDEF properties.
+
+
+
+
+ 18.10  Linked Function Calls
+
+
+
+Conventional (non-linked) function calls from a compiled function
+go through the function definition cell, i.e., the definition of the
+called function is obtained from its function definition cell at
+call time.  Thus, when the user breaks, advises, or otherwise modifies
+the definition of the function FOO, every function that subsequently
+calls it instead calls the modified function.  For calls from the
+system functions, this is clearly not a feature.  For example, the
+user may wish to break on basic functions such as  print,  eval,
+ rplaca, etc., which are used by the break package.  In other words,
+we would like to guarantee that the system packages will survive
+through user modification (or destruction) of basic functions (unless
+the user specifically requests that the system packages also be
+modified).  This protection is achieved by linked function calls.
+
+
+
+For linked function calls, the definition of the called function is
+obtained at link time, i.e., when the calling function is defined, and
+stored in the literal table of the calling function.  At call time,
+this definition is retrieved from where it was stored in the literal
+table, not from the function definition cell of the called function as
+it is for non-linked calls.  These two different types of calls are
+illustrated in Figure 18-1.
+
+
+
+Note that while function calls from block compiled functions are
+usually linked, and those from standardly compiled functions are
+usually non-linked, linking function calls and blockcompiling are
+independent features of the INTERLISP compiler, i.e., linked function
+calls are possible, and frequently employed, from standardly compiled
+functions.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                18.18
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                             Figure 18-1
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                18.19
+
+
+
+Note that normal function calls require only the called function's
+name in the literals of the compiled code, whereas a  linked  function
+ call uses two literals and hence produces slightly larger compiled
+functions.
+
+
+
+The compiler's decision as to whether to link a particular function
+call is determined by the variables  linkfns and  nolinkfns as
+follows:
+
+
+
+    (1)  If the function appears on  nolinkfns, the call is not
+         linked;
+
+    (2)  If block compiling and the function is one of the block
+         functions, the call is internal as described earlier;
+
+    (3)  If the function appears on  linkfns, the call is linked;
+
+    (4)  If  nolinkfns=T, the call is not linked;
+
+    (5)  If block compiling, the call is linked;
+
+    (6)  If  linkfns=T, the call is linked;
+
+    (7)  Otherwise the call is not linked.
+
+
+
+Note that (1) takes precedence over (2), i.e., if a function appears
+on  nolinkfns, the call to it is not linked, even if it is one of the
+functions in the block, i.e., the call will go outside of the block.
+
+
+
+ Nolinkfns is initialized to various system functions such as
+ errorset,  break1, etc.   Linkfns is initialized to NIL.  Thus if the
+user does not specify otherwise, all calls from a block compiled
+function (except for those to functions on  nolinkfns) will be
+linked; all calls from standardly compiled functions will not be
+linked.  However, when compiling system functions such as  help,
+ error,  arglist,  fntyp,  break1, et al,  linkfns is set to T so
+that even though these functions are not block compiled, all of their
+calls will be linked.
+
+
+
+If a function is not defined at link time, i.e., when an attempt is
+made to link to it, a message is printed, fn1 NOT DEFINED WHEN LINK
+TRIED FROM fn2. When the function is later defined, the link can
+be completed by relinking the calling function using  relink
+described below.  Otherwise, if a function is run which attempts a
+linked call that was not completed,  faultapply is called.  If
+the function is now defined, i.e., it was defined at some point after
+the attempt was made to link to it,  faultapply will quietly perform
+the link and continue the call.  Otherwise, it will print U.D.F. and
+proceed as described in Section 16.
+
+
+
+
+
+
+
+                                18.20
+
+
+
+Linked function calls are printed on the backtrace as ;fn; where fn is
+the name of the function.  Note that this name does not actually
+appear on the stack, and that  stkpos,  retfrom, and the rest of the
+pushdown list functions (Section 12) will not be able to find it.
+Functions which must be visible on the stack should not be linked to,
+i.e., include them on  nolinkfns when compiling a function that
+would otherwise link its calls.
+
+
+
+ printstructure,  calls,  break on fn1-IN-fn2 and  advise fn1-IN-fn2
+all work correctly for linked functions calls, e.g.,
+break[(FOO IN FIE)], where FOO is called from FIE via a linked
+function call.
+
+
+
+
+ Relinking
+
+
+
+The function  relink is available for relinking a compiled
+function, i.e., updating all of its linked calls so that they use the
+definition extant at the time of the relink operation.
+
+
+
+relink[fn]                    fn is either WORLD, the name
+                             of a function, a list of functions, or an
+                             atom whose value is a list of functions.
+                              relink performs the corresponding
+                             relinking operations.  relink[WORLD] is
+                             possible because  laprd maintains on
+                              linkedfns a list of all user
+                             functions containing any linked calls.
+                              syslinkedfns is a list of all
+                              system functions that have any linked
+                             calls.  relink[WORLD] performs both
+                             relink[linkedfns] and
+                             relink[syslinkedfns].
+
+
+
+                             The value of  relink is  fn.
+
+
+
+It is important to stress that linking takes place when a
+function is defined.  Thus, if FOO calls FIE via a linked call, and a
+bug is found in FIE, changing FIE is not sufficient; FOO must be
+relinked.  Similarly, if FOO1, FOO2, and FOO3 are defined (in that
+order) in a file, and each call the others via linked calls, when a
+new version of the file is loaded, FOO1 will be linked to the old FOO2
+and FOO3, since those definitions will be extant at the time it is
+read and defined.  Similarly, FOO2 will link to the new FOO1 and old
+FOO3.  Only FOO3 will link to the new FOO1 and FOO2.  The user would
+have to perform relink[FOOFNS] following the  load.
+
+
+
+
+
+
+
+
+                                18.21
+
+
+
+ 18.11  The Block Compiler
+
+
+
+There are three user level functions for blockcompiling,
+ blockcompile,  bcompl, and  brecompile, corresponding
+to  compile,  tcompl, and  recompile.  All of them ultimately call the
+same low level functions in the compiler, i.e., there is no
+'blockcompiler' per se.  Instead, when blockcompiling, a flag is set
+to enable special treatment for  specvars,  retfns,
+ blkapplyfns, and for determining whether or not to link a
+function call.  Note that all of the previous remarks on macros,
+globalvars, compiler messages, etc., all apply equally for block
+compiling.  Using block declarations described below, the user can
+intermix in a single file functions compiled normally, functions
+compiled normally with linked calls, and block compiled functions.
+
+
+
+
+ Blockcompile
+
+
+
+blockcompile[blkname;blkfns;entries;flg]     blkfns is a list of
+                             the functions comprising the block,
+                              blkname is the name of the block,
+                              entries a list of entries to the
+                             block, e.g.,
+
+
+
+                             
+              _BLOCKCOMPILE(SUBPRBLOCK (SUBPAIR SUBLIS SUBPR) (SUBPAIR 
+
+
+
+                             Each of the entries must also be on
+                              blkfns or an error is generated, NOT ON
+                                         28
+                             BLKFNS.  
+
+
+
+                             If  entries is NIL, list[blkname] is
+                             used, e.g.,
+
+
+                             _BLOCKCOMPILE(COUNT (COUNT COUNT1))
+
+
+
+                             If  blkfns is NIL, list[blkname] is used,
+                             e.g.,
+
+
+**FOOTNOTES**
+28
+    If only one entry is specified, the block name can also be one of
+    the  blkfns, e.g. BLOCKCOMPILE(FOO (FOO FIE FUM) (FOO)).  However,
+    if more than one entry is specified, an error will be generated,
+    CAN'T BE BOTH AN ENTRY AND THE BLOCK NAME.  
+
+
+
+
+
+                                18.22
+
+
+
+                             _BLOCKCOMPILE(EQUAL)
+
+
+
+                              blockcompile asks the standard
+                             compiler questions and then begins
+                             compiling.  As with  compile, if the
+                             compiled code is being written to a file,
+                             the file is closed unless  flg=T.  The
+                             value of  blockcompile is a list of the
+                             entries, or if  entries=NIL, the
+                             value is  blkname.
+
+
+
+                             The output of a call to  blockcompile is
+                             one function definition for  blkname,
+                             plus definitions for each of the
+                             functions on  entries if any.  These
+                             entry functions are very short functions
+                             which immediately call  blkname.
+
+
+
+
+ Block Declarations
+
+
+
+Since block compiling a file frequently involves giving the
+compiler a lot of information about the nature and structure of the
+compilation, e.g., block functions, entries, specvars, linking, et al,
+we have implemented a special  prettydef command to facilitate this
+commmunication.  The user includes in the third argument to  prettydef
+a command of the form
+
+(BLOCKS block1 ... block2 ... blockn) where each block1 is a
+block declaration.   bcompl and  brecompile described below
+are sensitive to these declarations and take the appropriate action.
+
+
+
+The form of a block declaration is:
+
+
+
+(blkname blkfn1 ... blkfnm (var1 . value) ... (varn . value))
+
+
+
+blkfn1 ... blkfnm are the functions in the block and correspond to
+ blkfns in the call to  blockcompile.  The (var . value)
+expressions indicate the settings for variables affecting the
+compilation.
+
+
+
+As an example, the value of  editblocks is shown below.  It consists
+of three block declarations,  editblock,  editfindblock, and  edit4e.
+
+
+
+
+
+
+
+                                18.23
+
+
+
+[RPAQQ EDITBLOCKS
+       ((EDITBLOCK EDITL0 EDITL1 UNDOEDITL EDITCOM EDITCOMA EDITCOML
+                   EDITMAC EDITCOMS EDIT]UNDO UNDOEDITCOM
+                   UNDOEDITCOM1 EDITSMASH EDITNCONC EDIT1F EDIT2F
+                   EDITNTH BPNT BPNT0 BPNT1 RI RO LI LO BI BO
+                   EDITDEFAULT ## EDUP EDIT* EDOR EDRPT EDLOC EDLOCL
+                   EDIT: EDITMBD EDITXTR EDITELT EDITCONT EDITSW
+                   EDITMV EDITTO EDITBELOW EDITRAN TAILP EDITSAVE
+                   EDITH (ENTRIES EDITL0 ## UNDOEDITL)
+                   (SPECVARS L COM LCFLG #1 #2 #3 LISPXBUFS
+                             **COMMENT**FLG PRETTYFLG UNDOLST
+                             UNDOLST1)
+                   (RETFNS EDITL0)
+                   (GLOBALVARS EDITCOMSA EDITCOMSL EDITOPS
+                              HISTORYCOMS EDITRACEFN)
+                   (BLKAPPLYFNS RI RO LI LO BI BO EDIT: EDITMBD
+                               EDITMV EDITXTR)
+                   (BLKLIBRARY LENGTH NTH LAST)
+                   (NOLINKFNS EDITRACEFN))
+        (EDITFINDBLOCK EDIT4E EDIT4E1 EDITQF EDIT4F EDITFPAT
+                        EDITFPAT1 EDIT4F1 EDIT4F2 EDIT4F3 EDITSMASH
+                        EDITFINDP EDITBF EDITBF1 ESUBST
+                        (ENTRIES EDITQF EDIT4F EDITFPAT EDITFINDP
+                                 EDITBF ESUBST))
+        (EDIT4EBLOCK EDIT4E EDIT4E1 (ENTRIES EDIT4E EDIT4E1]
+
+
+
+                                                              29
+Whenever  bcompl or  brecompile encounter a block declaraction   they
+rebind  retfns,  specvars,  localfreevars,
+ globalvars,  blklibrary,  nolinkfns, and  linkfns
+to their top level value, bind  blkapplyfns and  entries to
+NIL, and bind  blkname to the first element of the declaration.  They
+then scan the rest of the declaration, gathering up all atoms, and
+setting  car of each nonatomic element to  cdr of the expression if
+atomic, e.g., (LINKFNS . T), or else to  union of  cdr of the
+                                             30
+expressions with the current (rebound) value,   e.g.,
+(GLOBALVARS EDITCOMSA EDITCOMSL).  When the declaration is exhausted,
+the block compiler is called and given  blkname, the list of block
+functions, and  entries.
+
+
+
+Note that since all compiler variables are rebound for each block
+declaration, the declaration only has to set those variables it wants
+changed.  Furthermore, setting a variable in one declaration has no
+effect on the variable's value for another declaration.
+
+
+**FOOTNOTES**
+29
+    The BLOCKS command outputs a DECLARE expression, which
+    is noticed by  bcompl and  brecompile.
+
+
+30
+    Expressions of the form (var * form) will cause form to be
+    evaluated and the resulting list used as described above, e.g.
+    (GLOBALVARS * MYGLOBALVARS).
+
+
+
+
+
+                                18.24
+
+
+
+After finishing all blocks,  bcompl and  brecompile treat
+any functions in the file that did not appear in a block declaration
+in the same way as do  tcompl and  recompile.  If the user
+wishes a function compiled separately as well as in a block, or if he
+wishes to compile some functions (not blockcompile), with some
+compiler variables changed, he can use a special pseudo-block
+declaration of the form
+(NIL fn1 ... fnm (var1 . value) ... (varn . value)) which means
+compile fn1 ... fnm after first setting var1 ... varn as described
+above.  For example,
+(NIL CGETD FNTYP ARGLIST NARGS NCONC1 GENSYM (LINKFNS . T))
+
+appearing as a 'block declaration' will cause the six indicated
+functions to be compiled while  linkfns=T so that all of their
+calls will be linked (except for those functions on
+ nolinkfns).
+
+
+
+
+ bcompl
+
+
+
+bcompl[files;cfile]           files is a list of prettydefed
+                             files.  (If atomic, list[files] is used.)
+                              bcompl differs from  tcompl in that
+                             it compiles all of the files at once,
+                             instead of one at a time.  This is to
+                             permit one block to contain functions in
+                                           31
+                             several files.   Output is to  cfile if
+                             given, otherwise to a file whose name is
+                                                         32
+                             car[files] suffixed with COM   e.g.,
+                             bcompl[(EDIT WEDIT)] produces one file,
+                             EDIT.COM.
+
+
+
+                              bcompl asks the standard compiler
+                             questions, except for OUTPUT FILE: then
+                             reads in all of the files, adds all
+                             nlambda functions in DEFINEQ's to
+                              nlama,  nlaml, lambdas to
+                              lams, evaluates DECLARE
+
+
+
+
+
+**FOOTNOTES**
+31
+    Thus if you have several files to be  bcompled separately, you
+    must make several calls to  bcompl.
+
+
+32
+    See footnote on page 18.10.
+
+
+
+
+
+
+
+                                18.25
+
+
+
+                                         33
+                             expressions,   and then processes the
+                             block declarations as described
+                             above.  Finally, it compiles any
+                             functions not mentioned in one of the
+                             declarations and writes out all other
+                             expressions.
+
+
+
+                             The value of  bcompl is the output file.
+
+
+
+                             Note that it is permissible to
+                              tcompl files set up for  bcompl;
+                             the block declarations will simply have
+                             no effect.  Similarly, you can
+                              bcompl a file that does not contain
+                             any block declarations and the result
+                             will be the same as having  tcompled it.
+
+
+
+
+ Brecompile
+
+
+
+The purpose of  brecompile is to allow the user to update a
+compiled file without requiring an entire  bcompl.  As with
+ recompile, the usual way to call  brecompile involves specifying just
+its first argument, the symbolic file(s), as in the sequence of
+loading file(s) to PROP, editing selected definitions, makefiling, and
+then calling  brecompile.  In this case,  brecompile recompiles all
+                                         34
+exprs and works from in-core definitions.   Note that this assumes
+that each symbolic file was produced by  makefile, i.e., the
+arguments to  prettydef were fileFNS, file, and fileVARS, since
+ brecompile uses fileFNS and file VARS to drive its operation.  The
+rest of the discussion below is for various nonstandard usages.
+
+
+
+brecompile[files;cfile;fns;coreflg]     files is a list of symbolic
+                             files (if atomic, list[files] is used).
+                              cfile is the compiled file corresponding
+                             to bcompl[files] or a previous
+                              brecompile, i.e., it contains compiled
+                             definitions that may be copied.
+
+
+
+**FOOTNOTES**
+33
+    See footnote on page 18.8.
+
+
+34
+    Note that if any of the functions in a block are recompiled, the
+    entire block is recompiled.
+
+
+
+
+
+                                18.26
+
+
+
+                              fns is a list of those functions to be
+                             recompiled, i.e., they have been changed
+                             (or defined for the first time) since
+                              cfile was made.  If  fns=T, all
+                             functions defined as exprs (after
+                             unbreaking and unadvising) are
+                             recompiled.
+
+
+
+                              brecompile asks the standard
+                             compiler questions except for OUTPUT
+                             FILE: As with  bcompl, output
+                             automatically goes to file.COM, where
+                              file is the first file in  files.
+
+
+
+                             If  coreflg=NIL,  brecompile proceeds to
+                             read in each file, collecting all
+                             definitions while making the appropriate
+                             additions to  nlama,  nlaml,
+                             and  lams, evaluating DECLARE
+                                         35
+                             expressions,   and collecting all block
+                             declarations, and other expressions
+                             which will later be copied to the output
+                             file.
+
+
+
+                             If  coreflg=T,  brecompile computes the
+                             block declarations from the fileVARS for
+                                                 36
+                             each file in  files.    Similarly,
+                             fileFNS and fileVARS are used to
+                             determine what actually appears on the
+                             files.  The only access to the files is
+                             to obtain the date for each file so that
+                             it can be written onto the output file.
+
+
+
+                              brecompile next processes each
+                             block declaration.  If no functions in
+                             the block have been changed, the block is
+                             copied from  cfile as with  recompile.
+                             Otherwise, the entire block is
+                             recompiled.  For pseudo-block
+                             declarations of the form (NIL fn1 ...),
+                             all variable assignments are made, but
+
+
+
+**FOOTNOTES**
+35
+    See footnote on page 18.8.
+
+
+36
+    See footnote on page 18.10.
+
+
+
+
+
+                                18.27
+
+
+
+                             only those functions so indicated by  fns
+                             are recompiled.
+
+
+
+                             As with  recompile, the order in
+                             which functions appear on the file must
+                             not be changed unless all of the
+                             functions that are moved also recompiled.
+
+
+
+                             After completing the block declarations,
+                              brecompile processes all functions not
+                             appearing in a declaration, recompiling
+                             only those dictated by  fns, and copying
+                             the compiled definitions of the remaining
+                             from  cfile.
+
+
+
+                             Finally,  brecompile writes the
+                             portion of file.COM corresponding to the
+                             non-DEFINEQ expressions.  If
+                              coreflg=NIL,  brecompile simply writes
+                             out those expressions which it had
+                             previously collected.  Otherwise, it uses
+                             fileVARS to determine what is on each
+                             file and writes the corresponding
+                             expressions on to the output file.
+
+
+
+                             The value of  brecompile is the
+                             output file.
+
+
+
+                                                              37
+                             If  cfile= NIL, file.COM is used.   In
+                             addition, if  fns and  coreflg are both
+                             NIL, they are set to T.  This is the
+                             standard usage desscribed
+                             earlier.
+
+
+
+
+ 18.12  Compiler Structure
+
+
+
+The compiler has two principal passes.  The first compiles its
+input into a macro assembly language called LAP.  The second pass
+expands the LAP code, producing (numerical) machine language
+
+
+
+**FOOTNOTES**
+37
+    See footnote on page 18.10.
+
+
+
+
+
+                                18.28
+
+
+
+instructions.  The output of the second pass is written on a file
+and/or stored in binary program space.
+
+
+
+Input to the compiler is usually a standard INTERLISP S-expression
+function definition.  However, machine language coding can be included
+within a function by the use of one or more  assemble forms.  In
+other words,  assemble allows the user to write protions of a function
+in LAP.  Note that  assemble is only a compiler directive; it has no
+independent definition.  Therefore, functions which use  assemble must
+be compiled in order to run.
+
+
+
+
+ 18.13  Assemble
+
+
+
+The format of  assemble is similar to that of PROG:
+(ASSEMBLE V S1 S2 . . . SN).  V is a list of variables to be bound
+during the first pass of the compilation, not during the running of
+the object code.  The assemble statements S1 ... SN are compiled
+sequentially, each resulting in one or more instructions of object
+code.  When run, the value of the  assemble 'form' is the contents of
+AC1 at the end of the execution of the assemble instructions.
+Note that  assemble may appear anywhere in an INTERLISP function.  For
+example, one may write:
+
+
+          (IGREATERP (IQUOTIENT (LOC (ASSEMBLE NIL
+                                               (MOVEI 1 , -5)
+                                               (JSYS 13)))
+                                1000)
+                     4)
+
+
+to test if job runtime exceeds 4 seconds.
+
+
+
+
+ Assemble Statements
+
+
+
+If an assemble statement is an atom, it is treated as a label
+identifying the location of the next statement that will be
+          38
+assembled.   Such labels defined in an  assemble form are like  prog
+labels in that they may be referenced from the current and lower level
+nested  progs or  assembles.
+
+
+
+**FOOTNOTES**
+38
+    A label can be the last thing in an  assemble form, in which case
+    it labels the location of the first instruction after the
+     assemble form.
+
+
+
+
+
+                                18.29
+
+
+
+If an assemble statement is not an atom,  car of the statement must be
+an atom and one of the following: (1) a number; (2) a LAP op-def
+(i.e. has a property value OPD); (3) an assembler macro (i.e. has
+a property value AMAC); or (4) one of the special assemble
+instructions given below, e.g. C, CQ, etc.  Anything else will cause
+the error message OPCODE? - ASSEMBLE.
+
+
+
+The types of assemble statements are described here in the order of
+priority used in the  assemble processor; that is, if an atom has both
+properties OPD and AMAC, the OPD will be used.  Similarly a special
+ assemble instruction may be redefined via an AMAC.  The following
+descriptions are of the first pass processing of  assemble statements.
+The second pass processing is described in the section on LAP, page
+18.33.
+
+
+
+(1) numbers - If  car of an assemble statement is a number, the
+              statement is not processed in the first pass.  (See page
+              18.33.)
+
+
+
+(2) LAP op-defs -  The property OPD is used for two
+              different types of op-defs: PDP-10 machine instructions,
+              and LAP macros. If the OPD definition (i.e. the
+              property value) is a number, the op-def is a machine
+              instruction.  When a machine instruction, e.g. HRRZ,
+              appears as  car of an assemble statement, the statement
+              is not processed during the first pass but is passed to
+              LAP.  The forms and processing of machine instructions
+              by LAP are described on page 18.34.
+
+
+
+              If the OPD definition is not a number, then the op-def
+              is a LAP macro. When a LAP macro is encountered in
+              an assemble statement, its arguments are evaluated and
+              processing of the statement with evaluated arguments is
+              left for the second pass and LAP.  For example, LDV is a
+              LAP macro, and (LDV (QUOTE X) SP) in assemble code
+              results in (LDV X N) in the LAP code, where N is the
+              value of SP.
+
+
+
+              The form and processing of LAP macros are described on
+              page 18.36.
+
+
+
+(3) assemble macros -   If  car of an assemble statement has a
+              property AMAC, the statement is an assemble macro
+              call.  There are two types of assemble macros: lambda
+              and substitution.  If  car of the macro definition is
+              the atom LAMBDA, the definition will be applied to the
+              arguments of the call and the resulting list of
+              statements will be assembled.  For example,  repeat
+              could be a LAMBDA macro with two arguments,  n and  m,
+              which expands into  n occurrences of  m, e.g.
+
+
+
+
+                                18.30
+
+
+
+              (REPEAT 3 (CAR1)) expands to ((CAR1) (CAR1) (CAR1)).
+              The definition (i.e. value of property AMAC) for  repeat
+              is:
+
+
+                   (LAMBDA (N M)
+                     (PROG (YY)
+                       A   (COND
+                             ((ILESSP N 1)
+                               (RETURN (CAR YY)))
+                             (T (SETQ YY (TCONC YY M))
+                                (SETQ N (SUB1 N))
+                                (GO A)))))
+
+
+              If  car of the macro definition is not the atom LAMBDA,
+              it must be a list of dummy symbols.  The arguments of
+              the macro call will be substituted for corresponding
+              appearances of the dummy symbols in  cdr of the
+              definition, and the resulting list of statements will be
+                        39
+              assembled.   For example,  ubox could be a substitution
+              macro which takes one argument, a number, and expands
+              into instructions to compile the unboxed value of this
+              number and put the result on the number stack.
+
+
+
+                   The definition of UBOX is:
+
+
+                             ((E)
+                           (CQ (VAG E))
+                           (PUSH NP , 1))
+
+
+                   Thus (UBOX (ADD1 X)) expands to:
+
+
+                        ((CQ (VAG (ADD1 X)))
+                         (PUSH NP , 1))
+
+
+
+
+(4) special assemble statements -
+
+    (CQ s1 s2 ...)           CQ (compile quote) takes any number
+                             of arguments which are assumed to be
+                             regular S-expressions and are compiled in
+                             the normal way.  E.g.
+
+
+**FOOTNOTES**
+39
+    Note that assemble macros produce a list of statements to be
+    assembled, whereas compiler macros produce a single expression.
+    An assemble macro which computes a list of statements begins with
+    LAMBDA and may be either spread or no-spread.  The analogous
+    compiler macro begins with an atom, (i.e. is always no-spread) and
+    the LAMBDA is understood.
+
+
+
+
+
+                                18.31
+
+
+
+                             (CQ (COND ((NULL Y) (SETQ Y 1)))
+                                 (SETQ X (IPLUS Y Z)))
+
+
+Note: to avoid confusion, it is best to have as much of a function as
+possible compiled in the normal way, e.g. to load the value of  x to
+AC1, (CQ X) is preferred to (LDV (QUOTE X) SP).
+
+
+
+    (C s1 s2 ...)            C ( compile) takes any number of
+                             arguments which are first evaluated, then
+                             compiled in the usual way.  Both C and CQ
+                             permit the inclusion of regular
+                             compilation within an assemble form.
+
+
+
+    (E e1 e2 ...)            E ( evaluate) takes any number of
+                             arguments which are evaluated in
+                             sequence.  For example, (PSTEP) calls a
+                             function which increments the compiler
+                             variable SP.
+
+
+
+    (SETQ var)               Compiles code to set the variable
+                              var to the contents of AC1.
+
+
+
+    (FASTCALL fn)            Compiles code to call  fn.   Fn must
+                             be one of the SUBR's that expects its
+                             arguments in the accumulators, and not on
+                             the push-down stack.  Currently, these
+                             are  cons, and the boxing and unboxing
+                                      40
+                             routines.
+
+                             Example:
+
+                                  (CQ X)
+                                  (LDV2 (QUOTE Y) SP 2)
+                                  (FASTCALL CONS)
+
+                             and cons[x,y] will be in AC1.
+
+
+
+    (* ... )                 * is used to indicate a comment; the
+                             statement is ignored.
+
+
+
+
+
+
+**FOOTNOTES**
+40
+     list may also be called with  fastcall by placing its arguments
+    on the pushdown stack, and the number of arguments in AC1.
+
+
+
+
+
+                                18.32
+
+
+
+ COREVALS
+
+
+
+There are several locations in the basic machine code of
+INTERLISP which may be referenced from compiled code.  The current
+value of each location is stored on the property list under the
+                      41
+property COREVAL.   Since these locations may change in different
+reassemblies of INTERLISP, they are written symbolically on compiled
+code files, i.e. the name of the corresponding COREVAL is written, not
+its value.  Some of the COREVALs used frequently in  assemble are:
+
+
+
+                   CONS      entry to function CONS
+
+                   LIST      entry to function LIST
+
+                   KT        contains (pointer to) atom T
+
+                   KNIL      contains (pointer to) atom NIL
+
+                   MKN       routine to box an integer
+
+                   MKFN      routine to box floating number
+
+                   IUNBOX    routine to unbox an integer
+
+                   FUNBOX    routine to unbox floating number
+
+
+
+The index registers used for the push-down stack pointers are also
+included as COREVALS.  These are not expected to change, and are
+not stored symbolically on compiled code files; however, they should
+be referenced symbolically in assemble code.  They are:
+
+
+
+                   PP        parameter stack
+
+                   CP        control stack
+
+                   NP        number stack
+
+
+
+
+ 18.14  LAP
+
+
+
+LAP (for  LISP  assembly  Processor) expands the output of the
+
+
+
+**FOOTNOTES**
+41
+    The value of  corevals is a list of all atoms with
+    COREVAL properties.
+
+
+
+
+
+                                18.33
+
+
+
+first pass of compilation to produce numerical machine
+instructions.
+
+
+
+ LAP Statements
+
+
+
+If a LAP statement is an atom, it is treated as a label
+identifying the location of the next statement to be processed.  If a
+LAP statement is not an atom,  car of it must be an atom and one of
+the following: (1) a number; (2) a machine instruction; or (3) a LAP
+macro.
+
+
+
+(1) numbers - If  car of a LAP statement is a number, a location
+              containing the number is produced in the object code.
+
+
+
+                   e.g.      (ADD 1 , A (1))
+                              .
+                              .
+                              .
+                       A     (1)
+                             (4)
+                             (9)
+
+
+              Statements of this type are processed like machine
+              instructions, with the initial number serving as a  36-
+              bit op-code.
+
+
+
+(2) Machine Instructions - If  car of a LAP statement has a
+                                                      42
+              numeric value for the property OPD,   the statement
+              is a machine instruction.  The general form of a machine
+              instruction is:
+
+
+                             (opcode ac , @ address (index))
+
+
+
+               Opcode is any PDP-10 instruction mnemonic or
+
+
+
+
+
+**FOOTNOTES**
+42
+    The value is an 18 bit quantity (rather than 9), since some UUO's
+    also use the AC field of the instruction.
+
+
+
+
+
+
+
+
+                                18.34
+
+
+
+                            43
+              INTERLISP UUO.
+
+
+
+               Ac, the accumulator field, is optional.  However,
+              if present, it must be followed by a comma.   Ac is
+              either a number or an atom with a COREVAL property.
+              The low order 4 bits of the number or COREVAL are OR'd
+              to the AC field of the instruction.
+
+
+
+               @ may be used anywhere in the instruction to
+              specify indirect addressing (bit 13 set in the
+              instruction) e.g. (HRRZ 1 , @ ' V).
+
+
+
+
+
+               Address is the address field which may be any of the
+              following:
+
+
+
+              = constant     Reference to an unboxed constant.  A
+                             location containing the unboxed constant
+                             will be created in a region at the end of
+                             the function, and the address of the
+                             location containing the constant is
+                             placed in the address field of the
+                             current instruction.  The constant may be
+                             a number e.g.  (CAME 1 , = 3596); an atom
+                             with a property COREVAL (in which case
+                             the constant is the value of the
+                             property, at LOAD time); any other atom
+                             which is treated as a label (the constant
+                             is then the address of the labeled
+                             location) e.g. (MOVE 1 , = TABLE) is
+                             equivalent to (MOVEI 1 , TABLE); or an
+                             expression whose value is a number.
+
+
+
+              ' pointer      The address is a reference to a
+                             INTERLISP pointer, e.g. a list, number,
+                             string, etc.  A location containing the
+                             pointer is assembled at the end of the
+                             function, and the current instruction
+                             will have the address of this location.
+                             E.g. (HRRZ 1 , ' "IS NOT DEFINED")
+
+                             (HRRZ 1 , ' (NOT FOUND))
+
+
+
+**FOOTNOTES**
+43
+    The TENEX JSYS's are not defined, that is, one must write (JSYS
+    107) instead of (KFORK).
+
+
+
+
+
+                                18.35
+
+
+
+              *              Specifies the current location in
+                             the compiled function; e.g.  (JRST * 2)
+                             has the same effect as (SKIPA).
+
+
+
+
+
+              literal atom   If the atom has a property COREVAL,
+                             it is a reference to a system location,
+                             e.g. (SKIPA 1 , KNIL), and the address
+                             used is the value of the  coreval.
+                             Otherwise the atom is a label referencing
+                             a location in the LAP code, e.g.
+                             (JRST A).
+
+
+
+              number         The number is the address; e.g.
+
+                                  (MOVSI 1 , 400000Q)
+
+                                  (HLRZ 2 , 1 (1))
+
+
+
+              list           The form is evaluated, and its value is
+                             the address.
+
+
+
+              Anything else in the address field causes an error
+              message, e.g. (SKIPA 1 , KNILL) - LAPERROR.  A number
+              may follow the address field and will be added to it,
+              e.g. (JRST A 2).
+
+
+
+               Index is denoted by a list following the address field,
+              i.e. the address field must be present if an index field
+              is to be used.  The index ( car of the list) must be
+              either a number, or an atom with a property COREVAL,
+              e.g.  (HRRZ 1 , 0 (1)) or (ANDM 1 , -1 (NP))
+
+
+
+
+
+(3) LAP macros -   If  car of a LAP statement is the name of a
+              LAP macro, i.e. has the property OPD, the statement
+              is a macro call.  The arguments of the call follow the
+              macro name: e.g. (LQ2 FIE 3).
+
+
+
+              LAP macro calls comprise most of the output of the first
+              pass of the compiler, and may also be used in  assemble.
+              The definitions of these macros are stored on the
+              property list under the property OPD, and like assembler
+              macros, may be either lambda or substitution macros.  In
+              the first case, the macro definition is applied to the
+
+
+
+
+
+                                18.36
+
+
+
+                                    44
+              arguments of the call;   in the second case, the
+              arguments of the call are substituted for occurrences of
+              the dummy symbols in the definition.  In both cases, the
+              resulting list of statements is again processed, with
+              macro expansion continuing till the level of machine
+              instructions is reached.
+
+
+
+Some examples of LAP macros are shown in Figure 18-2.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+44
+    The arguments were already evaluated in the first pass, see page
+    18.30.
+
+
+
+
+
+                                18.37
+
+
+
+     (DEFLIST(QUOTE(
+       (SVN ((N P)                        (* STORE VARIABLE NAME)
+             (MOVE 1 , ' N)
+             (HRLM 1 , P (PP))))
+       (SVB ((N)                          (* STORE VARIABLE NAME AND V
+             (HRL 1 , ' N)
+             (PUSH PP , 1)))
+       (LQ ((X)                           (* LOAD QUOTE TO AC1)
+            (HRRZ 1 , ' X)))
+       (LQ2 ((X AC)                       (* LOAD QUOTE TO AC)
+             (HRRZ AC , ' X)))
+       (LDV ((A SP)                       (* LOAD LOCAL VARIABLE TO AC
+             (HRRZ 1 , (VREF A SP))))
+       (STV ((A SP)                       (* SET LOCAL VARIABLE FROM A
+             (HRRM 1 , (VREF A SP))))
+       (LDV2 ((A SP AC)                   (* LOAD LOCAL VARIABLE TO AC
+              (HRRZ AC , (VREF A SP))))
+       (LDF ((A SP)                       (* LOAD FREE VARIABLE TO AC1
+             (HRRZ 1 , (FREF A SP))))
+       (STF ((A SP)                       (* SET FREE VARIABLE FROM AC
+             (HRRM 1 , (FREF A SP))))
+       (LDF2 ((A SP)                      (* LOAD FREE VARIABLE TO AC)
+              (HRRZ 2 , (FREF A SP))))
+       (CAR1 (NIL                         (* CAR OF AC1 TO AC1)
+              (HRRZ 1 , 0 (1))))
+       (CDR1 (NIL                         (* CDR OF AC1 TO AC1)
+              (HLRZ 1 , 0 (1))))
+       (CARQ ((V)                         (* CAR QUOTE)
+              (HRRZ 1 , @ ' V)))
+       (CARQ2 ((V AC)                     (* CAR QUOTE TO AC)
+               (HRRZ AC , @ ' V)))
+       (CAR2 ((AC)                        (* CAR OF AC TO AC)
+              (HRRZ AC , 0 (AC))))
+       (RPQ ((V)                          (* RPLACA QUOTE)
+             (HRRM 1 , @ ' V)
+       (CLL ((NAM N)                      (* CALL FN WITH N ARGS GIVEN
+             (CCALL N , ' NAM)))
+       (LCLL ((NAM N)                     (* LINKED CALL WITH N ARGS)
+              (LNCALL N , (MKLCL NAM))))
+       (STE ((TY)                         (* SKIP IF TYPE EQUAL)
+             (PSTE1 TY)))
+       (STN ((TY)                         (* SKIP IF TYPE NOT EQUAL)
+             (PSTN1 TY)))
+       (RET (NIL                          (* RETURN FROM FN)
+            (POPJ CP ,)
+       (PUSHP (NIL (PUSH PP , 1)))
+       (PUSHQ ((X)                        (* PUSH QUOTE)
+               (PUSH PP , ' X)))
+     ))(QUOTE OPD))
+
+
+
+
+
+
+
+                             Figure 18-2
+
+                        Examples of LAP Macros
+
+
+
+
+
+
+
+                                18.38
+
+
+
+ 18.15  Using Assemble
+
+
+
+In order to use  assemble, it is helpful to know the following
+things about how compiled code is run.  All variable bindings and
+temporary values are stored on the parameter pushdown stack.  When a
+compiled function is entered, the parameter pushdown list
+contains, in ascending order of address:
+
+
+
+    1.   bindings of arguments to the function, where each binding
+         occupies one word on the stack with the variable name in the
+         left half and the value in the right half.
+
+    2.   pointers to the most recent bindings of free variables used
+         in the function.
+
+
+
+The parameter push-down list pointer, index register PP, points
+to the last free variable pointer on the stack.
+
+
+
+Temporary values, PROG and LAMBDA bindings, and the arguments to
+functions about to be called, are pushed on the stack following the
+free variable pointers.  The compiler uses the value of the variable
+SP to keep track of the number of stack positions in use beyond
+the last free variable pointer, so that it knows where to find the
+arguments and free variable pointers.  The function PSTEP adds 1
+to SP, and PSTEPN(N) adds N to SP (N can be positive or
+negative).
+
+
+
+The parameter stack should only be used for storing pointers.  In
+addition, anything in the left half of a word on the stack is assumed
+to be a variable name (see Section 12).  To store unboxed numbers, use
+the number stack, NP.  Numbers may be PUSH'ed and POP'ed on the
+number stack.
+
+
+
+
+ 18.16  Miscellaneous
+
+
+
+The value of a function is always returned in AC1.  Therefore,
+the pseudo-function,  ac, is available for obtaining the current
+contents of AC1.  For example (CQ (FOO (AC))) compiles a call to FOO
+with the current contents of AC1 as argument, and is equivalent to:
+
+
+              (PUSHP)
+              (E (PSTEP))
+              (CLL (QUOTE FOO) 1)
+              (E (PSTEPN -1))
+
+
+
+
+
+
+                                18.39
+
+
+
+In using  ac, be sure that it appears as the first argument to be
+evaluated in the expression.  For example: (CQ (IPLUS (LOC (AC)) 2))
+
+
+
+                         *             *              *
+
+
+
+There are several ways to reference the values of variables in
+assemble code.  For example:
+
+
+          to put value of X in AC1:         (CQ X)
+
+
+          to put value of X in AC3:         (LDV2 (QUOTE X) SP 3)
+
+
+          to set X to contents of AC1:      (SETQ X)
+
+
+          to set X to contents of AC2:
+
+              (E (STORIN (LIST (QUOTE HRRM) 2 (QUOTE ,)
+                              (LIST (VARCOMP (QUOTE X))
+                                    (QUOTE X)
+                                     SP))))
+
+
+          to box and unbox a number:
+
+
+          (CQ (LOC (AC)))                   box contents of AC1
+          (FASTCALL MKN)                    box contents of AC1
+          (FASTCALL MKFN)                   floating box contents of A
+          (CQ (VAG X))                      unboxed value of X to AC1
+          (FASTCALL IUNBOX)                 unbox contents of AC1
+          (FASTCALL FUNBOX)                 floating unbox of AC1
+
+
+
+To call a function directly, the arguments must be pushed on the
+parameter stack, and SP must be updated, and then the function called:
+e.g.
+
+
+          (CQ (CAR X))
+          (PUSHP)                      (* stack first argument)
+          (E (PSTEP))
+          (PUSHQ 3.14)
+          (E (PSTEP))                  (* stack second argument)
+          (CLL (QUOTE FUM) 2)          (* call FUM with 2 arguments)
+          (E (PSTEPN -2))              (* adjust stack count)
+
+
+and is equivalent to:
+
+
+          (CQ (FUM (CAR X) 3.14))
+
+
+
+
+
+
+                                18.40
+
+
+
+ 18.17  Compiler Printout and Error Messages
+
+
+
+For each function compiled, whether from  tcomp1,  recompile, or
+ compile, the compiler prints:
+
+
+
+         (fn COMPILING)
+         (fn (arg1 ... argn) (free1 ... freen))
+
+
+The first message is printed when the compilation of  fn begins.  The
+second message is printed at the beginning of the second pass of the
+compilation of  fn.  (arg1 ... argn) is the list of arguments to  fn,
+and (free1 ... freen) the list of free variables referenced or set in
+    45
+ fn.   The appearance of non-variables, e.g. function names, words
+from a comment, etc. in (free1 ... freen) is a good indication of
+parenthesis errors.
+
+
+
+If the compilation of  fn causes the generation of one or more  gensym
+functions (see page 18.14), compiler messages will be printed for
+these functions between the first message and the second message for
+ fn, e.g.
+
+
+              (FOO COMPILING)
+              (FOOA0027 COMPILING)
+              (FOOA0027 NIL (X))
+              (FOO (X) NIL)
+
+
+The compiler output for block compilation is similar to normal
+compilation.  The pass one message, i.e. (fn compiling) is printed for
+each function in the block.  Then a second pass message is printed for
+                 46
+the entire block.   Then both messages are printed for each entry to
+the block.
+
+
+
+In addition to the above output, both  recompile and  brecompile print
+the name of each function that is being copied from the old compiled
+file to the new compiled file.  The normal compiler messages are
+printed for each function that is actually compiled.
+
+
+
+**FOOTNOTES**
+45
+    Does not include variables on  globalvars, see page 18.6.
+
+
+46
+    The names of the arguments to the block are generated by suffixing
+    '#' and a number to the block name, e.g.
+    (FOOBLOCK (FOOBLOCK#0 FOOBLOCK#1) free-variables).
+
+
+
+
+
+                                18.41
+
+
+
+ Compiler Error Messages
+
+
+
+Messages describing errors in the function being compiled are
+also printed on the teletype.  These messages are always preceded by
+*****.  Unless otherwise indicated below, the compilation will
+continue.
+
+
+
+((form) - NON ATOMIC CAR OF FORM)
+
+         If user intended to treat the value of  form as a function,
+         he should use  apply*.   form is compiled as if  apply* had
+         been used.  See Section 8.
+
+
+
+(fn - NO LONGER INTERPRETED AS FUNCTIONAL ARGUMENT)
+
+         The compiler has assumed  fn is the name of a function.  If
+         the user intended to treat the value of  fn as a function, he
+                                          47
+         must use  apply*.  See Section 8.
+
+
+
+(tg - MULTIPLY DEFINED TAG)
+
+          tg is a PROG label that is defined more than once in a
+         single PROG.  The second definition is ignored.
+
+
+
+(tg - UNDEFINED TAG)
+
+          tg is a PROG label that is referenced but not defined in a
+         PROG.
+
+
+
+(tg - MULTIPLY DEFINED TAG, ASSEMBLE)
+
+          tg is a label that is defined more than once in an assemble
+         form.
+
+
+
+(tg - UNDEFINED TAG, ASSEMBLE)
+
+          tg is a label that is referenced but not defined in an
+         ASSEMBLE form.
+
+
+**FOOTNOTES**
+47
+    This message is printed when  fn is not defined, and is also a
+    local variable of the function being compiled.  Note that earlier
+    versions of the INTERLISP compiler did treat  fn as a functional
+    argument, and compiled code to evaluate it.
+
+
+
+
+
+                                18.42
+
+
+
+(tg - MULTIPLY DEFINED TAG, LAP)
+
+          tg is a label that was encountered twice during the second
+         pass of the compilation.  If this error occurs with no
+         indication of a multiply defined tag during pass one, the tag
+         is in a LAP macro.
+
+
+
+(tg - UNDEFINED TAG, LAP)
+
+          tg is a label that is referenced during the second pass of
+         compilation and is not defined.  LAP treats  tg as though it
+         were a  coreval, and continues the compilation.
+
+
+
+(fn - USED AS ARG TO NUMBER FN?)
+
+         The value of a predicate, such as GREATERP or EQ, is used as
+         an argument to a function that expects numbers, such as
+         IPLUS.
+
+
+
+(x - IS GLOBAL)
+
+          x is on  globalvars, and is also rebound in the
+         function being compiled, either as an argument or as a local
+         variable.  The error message is to alert the user to the fact
+         that other functions will not see this binding, since  x is
+         always accessed directly through its value cell.
+
+
+
+(op - OPCODE? - ASSEMBLE)
+
+          op appears as  car of an assemble statement, and is illegal.
+         See page 18.29-32 for legal assemble statements.
+
+
+
+(blkname - USED BLKAPPLY WHEN NOT APPLICABLE)
+
+          blkapply is used in the block  blkname, but there are no
+          blkapplyfns or  entries declared for the block.
+
+
+
+(fn - ILLEGAL RETURN)
+
+          return encountered when not in  prog.
+
+
+
+(tg - ILLEGAL GO)
+
+          go encountered when not in a  prog.
+
+
+
+(fn NOT COMPILEABLE)
+
+
+
+
+                                18.43
+
+
+
+         An expr definition for  fn could not be found.  In this case,
+         no code is produced for  fn, and the compiler proceeds to the
+         next function to be compiled, if any.
+
+
+
+fn NOT COMPILEABLE.
+
+         Same as above except generates an error, thereby aborting all
+         compilation.  For example, this error condition occurs if  fn
+         is one of the functions in a block.
+
+
+
+fn NOT FOUND.
+
+         Occurs when  recompile or  brecompile try to copy the
+         compiled definition of  fn from cfil e, and cannot find it.
+         See page 18.10.  Generates an error.
+
+
+
+fn NOT ON BLKFNS.
+
+          fn was specified as an entry to a block, or else was on
+          blkapplyfns, but did not appear on the  blkfns.  Generates
+         an error.
+
+
+
+fn CAN'T BE BOTH AN ENTRY AND THE BLOCK NAME.
+
+         Generates an error.
+
+
+
+(fn NOT IN FILE - USING DEFINITION IN CORE)
+
+         on calls to  bcompl and  brecompile.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                18.44
+
+
+

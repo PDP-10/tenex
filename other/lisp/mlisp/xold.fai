@@ -1,0 +1,449 @@
+ title kill
+start:
+ hrroi	1,[asciz /Kjob
+/]
+; psout
+ dtach
+ hrrzi	1,400000 ; this fork
+ clzff	; close and release all files
+ seto	1,
+ lgout
+ haltf
+ end start
+
+   ; detach the job - must write sti buffer to a file to read in
+detgo:
+ hrroi	b,fili	; ptr to future input file name
+ pushj	p,filout	; open it for output
+; buffer to file
+ move	a,jfno	; output jfn
+ move	b,outp	; ptr to buffer
+ setz	c,	; null byte to terminate
+ sout		; write buffer to file
+ move	a,jfno	; output jfn
+ movei	b,32	; control z
+ bout		; end of file
+ move	a,jfno
+ closf		; close output file, release jfn
+ pushj	p,error
+ jrst cx
+ ; ************************
+; now create a fork
+lower: 0 ; ones if abnormal
+tty:	0 ; ones if abnormal, from tty
+exec: 0 ; ones if abnormal, from foo
+cx:
+ hrroi	a,[asciz /(U)pper or lower=/]
+ psout
+ pbin
+ cain	a,"U"
+ setom	lower
+ hrroi	a,[asciz /(T)ty or file=/]
+ psout
+ pbin
+ cain	a,"T"
+ setom	tty
+ hrroi	a,[asciz /(F)oo or exec=/]
+ psout
+ pbin
+ cain	a,"F"
+ setom	exec
+ hrli	a,420000	; set indirect map to self, start fork
+ hrri	a,lstart	; starting address
+ cfork
+ pushj	p,error
+ movem	a,forknm
+ skipe	lower	; skip if normal, zero
+ jrst tryex	; *** try the exec
+ jrst topfrk
+dloop:	; top fork loop
+ hrroi	a,[asciz /--Main fork--/]
+ psout
+ movei	a,=5000 	; 5 seconds
+ disms		; go to sleep
+ jrst	dloop
+
+lstart:	; lower fork start
+ MOVE	P,[IOWD 20,PDL]	; SET UP STACK
+ hrroi	a,[asciz /**lower fork**/]
+ psout
+ skipn	lower	; skip if abnormal, ones
+ jrst tryex
+ haltf
+
+foo572: xwd 2,load2
+tryex:
+ movei	a,400000
+ movem	a,forknm	; *** try it
+ hrroi	b,fili	; ptr to filename
+ pushj	p,filin
+ hrroi	b,filo
+ pushj	p,filout
+ movei	a,777777
+ skipe	tty	; skip if normal
+ movem	a,jfno
+ hrroi	a,[asciz /Change pjfns /]
+ psout
+ move	a,forknm
+ hrl		b,jfni
+ hrr		b,jfno
+ spjfn		; change primary jfns of fork
+   HRLZI 1,100001   
+   HRROI 2,PRGSTG   
+ skipe	exec	; skip if zero, normal
+ hrroi	2,[asciz /foo.sav/]
+   GTJFN   
+   JRST foo532   
+   MOVEM 1,PRGJFN   
+   MOVE 1,PRGSIX   
+   SETNM   
+   MOVS 1,foo572
+   BLT 1,13   
+   JRST 2   
+load2:
+   HRLZI 1,400000   
+   HRR 1,PRGJFN   
+   GET   
+   MOVEI 1,400000   
+   GEVEC   
+   JRST 0(2)   
+foo532:
+   HRROI 1,foo42   
+   PSOUT   
+   HALTF   
+   JRST STADDR   
+ hrlzi	a,1	; input file
+ hrroi	b,[asciz /<system>exec.sav/]
+; hrroi	b,[asciz /foo.sav/]
+ gtjfn		; jfn in RH(a)
+ pushj	p,error
+ hrl		a,forknm	; fork,,jfn in a
+ get			; get the exec in the fork
+ move	a,forknm
+ hrri	a,[asciz /gevec /]
+ psout
+ move	a,forknm
+ gevec
+ hrrzm	b,vaddr	; save starting addr
+ move	d,b
+ pushj	p,octal
+ ; ***
+ move	a,forknm
+ move	b,vaddr
+ sfork		; start the lower fork
+ move	a,forknm
+ setz	b,	; use start address
+; sfrkv		; start fork using entry vector
+ hrroi	a,[asciz /Made fork start /]
+ psout
+ move	a,forknm
+ hrl		b,jfni
+ hrr		b,jfno
+; move	b,[xwd 100,101]
+ spjfn		; change primary jfns of fork
+ move	d,b	; save primaries
+ hrroi	a,[asciz /Want primaries: /]
+ psout
+ pushj	p,octal
+ hrroi	a,[asciz /New primaries: /]
+ psout
+ move	a,forknm
+ gpjfn		; get primary jfns for fork
+ move	d,b
+ pushj	p,octal
+; give it something to do
+ move	bptr,outp
+ movei	a,100
+ skipa
+det32:
+ setz b,  ; ***  sti
+ ildb	b,bptr
+ jumpn	b,det3
+
+; *******
+; test for fork events
+topfrk:
+ move	a,jfni
+; sizef		; get size of input file
+; pushj	p,error
+ movem	b,sizi	; save number of bytes in file
+det42:
+ move	a,jfni
+; rfptr		; read file ptr
+; pushj	p,error
+ movem	b,sizi2
+ jrst cont ; ***
+ caml	b,sizi	; if less then go on
+ jrst	[hrroi a,[asciz /File ptr less/]
+	psout
+	jrst closef]		; done
+cont:
+ move	a,forknm
+ rfsts		; read fork status
+ move	d,a
+ pushj	p,octal
+ move	a,forknm
+ rfsts		; read fork status
+ hlrz	b,a		; get the LH(a) in b
+ jumpe	b,det5	; jump if zero, running
+ hrroi	a,[asciz /Waiting /]
+ jrst	det6
+det52:
+ hrroi	a,[asciz /Running /]
+det62:
+ psout
+ movei	a,=5000 	; 5 seconds
+ disms		; go to sleep
+ jrst	det4
+
+ ; ****************
+; now try changing primary jfns and detaching
+ move	a,forknm
+ hrl		b,jfni	; input jfn
+ hrr		b,jfno	; output jfn
+ spjfn		; set primary jfns
+ hrroi	a,[asciz /Made it. /]
+ psout
+ dtach		; detach controlling terminal
+ jrst	staddr	; get the exec and go
+ ; ************************
+ccfork:
+; now create a fork
+ setz	a,
+ cfork
+ pushj	p,error
+ movem	a,forknm	; save name
+ hrlzi	a,1	; input file
+ hrroi	b,[asciz /<system>exec.sav/]
+; hrroi	b,[asciz /foo.sav/]
+ gtjfn		; jfn in RH(a)
+ pushj	p,error
+ hrl		a,forknm	; fork,,jfn in a
+ get			; get the exec in the fork
+ move	a,forknm
+ hrri	a,[asciz /gevec /]
+ psout
+ move	a,forknm
+ gevec
+ hrrzm	b,vaddr	; save starting addr
+ move	d,b
+ pushj	p,octal
+ ; ***
+ move	a,forknm
+ move	b,vaddr
+ sfork		; start the lower fork
+ move	a,forknm
+ setz	b,	; use start address
+; sfrkv		; start fork using entry vector
+ hrroi	a,[asciz /Made fork start /]
+ psout
+ move	a,forknm
+ hrl		b,jfni
+ hrr		b,jfno
+; move	b,[xwd 100,101]
+ spjfn		; change primary jfns of fork
+ move	d,b	; save primaries
+ hrroi	a,[asciz /Want primaries: /]
+ psout
+ pushj	p,octal
+ hrroi	a,[asciz /New primaries: /]
+ psout
+ move	a,forknm
+ gpjfn		; get primary jfns for fork
+ move	d,b
+ pushj	p,octal
+; give it something to do
+ move	bptr,outp
+ movei	a,100
+ skipa
+det3:
+ setz b,  ; ***  sti
+ ildb	b,bptr
+ jumpn	b,det3
+; test for fork events
+ move	a,jfni
+ sizef		; get size of input file
+ pushj	p,error
+ movem	b,sizi	; save number of bytes in file
+det4:
+ move	a,jfni
+ rfptr		; read file ptr
+ pushj	p,error
+ movem	b,sizi2
+ caml	b,sizi	; if less then go on
+ jrst	[hrroi a,[asciz /File ptr less/]
+	psout
+	jrst closef]		; done
+ move	a,forknm
+ rfsts		; read fork status
+ move	d,a
+ pushj	p,octal
+ move	a,forknm
+ rfsts		; read fork status
+ hlrz	b,a		; get the LH(a) in b
+ jumpe	b,det5	; jump if zero, running
+ hrroi	a,[asciz /Waiting /]
+ jrst	det6
+det5:
+ hrroi	a,[asciz /Running /]
+det6:
+ psout
+ movei	a,=5000 	; 5 seconds
+ disms		; go to sleep
+ jrst	det4
+
+closef:
+ move	a,jfni
+ closf
+ pushj	p,error
+ move	a,jfno
+ closf
+ pushj	p,error
+ jrst exit
+
+ dtach
+ jsys 306	; wait
+
+; now put detach command in input buffer and halt
+ setom	second	; to halt second time thru
+ move	bptr,detp
+ jrst	sti1	; let sti do the rest
+
+; now open primary input and output
+ hrroi	b,fili	; ptr to filename
+ pushj	p,filin
+ hrroi	b,filo
+ pushj	p,filout
+ HALTF
+; now try changing primary jfns and detaching
+ hrrzi	a,400000	; this fork
+ hrl		b,jfni	; input jfn
+ hrr		b,jfno	; output jfn
+ spjfn		; set primary jfns
+ hrroi	a,[asciz /Made it. /]
+ psout
+ dtach		; detach controlling terminal
+ jrst	exit
+
+detach: 0	; set to ones if want to detach
+fili: asciz /1.tmp/
+filo: asciz /1o.tmp/
+sizi: 0
+sizi2: 0
+jfni: 0
+jfno: 0
+; open input file, filename ptr in b, jfn will be in jfni
+filin:
+ hrroi	a,[asciz /File in /]
+ psout
+ hrlzi	a,1	; input file
+ gtjfn
+ pushj	p,error
+ hrrzm	a,jfni	; save jfn
+ move	a,jfni
+ movsi	b,70000	; byte size 7
+ hrri	b,200000	; read access
+ openf
+ pushj	p,error
+ popj	p,
+; open output file, filename ptr in b, jfn will be in jfno
+filout:
+ hrroi	a,[asciz /File out /]
+ psout
+ hrlzi	a,400001	; output file
+ gtjfn
+ pushj	p,error
+ hrrzm	a,jfno	; save jfn
+ move	a,jfno
+ movsi	b,70000	; byte size 7
+ hrri	b,100000	; write access
+ openf
+ pushj	p,error
+ popj	p,
+
+octal:		; print the octal contents of a word
+ movei	a,101
+ movei	c,=12
+oc2:
+ rot	d,3
+ move	b,d
+ andi	b,=7
+ ori	b,"0"
+ bout
+ sojg	c,oc2
+ movei	b," "
+ bout
+ popj	p,
+ ;	title swap
+foo57:	xwd 10,load
+prgjfn:	0
+PRGSIX:	sixbit /PARRY /
+foo42:
+ asciz /that subsystem not currently available   /
+prgstg:
+  asciz /<system>exec.SAV/
+staddr:
+   HRLZI 1,100001   
+   HRROI 2,PRGSTG   
+   GTJFN   
+   JRST foo53   
+   MOVEM 1,PRGJFN   
+   MOVE 1,PRGSIX   
+   SETNM   
+   MOVS 1,foo57   
+   BLT 1,15   
+   JRST 10   
+load:
+   HRLZI 1,400000   
+   HRR 1,PRGJFN   
+   GET   
+   MOVEI 1,400000   
+   GEVEC   
+   JRST 0(2)   
+foo53:
+   HRROI 1,foo42   
+   PSOUT   
+   HALTF   
+   JRST STADDR   
+; returns ones in a if ok
+chok:
+ gjinf	; get job info
+ movem	a,chok9	; login dir num
+ movei	d,3	; index
+chok2:
+ move	b,chokp1(d)	; get string ptr to name
+ pushj	p,chok4	; test
+ jumpn	a,chok3	; found if ones
+ sojge	d,chok2	; loop
+ ; not ok - a is zeros
+ hrroi	a,[asciz /Bad try/]
+ ;psout
+ setz	a,
+chok3:
+ popj	p,
+chok4:
+ movei	a,1	; match entire string
+ stdir	; translate string to dir num
+ jrst	chok5	; no match
+ jrst	chok5	; ambiguous
+ ; dir num in rh of a
+ hrrz	b,a	; move to b
+ came	b,chok9	; compare to this one
+ jrst 	chok5	; not good
+ seto	a,	; found, set to ones
+ popj	p,
+chok5:
+ setz	a,	; not found, set to zeros
+ popj	p,
+chok9:	0
+chokn1: asciz /FAUGHT/
+chokn2: asciz /PARKISON/
+chokn3: asciz /PARRY/
+chokn4: asciz /COLBY/
+chokp1:
+ point 7,chokn1
+ point 7,chokn2
+ point 7,chokn3
+ point 7,chokn4
+ 0
+

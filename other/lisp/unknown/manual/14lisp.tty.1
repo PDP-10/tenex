@@ -1,0 +1,4346 @@
+
+
+
+
+
+
+
+
+
+
+
+                                  SECTION 14
+
+                            INPUT/OUTPUT FUNCTIONS
+
+
+
+
+
+ 14.1  Files
+
+
+
+All input/output functions in INTERLISP can specify their
+source/destination file with an optional extra argument which is the name of
+the file.  This file must be opened as specified below.  If the extra argument
+is not given (has value NIL), the file specified as "primary" for input
+(output) is used.  Normally these are both T, for terminal input and output.
+However, the primary input/output file may be changed by
+
+
+
+              1
+input[file]                    Sets  file as the primary input file.  Its
+                             value is the name of the old primary input
+                             file.
+
+
+
+                             input[] returns current primary input file, which
+                             is not changed.
+
+
+
+output[file]                   Same as  input except operates on primary
+                             output file.
+
+
+
+Any file which is made primary must have been previously opened for
+input/output, except for the file T, which is always open.
+
+
+
+infile[file]                   Opens  file for input, and sets it as the
+
+
+
+
+
+**FOOTNOTES**
+1
+    The argument name  file is used for tutorial purposes only.  Subrs do not
+    have argument 'names', per se, as described in section 8.
+
+
+
+
+
+                                     14.1
+
+
+                                                2
+                             primary input file.  The value of  infile is the
+                             previous primary input file. If  file is
+                             already open, same as input[file].  Generates a
+                             FILE WON'T OPEN error if  file won't open,
+                             e.g.,  file is already open for output.
+
+
+
+outfile[file]                 Opens  file for output, and sets it as the
+                                                 3
+                             primary output file.  The value of  outfile is the
+                             previous primary output file.  If  file is already
+                             open, same as output[file].  Generates a FILE
+                             WON'T OPEN error if  file won't open, e.g., if
+                              file is already open for input.
+
+
+
+In INTERLISP-10, for all input/output functions,  file follows the TENEX
+conventions for file names, i.e.  file can be prefixed by a directory name
+enclosed in angle brackets, can contain alt-modes or control-F's, and
+can include suffixes and/or version numbers. Consistent with TENEX,
+when a file is opened for input and no version number is given, the highest
+version number is used.  Similarly, when a file is opened for output and no
+version number is given, a new file is created with a version number one higher
+than the highest one currently in use with that file name.
+
+
+
+In INTERLISP-10, regardless of the file name given to the INTERLISP function
+                                                                    4
+that opened the file, INTERLISP maintains only full TENEX file names  in its
+internal table of open files and any function whose value is a file name always
+returns a full file name, e.g. openp[FOO]=FOO.;3.  Whenever a file argument is
+given to an i/o function, INTERLISP first checks to see if the file is in its
+internal table.  If not, INTERLISP executes the appropriate TENEX JSYS to
+"recognize" the file.  If TENEX does not successfully recognize the file, a
+                                      5
+FILE NOT FOUND error is generated.  If TENEX does recognize the file, it
+
+
+
+**FOOTNOTES**
+2
+    To open  file without changing the primary input file, perform
+    input[infile[file]].
+
+
+3
+    To open file without changing the primary output file, perform
+    output[outfile[file]].
+
+
+4
+    i.e. name, extension, and version, plus directory name if it differs from
+    connected directory.
+
+
+5
+    except for  infilep,  outfilep and  openp, which in this case
+    return NIL.
+
+
+
+
+
+                                     14.2
+
+
+
+returns to INTERLISP the full file name.  Then, INTERLISP can continue with the
+indicated operation.  If the file is being opened, INTERLISP opens the file and
+stores its (full) name in the file table.  If it is being closed, or written to
+or read from, INTERLISP checks its internal table to make sure the file is
+open, and then executes the corresponding operation.
+
+
+
+Note that each time a full file name is not used, INTERLISP-10 must call
+TENEX to recognize the name.  Thus if repeated operations are to be
+performed, it is considerably more efficient to obtain the full file name once,
+e.g. via  infilep or  outfilep.  Also, note that recognition by TENEX
+is performed on the user's entire directory.  Thus, even if only one file is
+open, say FOO.;1, F$ (F altmode) will not be recognized if the user's directory
+also contains the file FIE.;1.  Similarly, it is possible for a file name that
+was previously recognized to become ambiguous.  For example, a program performs
+infile[FOO], opening FOO.;1, and reads several expressions from FOO.  Then the
+user types control-C, creates a FOO.;2 and reenters his program.  Now a call to
+ read giving it FOO as its file argument will generate a FILE NOT OPEN
+error, because TENEX will recognize FOO as FOO.;2.
+
+
+
+infilep[file]                 Returns full file name of  file if file is
+                             recognized as specifying the name of a file that
+                             can be opened for input, NIL otherwise.  In
+                             INTERLISP-10, the full file name will contain a
+                             directory field only if the directory differs from
+                             the currently attached directory.  Recognition is
+                             in input context, i.e. in INTERLISP-10, if no
+                             version number is given, the highest version
+                             number is returned.
+
+
+
+ infilep and  outfilep do not open any files, or change the primary files; they
+are pure predicates.
+
+
+
+outfilep[file]           Similar to  infilep, except recognition is in
+                             output context, i.e. in INTERLISP-10,  if no
+                             version number is given, a version number one
+                             higher than the highest version number is
+                             returned.
+
+
+
+closef[file]                  Closes  file.  Generates an error, FILE NOT
+                             OPEN, if  file not open. If  file is NIL, it
+                             attempts to close the primary input file if
+                             other than terminal.  Failing that, it attempts to
+                             close the primary output file if other than
+                             terminal.  Failing both, it returns NIL.  If
+                             it closes any file, it returns the name of that
+                             file.  If it closes either of the primary files,
+                             it resets that primary file to terminal.
+
+
+
+closeall[]                    Closes all open files (except T).  Value is a
+                             list of the files closed.
+
+
+
+
+                                     14.3
+
+
+
+openp[file;type]              If  type=NIL, value is  file (full name) if
+                              file is open either for reading or for writing.
+                             Otherwise value is NIL.
+
+
+
+                             If  type is INPUT or OUTPUT, value is  file if
+                             open for corresponding type, otherwise NIL.  If
+                              type is BOTH, value is  file if open for both
+                             input and output, (See  iofile, page 14.5)
+                             otherwise NIL.
+
+
+
+                             Note: the value of  openp is NIL if  file is not
+                             recognized, i.e.  openp does not generate an
+                             error.
+
+
+
+                             openp[] returns a list of all files open for
+                             input or output, excluding T.
+
+
+
+ Addressable Files
+
+
+
+For most applications, files are read starting at their beginning and
+proceeding sequentially, i.e. the next character read is the one immediately
+following the last character read.  Similarly, files are written sequentially.
+A program need not be aware of the fact that there is a file pointer
+associated with each file that points to the location where the next character
+is to be read from or written to, and that this file pointer is automatically
+advanced after each input or output operation.  This section describes a
+function which can be used to reposition the file pointer, thereby allowing a
+program to treat a file as a large block of auxiliary storage which can be
+                6
+access randomly.  For example, one application might involve writing an
+expression at the beginning of the file, and then reading an expression from a
+                              7
+specified point in its middle.
+
+
+
+
+
+**FOOTNOTES**
+6
+    Random access means that any location is as quickly accessible as any
+    other.  For example, an array is randomly accessible, but a list is not,
+    since in order to get to the  nth element you have to sequence through the
+    first n-1 elements.
+
+
+7
+    This particular example requires the file be open for both input and
+    output.  This can be achieved via the function  iofile described below.
+    However, random file input or output can be performed on files that have
+    been opened in the usual way by  infile or  outfile.
+
+
+
+
+
+                                     14.4
+
+
+
+A file used in this fashion is much like an array in that it has a certain
+number of addressable locations that characters can be put into or taken from.
+However, unlike arrays, files can be enlarged.  For example, if the file
+pointer is positioned at the end of a file and anything is written, the file
+"grows." It is also possible to position the file pointer beyond the end of
+                       8
+file and then to write.  In this case, the file is enlarged, and a "hole" is
+created, which can later be written into.  Note that this enlargement only
+takes place at the end of a file; it is not possible to make more room in the
+middle of a file.  In other words, if expression A begins at positon 1000, and
+expression B at 1100, and the program attempts to overwrite A with expression
+C, which is 200 characters long, part of B will be clobbered.
+
+
+
+iofile[file]                  Opens file for both input and output.  Value
+                             is  file.  Does not change either primary input or
+                             primary output.  If no version number is given,
+                             default is same as for  infile, i.e. highest
+                             version number.
+
+
+
+                                                                              9
+sfptr[file;address]       Sets  file  poin te r for  file to  address.
+                             Value is old setting.   address=-1 corresponds to
+                                             10
+                             the end of file.
+
+                             If  address=NIL,  sfptr returns the current
+                             value of file pointer without changing it.
+
+
+**FOOTNOTES**
+8
+    If the program attempts to read beyond the end of file, an END OF FILE
+    error occurs.
+
+
+9
+    The address of a character (byte) is the number of characters (bytes) that
+    precede it in the file, i.e., 0 is the address of the beginning of the
+    file.  However, the user should be careful about computing the space needed
+    for an expression, since end-of-line in INTERLISP-10  is represented as
+    two characters in a file, but  nchars only counts it as one.
+
+
+10
+    Note:  in INTERLISP-10, if a file is opened for output only, either by
+     outfile, or openf[file;100000q] (see page 14.6), TENEX assumes
+    that one intends to write a new or different file, even if a version number
+    was specified and the corresponding file already exists.  Thus,
+    sfptr[file;-1] will set the file pointer to 0.  If a file is opened for
+    both reading and writing, either by  iofile or openf[file;300000q],
+    TENEX assumes that there might be material on the file that the user
+    intends to read.  Thus, the initial file pointer is the beginning of
+    the file, but sfptr[file;-1] will set it to the end of the file.  Note that
+    one can also open a file for appending by openf[file;20000q].  In this
+    case, the file pointer right after opening is set to the end of the
+    existing file.  Thus, a write will automatically add material at the end of
+    the file, and an  sfptr is unnecessary.
+
+
+
+
+
+                                     14.5
+
+
+
+                                       11
+filepos[x;file;start;end;skip;tail]     Searches  file for  x a la
+                              strpos (Section 10).   Search begins at
+                              start (or if  start=NIL, the current position of
+                              file pointer), and goes to  end (or if  end=NIL,
+                             to the end of  file).  Value is address of start
+                             of match, or NIL if not found.   skip can be used
+                             to specify a character which matches any character
+                             in the file.  If  tail is T, and the search is
+                             successful, the value is the address of the first
+                             character after the sequence of characters
+                             corresponding to  x, instead of the starting
+                             address of the sequence.  In either case, the file
+                             is left so that the next i/o operation begins at
+                             the address returned as the value of  filepos.
+
+
+
+ Openf
+
+
+
+The following function is available in INTERLISP-10 for specialized file
+applications:
+
+
+openf[file;x]                 opens  file.   x is a number whose bits
+                             specify the access and mode for  file, i.e.  x
+                             corresponds to the second argument to the
+                             TENEX JSYS OPENF (see JSYS Manual). Value
+                             is full name of  file.
+
+
+
+ openf permits opening a file for read, write, execute, or append, etc.  and
+allows specification of byte size, i.e. a byte size of 36 enables reading and
+writing of full words.   openf does not affect the primary input or output file
+settings, and does not check whether the file is already open - i.e. the same
+                                                                   12
+file can be opened more than once, possibly for different purposes.
+ openp will work for files opened with  openf.
+
+
+
+The first argument to  openf can also be a number, which is then interpreted as
+JFN.  This results in a more efficient call to  openf, and can be
+signficant if the user is making frequent calls to  openf, e.g. switching byte
+sizes.
+
+
+
+
+
+
+**FOOTNOTES**
+11
+     filepos was written by J. W. Goodwin.
+
+
+12
+    The "thawed" bit in  x permits opening a file that is already open.
+
+
+
+
+
+                                     14.6
+
+
+
+                              13
+ JFN Functions in INTERLISP-10
+
+
+
+JFN stands for  job  file  number.  It is an integral part of the TENEX
+file system and is described in [Mur1], and in somewhat more detail in the
+TENEX JSYS manual.  In INTERLISP-10, the following functions are available
+for direct manipulation of JFNs:
+
+
+
+opnjfn[file]                  returns the JFN for  file.  If  file not
+                             open, generates a FILE NOT OPEN error.
+
+
+
+Example: to write a byte on a file
+
+
+
+    [DEFINEQ (BOUT
+         (LAMBDA (FILE BYTE)
+         (LOC (ASSEMBLE NIL
+                 (CQ (VAG BYTE))
+                 (PUSH NP , 1)
+                 (CQ (VAG (OPNJFN FILE)))
+                 (POP NP , 2)
+                 (JSYS 51Q)
+                 (MOVE 1 , 2)]
+
+
+or to read a byte from a file
+
+
+    [DEFINEQ (BIN
+         (LAMBDA (FILE)
+            (LOC (ASSEMBLE NIL
+                   (CQ (VAG (OPNJFN FILE)))
+                   (JSYS 50Q)
+                   (MOVE 1 , 2]
+
+
+Making BIN and BOUT substitution macros can save boxing and unboxing in
+compiled code.
+
+
+
+
+
+
+gtjfn[file;ext;v;flags]       sets up a 'long' call to GTJFN (see JSYS
+                             manual).   file is a file name possibly containing
+                             control-F and/or alt-mode.   ext is the default
+                             extension,  v the default version (overriden if
+
+
+
+**FOOTNOTES**
+13
+    The JFN functions were written by J. W. Goodwin.
+
+
+
+
+
+                                     14.7
+
+
+
+                              file specifies extension/version, e.g.
+                             FOO.COM;2).   flags is as described on page 17,
+                             section 2 of JSYS manual.   file and  ext may be
+                             strings or atoms;  v and  flags must be numbers.
+                             Value is JFN, or NIL on errors.
+
+
+
+rljfn[jfn]                    releases  jfn.  rljfn[-1] releases all JFN's
+                             which do not specify open files.  Value of  rljfn
+                             is T.
+
+
+
+jfns[jfn;ac3]                 converts  jfn (a small number) to a file
+                             name.   ac3 is either NIL, meaning format the file
+                             name as would  openp or other INTERLISP-10 file
+                             functions, or else is a number, meaning format
+                             according to JSYS manual. The value of
+                              jfns is atomic except where enough options are
+                             specified by  ac3 to exceed atom size (>= 100
+                             characters).  In this case, the value is returned
+                             as a string.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                     14.8
+
+
+
+ 14.2  Input Functions
+
+
+
+Most of the functions described below have an (optional) argument  file which
+specifies the name of the file on which the operation is to take place, and an
+(optional) argument rdtbl, which specifies the readtable  to be used for
+input.   If file is NIL, the primary input file will be used. If the file
+argument is a string, input will be taken from that string (and the string
+pointer reset accordingly).  If rdtbl is NIL, the primary readtable will be
+used.   readtables are described on page 14.18.
+
+
+Note: in all INTERLISP-10 symbolic files, end-of-line is indicated by the
+characters carriage-return and line-feed in that order.  Accordingly,
+on input from files, INTERLISP-10 will skip all line-feeds which immediately
+follow carriage-returns.  On input from terminal, INTERLISP will echo a line-
+feed whenever a carriage-return is input.
+
+
+For all input functions except  readc and  peekc, when reading from the
+terminal, control-A erases the last character typed in, echoing a \
+and the erased character.  Control-A will not backup beyond the last carriage
+return.  Typing control-Q causes INTERLISP to print ## and clear the
+                                                                          14
+input buffer, i.e. erase the entire line back to the last carriage-return.
+When reading from a file, and an end of file is encountered, all input
+functions close the file and generate an error, END OF FILE.
+
+
+
+read[file;rdtbl;flg]          Reads one S-expression from  file.  Atoms are
+                             delimited by the break and separator characters as
+                             defined in rdtbl.  To input an atom which contains
+                             a break or separator character, precede the
+                             character by the escape character %, e.g.
+                             AB%(C, is the atom AB(C, %% is the atom %, %^A
+                             (i.e. %control-A) is the atom ^A.  For input from
+                             the terminal,  an atom containing an interrupt
+                             character can be input by typing instead the
+                             corresponding alphabetic character preceded by
+                             control-V, e.g. ^VC for control-C.
+
+
+
+                             Strings are delimited by double quotes. To
+                             input a string containing a double quote or a %,
+                             precede it by %, e.g. "AB%"C" is the string
+                             AB"C.  Note that % can always be typed even if
+                             next character is not 'special', e.g. %A%B%C is
+                             read as ABC.
+
+
+
+
+
+
+**FOOTNOTES**
+14
+    Note that the CHARDELETE and LINEDELETE characters can be redefined or
+    disabled via setsyntax, see page 14.20.
+
+
+
+
+
+                                     14.9
+
+
+
+                             If an atom is interpretable as a number,
+                              read will create a number, e.g. 1E3
+                             reads as a floating point number, 1D3 as a
+                             literal atom, 1.0 as a number, 1,0 as a literal
+                             atom, etc.  Note that an integer can be input
+                             in octal by terminating it with a Q,
+                             e.g. 17Q and 15 read in as the same integer.  The
+                             setting of  radix, page 14.29, determines
+                             how integers are printed, i.e. with or without
+                             Q's.
+
+
+
+When reading from the terminal, all input is line-buffered to enable
+                             15
+the action of control-Q.   Thus no characters are actually seen by the
+program until a carriage-return is typed.  However, for reading by read,
+when a matching right parenthesis is encountered, the effect is the same
+as though a carriage return were typed, i.e. the characters are transmitted.
+To indicate this, INTERLISP also prints a carriage-return line-feed on the
+terminal.
+
+
+
+                              flg=T suppresses the carriage-return normally
+                             typed by  read following a matching right
+                             parenthesis.  (However, the characters are still
+                             given to  read - i.e. the user does not have to
+                             type the carriage return himself.)
+
+
+
+ratom[file;rdtbl]            Reads in one atom from  file.  Separation of
+                             atoms is defined by rdtbl.  % is also an
+                             escape character for  ratom, and the remarks
+                             concerning control-A, control-Q,
+                             control-V, and line-buffering also apply.
+
+
+
+                             If the characters comprising the atom would
+                             normally be interpreted as a number by  read,
+                             that number is also returned by  ratom.  Note
+                             however that  ratom takes no special action for
+                             " whether or not it is a break character,
+                             i.e.  ratom never makes a string.
+
+
+
+rstring[file;rdtbl]          Reads in one string from  file, terminated by
+                             next break or separator character.  Control-
+                             A, control-Q, control-V, and %
+                             have the same effect as with  ratom.
+
+
+
+
+
+**FOOTNOTES**
+15
+    Unless control[T] has been performed (page 14.27).
+
+
+
+
+
+                                     14.10
+
+
+
+Note that the break or separator character that terminates a call to
+ ratom or  rstring is  not read by that call, but remains in the
+buffer to become the first character seen by the next reading function that is
+called.
+
+
+
+ratoms[a;file;rdtbl]         Calls  ratom repeatedly until the atom  a is
+                             read.  Returns a list of atoms read, not including
+                              a.
+
+
+
+setsepr[lst;flg;rdtbl]        Set  sepa rator characters for rdtbl.  Value
+                             is NIL.
+
+
+
+setbrk[lst;flg;rdtbl]         Set  brea k characters for rdtbl.  Value is
+                             NIL.
+
+
+
+                                                                 16
+For both  setsepr and  setbrk,  lst is a list of character codes,    flg
+determines the action of  setsepr/ setbrk as follows:
+
+
+
+    NIL  clear out indicated readtable and  reset break/separator characters to
+         be those in lst.
+
+    0    clear out only those characters in  lst - i.e. this provides an
+         unsetsepr and unsetbrk.
+
+    1    add characters in lst.
+
+
+
+Characters specified by  setbrk will delimit atoms, and be returned as
+separate atoms themselves by  ratom.  Characters specified by
+ setsepr will  serve only to delimit  atoms, and are otherwise ignored.
+For example, if $ was a break character and * a separator character, the input
+stream ABC**DEF$GH*$$ would be read by 6 calls to  ratom returning
+respectively ABC, DEF, $, GH, $, $.
+
+
+
+The elements of  lst may also be characters, e.g. setbrk[(. ,)] has the same
+effect in INTERLISP-10 as setbrk[(46 44)].  Note however that the 'characters'
+1,2,...,9 will be interpreted as character codes because they are numbers.
+
+
+
+
+**FOOTNOTES**
+16
+    If  lst=T, the break/separator characters are reset to be those in the
+    system's readtable for terminals, regardless of value of flg,  i.e.
+    setbrk[T] is equivalent to setbrk[getbrk[T]].  If rdtbl is T, then the
+    characters are reset to those in the original system table.
+
+
+
+
+
+                                     14.11
+
+
+
+Note: (, ), [, ], and " are normally break characters, i.e. will be returned as
+separate atoms when read by ratom.  If any of these break characters are
+disabled by an appropriate setbrk (or by making it be a separator character),
+its special action for read will not be restored by simply making it be a break
+                            17
+character again with setbrk.    For more details, see discussion in section on
+readtables, page 14.21-21.
+
+
+
+Note that the action of % is not affected by  setsepr or  setbrk.  To defeat
+the action of % use escape[], as described below.
+
+
+
+getsepr[rdtbl]               Value is a list of separator character codes.
+
+
+
+getbrk[rdtbl]                Value is a list of break character codes.
+
+
+
+escape[flg]             If  flg=NIL, makes % act like every other
+                                                 18
+                             character for input.   Normal setting is
+                             escape[T].  The value of  escape is the previous
+                             setting.
+
+
+
+ratest[x]                    If  x = T,  ratest returns T if a separator
+                             was encountered immediately prior to the last atom
+                             read by  ratom, NIL otherwise.
+
+
+
+                             If  x = NIL,  ratest returns T if last atom read
+                             by  ratom or  read was a break character, NIL
+                             otherwise.
+
+
+
+                             If  x = 1,  ratest returns T if last atom read
+                             (by  read or  ratom) contained a % (as an escape
+                             character, e.g., %[ or %A%B%C), NIL otherwise.
+
+
+
+
+
+
+**FOOTNOTES**
+17
+    However, making these characters be break characters when they already are
+    will have no effect.
+
+
+18
+     escape does not currently take a readtable argument, but will probably do
+    so in the near future.
+
+
+
+
+
+                                     14.12
+
+
+
+readc[file]                  Reads the next character, including %,
+                             ", etc, i.e. is not affected by break,
+                             separator, or escape character.  Value is the
+                             character.  Action of  readc is subject to line-
+                             buffering, i.e.  readc will not return a value
+                             until the line has been terminated even if a
+                             character has been typed.  Thus, control-A,
+                             control-Q, and control-V will have their
+                             usual effect.  If control[T] has been
+                             executed (page 14.27), defeating line-
+                             buffering,  readc will return a value as soon
+                             as a character is typed.  In addition, if
+                             control-A, control-Q, or control-V are typed,
+                              readc will return them as values.
+
+
+
+peekc[file;flg]              Value is the next character, but does not
+                             actually read it, i.e. remove it from the buffer.
+                             If  flg=NIL,  peekc is not subject to line-
+                             buffering, i.e. it returns a value as soon as
+                             a character has been typed.  If  flg=T,
+                              peekc waits until the line has been
+                             terminated before returning its value.  This means
+                             that control-A, control-Q, and
+                             control-V will be able to perform their usual
+                             editing functions.
+
+
+
+lastc[file]                  Value is  last  character read from  file.
+                             
+
+
+
+Note:  read,  ratom,  ratoms,  peekc,  readc all wait for input if there is
+      none. The only way to test whether or not there is input is to use
+       readp.
+
+
+
+readp[file;flg]         Value is T if there is anything in the input
+                                                                 19
+                             buffer of  file, NIL otherwise.   Note that
+                             because of line-buffering,  readp may return
+                             T, indicating there is input in the buffer, but
+                              read may still have to wait.
+
+
+
+
+
+
+
+**FOOTNOTES**
+19
+    Frequently, the input buffer will contain a single EOL character left over
+    from a previous input.  For most applications, this situation wants to be
+    treated as though the buffer were empty, and so  readp returns NIL.
+    However, if  flg=T,  readp will also return T in this case, i.e. will
+    return T if there is any character in the input buffer.
+
+
+
+
+
+                                     14.13
+
+
+
+                    20
+readline[rdtbl]               reads a  line from the terminal,
+                             returning it as a list.  If readp[T] is NIL,
+                              readline returns NIL.  Otherwise it reads
+                                                      21
+                             expressions, using  read,   until it encounters
+                             either:
+
+
+
+                             (1)  a carriage-return (typed by the user)
+                                  that is not preceded by any spaces, e.g.
+
+                                        A B C
+
+                                                               22
+                                  and  readline returns (A B C)
+
+
+
+                             (2)  a list terminating in a ']', in which
+                                  case the list is included in the value of
+                                   readline, e.g. A B (C D] and  readline
+                                  returns (A B (C D)).
+
+
+
+                             (3)  an unmatched right parentheses or right
+                                  square bracket, which is not included in the
+                                  value of  readline, e.g.
+
+                                       A B C]
+
+                                  and  readline returns (A B C).
+
+
+
+In the case that one or more spaces precede a carriage-return, or a list
+is terminated with a ')',  readline will type '...' and continue reading on the
+
+
+
+
+
+
+**FOOTNOTES**
+20
+     Readline actually has two extra arguments for use by the system, but the
+    user should consider it as a function of one argument.
+
+
+21
+    Actually,  readline performs (APPLY* LISPXREADFN T), as described in
+    Section 22.   lispxreadfn is initially READ.
+
+
+22
+    Note that carriage-return, i.e. the EOL character, can be redefined with
+    setsyntax, page 14.20.  readline actually checks for the EOL character,
+    whatever that may be.  The same is true for right parenthesis and right
+    bracket.
+
+
+
+
+
+                                     14.14
+
+
+          23
+next line,   e.g.
+
+
+
+                   A B C 
+                   ...(D E F)
+                   ...(X Y Z]
+
+
+
+and  readline returns (A B C (D E F) (X Y Z)).
+
+
+
+                              24
+skread[file;rereadstring]    is a  skip  read function.  It moves the file
+                             pointer for  file ahead as if one call to  read
+                             had been performed, without paying the storage and
+                             compute cost to really read in the structure.
+                              rereadstring is for the case where the user has
+                             already performed some  readc's and  ratom's
+                             before deciding to skip this expression.  In this
+                             case,  rereadstring should be the material already
+                             read (as a string), and  skread operates as though
+                             it had seen that material first, thus getting its
+                             paren-count, double-quote count, etc. set up
+                             properly.
+
+
+
+                             The value of  skread is %) if the first thing
+                             encountered was a closing paren; %] if the read
+                             terminated on an unbalanced %], i.e. one which
+                             also would have closed any extant open left
+                             parens; otherwise the value of  skread is
+                             NIL.
+
+
+
+
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+23
+    If the user then types another carriage return, the line will terminate
+    e.g.
+                   A B C 
+                   ...
+
+    and  readline returns (A B C)
+
+
+24
+     skread was written by J. W. Goodwin. It always uses filerdtbl for its
+    readtable.
+
+
+
+
+
+                                     14.15
+
+
+
+ 14.3  Output Functions
+
+
+
+Most of the functions described below have an (optional) argument  file
+which specifies the name of the file on which the operation is to take place.
+If file is NIL, the primary output file will be used. Some of the
+functions have an (optional) argument rdtbl, which specifies the readtable to
+be used for output.  If rdtbl is NIL,  the primary readtable will be
+used.
+
+
+Note: in all INTERLISP-10 symbolic files, end-of-line is indicated by the
+characters carriage-return and line-feed in that order.  Unless
+otherwise stated,  carriage-return appearing in the description of an output
+function means carriage-return and line-feed.
+
+
+
+prin1[x;file]                prints  x on  file.
+
+
+
+prin2[x;file;rdtbl]          prints  x on  file with %'s and "'s inserted
+                             where required for it to read back in properly by
+                              read, using rdtbl.
+
+
+
+Both  prin1 and  prin2 print lists as well as atoms and strings;  prin1 is
+usually used only for explicitly printing formatting characters, e.g.
+(PRIN1 (QUOTE %[)) might be used to print a left square bracket (the %
+would not be printed by  prin1).   prin2 is used for printing S-expressions
+which can then be read back into INTERLISP with  read i.e.  break and separator
+characters in atoms will be preceded by %'s, e.g. the atom '()' is printed as
+%(%) by  prin2.  If  radix=8,  prin2 prints a  Q after integers but
+ prin1 does not (but both print the integer in octal).
+
+
+
+print[x;file;rdtbl]          Prints the S-expression  x using  prin2;
+                             followed by a carriage-return line-feed.  Its
+                             value is  x.
+
+
+
+For all printing functions, pointers other than lists, strings, atoms, or
+numbers, are printed as #N, where N is the octal representation of the
+address of the pointer (regardless of radix).  Note that this will  not read
+back in correctly, i.e., it will read in as the atom '#N'.
+
+
+
+spaces[n;file]               Prints  n spaces; its value is NIL.
+
+
+
+terpri[file]                 Prints a carriage-return; its value is
+                             NIL.
+
+
+
+
+
+
+
+                                     14.16
+
+
+
+ Printlevel
+
+
+
+The print functions  print,  prin1, and  prin2 are all
+affected by a level parameter set by:
+
+
+
+printlevel[n]                Sets print level to  n, value is old setting.
+                             Initial value is 1000.  printlevel[] gives current
+                             setting.
+
+
+
+The variable  n controls the number of unpaired left parentheses which will be
+printed.  Below that level, all lists will be printed as &.
+
+
+
+Suppose  x = (A (B C (D (E F) G) H) K).  Then if  n = 2, print[x] would print
+
+(A (B C & H) K), and if  n = 3, (A (B C (D & G) H) K), and if  n = 0, just &.
+
+
+
+If printlevel is negative, the action is similar except that a carriage-return
+is inserted between all occurrences of right parenthesis immediately followed
+by a left parenthesis.
+
+
+
+The printlevel setting can be changed dynamically, even while INTERLISP is
+printing, by typing control-P followed by a number, i.e. a string of
+                                                  25
+digits, followed by a period or exclamation point.   The printlevel will
+                                  26
+immediately be set to this number.   If the print routine is currently deeper
+than the new level, all unfinished lists above that level will be terminated by
+"--)". Thus, if a circular or long list of atoms, is being printed out,
+typing control-P0. will cause the list to be terminated.
+
+
+
+
+
+**FOOTNOTES**
+25
+    As soon as control-P is typed, INTERLISP clears and saves the input
+    buffer, clears the output buffer, rings the bell indicating it
+    has seen the control-P, and then waits for input which is terminated by any
+    non-number.  The input buffer is then restored and the program continues.
+    If the input was terminated by other than a period or an exclamation point,
+    it is ignored and printing will continue, except that characters cleared
+    from the output buffer will have been lost.
+
+
+26
+    Another way of "turning off" output is to type control-O, which simply
+    clears the output buffer, thereby effectively skipping the next (up
+    to) 64 characters.
+
+
+
+
+
+                                     14.17
+
+
+
+If a period is used to terminate the printlevel setting, the printlevel will be
+returned to its previous setting after this printout.  If an exclamation point
+is used, the change is permanent and the printlevel is not restored (until it
+is changed again).
+
+
+
+Note:  printlevel only affects  terminal output.  Output to all other files
+      acts as though level is infinite.
+
+
+
+
+                                     27
+ 14.4  Readtables and Terminal Tables   
+
+
+
+The INTERLISP input and (to a certain extent) output routines are table driven
+                                                          28
+by readtables and terminal tables.  A readtable is a datum   that contains
+information about the syntax class of each character, e.g. break character,
+separator character, escape character, list or string delimiter, etc.  The
+system packages use three readtables:  T for input/output from terminals, (the
+value of) filerdtbl for input/output from files, and (the value of) editrdtbl,
+for input from terminals while in the editor.  These  three tables are
+initially equal but not eq.  Using the functions described below, the user may
+change, reset, or copy these tables.  He can also create his own readtables,
+and either explicitly pass them to input/output functions as arguments, or
+install them as the primary readtable, via setreadtable, and then not
+specify a rdtbl argument, i.e. use  NIL.
+
+
+
+In the discussion below, most functions that accept readtable arguments will
+also accept NIL as indicating the primary readtable, or T as indicating the
+system's readtable for terminals.  Where indicated, some will also accept ORIG
+(not the value of ORIG) as indicating the original system readtable.
+
+
+
+ Readtable Functions
+
+
+
+readtablep[rdtbl]            Value is rdtbl, if rdtbl is a real readtable,
+                             otherwise NIL.
+
+
+
+
+
+
+**FOOTNOTES**
+27
+    Readtables and terminal tables were designed and implemented by D. C.
+    Lewis.
+
+
+28
+    In INTERLISP-10, readtables are represented (currently) by 128 word arrays.
+
+
+
+
+
+                                     14.18
+
+
+
+getreadtable[rdtbl]          If  rdtbl=NIL, value is primary read table.
+                             If  rdtbl=T, value is system's  readtable for
+                             terminals. If rdtbl is a real readtable, value is
+                             rdtbl.  Otherwise, generates an ILLEGAL READTABLE
+                             error.
+
+
+
+                                                                       29
+setreadtable[rdtbl;flg]      resets primary readtable to be rdtbl.
+                             Generates ILLEGAL READTABLE error if rdtbl is
+                             not NIL, T, or a real readtable.  Value is
+                             previous setting of primary readtable, i.e.
+                             setreadtable is suitable for use with resetform
+                             (section 5).
+
+
+
+copyreadtable[rdtbl]         value is a copy of rdtbl.  rdtbl can be a
+                             real readtable, NIL, T, or ORIG, in which case
+                             value is a copy of original system readtable,
+                             otherwise generates an ILLEGAL READTABLE
+                             error.  Note that copyreadtable is the only
+                             function that creates a readtable.
+
+
+
+resetreadtable[rdtbl;from]   copies (smashes) from into rdtbl.  from and
+                             rdtbl can be NIL, T, or a real readtable.  In
+                             addition, from can be ORIG, meaning use system's
+                             original readtable.
+
+
+
+ Syntax Classes 
+
+
+
+A syntax class is a group of characters which behave the same with respect to a
+particular input/output operation.  For example, break characters belong to the
+syntax class BREAK, separators belong to the class SEPR, [ belongs to
+the class LEFTBRACKET, " to  STRINGDELIM, etc.  Characters that are not
+                                                 30
+otherwise special belong to the class OTHER.
+
+
+
+
+
+**FOOTNOTES**
+29
+    If  flg=T, setreadtable resets the system  readtable for terminals.  Note
+    that the user can reset the other system readtables with setq, e.g.
+    (SETQ FILERDTBL (GETREADTABLE)).
+
+
+30
+    There are currently 11 syntax classes for readtables: LEFTBRACKET,
+    RIGHTBRACKET, LEFTPAREN, RIGHTPAREN, STRINGDELIM, ESCAPE, BREAK, SEPR,
+    BREAKCHAR, SEPRCHAR, and OTHER.  Syntax classes for terminal tables are
+    discussed on page 14.24.
+
+
+
+
+
+                                     14.19
+
+
+
+The  functions below are used to obtain and (re)set the syntax class of a
+character.  ch can either be a character code, or a character, i.e. if ch is a
+number, it is interpreted as a character code. For example, in INTERLISP-10, 1
+indicates control-A, and 49 indicates the character 1.
+
+
+
+getsyntax[ch;table]          Value is syntax class of ch with respect to
+                             table. table can be NIL, T, ORIG, or a real
+                             readtable or terminal table.  ch is either a
+                             character code, a character, or a syntax class. In
+                             the last case, the value of getsyntax is a list of
+                             the character codes in that class, e.g.
+                             getsyntax[BREAK]=getbrk[].
+
+
+
+setsyntax[ch;class;table]                    ch, a character code, or a
+                             sets syntax class of 
+                             character. table can be either NIL, T, or a real
+                             readtable or terminal table. class is a syntax
+                             class, or in the case of read-macro characters
+                             (page 14.21), an expression of the form
+                             (type fn). The value of setsyntax is the
+                             previous class of  ch.
+
+
+
+                             setsyntax will also accept  class=NIL, T, ORIG, or
+                             a real readtable or terminal table, as being
+                             equivalent to getsyntax[ch;class], i.e. means give
+                             ch the syntax class it has in the table indicated
+                             by class, e.g. setsyntax[%(;ORIG].  class can also
+                             be a character code or character, which is
+                             equivalent to getsyntax[class;table], i.e. means
+                             give ch the syntax class of the character
+                             indicated by  class, e.g. setsyntax[{;%[].
+
+
+
+syntaxp[code;class;table]    table is NIL, T, or a real readtable or
+                             terminal table.  Value is T if code is a member of
+                             syntax class class, e.g. syntaxp[41;LEFTPAREN]=T.
+                             syntaxp compiles open.  Note that syntaxp will not
+                             accept a character as an argument.
+
+
+
+ Format Characters
+
+
+
+
+A format character is a character which is recognized as special by read.
+There are six format characters in INTERLISP namely [, ], (, ), ", and %.  The
+six corresponding syntax classes are: LEFTBRACKET, RIGHTBRACKET, LEFTPAREN,
+RIGHTPAREN, STRINGDELIM,  and ESCAPE.  (Note that
+the class ESCAPE refers to the input escape character.) Making a character be a
+format character does not disable the character currently filling that
+function, i.e. it is perfectly acceptable to have both { and [ function as left
+brackets. To disable a format character, assign it syntax class OTHER, e.g.
+setsyntax[%";OTHER].
+
+
+
+
+
+                                     14.20
+
+
+
+ Breaks, Separators, and Readtables
+
+
+
+The syntax class BREAK (or SEPR) corresponds to those characters
+treated as break (or separator) characters by ratom. Thus,
+getsyntax[BREAK;rdtbl] is equivalent to getbrk[rdtbl], and
+setsyntax[ch;BREAK;rdtbl] is equivalent to setbrk[list[ch];1;rdtbl].  Note that
+the characters corresponding to the syntax classes LEFTBRACKET, RIGHTBRACKET,
+LEFTPAREN, RIGHTPAREN, STRINGDELIM, 
+and ESCAPE are all break characters, and therefore members of the class BREAK.
+However, getsyntax applied to these characters will return the syntax class
+corresponding to their format character function, not BREAK.
+
+
+
+In fact,  getsyntax will never return BREAK or SEPR as a value. Instead,
+characters which are break or separator characters but have no other special
+function belong to the syntax class BREAKCHAR or  SEPRCHAR (as well
+as being members of the class BREAK or SEPR). In most cases, BREAK
+can be used interchangeably with BREAKCHAR.  However, note that
+setsyntax[%(;BREAK] is a nop (since %( is already a break character), but that
+setsyntax[%(;BREAKCHAR] means make %( be just a break character, and therefore
+disables the LEFTPAREN function of %(. It is equivalent to setsyntax[%(;OTHER]
+followed by setsyntax[%(;BREAK]. If the user does disable one of the format
+characters, e.g. by performing setsyntax[%(;OTHER], it is not sufficient for
+restoring the formatting function simply to make the character again into a
+break character, i.e. setsyntax[%(;BREAK] would not restore %( as LEFTPAREN.
+
+
+
+ Read Macro Characters
+
+
+
+The user can define various characters as read macro characters by specifying
+as a class an expression of the form (type fn), where type is MACRO, SPLICE, or
+INFIX, and fn is the name of a function, or a lambda expression.  Whenever read
+encounters a read-macro character, it calls the associated function, giving it
+as arguments the input file and readtable being used for that call to read. The
+interpretation of the value returned depends on the type of read-macro:
+
+
+
+
+(1) MACRO                    The result is inserted into the input as if that
+                             expression had been read, instead of the
+                             read-macro character. For example, ' could be
+                             defined by:
+
+                                [MACRO(LAMBDA(FL RDTBL)(KWOTE(READ FL RDTBL].
+
+
+
+
+(2) SPLICE                   The result (which should be a list or NIL) is
+                              nconc'ed into the input list, e.g. if ! is
+                             defined by (SPLICE (LAMBDA NIL (APPEND FOO))), and
+                             the value of foo is (A B C), when the user inputs
+                             (X ! Y), the result will be (X A B C Y).
+
+
+
+
+
+
+                                     14.21
+
+
+
+
+(3) INFIX                    The associated function is called with the list of
+                             what has been read (current level list only), in
+                             tconc format,  as its third argument.  The
+                             function's value is taken as a new tconc list
+                             which replaces the old one.  For example, + could
+                             be defined by:
+
+                                  (INFIX (LAMBDA (FL RDTBL Z)
+                                            (RPLACA (CDR Z)
+                                                    (LIST (QUOTE IPLUS)
+                                                          (CADR Z)
+                                                          (READ FL RDTBL)))
+                                            Z))
+
+
+
+Note that read-macro characters can be 'nested.' For example, if = is defined
+by (MACRO (LAMBDA (FL RDTBL) (EVAL (READ FL RDTBL)))) and ! by
+(SPLICE (LAMBDA (FL RDTBL) (READ FL RDTBL))), then if the value of foo is
+(A B C), and (X =FOO Y) is input, (X (A B C) Y) will be returned. If
+(X !=FOO Y) is input, (X A B C Y) will be returned.
+
+
+
+Note that if a read-macro's function calls read, and the read returns NIL, the
+function cannot distinguish the case where a  RIGHTPAREN or RIGHTBRACKET
+followed the read-macro character, e.g. (A B '),  from the case where the atom
+NIL (or '()') actually appeared.  Thus the first case is disallowed, i.e.
+reading a single RIGHTPAREN or RIGHTBRACKET via a read inside of a read-macro
+function.  If this occurs, the paren/bracket will be put back into the input
+                                                              31
+buffer, and a READ-MACRO CONTEXT ERROR will be generated.
+
+
+
+readmacros[flg;rdtbl]        If  flg=NIL, turns off action of readmacros
+                             in rdtbl.  If  flg=T, turns them on.  Value is
+                             previous setting.  
+
+
+
+ Terminal Tables 
+
+
+
+A readtable contains input/output information that is media-independent.  For
+example, the action of parentheses is the same regardless of the device from
+
+
+
+
+**FOOTNOTES**
+31
+    If a call to  read from within a readmacro encounters an unmatched
+    RIGHTBRACKET within a list, the bracket is also put back into the buffer to
+    be read (again) at the higher level.  Thus, inputting an expression such as
+    (A B '(C D] will work correctly.
+
+
+
+
+
+
+
+
+                                     14.22
+
+
+                                                                32
+which the input is being performed.  A terminal table is a datum   that
+contains those syntax classes of characters that pertain to terminal
+input/output operations only, e.g. DELETECHAR  (control-A),
+DELETELINE (control-Q), etc.  In addition, terminal tables contain such
+information as how line-buffering is to be performed, how control characters
+are to be echoed/printed, whether lower case input is to be converted to upper
+case, etc.
+
+
+
+Using the functions below, the user may change, reset, or copy terminal tables.
+He can also create his own terminal tables and install them as the primary
+terminal table via  settermtable. However, unlike readtables, terminal
+tables cannot be passed as arguments to input/output functions.
+
+
+
+ Terminal Table Functions
+
+
+
+termtablep[ttbl]             value is ttbl, if ttbl is a real terminal
+                             table, NIL otherwise.
+
+
+
+gettermtable[ttbl]           If  ttbl=NIL, value is primary (i.e. current)
+                             terminal table.  If ttbl is a real terminal table,
+                             value is ttbl.  Otherwise, generates an
+                             ILLEGAL TERMINAL TABLE error.
+
+
+
+settermtable[ttbl]           resets primary terminal table to be  ttbl.
+                             Value is previous  ttbl.  Generates an
+                             ILLEGAL TERMINAL TABLE error if  ttbl is not
+                             a real terminal table.
+
+
+
+copytermtable[ttbl]     value is a copy of  ttbl.  ttbl can be a real
+                             terminal table, NIL, or ORIG, in which case value
+                             is a copy of the original system terminal table.
+                             Note that copytermtable is the only function that
+                             creates a terminal table.
+
+
+
+resettermtable[ttbl;from]       from into  ttbl. from and  ttbl can be NIL
+                             smashes 
+                             or a real terminal table.  In addition, from can
+                             be ORIG, meaning use system's original terminal
+                             table.
+
+
+
+
+
+**FOOTNOTES**
+32
+    In INTERLISP-10, terminal tables are represented (currently) by 16 word
+    arrays.
+
+
+
+
+
+                                     14.23
+
+
+
+getsyntax, setsyntax, and syntaxp all work on terminal tables as well as
+readtables.  When given NIL as a table argument, getsyntax and syntaxp use the
+primary readtable or  primary terminal table depending on which table
+contains the indicated class argument, e.g. setsyntax[ch;BREAK] will refer to
+the primary readtable, setsyntax[ch;CHARDELETE] will refer to the primary
+terminal table.  In the absence of such information, all three functions
+default to the primary readtable, e.g. setsyntax[ch1;ch2] refers to the primary
+read table.  If given incompatible class and table arguments, all three
+functions generate errors, e.g. setsyntax[ch;BREAK;ttbl], where ttbl is a
+terminal table, generates an ILLEGAL READTABLE error,
+getsyntax[CHARDELETE;rdtbl] an ILLEGAL TERMINAL TABLE error.
+
+
+
+ Terminal Syntax classes
+
+
+
+There are currently six terminal syntax classes: CHARDELETE (or DELETECHAR),
+LINEDELETE (or DELETELINE), RETYPE, CTRLV (or CNTRLV), and EOL
+ These classes
+correspond (initially) to the characters control-A, control-Q, control-R,
+                                       33
+control-V, and carriagereturn/linefeed.   All other  characters belong to
+terminal syntax class NONE. The classes CHARDELETE, LINEDELETE, RETYPE,
+CTRLV, and EOL can contain at most one character.  When a new character is
+assigned one of these syntax classes by setsyntax, the previous character is
+disabled, i.e. reassigned the syntax class NONE, and the value of setsyntax
+will be the code for the previous character of that class, if any, otherwise
+NIL.
+
+
+
+ Terminal Control Functions
+
+
+
+
+echocontrol[char;mode;ttbl]  Used to indicate how control characters are
+                             to be echoed or printed.  char is a character or
+                             character code.  If  mode=IGNORE, char is never
+                             printed.  If  mode=REAL, char itself will be
+                             printed.  If  mode=SIMULATE, output will be
+                             simulated. If  mode=UPARROW, char will be printed
+                             as ^ followed by the corresponding alphabetic
+                             character.  The value of echocontrol is the
+                             previous output mode for  char.  If  mode=NIL, the
+                             value is the current output mode without changing
+                             it.
+
+
+
+Note that echoing information can be independently specified for control
+
+
+
+**FOOTNOTES**
+33
+    On input from a terminal, the EOL character signals to the line buffering
+    routine to pass the input back to the calling function.  It also is used to
+    terminate inputs to readline, page 14.14.
+
+
+
+
+
+                                     14.24
+
+
+
+characters only.  (However, the function  echomode described below can be used
+to disable all echoing.) Therefore, if  char is an alphabetic character (or
+code), it refers to the corresponding control character, e.g.
+charcontrol[A;UPARROW] makes control-A echo as ^A. All other values of  char
+generate ILLEGAL ARG errors.
+
+
+
+echomode[flg;ttbl]           If  flg=T, turns echoing for terminal table
+                              ttbl on. If  flg=NIL, turns echoing off. Value is
+                             previous  setting.
+
+
+
+deletecontrol[type;message;ttbl]       used for specifying the output
+                             protocol when a CHARDELETE or LINEDELETE is typed
+                             according to the following interpretations of
+                              type:
+
+
+                                 LINEDELETE     message is the message printed
+                                               when LINEDELETE character is
+                                               typed. Initially "##<cr>".
+
+                                 1STCHDEL       message is the message printed
+                                               the first time CHARDELETE is
+                                               typed. Initially "\".
+
+                                 NTHCHDEL       message is the message printed
+                                               on subsequent CHARDELETE's
+                                               (without intervening
+                                               characters). Initially "".
+
+                                 POSTCHDEL      message is the message printed
+                                               when input is resumed following
+                                               a sequence of one or more
+                                               CHARDELETE's. Initially
+                                                        34
+                                               "\".
+
+                                 EMPTYCHDEL     message is the message printed
+                                               when a CHARDELETE is typed and
+                                               there are no characters in the
+                                               buffer. Initially "##<cr>".
+
+                                 ECHO          the characters deleted by
+                                               CHARDELETE are echoed.
+
+                                 NOECHO        the characters deleted by
+                                               CHARDELETE are not echoed.
+
+
+
+
+
+
+**FOOTNOTES**
+34
+    This setting of 1STCHDEL, NTHCHDEL, and POSTCHDEL makes it easy to
+    determine exactly what has been deleted, namely all of the characters
+    between the \'s.
+
+
+
+
+
+                                     14.25
+
+
+
+                             For LINEDELETE, 1STCHDEL, NTHCHDEL, POSTCHDEL, and
+                             EMPTYCHDEL, the message to be printed must be less
+                             than 5 characters. The value of  deletecontrol
+                             will be the previous message as a string. If
+                              message=NIL, the value will be the previous
+                             message without changing it.  For ECHO and NOECHO,
+                             the value of  deletecontrol is the previous echo
+                             mode, i.e.  ECHO or NOECHO.  message is ignored.
+
+
+
+Note:  If the user's terminal is a scope terminal, deletecontrol and
+ echocontrol can be used to make it really delete the last character by
+performing the following: echocontrol[8;REAL], (8 is code for control-H, which
+is backspace) deletecontrol[NOECHO], (eliminates echoing of deleted characters)
+deletecontrol[1STCHDEL;"^H ^H"], and deletecontrol[NTHCHDEL;"^H ^H"].
+
+
+
+
+raise[flg;ttbl]         If  flg=T, input is echoed as typed, but lowercase
+                             letters are converted to upper case. If  flg=NIL,
+                             all characters are passed as typed. Value is
+                                              35
+                             previous setting.
+
+
+
+
+ Line-buffering and CONTROL
+
+
+
+In INTERLISP's normal state, characters typed on the terminal
+(this section does not apply in any way to input from a file) are transferred
+to a line buffer.  Characters are transmitted from the line buffer to
+whatever input function initiated the request (i.e.,  read,  ratom,  rstring,
+
+
+
+
+**FOOTNOTES**
+35
+    In INTERLISP-10, both raise[] and raise[T] execute TENEX JSYS calls
+    corresponding to the TENEX command NORAISE. Conversion of
+    lowercase characters to uppercase before echoing is also available via
+    raise[0], which executes the JSYS calls corresponding to the TENEX command
+    RAISE.  The conversion is then performed at the TENEX level, i.e. before
+    INTERLISP-10 even sees the characters.  The initial setting of  raise in
+    INTERLISP-10 is determined by the terminal mode at the time the user first
+    starts up the system. Following a  sysin, the raise mode is restored to
+    whatever it was prior to the corresponding  sysout.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                     14.26
+
+
+
+          36                                           37
+or  readc)   only when a carriage-return is typed.   Until this time, the
+user can delete characters one at a time from the input buffer by typing
+control-A.  The characters are echoed preceded by a \. Or, the user
+can delete the entire line buffer back to the last carriage-return by typing
+                                                       38
+control-Q, in which case INTERLISP echoes ##.   (If no characters are
+in the buffer and either control-A or control-Q is typed, INTERLISP echoes
+    39
+##.)
+
+
+
+Note that this line editing is not performed by  read or  ratom, but by
+INTERLISP, i.e. it does not matter (nor is it necessarily known) which function
+will ultimately process the characters, only that they are still in the
+INTERLISP input buffer. Note also that it is the function that is
+currently requesting input that determines whether parentheses counting is
+observed, e.g. if the user executes (PROGN (RATOM) (READ)) and types in
+A (B C D) he will have to type in the carriage-return following the right
+parenthesis before any action is taken, whereas if he types
+(PROGN (READ) (READ)) he would not.  However, once a carriage-return has been
+typed, the entire line is 'available' even if not all of it is processed by the
+function initiating the request for input, i.e. if any characters are 'left
+over', they will be returned immediately on the next request for input.  For
+example, (PROGN (RATOM) (READC)) followed by A B carriage-return will perform
+both operations.
+
+
+
+
+ Turning-off Line-buffering
+
+
+
+
+
+
+**FOOTNOTES**
+36
+     peekc is an exception; it returns the character immediately.
+
+
+37
+    As mentioned earlier, for calls from  read, the characters are also
+    transmitted whenever the parentheses count reaches 0.  In this case,
+    if the third argument to  read is NIL, INTERLISP also outputs a carriage-
+    return line-feed.
+
+
+38
+    Typing rubout  clears the entire input buffer at the time it is typed,
+    whereas the action of control-A and control-Q occurs at the time they are
+    read. Rubout can thus be used to clear type-ahead.
+
+
+39
+    As described earlier, the CHARDELETE, LINEDELETE, and EOL characters can
+    all be redefined.  Therefore, references to control-A, control-Q, or
+    carriage return in the discussion actually refer to the current CHARDELETE,
+    LINEDELETE, or EOL characters, whatever they may be.
+
+
+
+
+
+                                     14.27
+
+
+
+The function  control is available to defeat this line-buffering.  After
+control[T], characters are returned to the calling function without line-
+buffering as described below.  The function that initiates the request for
+input determines how the line is treated:
+
+
+
+1.  read
+
+if the expression being typed is a list, the effect is the same as though
+control were NIL, i.e.  line-buffering until carriage-return or matching
+parentheses.  If the expression being typed is not a list, it is returned as
+                                                                40
+soon as a break or separator character is encountered,   e.g. (READ)
+followed by ABC space will immediately return ABC.  Control-A and
+control-Q editing are available on those characters still in the buffer.
+Thus, if a program is performing several reads under control[T], and the user
+types NOW IS THE TIME followed by control-Q, he will delete only TIME since the
+rest of the line has already been transmitted to  read and processed.
+
+
+
+2.  ratom
+
+characters are returned as soon as a break or separator character is
+encountered.  Before then, control-A and control-Q may be used as
+with  read, e.g. (RATOM) followed by ABCcontrol-Aspace will return AB.  (RATOM)
+followed by (control-A will return ( and type ## indicating that control-A
+was attempted with nothing in the buffer, since the ( is a break character and
+would therefore already have been read.
+
+
+
+3.  readc/ peekc
+
+the character is returned immediately; no line editing is possible.
+In particular, (READC) followed by control-A will read the control-A,
+(READC) followed by % will read the %.
+
+
+
+control[u;ttbl]               u=T      eliminates INTERLISP's normal
+                                       line-buffering for the terminal table
+                                       ttbl.
+
+                             u=NIL     restores line-buffering (normal).
+
+
+
+                             The value of  control  is its previous  setting.
+                             
+
+
+**FOOTNOTES**
+40
+    An exception to the above occurs when the break or separator character is a
+    (, ", or [, since returning at this point would leave the line buffer in a
+    "funny" state.  Thus if control is T and (READ) is followed by 'ABC(', the
+    ABC will not be read until a carriage-return or matching parentheses is
+    encountered.  In this case the user could control-Q the entire line, since
+    all of the characters are still in the buffer.
+
+
+
+
+
+                                     14.28
+
+
+
+ 14.5  Miscellaneous Input/Output Control Functions
+
+
+
+clearbuf[file;flg]           Clears the input buffer for  file.  If
+                              file is T and  flg is T, contents of INTERLISP's
+                             line buffer and the system buffer are saved
+                             (and can be obtained via  linbuf and
+                              sysbuf described below).
+
+                             When either control-D, control-E,
+                             control-H, control-P, or control-S
+                             is typed, INTERLISP automatically does a
+                             clearbuf[T;T].  (For control-P and control-S,
+                             INTERLISP restores the buffer after the
+                             interaction.  See Appendix 3.)
+
+
+
+linbuf[flg]                  if  flg=T, value is INTERLISP's line
+                             buffer (as a string) that was saved at last
+                             clearbuf[T;T].  If  flg=NIL, clears this
+                             internal buffer.
+
+
+
+sysbuf[flg]                  same as  linbuf for system buffer.
+
+
+
+If both the system buffer and INTERLISP's line buffer are empty, the internal
+buffers associated with  linbuf and  sysbuf are not changed by a clearbuf[T;T].
+
+
+
+bklinbuf[x]                   x is a string.   bklinbuf sets INTERLISP's
+                             line buffer to  x.  If greater than 160
+                             characters, first 160 taken.
+
+
+
+bksysbuf[x]                   x is a string.   bksysbuf sets system buffer
+                             to  x.  The effect is the same as though the user
+                             typed  x.
+
+
+
+ bklinbuf,  bksysbuf,  linbuf, and  sysbuf provide a way of
+'undoing' a  clearbuf.  Thus if the user wants to "peek" at various
+characters in the buffer, he could perform clearbuf[T;T], examine the buffers
+via  linbuf and  sysbuf, and then put them back.
+
+
+
+                                                     41
+radix[n]                     Resets output radix   to |n| with sign
+
+
+**FOOTNOTES**
+41
+    Currently, there is no input radix.
+
+
+
+
+
+                                     14.29
+
+
+
+                             indicator the sign of n.  For example, in
+                             INTERLISP-10, -9 will print as shown with the
+                             following radices:
+
+
+
+                                   radix          printing
+
+                                   10               -9
+
+                                  -10            68719476727
+
+                                                 i.e. (2^36-9)
+
+                                    8               -11Q
+
+                                   -8            777777777767Q
+
+
+
+                             Value of  radix is its last setting.  radix[]
+                             gives current setting without changing it.
+                             Initial setting is 10.
+
+
+
+fltfmt[n]                    In INTERLISP-10, sets floating format control
+                             to  n (See TENEX JSYS manual for
+                             interpretation of  n).  fltfmt[T] specifies free
+                             format (see Section 3).  Value of  fltfmt is
+                             last setting.  fltfmt[] returns current setting
+                             without changing it.  Initial setting is T.
+
+
+
+linelength[n]                Sets the length of the print line for all
+                             files.  Value is the former setting of the line
+                             length.  Whenever printing an atom would go beyond
+                             the length of the line, a carriage-return is
+                             automatically inserted first.  linelength[]
+                             returns current setting.  Initial setting is 72.
+
+
+
+position[file;n]             Gives the column number the next character
+                             will be read from or printed to, e.g. after a
+                             carriage-return,  position=0.  If  n is non-NIL,
+                             resets  position to  n.
+
+
+
+Note that position[file] is not the same as sfptr[file] which gives
+the position in the file, not on the line.
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                     14.30
+
+
+
+ 14.6  Sysin and Sysout
+
+
+
+sysout[file]                 Saves the user's private memory on  file.
+                             Also saves the stacks, so that if a program
+                             performs a  sysout, the subsequent  sysin will
+                             continue from that point, e.g.
+
+                             (PROGN (SYSOUT (QUOTE FOO)) (PRINT (QUOTE HELLO)))
+
+                             will cause HELLO will be printed after
+                             (SYSIN (QUOTE FOO)) The value of  sysout is  file
+                                         42
+                             (full name).   A value of NIL indicates the
+                              sysout was unsuccessful, i.e., either disk or
+                             computer error, or user's directory was full.
+
+
+
+ Sysout does  not save the state of any open files.
+
+
+Whenever the INTERLISP system is reassembled and/or reloaded, old  sysout files
+are  not compatible with the new system.
+
+
+sysin[file]                  restores the state of INTERLISP from a
+                                          43
+                              sysout file.   Value is list[file].  If  sysin
+                             returns NIL, there was a problem in reading the
+                             file.  If  file is not found, generates a FILE NOT
+                             FOUND error.
+
+
+
+Since  sysin continues immediately where  sysout left off, the only way for a
+program to determine whether it is just coming back from a  sysin or from a
+ sysout is to test the value of  sysout.
+
+
+
+For example, (COND ((LISTP (SYSOUT (QUOTE FOO))) (PRINT (QUOTE HELLO)))) will
+
+
+
+**FOOTNOTES**
+42
+     sysout is advised to set the variable  sysoutdate to (DATE), i.e. the
+    time and  date that the sysout was performed.   sysout is also advised to
+    evaluate the expressions on  aftersysoutforms when coming back from a
+     sysin, i.e. when the value being returned by  sysout is a list.
+
+
+43
+    In INTERLISP-10,  file is a runnable file, i.e. it is not necessary to
+    start up an INTERLISP and call  sysin in order to restore the state of the
+    user's program.  Instead, the user can treat the sysout file the same as a
+    SAV file, i.e. use the TENEX RUN command, or simply type the file name to
+    TENEX, and the effect will be exactly the same as having performed a
+     sysin.
+
+
+
+
+
+                                     14.31
+
+
+
+cause HELLO to be printed following the  sysin, but not when the  sysout
+was performed.
+
+
+
+
+ 14.7  Symbolic File Input
+
+
+
+readfile[file]               Reads successive S-expressions from file
+                             using read (with filerdtbl as readtable)
+                             until the single atom STOP is read, or an end of
+                             file encountered.  Value is a list of these
+                             S-expressions.
+
+
+
+load[file;ldflg;printflg]    Reads successive S-expressions from  file
+                             (with filerdtbl as readtable) and evaluates
+                             each as it is read, until it reads either NIL, or
+                             the single atom STOP. Value is  file (full
+                             name).
+
+
+
+                             If  printflg=T,  load prints the value of each S-
+                             expression; otherwise it does not.   ldflg affects
+                             the operation of  define,  defineg,  rpaq, and
+                              rpaqq.  While  load is operating,
+                                                                         44
+                              dfnflg (Section 8) is reset to  ldflg.
+                             Thus, if  ldflg=NIL, and a function is redefined,
+                             a message is printed and the old definition
+                             saved. If  ldflg=T, the old definition is
+                             simply overwritten.  If  ldflg=PROP, the function
+                             definitions are stored on the property lists under
+                             the property EXPR.  If  ldflg=ALLPROP,
+                             not only function definitions but also variables
+                             set by  rpaqq and  rpaq are stored on
+                                            45
+                             property lists.
+
+
+
+
+
+
+
+**FOOTNOTES**
+44
+    Using  resetvar (Section 5).   dfnflg cannot simply be rebound because it
+    is a global variable.  See section 18.
+
+
+45
+    except when the variable has value NOBIND, in which case it is set to
+    the indicated value regardless of  dfnflg.
+
+
+
+
+
+
+
+
+                                     14.32
+
+
+                                 46
+loadfns[fns;file;ldflg;vars]      permits selective loading of function
+                             definitions.   fns is a list of function names, a
+                             single function name, or T, meaning all
+                                       47
+                             functions.    file can be either a compiled or
+                             symbolic file, i.e., any file that can be loaded
+                             by  load.  The interpretation of  ldflg is the
+                             same as for  load.
+
+
+
+                              vars specifies which non-DEFINEQ expression
+                             are to be loaded (i.e. evaluated):  T means all,
+                             NIL means none, VARS is same as (RPAQQ RPAQ),
+                             FNS/VARS is same as (fileCOMS fileBLOCKS), and any
+                             other atom is the same as list[atom].
+
+
+
+                             When  vars is a list, each atom on  vars is
+                             compared with both  car and  cadr of non-DEFINEQ
+                             expressions, e.g. either RPAQQ or FOOCOMS can be
+                             used to indicate (RPAQQ FOOCOMS --) should be
+                             loaded. For more complicated specification, each
+                             list on  vars is treated as an edit pattern and
+                             matched with the entire non-DEFINEQ expression.
+                             In other words, a non-DEFINEQ expression will be
+                             loaded if either its  car or  cadr is eq to some
+                             member of  vars, or it matches (using edit4e) some
+                             list on vars, e.g.
+                             (FOOCOMS DECLARE: (DEFLIST & (QUOTE MACRO))) would
+                             cause (RPAQQ FOOCOMS --), all DECLARE:'s, and all
+                             DEFLIST's which set up MACRO's to be read and
+                             evaluated.
+
+
+
+                             The value of  loadfns is a list of (the names of)
+                             the functions that were found, plus a list of
+                             those functions not found (if any) headed by the
+                             atom NOT-FOUND: e.g. (FOO FIE (NOT-FOUND:
+                             FUM)).  If  vars is non-NIL, the value will also
+                             include those expressions that were loaded, plus a
+                             list of those members of  vars for which no
+                             corresponding expressions were found (if any),
+                             again headed by the atom NOT-FOUND:.
+
+
+
+
+
+
+**FOOTNOTES**
+46
+     loadfns was originally written by J. W. Goodwin, and subsequently modified
+    by W. Teitelman.
+
+
+47
+    If a compiled definition is loaded, so are all compiler generated
+    subfunctions.
+
+
+
+
+
+                                     14.33
+
+
+
+                              If  file=NIL,  loadfns will use whereis (page
+                             14.60) to determine where the first function in
+                              fns resides, and load from that file.  Note that
+                             the file must previously have been 'noticed'.
+                             (For more discussion, see page 14.52).
+
+
+
+loadvars[vars;file;ldflg]    same as loadfns[NIL,file;ldflg;vars]
+
+
+
+loadfrom[file;fns;ldflg]     same as loadfns[fns;file;ldflg;T]
+
+
+
+As mentioned in section 9, once the file package knows about the contents of a
+file, the user can edit functions contained in the file without explicitly
+loading them.  Similarly, those functions which have not been modified do not
+have to be loaded in order to write out an updated version of the file.  Files
+are normally  noticed, i.e.  their contents become known to the file package
+(page 14.52), when either the symbolic or compiled versions of the file are
+loaded.  If the file is not going to be loaded, the preferred way to notice it
+is with  loadfrom.  For example, if the user wants to update the file FOO by
+editing the function FOO1 contained in it, he need only perform loadfrom[FOO],
+edit[FOO1], and makefile[FOO].  Note that the user can also load some functions
+at the same time by giving  loadfrom a second argument, e.g.
+loadfrom[FOO;FOO1], but its raison d'etre is to inform the file package about
+the existence and contents of a particular file.
+
+
+
+loadblock[fn;file;ldflg]     calls  loadfns on those functions contained
+                                                                     48
+                             in the block declaration containing  fn.
+
+
+
+ File Maps
+
+
+
+A file map is a data structure which contains a symbolic 'map' of the contents
+                                                                 49
+of a file.  Currently, this consists of the begin and end address   for each
+ defineq expression in the file, the begin and end address for each function
+definition within the  defineq, and the begin and end address for each compiled
+
+
+
+
+**FOOTNOTES**
+48
+     loadblock is designed primarily for use with symbolic files, i.e. to load
+    the exprs for a given block.   It will not load a function which already
+    has an in-core expr definition,  and it will  not load the block name,
+    unless it is also one of the block functions.
+
+
+49
+    byte address, see  sfptr, page 14.5.
+
+
+
+
+
+                                     14.34
+
+
+
+         50
+function.
+
+
+
+makefile, prettydef, loadfns, recompile, and numerous other system functions
+depend heavily on the file map for efficient operation.  For example, the file
+map enables loadfns to load selected function definitions simply by setting the
+file pointer to the corresponding address using sfptr, and then performing a
+single read.  Similarly, the file map is heavily used by the 'remake' option of
+prettydef (page 14.56) those function definitions that have been changed since
+the previous version are prettyprinted; the rest are simply copied from the old
+file to the new one, resulting in a considerable speedup.
+
+
+
+                                                                             51
+Whenever a file is read by load or loadfns, a file map is automatically built
+                                                52
+and stored on the property list of the root name   of the file, under the
+property FILEMAP.  Whenever a file is written by prettydef, a file map for the
+                                                                53
+new file is also built and stored on the FILEMAP  property.   In addition,
+                                           54
+the file map is written on the file itself.   Thus, in most cases, load and
+loadfns do not have to build the file map at all, since a file map will usually
+
+
+
+
+
+**FOOTNOTES**
+50
+    The internal representation of the file map is not documented since it may
+    change when the map is extended to include information about other than
+    just function definitions.
+
+
+51
+    unless  buildmapflg=NIL. buildmapflg is initially T.
+
+
+52
+    the file name with directory and version number stripped off.
+
+
+53
+    Building the map in this case essentially comes for free, since it requires
+    only reading the current file pointer before and after each definition is
+    written or copied.  However, building the map does require that
+     prettyprint know that it is printing a DEFINEQ expression. For this
+    reason, the user should never print a DEFINEQ expression onto a file
+    himself, but should instead always use the FNS command, page 14.41.
+
+
+54
+    For cosmetic reasons, the file map is written as the last expression in the
+    file.  However, the address of the file map in the file is (over)written
+    into the FILECREATED expression that appears at the beginning of the file
+    so that the file map can be rapidly accessed without having to scan the
+    entire file.
+
+
+
+
+
+                                     14.35
+
+
+
+                                 55
+appear in the corresponding file.
+
+
+The procedure followed whenever a system package that uses file maps accesses a
+file is embodied in the function getfilemap. getfilemap first checks the
+FILEMAP property to see if a file map for this file was previously obtained or
+      56
+built.   If there is none, getfilemap next checks the first expression on the
+file to see if it is a FILECREATED expression that also contains the address of
+          57                                                  58
+a FILEMAP.   If neither are successful getfilemap returns NIL,  , and a file
+                  59
+map will be built.   
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+55
+    unless the file was written with  buildmapflg=NIL, or was created in a pre-
+    file map INTERLISP, or outside of INTERLISP altogether.
+
+
+56
+    The full name of the file is also stored on the FILEMAP property along with
+    its map.
+
+
+57
+    currently, file maps for compiled files are not written onto the files
+    themselves.  However, load and loadfns will build maps for a compiled file
+    when it is loaded, and store it on the property FILEMAP.  Similary, loadfns
+    will obtain and use the file map for a compiled file, when available.
+
+
+58
+    getfilemap also returns NIL, if  usemapflg=NIL, initially T. usemapflg
+    is available primarily to enable the user to recover in those cases where
+    the file and its map for some reason do not agree.  For example, if the
+    user edits a symbolic file that contains a map using a text editor such as
+    TECO, inserting or deleting just one character will throw that map off. The
+    functions which use file maps contain various integrity checks to enable
+    them to detect that something is wrong, and to generate the error FILEMAP
+    DOES NOT AGREE WITH CONTENTS OF file-name.  In such cases, the user
+    can set usemapflg to NIL, causing the map contained in the file to be
+    ignored, and then reexecute the operation.  A new map will then be built
+    (unless buildmapflg is also NIL).
+
+
+59
+    While building the map will not help this operation, it will help in future
+    references to this file.  For example, if the user performs loadfrom[FOO]
+    where FOO does not contain a file map, the loadfrom will be (slightly)
+    slower than if FOO did contain a file map, but subsequent calls to loadfns
+    for this version of FOO will be able to use the map that was built as the
+    result of the loadfrom, since it will be stored on FOO's FILEMAP property.
+
+
+
+
+
+                                     14.36
+
+
+
+ 14.8  Symbolic File Output
+
+
+
+writefile[x;file]       Writes a date expression onto  file, followed by
+                             successive S-expressions from  x, using
+                             filerdtbl as a readtable.  If  x is atomic,
+                             its value is used.  If  file is not open, it is
+                             opened.  If  file is a list, car[file] is used and
+                             the file is left opened.  Otherwise, when  x is
+                             finished, a STOP is printed on  file and it
+                             is closed.  Value is  file.
+
+
+
+pp[x]                        nlambda, nospread function that performs
+                             output[T], setreadtable[T]  and then calls
+                             prettyprint: PP FOO is equivalent to
+                             PRETTYPRINT((FOO)); PP(FOO FIE) or (PP FOO FIE) is
+                             equivalent to PRETTYPRINT((FOO FIE)).
+
+                             Primary output file and primary readtable are
+                             restored after printing.
+
+
+
+                     60 61
+prettyprint[lst]              lst is a list of functions (if atomic, its
+                             value is used).  The definitions of the functions
+                             are printed in a pretty format on the primary
+                             output file using the  primary readtable. For
+                             example,
+
+
+               (FACTORIAL
+                 [LAMBDA (N)
+                   (COND
+                     ((ZEROP N)
+                       1)
+                                                                62
+                     (T (ITIMES N (FACTORIAL (SUB1 N])
+
+
+
+**FOOTNOTES**
+60
+    The  prettyprint package was written by W. Teitelman.
+
+
+61
+     prettyprint has a second argument that is T when called from  prettydef.
+    In this case, whenever  prettyprint starts a new function, it prints (on
+    the terminal) the name of that function if more than 30 seconds (real time)
+    have elapsed since the last time it printed the name of a function.
+
+
+62
+    In order to save space on files, tabs are used instead of spaces for the
+    inital spaces on each line, assuming that each tab corresponds to 8 spaces.
+    This results in a reduction of file size by about 30%.  Tabs will not be
+    used if prettytabflg is set to NIL (initially T).
+
+
+
+
+
+                                     14.37
+
+
+
+Note:     prettyprint will operate correctly on functions that are  broken,
+ broken-in,  advised, or have been compiled with their definitions saved on
+their property lists - it prints the original, pristine definition, but does
+not change the current state of the function.  If  prettyprint is given an atom
+which is not the name of a function, but has a value, it will prettyprint the
+      63
+value.   Otherwise,  prettyprint will perform spelling correction.  If all
+fails,  prettyprint returns (atom NOT PRINTABLE).
+
+
+
+
+ Comment Feature
+
+
+
+A facility for annotating INTERLISP functions is provided in  prettyprint.
+Any S-expression beginning with * is interpreted as a comment and printed
+in the right margin.  Example:
+
+
+
+(FACTORIAL
+  [LAMBDA (N)                          (* COMPUTES N!)
+    (COND
+      ((ZEROP N)                       (* 0!=1)
+        1)
+      (T                               (* RECURSIVE DEFINITION:
+                                       N!=N*N-1!)
+         (ITIMES N (FACTORIAL (SUB1 N])
+
+
+These comments actually form a part of the function definition.  Accordingly, *
+is defined as an NLAMBDA NOSPREAD function that returns its argument, i.e.  it
+is equivalent to  quote.  When running an interpreted function, * is entered
+the same as any other INTERLISP function.  Therefore, comments should only be
+placed where they will not harm the computation, i.e. where a quoted expression
+could be placed.  For example, writing
+
+(ITIMES N (FACTORIAL (SUB1 N)) (* RECURSIVE DEFINITION)) in the above function
+would cause an error when ITIMES attempted to multiply N, N-1!, and RECURSIVE.
+
+
+
+For compilation purposes, * is defined as a macro which compiles into no
+instructions.  Thus, if you compile a function with comments, and load the
+compiled definition into another system, the extra atom and list structures
+storage required by the comments will be eliminated.  This is the way the
+comment feature is intended to be used.  For more options, see end of this
+section.
+
+
+
+Comments are designed mainly for documenting listings.  Thus when
+prettyprinting to the terminal, comments are suppressed and printed as the
+
+
+
+**FOOTNOTES**
+63
+    except when  prettyprint is called from  prettydef.
+
+
+
+
+
+                                     14.38
+
+
+
+                   64
+string **COMMENT**.  
+
+
+
+
+ Prettydef
+
+
+
+                                       65
+prettydef[prttyfns;prttyfile;prttycoms]     Used to make symbolic files that
+                             are suitable for loading which contain function
+                             definitions, variable settings, property lists, et
+                             al, in a prettyprint format.  prettydef uses
+                             filerdtbl as its readtable.  The value of
+                             prettydef is the name of the symbolic file that
+                             was created.  If an error occurs, or a control-D
+                             is typed, all files that prettydef has opened will
+                             be closed, and the (partially complete) file being
+                             written will be deleted.
+
+
+
+The arguments to prettydef are interpreted as follows:
+
+
+
+prttyfns                     is a list of function names.  The functions on the
+                             list are  prettyprinted surrounded by a
+                             (DEFINEQ ...) so that they can be loaded with
+                              load.  If  prttyfns is atomic (the preferred
+                             usage), its top level value is used as the list of
+                                                                66
+                             function names, and an  rpaqq    will also be
+                             written which will set that atom to the list of
+                             functions when the file is loaded.  A  print
+                             expression will also be written which informs the
+                             user of the named atom or list of functions when
+
+
+
+
+**FOOTNOTES**
+64
+    The value of  **comment**flg determines the action.  If  **comment**flg is
+    NIL, the comment is printed.  Otherwise, the value of  **comment**flg is
+    printed.   **comment**flg is initially set to " **COMMENT** ".  The
+    function  pp* is provided to prettyprint functions, including their
+    comments, to the terminal.   pp* operates exactly like  pp except it
+    first sets  **comment**flg to NIL.
+
+
+65
+     prettydef actually has three additional arguments for use by the file
+    package.  See discussion of remaking a file, page 14.57.
+
+
+66
+     rpaqq and  rpaq are like  setqq and  setq, except they set the
+    top level value.  See section 5.
+
+
+
+
+
+                                     14.39
+
+
+
+                                                             67
+                             the file is subsequently loaded.
+
+
+
+prttyfile                    is the name of the file on which the output is to
+                             be written.
+
+                             The following options exist:
+
+                                   prttyfile=NIL
+
+                                       The primary output file is used.
+
+
+
+                                   prttyfile atomic
+
+                                       The file is opened if not already open,
+                                       and becomes primary output file.  File
+                                       is closed at end of  prettydef and
+                                       primary output file is restored.
+
+
+
+                                   prttyfile a list
+
+                                        Car of the list is assumed to be the
+                                       file name, and is opened if not already
+                                       open.  The file is left open at end of
+                                        prettydef.
+
+
+
+prttycoms                    Is a list of commands interpreted as
+                             described below.  If  prttycoms is atomic (the
+                             preferred usage), its top level value is used and
+                             an  rpaqq is written which will set that atom
+                             to the list of commands when the file is
+                             subsequently loaded, exactly as with  prttyfns.
+
+
+
+These commands are used to save on the output file top level bindings of
+variables, property lists of atoms, miscellaneous INTERLISP forms to be
+evaluated upon loading, arrays, and advised functions.  It also provides for
+evaluation of forms at output time.
+
+
+
+The interpretation of each command in the command list is as follows:
+
+
+
+**FOOTNOTES**
+67
+    In addition, if any of the functions in the file (including those printed
+    by FNS command) are nlambdas, prettydef will print a DECLARE: expression
+    suitable for informing the compiler about these functions, in case the user
+    recompiles the file without having first loaded the nlambda functions.  For
+    more discussion, see section 18.
+
+
+
+
+
+                                     14.40
+
+
+
+1.  if atomic, an  rpaqq is written which will restore the top level value
+    of this atom when the file is loaded.
+
+
+
+2.  (PROP propname atom1 ... atomn) an appropriate  deflist will be
+    written which will restore the value of  propname for each atomi when the
+                   68
+    file is loaded.   If  propname is a list,  deflist's will be written for
+    each property on that list.  If  propname=ALL, the values of all user
+                                                              69
+    properties (on the property list of each atomi) are saved.
+
+
+
+3.  (ARRAY atom1 ... atomn), each atom following ARRAY should have an
+    array as its value.  An appropriate expression will be written which will
+    set the atom to an array of exactly the same size, type, and contents upon
+    loading.
+
+
+
+4.  (P ... ), each S-expression following P will be printed on the output
+    file, and consequently evaluated when the file is loaded.
+
+
+
+5.  (E ... ), each form following E will be evaluated at output time,
+    i.e., when  prettydef reaches this command.
+
+
+
+6.  (FNS fn1 ...fnm), a  defineq is written with the definitions of
+    fn1 ... fnm exactly as though (fn1 ...fnm) were the first argument to
+               70
+     prettydef.
+
+
+
+7.  (VARS var1 ... varn), for each vari, an expression will be written
+    which will set its top level value when the file is loaded.  If  vari is
+
+
+
+**FOOTNOTES**
+68
+    If atomi does not have the property propname (as opposed to having the
+    property with NIL value), a warning message "NO propname PROPERTY FOR
+    atomi" is printed.  The command IFPROP should be used if it is not
+    known whether or not an atom will have the corresponding property.
+
+
+69
+     sysprops is a list of properties used by system functions.  Only
+    properties not on that list are dumped when the ALL option is used.
+
+
+70
+    The user should never print a DEFINEQ expression directly onto a file
+    himself, but should instead always use the FNS command for dumping
+    functions.  For more details, see page 14.35.
+
+
+
+
+
+                                     14.41
+
+
+
+    atomic,  vari will be set to the top-level value it had at the time the
+                                                                        71
+    file was prettydefed, i.e.  (RPAQQ vari top-level-value) is written.   If
+     vari is non-atomic, it is interpreted as (var form).  e.g.
+    (FOO (APPEND FIE FUM)) or (FOO (QUOTE (FOO1 FOO2 FOO3))).  In this case the
+    expression (RPAQ var form) is written.
+
+
+
+8.  (ADVISE fn1 ... fnm), for each fnn, an appropriate expression will be
+    written which will reinstate the function to its advised state when the
+    file is loaded.
+
+
+
+9.  (ADVICE fn1 ... fnm,), for each fni, will write a deflist which will
+    put the advice back on the property list of the function.  The user can
+    then use  readvise to reactivate the advice.  See Section 19.
+
+
+
+10. (BLOCKS block1 ... blockn) for each blocki, a  declare expression
+    will be written which the block compile functions interpret as block
+    declarations. See Section 18.
+
+
+
+11. (COMS com1 ... comn), each of the commands com1 ... comn will be
+    interpreted as a  prettydef command.
+
+
+
+12. (ADDVARS (var1 . lst1) ... (varn . lstn)) For each vari, the effect is
+    the same as (RPAQ vari (UNION lsti vari)), i.e. each element of lsti not a
+    member of vari (at load time) is added to it.   vari can initially be
+    NOBIND, in which case it is first set to NIL.
+
+
+
+13. (USERMACROS atom1 ... atomn), each atomi is the name of a user edit
+    macro.  USERMACROS writes expressions for adding the definitions to
+     usermacros and the names to the appropriate spelling lists.
+    (USERMACROS) will save all user edit macros.
+
+
+
+14. (IFPROP propname atom1 ... atomn) same as PROP command, except that
+    only non-NIL property values are saved.  For example, if FOO1 has property
+    PROP1 and PROP2, FOO2 has PROP3, and FOO3 has property PROP1 and PROP3,
+    (IFPROP (PROP1 PROP2 PROP3) FOO1 FOO2 FOO3) will save only those 5 property
+    values.
+
+
+
+
+
+**FOOTNOTES**
+71
+    HORRIBLEVARS (section 21) provides a way of saving and reloading variables
+    whose values contain re-entrant or circular list structure, user data
+    types, arrays, or hash arrays.
+
+
+
+
+
+                                     14.42
+
+
+
+15. (DECLARE: . prettycoms/flags) Normally expressions written onto a
+    symbolic file are (1) evaluated when loaded; (2) copied to the compiled
+    file when the symbolic file is compiled (see section 18); and (3) not
+    evaluated at compile time.  DECLARE: allows the user to override these
+    defaults.  The output of those prettycoms appearing within the DECLARE:
+    command is embedded in a DECLARE: expression, along with any tags that are
+    specified, e.g.  (DECLARE: EVAL@COMPILE DONTCOPY (FNS --) (PROP --)) would
+    produce (DECLARE: EVAL@COMPILE DONTCOPY (DEFINEQ --) (DEFLIST --)).
+    DECLARE: is defined as an nlambda nospread function.  When  declare: is
+    called, it processes its arguments by evaluating or not evaluating each
+    list depending on the setting of an internal state variable.  The tags
+    EVAL@LOAD, or DOEVAL@LOAD, and DONTEVAL@LOAD can be used to
+                                                                  72
+    reset this state variable. The initial setting is to evaluate.
+
+
+
+In each of the commands described above, if the atom * follows the command
+type, the form following the *, i.e.,  caddr of the command, is evaluated
+and its value used in executing the command, e.g.,
+                           73
+(FNS * (APPEND FNS1 FNS2)).   Note that (COMS * form) provides a way of
+computing what should be done by  prettydef.
+
+
+
+New  prettydef commands can be defined via  prettydefmacros (see page
+14.47).  If  prettydef is given a command not one of the above, and not
+                                                            74
+defined on  prettydefmacros, it attempts spelling correction   using
+ prettycomsplst as a spelling list. If successful, the corrected
+                                                             75
+version of  prettycoms is written (again) on the output file.   If
+unsuccessful,  prettydef generates an error, BAD PRETTYCOM.
+
+
+**FOOTNOTES**
+72
+    As indicated in section 18, DECLARE: expressions are specially processed by
+    the compiler.  In this case, the relevant tags are COPY,  DOCOPY, DONTCOPY,
+    EVAL@COMPILE, DOEVAL@COMPILE, and
+    DONTEVAL@COMPILE. The value of  declaretagslst is a list of all
+    the tags used in DECLARE: expressions. If a tag not on this list appears in
+    a DECLARE: prettycom,  prettydef performs spelling correcton using
+     declaretagslst as a spelling list.
+
+
+73
+    Except for the PROP and IFPROP commands, in which case the * must
+    follow the property name, e.g., (PROP MACRO * FOOMACROS).
+
+
+74
+    unless  dwimflg=NIL. See Section 17.
+
+
+75
+    since at this point, the uncorrected  prettycoms would already have been
+    printed on the output file.  When the file is loaded, this will result in
+     prettycoms being reset, and a message printed, e.g. (FOOVARS RESET). The
+    value of FOOVARS  would then be the corrected version.
+
+
+
+
+
+                                     14.43
+
+
+
+                        *              *              *
+
+
+
+ Example:
+
+
+
+_SET(FOOFNS (FOO1 FOO2 FOO3))
+_SET(FOOCOMS(FIE (PROP MACRO FOO1 FOO2) (P (MOVD (QUOTE FOO1)
+  (QUOTE FIE1]
+_PRETTYDEF(FOOFNS FOO FOOCOMS)
+
+
+would create a file FOO containing:
+
+
+
+1.  A message which prints the time and date the file was made (done
+automatically)
+
+2.  DEFINEQ followed by the definitions of FOO1, FOO2, and FOO3
+
+3.  (PRINT (QUOTE FOOFNS) T)
+
+4.  (RPAQQ FOOFNS (FOO1 FOO3 FOO3))
+
+5.  (PRINT (QUOTE FOOVARS) T)
+
+6.  (RPAQQ FOOVARS (FIE ...)
+
+7.  (RPAQQ FIE value of  fie)
+
+8.  (DEFLIST (QUOTE ((FOO1 propvalue) (FOO2 propvalue))) (QUOTE MACRO))
+
+9.  (MOVD (QUOTE FOO1) (QUOTE FIE1))
+
+10. STOP
+
+
+
+ prettydef functions
+
+
+
+printfns[x]                   x is a list of functions.   printfns prints
+                              defineq and prettyprints the functions to primary
+                             output file using primary readtable.  Used by
+                              prettydef, i.e. command (FNS * FOO) is equivalent
+                             to command (E (PRINTFNS FOO)).
+
+
+
+printdate[file;changes]      prints the FILECREATED expression at
+                             beginning of  prettydefed files that upon loading
+
+
+
+
+
+
+
+
+
+
+
+                                     14.44
+
+
+                                                                            76
+                             types the time and date the file was made,
+                             and stores this time and date on the property list
+                             of  file under the property FILEDATES.
+                              changes is for use by the file package.
+
+
+
+tab[pos;minspaces;file]      performs appropriate number of spaces to move
+                             to position  pos.   minspaces indicates the
+                             minimum number of spaces to be printed by  tab,
+                             i.e., it is intended to be small number (if NIL, 1
+                             is used).  Thus, if position + minspaces is
+                             greater than  pos,  tab does a  terpri and then
+                             spaces[pos].
+
+
+
+endfile[file]                Prints STOP on  file and closes it.
+
+
+
+printdef[expr;left;def]      prints the expression  expr in a pretty
+                             format on the primary output file using the
+                             primary readtable.   left is the left hand
+                             margin ( linelength determines the right hand
+                             margin).  2 is used if  left=NIL.
+
+
+
+                              def=T means  expr is a function definition, or a
+                             piece of one, i.e.  prettyprint is essentially
+                             printdef[getd[fn];NIL;T].  If  def=NIL, no special
+                             action will be taken for LAMBDA's, PROG's, COND's,
+                             comments, CLISP, etc.   def is NIL when  prettydef
+                             calls  prettyprint to print variables and property
+                             lists, and when  printdef is called from the
+                             editor via the command PPV.
+
+
+
+
+ Special Prettyprint Controls
+
+
+
+All variables described below, i.e.,  #rpars,  firstcol, et al, are global
+variables, see Section 18.  Therefore, if they are to be changed, they must be
+reset, not rebound.
+
+
+
+#rpars                       controls the number of right parentheses
+                             necessary for square bracketing to
+
+
+
+**FOOTNOTES**
+76
+    The message printed when the file is loaded is the value of prettyheader
+    followed by the time and date. prettyheader is initially "FILE CREATED
+    ".
+
+
+
+
+
+                                     14.45
+
+
+
+                             occur. If  #rpars=NIL, no brackets are
+                             used.   #rpars is initialized to 4.
+
+
+
+linelength[n]                determines the position of the right margin
+                                              77
+                             for  prettyprint.
+
+
+
+firstcol                     is the starting column for comments.  Initial
+                             setting is 48.  Comments run between  firstcol and
+                              linelength.  If a word in a comment ends with a
+                             '.' and is not on the list  abbrevlst, and
+                             the position is greater than halfway between
+                              firstcol and  linelength, the next word in the
+                             comment begins on a new line.  Also, if a list is
+                             encountered in a comment, and the position is
+                             greater than halfway, the list begins on a new
+                             line.
+
+
+
+prettylcom                   If a comment is bigger (using  count) than
+                              prettylcom in size, it is printed starting at
+                                                             78
+                             column 10, instead of  firstcol.    prettylcom is
+                             initialized to 14 (arrived at empirically).
+
+
+
+#carefulcolumns         in the interests of efficiency,  prettyprint
+                             approximates the number of characters in each
+                             atom, rather than calling  nchars, when computing
+                             how much will fit on a line.  This procedure works
+                             satisfactorily in most cases. However, users with
+                             unusually long atoms in their programs, e.g. such
+                             as produced by  clispify, may occasionlly
+                             encounter some glitches in the output produced by
+                              prettyprint.  The value of  #carefulcolumns tells
+                              prettyprint how many columns (counting from the
+                             right hand margin) in which to actually compute
+                              nchars instead of approximating. Setting
+                              #carefulcolumns to 20 or 30 will eliminate the
+                             above glitches, although it will slow down
+                              prettyprint slightly.  #carefulcolumns is
+                             initially 0.
+
+
+
+**FOOTNOTES**
+77
+    Note that makefile, page 14.55, resets  linelength to the value of
+    filelinelength, before calling prettydef.  filelinelength is initially
+    72.
+
+
+78
+    Comments are also printed starting at column 10, if their second element is
+    also a *, i.e. comments of the form (* * --).
+
+
+
+
+
+                                     14.46
+
+
+
+widepaper[flg]               widepaper[T] sets filelinelength to 120,
+                              firstcol to 80, and  prettylcom to 28.
+                             This is a useful setting for prettyprinting files
+                             to be listed on wide paper.  widepaper[] restores
+                             these parameters to their initial values.  The
+                             value of  widepaper is its previous setting.
+
+
+
+commentflg                   If  car of an expression is  eq to
+                              commentflg, the expression is treated as a
+                             comment.   commentflg is initialized to *.
+
+
+
+prettyflg                    If  prettyflg is NIL,  printdef uses
+                              prin2 instead of prettyprinting.  This is useful
+                             for producing a fast symbolic dump  (see FAST
+                             option of makefile, page 14.55).  Note that the
+                             file loads the same as if it were prettyprinted.
+                              prettyflg is initially set to T.
+
+
+
+clispifyprettyflg            used to inform  prettyprint to CLISPIFY
+                             selected function definitions before printing
+                             them.  See section 23.
+
+
+
+prettydefmacros         Is an assoc-type list for defining substitution
+                             macros for  prettydef.  If (FOO (X Y) . coms)
+                             appears on  prettydefmacros, then (FOO A B)
+                             appearing in the third argument to  prettydef
+                             will cause A to be substituted for X and B for Y
+                             throughout  coms (i.e.,  cddr of the macro), and
+                             then  coms treated as a list of commands for
+                                        79
+                              prettydef.    If the atom * follows the name of
+                             the command, caddr of the command is evaluated
+                             before substituting in the definition for the
+                             command.
+
+
+
+prettyprintmacros       is an assoc-list that enables the user to format
+                             selected expressions himself.  car of each
+                             expression being  prettyprinted is looked up on
+                              prettyprintmacros, and if found,  cdr of the
+                             corresponding entry is applied to the expression.
+                             If the result of this application is NIL,
+                              prettyprint will ignore the expression.This gives
+
+
+
+**FOOTNOTES**
+79
+    The substitution is carried out by  subpair (section 6), so that the
+    'argument list' for the macro can also be atomic.  For example, if
+    (FOO X . COMS) appears on prettydefmacros, then (FOO A B) will cause (A B)
+    to be substituted for X throughout  coms.
+
+
+
+
+
+                                     14.47
+
+
+
+                             the user the option of printing the expression
+                             himself in whatever format he pleases. If the
+                             result is non-NIL, it is  prettyprinted in the
+                             normal fashion. This gives the user the option of
+                             computing some other expression to be
+                              prettyprinted in its place.   prettyprintmacros
+                             is initially NIL.
+
+
+
+(* E x)                      A comment of this form causes  x to be
+                             evaluated at prettyprint time, e.g.,
+                             (* E (RADIX 8)) as a comment in a function
+                             containing octal numbers can be used to change the
+                             radix to produce more readable printout.  The
+                             comment is also printed.
+
+
+
+ Converting Comments to Lower Case
+
+
+
+This section is for users operating on terminals without lower case
+who nevertheless would like their comments to be converted to lower case for
+more readable line-printer listings.  Users with lower-case terminals can skip
+to the File Package sections (as they can type comments directly in lower
+case).
+
+
+
+%%                           If the second atom in a comment is %%, the
+                             text of the comment is converted to lower case so
+                             that it looks like English instead of LISP (see
+                             next page).
+
+
+
+The output on the next page illustrates the result of a lower casing operation.
+Before this function was  prettydefed, all comments consisted of upper case
+atoms, e.g., the first comment was (* %% INTERPRETS A SINGLE COMMAND).  Note
+that comments are converted only when they are actually written to a file by
+ prettydef.
+
+
+
+The algorithm for conversion to lower case is the following: If the first
+character in an atom is ^, do not change the atom (but remove the ^).  If
+                                                              80             81
+the first character is %, convert the atom to lower case.    If the atom
+
+
+
+
+**FOOTNOTES**
+80
+    User must type %% as % is the escape character.
+
+
+81
+    minus any trailing punctuation marks.
+
+
+
+
+
+                                     14.48
+
+
+
+                     82
+is an INTERLISP word,   do not change it.  Otherwise, convert the atom to lower
+case.  Conversion only affects the upper case alphabet, i.e., atoms already
+converted to lower case are not changed if the comment is converted again.
+When converting, the first character in the comment and the first character
+following each period are left capitalized.  After conversion, the comment is
+physically modified to be the lower case text minus the %% flag, so that
+conversion is thus only performed once (unless the user edits the comment
+inserting additional upper case text and another %% flag).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+82
+    i.e., is a bound or free variable for the function containing the comment,
+    or has a top level value, or is a defined function, or has a non-NIL
+    property list.
+
+
+
+
+
+                                     14.49
+
+
+
+(BREAKCOM
+  [LAMBDA (BRKCOM BRKFLG)                   (* Interprets a
+                                            single command.)
+    (PROG (BRKZ)
+      TOP (SELECTQ
+            BRKCOM
+            [^ (RETEVAL (QUOTE BREAK1)
+                        (QUOTE (ERROR]]
+            (GO                             (* Evaluate BRKEXP
+                                            unless already evaluated,
+                                            print value, and exit.)
+                (BREAKCOM1 BRKEXP BRKCOM NIL BRKVALUE)
+                (BREAKEXIT))
+            (OK                             (* Evaluate BRKEXP,
+                                            unless already evaluated,
+                                            do NOT print value,
+                                            and exit.)
+                (BREAKCOM1 BRKEXP BRKCOM BRKVALUE BRKVALUE)
+                (BREAKEXIT T))
+            (^WGO                           (* Same as GO except
+                                            never saves evaluation
+                                            on history.)
+                (BREAKCOM1 BRKEXP BRKCOM T BRKVALUE)
+                (BREAKEXIT))
+            (RETURN
+
+         (* User will type in expression to be evaluated and
+         returned as value of BREAK. Otherwise same as GO.)
+
+
+                   (BREAKCOM1 [SETQ BRKZ (COND
+                                  (BRKCOMS (CAR BRKCOMS))
+                                  (T (LISPXREAD T]
+                              (QUOTE RETURN)
+                              NIL NIL (LIST (QUOTE RETURN)
+                                            BRKZ))
+                   (BREAKEXIT))
+         (EVAL                              (* Evaluate BRKEXP but
+                                            do not exit from BREAK.)
+              (BREAKCOM1 BRKEXP BRKCOM)
+              (COND
+                (BRKFLG (BREAK2)
+                        (PRIN1 BRKFN T)
+                        (PRIN1 (QUOTE " EVALUATED
+")
+                               T)))
+                (SETQ !VALUE (CAR BRKVALUE))
+                                            (* For user's benefit.)
+                )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                     14.50
+
+
+
+lcaselst                     Words on  lcaselst will always be converted
+                             to lower case.   lcaselst is initialized to
+                             contain words which are INTERLISP functions but
+                             also appear frequently in comments as English
+                             words.  e.g. AND, EVERY, GET, GO, LAST, LENGTH,
+                             LIST, etc.  Thus, in the example on the previous
+                             page, not was written as ^NOT, and GO as ^GO in
+                             order that they might be left in upper case.
+
+
+
+ucaselst                     words on  ucaselst (that do not appear on
+                              lcaselst) will be left in upper case.   ucaselst
+                             is initialized to NIL.
+
+
+
+abbrevlst                     abbrevlst is used to distinguish between
+                             abbreviations and words that end in periods.
+                             Normally, words that end in periods and occur more
+                             than halfway to the right margin cause carriage
+                             returns.  Furthermore, during conversion to
+                             lowercase, words ending in periods, except for
+                             those on  abbrevlst, cause the first character in
+                             the next word to be capitalized.   abbrevlst is
+                             initialized to the upper and lower case forms of
+                             ETC. I.E. and E.G.
+
+
+
+l-case[x;flg]                value is lower case version of  x. If
+                              flg is T, the first letter is capitalized, e.g.
+
+                             l-case[FOO;T] = Foo, l-case[FOO] = foo.  If  x is
+                             a string, the value of  l-case is also a string,
+                             e.g.
+
+                             l-case["FILE NOT FOUND";T] = "File not found".
+
+
+
+u-case[x]                    Similar to  l-case 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                     14.51
+
+
+
+                   83
+ 14.9  File Package
+
+
+
+This section describes a set of functions and conventions for facilitating
+the bookkeeping involved with working in a large system consisting of many
+symbolic files and their compiled counterparts.  The file package keeps track
+of which files have been in some way modified and need to be dumped, which
+files have been dumped, but still need to be listed and/or recompiled. The
+functions described below comprise a coherent package for eliminating this
+burden from the user.  They require that for each file, the first argument to
+ prettydef be NIL and the third argument be fileCOMS, where file is
+                                                      84
+the name of the file, e.g. prettydef[NIL;FOO;FOOCOMS].
+
+
+
+                                                             85
+All the system functions that perform global file operations,   e.g. load,
+loadfns, prettydef, tcompl, recompile, et al, as well as those functions that
+change data stored in files, e.g.  editf, editv, DWIM corrections to user
+functions, reassignment of top-level variables, etc., interact with the file
+package. Some of these interactions are quite complex, such as those cases
+where the same function appears in several different files, or where the
+symbolic or compiled files reside in other directories, or were originally made
+under a different name, etc.  Therefore, this section will not attempt to
+document how the file package works in each and every situation, but instead
+make the deliberately vague statement that it does the 'right' thing with
+respect to keeping track of what has been changed, and what file operations
+need to be performed in accordance with those changes.
+
+
+
+ Noticing files
+
+
+
+Operations in the file package can be broken down roughly into three
+categories: (1) noticing files, (2) marking changes, and (3) updating files.
+Files are 'noticed' by load and loadfns (or loadfrom, loadvars, etc.).  All
+file operations in the file package are based on the root name of the
+file, i.e.  the filename with version number and/or directory field
+
+
+
+**FOOTNOTES**
+83
+    The file package was written by W. Teitelman.  It can be disabled by
+    setting  filepkgflg to NIL.
+
+
+84
+     file can contain a suffix and/or version number, e.g.
+    PRETTYDEF(NIL FOO.TEM;3 FOOVARS) is acceptable.  The essential point is
+    that the COMS be computable from the name of the file.
+
+
+85
+    as opposed to 'local' file operations such as those performed by print,
+    read, sfptr, etc.
+
+
+
+
+
+                                     14.52
+
+
+
+removed.  Noticing a file consists of adding its root name to the list filelst,
+and adding the property FILE, value ((fileCOMS . type)), to the property list
+                 86 87
+of its root name,      where type indicates how the file was loaded, e.g.
+completely loaded, only partially loaded as with loadfns, loaded as a compiled
+file, etc.  For example, if the user performs load[<TEITELMAN>FOO.LSP;2],
+FOO.LSP is added to filelst, and ((FOOCOMS . T)) is put on the property list of
+FOO.LSP.
+
+
+
+The property FILE is used to determine whether or not the corresponding
+file has been modified since the last time it was loaded or dumped as described
+below.  In addition, the property FILECHANGES contains the union of all
+changes since the file was loaded (i.e. there may have been several sequences
+of editing and rewriting the file), and the property FILEDATES a list of
+version numbers and the corresponding file dates.  The use and maintenance of
+these properties is explained below.
+
+
+
+ Marking changes
+
+
+
+Whenever a function is changed, either explicitly, as with editing, or
+implicitly, e.g. via a DWIM correction, the function is marked as being changed
+by adding it to the list changedfnslst. A similar procedure is followed
+                                      88
+for variables and changedvarslst.   Periodically, the function
+updatefiles is called to find which file(s) contain the functions and
+
+
+
+
+
+
+**FOOTNOTES**
+86
+    The computation of the root name is actually based on the name of the file
+    as indicated in the FILECREATED expression appearing at the front of the
+    file, since this name corresponds to the name the file was originally made
+    under.  Similarly, the file package can detect that the file being noticed
+    is a compiled file (regardless of its name), by the appearance of more than
+    one FILECREATED expressions. In this case, each of the files mentioned in
+    the FILECREATED expressions are noticed.  For example, if the user performs
+    BCOMPL((FOO FIE)), and subsequently loads FOO.COM, both FOO and FIE will be
+    noticed.
+
+
+87
+    The variable loadedfilelst contains a list of the actual names of the
+    files as loaded by load or loadfns. For example, if the user performs
+    LOAD[<NEWLISP>EDITA.COM;3], EDITA will be added to filelst, but
+    <NEWLISP>EDITA.COM;3 is added to loadedfilelst.  loadedfilelst is not  used
+    by the file package, it is mantained for the user's benefit.
+
+
+88
+    Initially, the file package only knows about two "types": functions and
+    variables. page 14.62 describes how to add additional types.
+
+
+
+
+
+                                     14.53
+
+
+
+                                 89
+variables that have been changed.   updatefiles operates by scanning filelst
+and interrogating the prettycoms for each file.  When (if) such files are
+found, the name of the function or variable is added  to the value of the
+property FILE for the corresponding file, and the function or variable removed
+from  changedfnslst or changedvarslst.  Thus, after updatefiles has
+completed operating, the files that need to be dumped are simply those files on
+filelst for which cdr of their FILE property is non-NIL.  For example, if the
+user loads the file FOO containing definitions for FOO1, FOO2, and FOO3, edits
+FOO2, and then calls updatefiles, getp[FOO;FILE] will be ((FOOCOMS . T) FOO2).
+Functions or variables that remain on their corresponding changedlst are those
+                                 90
+for which no file has been found.
+
+
+
+ Updating Files
+
+
+
+Whenever a file is written using makefile (described below), the
+functions/variables that have been changed, i.e. cdr of the FILE property,
+are moved to the property FILECHANGES, and cdr of the FILE property is
+                      91
+reset (rplacd) to NIL.   In addition, the file is added to the list
+ notlistedfiles and  notcompiledfiles.  Whenever the user lists a
+file using  listfiles, it is removed from  notlistedfiles.  Similarly,
+whenever a file is compiled by  tcompl,  recompile,  bcompl, or  brecompile,
+the file is removed from  notcompiledfiles.  Thus at each point, the state of
+all files can be determined.  This information is available to the user via the
+function  files?. Similarly, the user can see whether and how each
+particular file has been modified (by examining the appropriate property
+values), dump all files that have been modified, list all files that have been
+dumped but not listed, recompile all files that have been dumped but not
+recompiled, or any combination of any or all of the above by using one of the
+function described below.
+
+
+**FOOTNOTES**
+89
+    updatefiles is called by files?, cleanup, makefiles, and addfile, i.e. any
+    procedure that requires the FILE property to be up to date. (The user can
+    also invoke updatefiles directly.)  This procedure is followed rather than
+    update the FILE property after each change because scanning filelst and
+    interrogating each prettycom can be a time-consuming process, and  is not
+    so noticeable when performed in conjunction with a large operation like
+    loading or writing a file.
+
+
+90
+    e.g., the user defines a new function but forgets to add it to the
+    prettycoms for the corresponding file. For this reason, both files? and
+    cleanup print warning messages when changedfnslst is not NIL following an
+    updatefiles.
+
+
+91
+    If the file was not on filelst, e.g. the user defined some functions and
+    initialized the corresponding  prettydoms without loading a file, then the
+    file will be 'noticed' by virtue of its being written. i.e. added to
+    filelst, and given appropriate FILE, FILEDATES and FILECHANGES properties.
+
+
+
+
+
+                                     14.54
+
+
+
+Makefile
+
+
+
+makefile[file;options;reprintfns;sourcefile]          notices file if not
+                             previously noticed.  Performs
+                             linelength[filelinelength], and calls
+                             prettydef giving it NIL, file, fileCOMS,
+                             reprintfns, sourcefile, and the list of changes as
+                                           92
+                             its arguments,   restores original linelength, and
+                             then adds file to  notlistedfiles,
+                                               93
+                              notcompiledfiles.    options is a list of
+                             options or a single option interpreted as follows:
+
+
+
+                             FAST      perform  prettydef with
+                                        prettyflg=NIL
+
+                             RC        call  recompile  after
+                                        prettydef or  brecompile if there
+                                       are any block declarations specified in
+                                                94
+                                       fileCOMS.
+
+                             C         calls  tcompl  after
+                                        prettydef or  bcompl if there are
+                                       any block declarations specified in
+                                       fileCOMS.
+
+                             CLISPIFY  perform  prettydef with
+                                        clispifyprettyflg=T, causing
+
+
+
+**FOOTNOTES**
+92
+    fileCOMS are constructed from the name field only, e.g. makefile[FOO.TEM]
+    will work.  The list of changes is simply  cdr of the FILE property, as
+    described earlier, i.e. those items that have been changed since the last
+     makefile.   prettydef merges those changes with those handled in previous
+    calls to  makefile, and stores the result on the property FILECHANGES.
+    This list of changes is included in the FILECREATED expression printed at
+    the beginning of the file by printdate, along with the date and version
+    number of the file that was originally noticed, and the date and version
+    number of the current file, i.e.  this one. (these two version numbers and
+    dates are also kept on the property FILEDATE for various integrity
+    checks in connection with remaking a file as described below.)
+
+
+93
+    Files that do not contain any function definitions or those that have on
+    their property list the property FILETYPE with value DON'TCOMPILE, are
+    not added to notcompiledfiles, nor are they compiled even when options
+    specifies C or RC.
+
+
+94
+    Including any generated via the COMS command or via a prettymacro.
+
+
+
+
+
+                                     14.55
+
+
+
+                                        clispify (see Section 23) to be
+                                       called on each function defined as an
+                                                                       95
+                                       expr before it is prettyprinted.
+
+                             NOCLISP   performs  prettydef with
+                                        prettytranflg=T, causing CLISP
+                                       translations to be printed, if any, in
+                                       place of the corresponding CLISP
+                                       expression, e.g. iterative statement.
+
+                             LIST      calls  listfiles on  file.
+
+                             REMAKE    'remakes' file.  See discussion
+                                       below.
+
+                                                                  96
+                             NEW        does not remake file.
+
+
+
+If F, ST, STF, or S is the next item on options following C or RC, given to the
+compiler as the answer to the compiler's question LISTING?, e.g.
+
+makefile[FOO;(C F LIST)] will dump FOO, then  tcompl or  bcompl it
+specifying that functions are not to be redefined, and finally list the file.
+
+
+
+The user can indicate that  file must be block compiled together with other
+files as a unit  by putting a list of those files on the property list of each
+file under the property FILEGROUP.  For example, EDIT and WEDIT are one
+such group, DWIM, FIX, CLISP, and DWIMIFY another.  If  file has a FILEGROUP
+property, the compiler will not be called until all files on this property have
+been dumped that need to be.
+
+
+
+ Remaking a symbolicfile
+
+
+
+Most of the time that a symbolic file is written using prettydef, only some,
+
+
+
+**FOOTNOTES**
+95
+    Alternatively, if  file has the property FILETYPE with value CLISP,
+     prettydef is called with  clispifyprettyflg reset to CHANGES, which will
+    cause  clispify to be called on all functions marked as having been
+    changed.  For more details, see discussion of  clispifyprettyflg in section
+    23.  Note that if  file has property FILETYPE with  value CLISP, the
+    compiler will know to  dwimify its functions before compiling them, as
+    described in section 18 and 23.
+
+
+96
+    If makefileremakeflg is T (its initial setting), the default for all
+    calls to makefile is to remake.  The NEW option is provided in order to
+    override this default.
+
+
+
+
+
+                                     14.56
+
+
+
+usally a few, of the functions that it contains have been changed since the
+last time the file was written. A considerable savings in time is afforded by
+copying the prettprinted definitions of those functions that have not changed
+from an earlier version of the symbolic file,  and  prettyprinting only those
+                                 97
+functions that have been changed.
+
+
+
+To this end, prettydef has two additional arguments, reprintfns and sourcefile.
+reprintfns can be a list of functions to be prettyprinted, or EXPRS meaning
+prettyprint all functions with EXPR definitions, or ALL meaning prettyprint all
+                                                          98
+functions either defined as exprs or with EXPR properties.    sourcefile is the
+name of the file from which to copy the definitions for those functions that
+are not going to be prettyprinted, i.e. those not specified by reprintfns.
+sourcefile=T means use most recent version (i.e. highest number) of prttyfile,
+the second argument to prettydef.  If sourcefile cannot be found, prettydef
+prints the message "file NOT FOUND, SO IT WILL BE WRITTEN ANEW",  and
+proceeds as it does when reprintfns and sourcefile are both NIL.
+
+
+
+ Makefile and Remaking a file
+
+
+
+While a file can be remade by appropriately specifying the reprintfns and
+sourcefile arguments to prettydef, remaking is intended to be used in
+conjunction with makefile, which performs a number of 'do-what-I-mean' type of
+services in this context, as described below.  When a makefile remake is being
+
+
+
+
+
+**FOOTNOTES**
+97
+    Remaking a symbolic file does not depend on the earlier version having a
+    file map, although  it is considerably faster if one does exist.  In the
+    case of a remake where no file map is available, prettydef scans the file
+    looking for the corresponding definition whenever it is about to copy the
+    definition to the new file.  The scan utilizes skread (page 14.15), and
+    prettydef does not begin scanning from the beginning of the file each time,
+    but instead 'walks through' the original file as it is writing the new
+    file.  Since the functions are for the most part in the same order,
+    prettydef never has to scan very far.  However, prettydef also builds a map
+    of the functions it has skipped over so that if the order of functions is
+    reversed in the new file, prettydef is able to back up and pick up a
+    function previously skipped.  The net result is still a significant
+    savings over (re)prettyprinting the entire file, although not as great a
+    savings as occurs when a map is available.
+
+
+98
+    Note that doing a remake with  reprintfns=NIL makes sense if  there have
+    been changes in the file, but not to any of the functions, e.g. changes to
+    vars or property lists.
+
+
+
+
+
+
+
+
+                                     14.57
+
+
+          99
+performed,   prettydef will be called specifying as reprintfns those functions
+                                                                      100
+that have been changed since the last version of the file was written.    For
+sourcefile, makefile  obtains the full name of the most recent version of the
+                          101
+file (that it knows about)    from the FILEDATES property, and checks to
+make sure that the file still exists, and has the same file date as that stored
+on the FILEDATES property.  If it does, makefile calls prettydef specifying
+                        102
+that file as sourcefile.    In the case where the most recent version of the
+file cannot be found, makefile will attempt to remake using the original
+version of the file, i.e. the one first loaded, and specifying as reprintfns
+the union of all changes that have been made, which it obtains from the
+FILECHANGES property.  If both of these fail, makefile prints the message
+"CAN'T FIND EITHER THE PREVIOUS VERSION OR THE ORIGINAL VERSION OF file, SO IT
+WILL HAVE TO BE WRITTEN ANEW", and then calls prettydef with reprintfns and
+ sourcefile=NIL.
+
+
+
+When a remake is specified, makefile also checks the state of the file (cdar of
+the FILE property) to see how the file was originally loaded (page 14.52). If
+the file was originally loaded as a compiled file, makefile will automatically
+call loadvars to obtain those DECLARE: expressions that are contained on the
+symbolic file, but not the compiled file, and hence have not been loaded.  If
+the file was loaded by loadfns (but not loadfrom), then loadvars will
+                                                              103
+automatically be called to obtain the non-DEFINEQ expressions.    If a remake
+is not being performed, i.e. makefileremakeflg is NIL, or the option NEW was
+specified, makefile checks the state of the file to make sure that the entire
+
+
+
+**FOOTNOTES**
+99
+    The normal default for makefile is to remake, as indicated by the value of
+    makefileremakeflg, initially T, i.e. the user does not have to explicitly
+    include REMAKE as an option.  Note that the user can override this default
+    for particular files by using the NEW option (page 14.56).
+
+
+100
+    The user can specify reprintfns as the third argument to makefile.
+
+
+101
+    The user can also specify sourcefile as the fourth argument to makefile, in
+    which case the above checks are not executed.
+
+
+102
+    This procedure permists the user to load or loadfrom a file in a different
+    directory, and still be able to makefile-remake.
+
+
+103
+    If the file has never been loaded or dumped, e.g.  the user simply set up
+    the fileCOMS himself, then makefile will  never attempt to remake the file,
+    regardless of the setting of makefileremakeflg, or whether the REMAKE
+    option was specified, but instead will call prettydef with
+     sourcefile= reprintfns=NIL.
+
+
+
+
+
+                                     14.58
+
+
+
+symbolic file was actually  loaded.  If the file was loaded as a compiled file,
+makefile prints the message "CAN'T DUMP: ONLY THE COMPILED FILE HAS BEEN
+LOADED." Similarly, if only some of the symbolics were load via loadfns or
+loadfrom,  makefile prints "CAN'T DUMP: ONLY SOME OF ITS SYMBOLICS HAVE BEEN
+LOADED." In both cases, makefile does not call prettydef, and returns
+(file NOT DUMPED) as its value.
+
+
+
+                         *             *              *
+
+
+
+makefiles[options;files]     For each file on  files that has been
+                             changed, performs makefile[file;options], If
+                              files = NIL,  filelst is used, e.g.
+                                                                          104
+                             makefiles[LIST] will make and list all files.
+                             Value is a list of all files that are made.
+
+
+
+listfiles[files]             nlambda, nospread function.  Uses
+                              bksysbuf to load system buffer appropriately
+                             to list each file on  files, (if NIL,
+                              notlistedfiles is used) followed by a
+                             QUIT command, then calls a lower EXEC via
+                              subsys (section 21).  The EXEC will then
+                             read from the system buffer, list the files, and
+                                                           105
+                             QUIT back to the program.
+
+
+
+                             Each file listed is removed from
+                              notlistedfiles if the listing is completed,
+                             e.g. if the user control-C's to stop the listing
+                             and QUITS.  For each file not found,  listfiles
+                             prints the message "<file-name> NOT FOUND"
+                             and proceeds to the next file on files.
+
+
+
+compilefiles[files]          nlambda, nospread function.  Executes the RC
+
+
+
+**FOOTNOTES**
+104
+    In this case, if any functions have been defined or changed that are not
+    contained in one of the files on  filelst, a message is printed alerting
+    the user.
+
+
+105
+     listfiles calls the function  listfiles1 on each file to be listed.
+     listfiles1 computes the appropriate string to be fed to TENEX by
+     concating LIST$, the file name, and the value of  listfilestr, initially
+    "
+". The user can reset  listfilestr to specify subcommands for the
+    list command, or advise or redefine  listfiles1 for more specialized
+    applications.
+
+
+
+
+
+                                     14.59
+
+
+
+                             option of  makefile for each member of
+                              files.  (If  files=NIL,  notcompiledfiles is
+                                   106
+                             used.)
+
+
+
+files?[]                     Prints on terminal the names of those files
+                             that have been modified but not dumped, dumped but
+                             not listed, dumped but not compiled, plus the
+                             names of those functions (if any) that are not
+                             contained in any file.
+
+
+
+cleanup[files]               nlambda, nospread.  Dumps, lists, and
+                              recompiles (or  brecompiles) any and
+                             all files on  files requiring the corresponding
+                             operation.  If  files = NIL,  filelst is
+                                                 107
+                             used.  Value is NIL.
+
+
+
+whereis[x;type;files]        type is the name of a prettycom.  whereis
+                             sweeps through all the files on files and returns
+                             a list of all files containing x. whereis knows
+                             about and expands all prettydef commands and
+                             prettydefmacros.   type=NIL is equivalent to FNS,
+                              type=T is equivalent to VARS. Similarly,
+                              files=NIL is equivalent to (the value of)
+                              filelst, and  files=T is equivalent to
+                             (APPEND FILELST SYSFILES).
+
+
+
+Note that whereis requires that the fileCOMS of the corresponding files be
+available. However, in INTERLISP-10, the system fileCOMS are clobbered to save
+space.  Therefore, if the user wants to ask the location of a system function,
+variable, etc., he should first load the file <LISP>FNS/VARS.
+
+
+
+
+
+**FOOTNOTES**
+106
+    If car of files is a list, it is interpreted as the options argmument to
+    makefiles.  This feature can be used to supply an answer to the compiler's
+    LISTING? question, e.g. compilefiles[(STF)] will compile each file on
+    notcompiledfiles so that the functions are redefined without the exprs
+    being saved.
+
+
+107
+    The user can affect the operation of cleanup by resetting the variable
+    cleanupoptions, initially (LIST RC). For example, if cleanupoptions is
+    (RC F), no listing will be performed, and no functions will be redefined as
+    the result of compiling.  Alternatively, if car of files is a list, it will
+    be interpreted as the list of options regardless of the value of
+    cleanupoptions.
+
+
+
+
+
+                                     14.60
+
+
+
+filefnslst[file]             returns a list of the functions in  file,
+                             i.e. specified by fileCOMS.   filefnslst knows
+                             about  prettydefmacros.
+
+
+
+newfile2[name;coms;type]      coms is a list of  prettydef commands,  type
+                             is usually FNS or VARS but may be BLOCKS, ARRAYS,
+                             etc. or the name of any other  prettydef command.
+                             If  name=NIL,  newfile2 returns a list of all
+                             elements of type  type.  ( filefnslst and  bcompl
+                             and  brecompile use this option.)
+
+
+
+                             If  name=T,  newfile2 returns T if there are any
+                             elements of type  type.  ( makefile uses this
+                             option to determine whether the file contains any
+                             FNS, and therefore should be compiled, and if so,
+                             whether it contains any BLOCKS, to determine
+                             whether to call  bcompl/ brecompile or
+                              tcompl/ recompile.)
+
+
+
+                             Otherwise,  newfile2 returns T if  name is
+                             "contained" in  coms.  ( whereis uses  newfile2 in
+                             this way.)
+
+
+
+                         *             *              *
+
+
+
+If the user often employs  prettydefmacros, their expansion by the various
+parts of the system that need to interrogate files can result in a large number
+of  conses and garbage collections.  If the user could inform the file package
+as to what his various  prettydefmacros actually produce, this expansion would
+not be necessary.  For example, the user may have a macro called GRAMMARS which
+dumps various property list but no functions.  Thus, the file package could
+ignore this command when seeking information about FNS.  The user can supply
+this information by putting on the property list of the prettymacro, e.g.
+                                             108
+GRAMMARS, under the property PRETTYTYPE,    a function (or LAMBDA
+expression) of three arguments,  com,  type, and name, where  com is a
+ prettydef command, and  type and name corrrespond to the arguments to
+newfile2.  The result of applying the function to these arguments should be a
+
+
+
+
+
+**FOOTNOTES**
+108
+    If nothing appears on property PRETTYTYPE, the command is expanded as
+    before.
+
+
+
+
+
+
+
+
+
+                                     14.61
+
+
+                                                       109
+list of those elements of type  type contained in  com.
+
+
+
+                         *             *              *
+
+
+
+Currently, the file package knows about two "types": functions and variables.
+As described on page 14.53, whenver a function or variable is changed, it is
+added to  changedfnslst or  changedvarslst respectively by newfile?
+(see below).   Updatefiles operates by mapping down  filelst and
+using  newfile2 to determine if the corresponding file contains any of the
+functions on  changedfnslst or  changedvarslst.  The user can tell the file
+package about other types by adding appropriate entries to  prettytypelst.
+Each element of  prettytypelst is a list of the form (name-of-changedlist type
+string), where string is optional.  For example,  prettytypelst is initially
+                                                        110
+((CHANGEDFNSLST FNS "functions") (CHANGEDVARSLST VARS)).    If the user adds
+(CHANGEDGRAMLST GRAMMARS) to  prettytypelst, then  updatefiles will know
+to move elements on  changedgramlst to the FILE property for the files that
+contain them.  
+
+
+
+The function newfile? should be used to mark elements of other types as being
+changed, i.e. to move them to their respective changedlst.
+
+
+
+newfile?[name;changedlst]    changedlst is the name of a changedlst, e.g.
+                             CHANGEDFNSLST, CHANGEDGRAMLST, etc. newfile?
+                             (undoably) adds name to changedlst.  Value is
+                             name. newfile? is used by the editor, DWIM,
+                             define, etc.
+
+
+
+
+
+
+**FOOTNOTES**
+109
+    Actually, when  name=T, it is sufficient to return T if there are any
+    elements of type type in com.  Similary, when name is an atom other than T
+    or NIL, return T if name is contained in com. Finally, if name is a list,
+    it is sufficient to return a list of only those elements of type type
+    contained in com that are also contained in name.  The user nay take
+    advantage of these conventions of newfile2 to reduce the number of conses
+    required for various file package operations, such as calls to whereis that
+    editf performs when given a function without an expr (see section 9).
+    However, note that simply returning a list of all elements of type type
+    found in com will always work.
+
+
+110
+    If  string is supplied,  files? will inform the user if any elements
+    remain on the changed list after  updatefiles has completed.  Similarly,
+     makefiles will warn the user that some elements of this type are not
+    going to be dumped in the event that it could not find the file to which
+    they belonged.
+
+
+
+
+
+                                     14.62
+
+
+

@@ -1,0 +1,966 @@
+	TITLE DO
+
+
+ ARRAY PDL[20]	; STACK
+
+ ; SET UP REGISTER NAMES
+A_1
+B_2
+C_3
+D_4
+E_5
+F_6
+G_7
+PTR_10
+BPTR_11	; POINTS TO CHAR IN BUF
+P_13	; STACK POINTER
+
+ ; defns of ascii chars
+nul_0
+etx_3
+eot_4
+enq_5
+bel_7
+bs_10
+ht_11
+tab_11
+lf_12
+vt_13
+ff_14
+cr_15
+so_16
+si_17
+dle_20
+dc1_21
+em_31
+esc_33
+alt_33
+rs_36
+us_37
+
+one:	1
+qcr_57	; /
+qlf_55	; -
+qalt_44	; $
+qtty_45	; %
+quot_75	; =
+qcc_46	; &
+qcbit_53	; +
+qstr_"#" ; #
+cc_3	; control c
+ data_20000
+filenm:	0
+filepg:	0
+numfpg:	1
+corepg:	20
+;buf: block 20
+bufp:	point 7,buf
+;buf2: block 20
+buf2p:	point 7,buf2
+;buf3: block 20
+buf3p:	point 7,buf3
+bb4:
+ xwd 462131,500000
+ xwd 627455,167000
+ xwd 462131,547400
+ 0
+filedo:	asciz /DO.CMD/
+filept:	point 7,filedo
+break:	asciz /	####/	; break wd is tab and 4 #'s
+comwd:	block 2	; command typed in
+comwdp:	point 7,comwd	; ptr to comwd
+;out:	block 60
+outp:	point 7,out
+;dbuf:	block 120
+dbufp:	point 7,dbuf
+pstobl: -1 ; block psto if ones, dont block if zeros
+
+; start, comman,exit
+ ; START OF PROGRAM
+START:
+ ;RESET
+ MOVE	P,[IOWD 20,PDL]	; SET UP STACK
+a2:
+ pbin	; get one char from tty
+ cain	a," "	; test for space
+ jrst	a2		; loop
+ cain	a,"."	; test for file name
+ jrst	a4		; go get file name
+ cain	a,","	; test for detached run
+ jrst	a5		; go set detached flag
+ cain	a,"-"	; test for detached run without clean end
+ jrst	a51		; go set detached flag
+ cain	a,";"	; test for ptyjob, but not detached
+ jrst	a52		; go set ptyjob flag
+ cain	a,":"	; test for ptyjob, not detached, input from tty
+ jrst	a53		; go set ptyjob flag
+ cain	a,"/"	; test for resetting all ptys
+ jrst	a54		; go reset all ptys and quit
+ cain	a,"?"	; test for help
+ jrst	a56		; go print help message
+ movei	a,100
+ bkjfn	; backspace tty input
+ pushj	p,error
+ jrst	a6		; go get command
+a4:
+ hrroi	a,[asciz /Getting file name /]
+ ;psout
+ movei	a,100
+ hrroi	b,filedo	; ptr to filename in ascii
+ movei	c,=79	; limit on num of chars
+ movei	d," "	; stop on space
+ sin		; get filename
+ jrst	a2		; get command
+a5:	; comma
+ setom	detach	; set detached flag
+ setom	ptyjob	; set ptyjob flag
+ jrst	a2		; get command or filename
+a51:	; dash
+; setom	detach	; set detached flag
+; setom	ptyjob	; set ptyjob flag
+ setom	dirtyp	; set dirty end to ptyjob
+ jrst	a2		; get command or filename
+a52:	; semicolon
+ setom	ptyjob	; set ptyjob flag
+ jrst	a2		; get command or filename
+a53:	; colon
+ setom	ptyjob	; set ptyjob flag
+ setom	ttyinp	; set flag for tty input to ptyjob
+ jrst	a2		; get command or filename
+a54:
+ jrst	reeset	; release all ptys and quit
+a56:	; help routine
+ hrroi	a,[asciz " ; pty with no detach
+ : pty, no detach, input from tty
+ , pty and detach
+ - dirty end (to record) (use with , or ;)
+ / reset all ptyjobs
+ ? help
+Doc on <mlisp>do.doc
+"]
+ psout
+ jrst	a2	; loop
+a6:
+ hrroi	a,[asciz /Getting command name /]
+ ;psout
+; movei	a,100	; tty input
+; hrroi	b,buf	; input into buf
+; movei	c,6
+; movei	d,us
+; sin		; read command into buf
+ hrroi	a,buf
+ movei	b,7 ; max number of chars
+ movei	c,0
+ jsys	611	; pstin
+ jumpe	2,[ hrroi a,[asciz/Command too long/]
+		psout
+		jrst exit]
+; make command wd look like left justified sos wd
+ move	ptr,bufp	; get ptr to buf
+ move	bptr,comwdp	; get ptr to comwd
+a7:
+ ildb	a,ptr	; get next char from command
+ cain	a,cr		; look for US (cr) char, skip if not us
+ jrst	a8		; done
+ cail	a,"a"	; skip if less than "a"
+ subi	a,40		; convert lower case to upper
+ idpb	a,bptr	; char to comwd
+ jrst	a7		; loop
+a8:
+ movei	a,cr
+ idpb	a,bptr	; put cr in after name
+ movei	a,lf	
+ idpb	a,bptr	; put lf after cr
+ ; command is now in comwd in upper case
+
+; read file in
+b1:
+ hrroi	a,[asciz /Read file /]
+ ;psout
+ hrlzi	a,1		; filename is a string in core
+ move	b,filept	; ptr to filename
+ gtjfn	; get jfn for file
+ pushj	p,error
+ hrrzm	a,filenm	; save jfn
+; open file
+b2:
+ move 	a,filenm
+ movsi	b,440000
+ hrri	b,200000	; read only
+ openf	; open file
+ pushj	p,error
+ hrroi	a,[asciz /Open file /]
+ ;psout
+ move	a,filenm
+ ffffp		; first free file pag
+ hrrz	e,a	; number of page
+ move	a,filenm
+ move	b,[xwd 1,11]
+ movei	c,c	; write file block starting at c
+ gtfdb		; gt file desc block
+ hrrz	b,c	; number of pages in file
+ movem	b,numfpg	; save
+ camn	b,e		; compare actual number to number of sequential pgs
+ jrst	p1	; same - ok
+ hrroi	a,[asciz /Funny file /]
+ psout
+; try pmaps
+p1:
+ hrroi	a,[asciz /Try pmap /]
+ ;psout
+ move	d,corepg
+ move	e,filepg
+p2:
+ hrl		a,filenm
+ hrr		a,e
+ movsi	b,400000	; this fork
+ hrr		b,d		; core pg
+ movsi	c,100000	; read access
+ pmap	; read a page from file to fork
+ hrroi	a,[asciz /Pmap ok /]
+ ;psout
+ addi	e,1
+ addi	d,1
+ camge	e,numfpg	; compare file page to limit
+ jrst	p2		; loop
+; now should have file in core
+
+; scan file looking for breaker or eof
+ movei	g,data	; begin wd num of data
+ move	e,numfpg	; num file pages
+ imuli	e,1000	; num wds in file
+ add		e,g		; end wd num of data
+d2:
+ skipn	a,0(g)	; get wd of data, skip if nonzero
+ jrst	d22		; dont test for break
+ camn	a,break	; compare to break
+ jrst	d44		; found a break
+d22:
+ camge	g,e		; current wd to end
+ aoja	g,d2		; incr g and loop
+; over bound
+ hrroi	a,[asciz /Didnt find command
+/]
+ psout
+ jrst 	exit
+d44:
+ aoj		g,		; incr wd count
+ move	a,0(g)	; get command wd
+ came	a,comwd	; compare
+ jrst	d22		; no - go loop
+ hrroi	a,[asciz /Found command /]
+ ;psout
+; found correct command
+
+; get chars from buf
+ move	ptr,g
+ move	bptr,outp	; ptr to out buf
+; now have ptr to wd containing cr in ptr
+;  and we are all done with this wd
+; look for line num
+c1:
+ hrli	ptr,0	; remove byte ptr aspect
+ addi	ptr,1		; point to line num maybe
+ move	a,0(ptr)	; get next wd
+ trnn	a,one		; skip if a line num
+ jrst	.-3		; loop if not line num
+ skipa	a,		; dont increment ptr
+c2:
+ addi	ptr,1	; to next wd
+ move	a,0(ptr)	; get next wd from buf
+ tdne	a,one	; skip if not a line num
+ jrst	c2		; loop if a line num
+ camn	a,break	; skip if not a breaker
+ jrst	done		; all chars done
+ ;subi	ptr,1	; back up
+ hrli	ptr,440700	; make ptr a byte ptr
+; now have byte ptr in ptr
+;  stop only on cr
+c4:
+ ildb	a,ptr	; get next char
+ cail	a,100	; skip if not normal alpha char
+ jrst	c45		; normal alpha char
+ cain	a,quot	; skip if not quot
+ jrst	c5		; quot so go to special chars
+ caige	a,060	; skip if its a normal char
+ jrst	c5		; maybe a special char
+c45:
+ idpb	a,bptr	; stuff into output
+ jrst	c4		; loop
+c5:
+ cain	a,cr		; skip if not cr
+ jrst	c1		; done with this line
+ cain	a,tab
+ jrst	c4		; dont use tabs
+ cain	a,qcr
+ jrst	[ movei b,cr
+		  jrst c6 ]
+ cain	a,qalt
+ jrst	[movei b,alt
+		 jrst c6 ]
+ cain	a,qlf
+ jrst	[movei b,lf
+		 jrst c6]
+ cain	a,qcc
+ jrst	[movei b,cc
+		 jrst c6]
+ cain	a,quot
+ jrst	[ildb b,ptr	; use next char as is
+		 jrst c6]
+ cain	a,qcbit
+ jrst	[ildb b,ptr	; make control char
+		 andi b,77	; erase non-control bit
+		 jrst c6]
+ cain	a,qtty	; special tty input char
+ jrst	c7
+ cain	a,qstr	; special string input
+ jrst	c8
+ jrst	c45		; wasnt a special char -- use as-is
+c6:
+ move	a,b
+ jrst	c45		; use special char
+; output until next qtty char
+c7:
+ move	d,buf2p
+c72:
+ ildb	a,ptr	; get char from buf
+ cain	a,qtty	; test for end char
+ jrst	c74		; done
+ idpb	a,d		; put char in ttyout buf
+ move	e,a		; save last char for later
+ jrst	c72
+c74:
+ cain	e,quot	; was the last char a quot
+ jrst	c76		; if so, jump
+ movei	a,cr		; put crlf after comment
+ idpb	a,d
+ movei	a,lf
+ idpb	a,d
+c76:
+ setzb	a,		; null in a
+ idpb	a,d		; put null in ttyout buf
+ move	a,buf2p		; get string ptr
+ psout	; say the string
+ caie	e,quot	; was the last char the quot char
+ jrst	c4		; no - then this was just a comment
+;get string from tty
+ movei	a,100
+ move	b,buf3p	; input to special buffer
+ movei	c,=79
+ movei	d,us
+ sin		; get tty input
+ setz	a,		; now have to get rid of the US
+ dpb		a,b	; make it null
+ move	a,b
+ bkjfn		; back up the string ptr
+ pushj	p,error
+ ; now have input string in buf3
+ move	a,buf3p
+ move	b,bptr
+ setz	c,	; stop on null
+ sin	; tty input from buf3 to buffer
+ movem	b,bptr	; save updated ptr
+ jrst	c4		; more input
+
+; specail string input tu buffer
+c8:
+ ildb	b,ptr	; get next char
+ cain	b,"#"
+ jrst	[move a,buf3p
+		jrst c84] ; use the contents of buf3 as input
+ movem	b,c85	; save char
+ pushj	p,chok	; check to see if this command ok
+ jumpe	a,c8err	; not ok
+ move	b,c85	; get char back
+ caige	b,"A"	; at least A
+ jrst	c8err
+ caile	b,"D"	; not greater than D
+ jrst	c8err
+ subi	b,"A"	; make into an index
+ hrroi	a,bb4
+ add	a,b	; add index
+c84:
+ move	b,bptr	; move to buffer
+ setz	c,	; end on null
+ sin		; move special string to buffer
+ movem	b,bptr	; save updated ptr
+ jrst	c4
+c85: 0
+c8err:
+ hrroi	a,[asciz /Dont understand use of #
+/]
+ psout
+ haltf
+ jrst c4
+
+; have output in out -- now sti
+done:
+ move	a,outp
+ ;psout	; print it
+ move	a,ptyjob
+ jumpn	a,stigo	; no length limit on ptyjobs
+ hrrz	c,bptr	; ptr to last char
+ hrrz	d,outp	; base
+ sub		c,d		; number of words
+ caig	c,=22	; too close to max, go calculate
+ ;skipn
+ ;skipa
+ jrst	stigo	; ok, sti the buffer
+ imuli	c,5		; number of chars per word
+ hllz	d,bptr	; get byte ptr part
+ lsh		d,-36	; get p of ptr - top 6 bits
+ subi	d,1		; 1 for left justified
+ idivi	d,7		; 7 bits per char
+ sub		c,d		; add excess chars
+ addi	c,6		; correction factor (fudge to make it work)
+ ; c should now be the length of the buffer
+ cail	c,=120	; if less, then skip
+ jrst	d3		; more, to d3
+ movei	d,=120	; 120 - length
+ sub		d,c
+ jrst	d4
+d3:
+ move	d,c		; length - 120
+ subi	d,=120
+d4:	; now have difference in d
+ caige	d,100	; dont want to print if too big
+ jrst	d5
+ hrroi	a,[asciz /MORE THAN 64/]
+ psout
+ jrst	d6
+d5:	; print 2-digit number
+ move	a,d
+ lsh		a,-3
+ addi	a,"0"
+ pbout	; print a byte
+ move	a,d
+ andi	a,7
+ addi	a,"0"
+ pbout	; print another byte
+d6:  ; now way what it is
+ caile	c,=120	; if less, ok
+ jrst	d7		; not ok
+ hrroi	a,[asciz / OCT CHARS TO SPARE
+/]
+ psout
+ jrst	stigo
+d7:	; too long
+ hrroi	a,[asciz / OCT CHARS TOO MANY
+/]
+ psout
+ hrroi	a,[asciz /Line too long
+/]
+ psout
+ jrst	exit
+stigo:
+ move	a,filenm	; jfn of do.cmd file
+ closf		; close and release jfn
+ pushj	p,error
+ move	a,ptyjob	; get ptyjob flag
+ jumpn	a,detgo	; jump if set
+ move	bptr,outp	; get ptr
+sti1:
+ move	a,bptr
+; psout
+ movei	a,100
+ jrst	s2+1
+s2:
+ sti		; put char into tty input
+ ;move	a,b
+ ;pbout
+ ;movei	a,100
+ ildb	b,bptr	; get char from out
+ jumpn	b,s2		; loop if not null
+ jrst	exit		; done
+
+   ; detach the job - must write sti buffer to a file to read in
+detgo:
+ hrroi	a,[asciz /Pty job /]
+ psout
+ skipn	detach	; ones if want to detach
+ jrst	ploop0	; dont detach
+ hrroi	a,[asciz /Detaching...Wait 15 secs before ^C /]
+ psout
+ dtach
+ploop0:
+ pushj	p,newjob	; new job, name in pty
+ pushj	p,filonm	; make new filo name
+ hrroi	b,filo	; filout for results from pty
+ pushj	p,filout
+ move	ptr,[point 7,comin]
+ pushj	p,sendgt
+ move	bptr,outp	; sti command buffer
+ hrroi	a,[asciz /Type input:/]
+ skipe	ttyinp	; skip if no tty input
+ psout
+ploop:
+ move	a,ttyinp	; flag for ttyinput to ptyjob
+ jumpe	a,ploop1	; no ttyinput
+ pbin	; get tty char for input
+ cain	a,us	; skip if not us
+ movei	a,cr	; convert to cr
+ move	b,a
+ cain	b,":"	; use colon to stop
+ jrst	detex	; stop the job
+ skipa	; to push char
+ploop1:
+ ildb	b,bptr	; char from sti buf
+ jumpe	b,detex	; done with buf if null
+ move	a,pty
+ jsys	362	; psti
+ pushj	p,inperr	; input buf full
+ploop2:
+ pushj	p,sendg2	; get pty output and print
+ jumpn	a,ploop2	; got output, get more
+ jrst	ploop	; no more output, push more input
+; done routine
+detex:
+ skipe	dirtyp	; if not dirty end then normal
+ jrst	dirtyo	; abnormal
+ move	ptr,[point 7,comout]
+ pushj	p,sendgt
+ move	ptr,[point 7,comou2]
+ pushj	p,sendgt
+ pushj	p,sendg2
+ skipe	detach	; skip if not detached
+ pushj	p,linkms	; else link and print message
+ pushj	p,sendg2
+ move	ptr,[point 7,comou3]
+ pushj	p,sendgt
+ pushj	p,sendg2
+detex3: ; dirtyo returns here
+ pushj	p,releas	; release the pty
+ move	a,jfno
+ closf	; close output file
+ pushj	p,error
+ gjinf
+ skipl	d	; skip if line num is ones, detached
+ jrst	[hrroi a,[asciz /Exiting.../] ; dont kill if not detached
+	 psout
+ jrst exit ]
+; detached - suicide
+ seto	a,
+ lgout
+ pushj	p,error
+ jrst	exit
+inperr:
+ hrroi	a,[asciz /Input buffer full -- shouldnt happen /]
+ psout
+ popj	p,
+sendgt:	; sends string in ptr, gets into dbuf, does sout into filout
+ pushj	p,[ popj p, ; 	move a,jfno
+			move b,ptr
+			setz c,
+			sout
+			popj p,]
+ pushj	p,send
+sendg2:
+ setzm	sendgg	; returns zero if absolutely no output, else ones
+ move	ptr,dbufp
+ pushj	p,get
+ movem	 a,sendgf	; get returns flag in a
+ or	a,sendgg	; return flag
+ movem	a,sendgg	; set if any output at all
+ move	a,jfno
+ move	b,dbufp
+ setz	c,
+ sout
+ pushj	p,printd	; print dbuf if attached
+ move	d,sendgf
+ jumpn	d,sendg2+1	; if flag nonzero, loop and get more
+ move	a,sendgg	; return flag
+ popj	p,
+sendgf: 0
+sendgg: 0 ; zero if absolutely no output, else ones
+dirtyo: ; abnormal ptyend - try to determine when pty is done
+ movei	f,=5000	; 5 seconds to sleep
+ pushj	p,sendg2	; try to get output from pty
+; ildb	a,dbufp	; first char of output
+ jumpn	a,dirtyo	; there was output, go get more, reset sleep time
+ camg	f,[=200000]	; test time to limit: top will be 160 secs
+ jrst	dirt2	; not greater, ok to sleep more
+ skipe	killjb	; skip if zero, dont kill
+ jrst	detex3	; over limit, quit
+dirt2:
+ move	a,f	; sleep time
+ disms	; sleep to wait for ptyjob
+ move	d,f
+; pushj	p,octal	; print sleep time
+ imuli	f,2	; increment sleep time
+ jrst	dirtyo+1	; loop
+printd: ; prints dbuf if ok to print it
+ gjinf
+ skipge	d	; skip if valid terminal num (not detached)
+ popj	p,	; detached, return
+pr1:
+ movei	a,100	; tty
+ sibe	; skip if no tty input
+ skipa	; tty input
+ jrst	pr2	; no tty input
+ pbin	; get tty char
+ cain	a,"?"
+ jrst	[hrroi a,[asciz /Can type: YNDKL.../]
+	 psout
+	 jrst pr1]
+ cain	a,"Y"
+ setom	prflag	; want to print
+ cain	a,"N"
+ setzm	prflag	; dont print
+ cain	a,"K"
+ setom	killjb	; kill the job when done
+ cain	a,"L"
+ setzm	killjb	; dont kill, let sleep and test for ptyjob output
+ cain	a,"D"	; to detach job
+ jrst	[setzm prflag
+		 hrroi a,[asciz /Detaching.../]
+		 psout
+		 dtach
+		 jrst pr2]
+ jrst	pr1	; loop for more tty input
+pr2:
+ skipn	prflag	; if set then skip
+ popj	p,	; else return
+ movei	a,101
+ move	b,dbufp
+ setz	c,
+ sout	; print dbuf on tty
+ popj	p,
+prflag: 0
+killjb: -1 ; kill the job when done
+ ; start up a new job, return the name in  pty
+newjob:
+	jsys 360	;ASPTY;
+ jrst	ptyerr	; error
+	MOVEM	1,pty;
+	RFMOD;
+	TRZ	2,300	; BINARY MODE;
+	SFMOD;
+	popj	p,
+
+ ; kill the ptyjob, name in pty
+releas:
+	MOVE	1,PTY;	
+	jsys 361	;REPTY	; RELEASE IT;
+	pushj	p,error
+	popj	p,
+
+ ; send a char to a ptyjob, char in ac2, name in pty
+ ; returns ones in a if ok, else zeros in a
+sendc:
+	MOVE 1,pty;
+	jsys 362	;PSTI;
+	pushj	p,inperr ; SAY THAT THE BUFFER IS FULL;
+	popj	p,
+
+
+ ; get a char, name in pty, char returned in a
+ ; returns 0 if buffer empty
+getc:
+	MOVE 	1,pty;
+;	SETZ	2,;DENY THAT WE WANT TO BE BLOCKED.;
+;	seto	2,; block until non-empty, or pty waiting for input
+	move 2,pstobl ; contains ones or zeros
+	jsys 363	;PSTO;
+	setz	2,	; INDICATE BUFFER EMPTY;
+	MOVE 	1,2	; RETURN IN 1;
+	popj	p,
+
+ ; send a whole string to a ptyjob
+ ; put ptr in ptr, name in a - jfn, string ends in null
+send:
+ hrroi	a,[asciz /To pty /]
+ ;psout
+s22:
+	ildb	b,ptr	; get char from string
+	jumpe	b,s4	; exit
+	pushj	p,sendc
+	jrst	s22	; loop
+s4:
+	popj	p,
+
+ ; get a string, ptr in ptr, name in a - jfn
+get:
+ hrroi	a,[asciz /From pty /]
+ ;psout
+ setz	c,	; count of chars
+g2:
+ pushj	p,getc
+ jumpe	a,g4	; jump if 0, done
+ idpb	a,ptr	; put char in string
+ addi	c,1	; incr num of chars
+ caig	c,=120	; skip if c over limit
+ jrst	g2	; loop
+g4:
+ setz	b,
+ idpb	b,ptr	; put null byte at end
+ popj	p,	; return nonzero in a if more, zero in a if done
+
+ptyerr:	; errors in ptys that shouldnt happen
+ hrroi	a,[asciz /Pty error. Type continue if brave
+/]
+ psout
+ haltf
+ popj	p,
+
+detach: 0	; set to ones if want to detach
+ptyjob: 0	; set to ones if want ptyjob
+dirtyp: 0 ; set to ones if want dirty end to ptyjob
+ttyinp: 0	; set to ones if ptyjob input from tty
+fili: asciz /1.tmp/
+filo: asciz /1o000.tmp/
+sizi: 0
+sizi2: 0
+jfni: 0
+jfno: 0
+pty: 0
+char: 0
+comin:
+ byte (7) 3,"l","o","g"," "  ; first line
+ asciz /faught SUM  
+receive
+/
+comout:
+ byte (7) 3; control c
+comou2:
+ asciz /shut
+quit 
+shut
+/
+comou3: asciz /shut
+/
+; open input file, filename ptr in b, jfn will be in jfni
+filin:
+ hrroi	a,[asciz /File in /]
+ ;psout
+ hrlzi	a,1	; input file
+ gtjfn
+ pushj	p,error
+ hrrzm	a,jfni	; save jfn
+ move	a,jfni
+ movsi	b,70000	; byte size 7
+ hrri	b,200000	; read access
+ openf
+ pushj	p,error
+ popj	p,
+; open output file, filename ptr in b, jfn will be in jfno
+filout:
+ hrroi	a,[asciz /File out /]
+ ;psout
+ hrlzi	a,400001	; output file
+ gtjfn
+ pushj	p,error
+ hrrzm	a,jfno	; save jfn
+ move	a,jfno
+ movsi	b,70000	; byte size 7
+ hrri	b,100000	; write access
+ openf
+ pushj	p,error
+ popj	p,
+filonm: ; makes filo name dependent upon tss job number
+ gjinf	; job number in c
+ move	a,c	; top digit
+ andi	a,70
+ lsh	a,5
+ andi	c,7	; bottom digit
+ lsh	c,1
+ or	a,c
+ or	a,filo	; old file name
+ movem	a,filo	; new file name
+ popj	p,
+
+octal:		; print the octal contents of a word
+ movei	a,101
+ movei	c,=12
+oc2:
+ rot	d,3
+ move	b,d
+ andi	b,=7
+ ori	b,"0"
+ bout
+ sojg	c,oc2
+ movei	b," "
+ bout
+ popj	p,
+; returns ones in a if ok
+chok:
+ gjinf	; get job info
+ movem	a,chok9	; login dir num
+ movei	d,3	; index
+chok2:
+ move	b,chokp1(d)	; get string ptr to name
+ pushj	p,chok4	; test
+ jumpn	a,chok3	; found if ones
+ sojge	d,chok2	; loop
+ ; not ok - a is zeros
+ hrroi	a,[asciz /Bad try/]
+ ;psout
+ setz	a,
+chok3:
+ popj	p,
+chok4:
+ movei	a,1	; match entire string
+ stdir	; translate string to dir num
+ jrst	chok5	; no match
+ jrst	chok5	; ambiguous
+ ; dir num in rh of a
+ hrrz	b,a	; move to b
+ came	b,chok9	; compare to this one
+ jrst 	chok5	; not good
+ seto	a,	; found, set to ones
+ popj	p,
+chok5:
+ setz	a,	; not found, set to zeros
+ popj	p,
+
+chok70: ; translate all dir strings to dir nums
+ movei	c,3
+chok71:
+ movei	a,1
+ move	b,chokp1(c)	; string ptr
+ stdir	; translate dir string to dir num
+ jrst	chok75	; no match
+ jrst	chok75	; ambig
+ hrrzm	a,chokd1(c)	; save dir num
+ sojge	c,chok71	; loop
+ popj	p,
+chok75:
+ hrroi	a,[asciz /Couldnt find dir number /]
+ psout
+ jrst exit
+chok9:	0
+chokn1: asciz /FAUGHT/
+chokn2: asciz /PARKISON/
+chokn3: asciz /PARRY/
+chokn4: asciz /COLBY/
+chokp1:
+ point 7,chokn1
+ point 7,chokn2
+ point 7,chokn3
+ point 7,chokn4
+ 0
+chokd1: block 5
+
+reeset:	; reset all ptys
+ seto	a,
+ jsys	361	; release all ptys
+ jrst error
+ hrroi a,[asciz /All ptys reset. /]
+ psout
+ setom	linkin	; set flag for kill jobs
+ pushj	p,linkms
+ hrroi a,[asciz /All det jobs killed. /]
+ psout
+ jrst	exit
+; link and give message that the ptyjob is done
+linkin: 0 ; calling flag - zero if link and msg, ones if kill jobs
+linkms:
+ pushj	p,chok70	; translate all dir names to dir nums
+ move	a,[sixbit /JOBDIR/]
+ sysgt
+ skipn	b
+ jrst	tblerr	; couldnt find table
+ hlro	e,b	; neg num of entries in e
+ addi	e,1	; we dont use entry zero, thus one less
+ hrrzm	b,tjobdr	; table number in tjobdr
+ setz	f,	; table index in f
+liloop:
+ jumpge	e,lidone	; when e is nonneg then done
+ addi	e,1
+ addi	f,1
+ hrl	a,f	; index - job number
+ hrr	a,tjobdr	; table num
+ getab	; get dir num for job
+ pushj	p,error
+ hrrz	b,a	; dir num of job n in b
+ jumpe	b,liloop	; null entry, ignore
+ movei	c,3	; just first 3 names
+li2:
+ camn	b,chokd1-1(c)	; skip if not equal
+ jrst	li3	; found a good guy
+ sojg	c,li2	; small loop
+ jrst	liloop	; not a good guy, get another
+; we have found a good guy
+li3:
+ move	a,[sixbit /JOBTTY/]
+ sysgt
+ skipn	b
+ jrst	tblerr	; no such table
+ hrr	a,b	; table number
+ hrl	a,f	; job number
+ getab	; get tty line number for the job
+ pushj	p,error
+ hlrz	b,a	; ttyline num in b
+ cail	b,777777	; if less than 7's then not detached
+ jrst	liloo2	; detached, look further
+ jrst li4
+liloo2:	; look at detached job
+ move	a,linkin	; get flag
+ jumpe	a,liloop	; if zero, dont kill
+; try to kill detached job
+ hrrz	a,f	; job num
+ lgout	; jsys 3, logout the job
+ jrst	liloop	; if error, ignore
+ jrst	liloop
+li4:
+ move	a,linkin	; get flag
+ jumpn	a,liloop	; if ones, dont pty msg
+; now link to the tty line number
+; make the line number into string characters
+ move	g,b	; print it first
+ move	d,b
+; pushj	p,octal
+ move	b,g
+ move	a,b
+ andi	a,7	; last digit
+ lsh	a,=15
+ move	c,b
+ andi	c,70	; middle digit
+ lsh	c,=19
+ or	a,c
+ andi	b,700	; top digit
+ lsh	b,=23
+ or	a,b
+ or	a,linkm2+1	; the clean message
+ movem	a,linkm+1	; the changing message
+ move	ptr,linkmp
+ setzm	pstobl	; set to zeros so dont block psto
+ pushj	p,sendgt	; send string to ptyjob
+ setom	pstobl	; set back to ones to block for input
+ move	ptr,[point 7,[asciz /;nil
+/]] ; cleanup
+ pushj	p,sendgt	; clean up potential errors
+ jrst	liloop	; get another
+lidone:
+ popj	p,
+tblerr:
+ hrroi	a,[asciz /Couldnt find system table /]
+ psout
+ jrst exit
+tjobdr: 0
+linkm: ascii /LINK 000  /
+ byte (7)15," ",";"," ",7
+ ascii /Ptyjob done... /
+ byte (7)15,"B","R","E",15
+0
+linkm2: ascii /LINK 000  /
+linkmp: point 7,linkm
+error:	; universal error routine
+ hrroi	a,[asciz /Error: /]
+ psout
+ hrrzi	a,101
+ move	b,[xwd 400000,777777]
+ movei	c,0
+ erstr		; translate error to string and print
+ jrst 	exit9
+ jrst	exit9
+ psout
+ jrst	exit9
+exit:
+exit9:
+	haltf
+buf: block 20
+buf2: block 20
+buf3: block 20
+dbuf:	block 120
+OUT: BLOCK 2000 ; 10,000 chars
+	end start

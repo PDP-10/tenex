@@ -1,0 +1,810 @@
+(FILECREATED "10-OCT-74 21:39:32" HELPDL.;4 24879  
+
+     changes to:  MAPDL SEARCHPDL
+
+     previous date: " 7-OCT-74 12:21:29" HELPDL.;3)
+
+
+  (LISPXPRINT (QUOTE HELPDLCOMS)
+	      T T)
+  [RPAQQ HELPDLCOMS ((FNS * HELPDLFNS)
+	  (VARS (HELPFLAG T)
+		[ERSETBLIP (CDR (GETD (QUOTE ERRORSET]
+		[EVALDEF (CDR (GETD (QUOTE EVAL]
+		[APPLYDEF (CDR (GETD (QUOTE APPLY]
+		(HELPDEPTH 9)
+		(HELPTIME 1000)
+		(HELPCLOCK)
+		(ERRORTYPELST)
+		[LISPINTERRUPTS (QUOTE ((HELP 0 8)
+					(PRINTLEVEL 1 16)
+					(STORAGE 2 19)
+					(RUBOUT 3 28)
+					(ERROR 4 5)
+					(DOP 5 4)
+					(RESET 5)
+					(OUTPUTBUFFER 6 15)
+					(BREAK 7 2)
+					(USER 8 21]
+		(USERINTERRUPTS)
+		(NLSETQGAG T))
+	  [P [AND (NULL (GETD (QUOTE OLDFAULT1)))
+		  (PUTD (QUOTE OLDFAULT1)
+			(GETD (QUOTE FAULT1]
+	     (AND (NULL (GETD (QUOTE ERROR1)))
+		  (PUTD (QUOTE ERROR1)
+			(GETD (QUOTE ERROR]
+	  (BLOCKS * HELPDLBLOCKS)
+	  (DECLARE: DONTEVAL@LOAD DOEVAL@COMPILE DONTCOPY COMPILERVARS
+		    (ADDVARS (NLAMA FAULTEVAL)
+			     (NLAML]
+  (RPAQQ HELPDLFNS
+	 (HELP ERROR ERRORMESS ERRORMESS1 ERRORX ERRORX2 BREAKCHECK FINDERSET 
+	       STKARGS VARIABLES INTERRUPT MAKEAPPLY FAULTEVAL FAULTAPPLY 
+	       FAULT1 FAULT2 SEARCHPDL MAPDL INTERRUPTCHAR))
+(DEFINEQ
+
+(HELP
+  (LAMBDA (MESS1 MESS2)                         (* Help always breaks.)
+    (ERRORMESS1 MESS1 MESS2 (QUOTE help!))
+    (BREAK1 (ERROR (QUOTE "??")
+		   (QUOTE )
+		   T)
+	    T HELP)))
+
+(ERROR
+  (LAMBDA (MESS1 MESS2 NOBREAK)
+    (COND
+      (NOBREAK                                  (* An ERROR! cum 
+                                                message.)
+	       (SETERRORN 17 (CONS MESS1 MESS2))
+	       (ERRORMESS1 MESS1 MESS2 (QUOTE ERROR))
+	       (ERROR!))
+      (T (ERRORX (LIST 17 (CONS MESS1 MESS2)))))))
+
+(ERRORMESS
+  [LAMBDA (U)                                   (* Replaces ERRORM.)
+    [COND
+      ((NULL U)
+	(SETQ U (ERRORN]
+    (COND
+      ((EQ (CAR U)
+	   17)
+	(ERRORMESS1 (CAR (SETQ U (CADR U)))
+		    (CDR U)
+		    (QUOTE ERROR)))
+      (T (AND LISPXHISTORY (LISPXPUT (QUOTE *ERROR*)
+				     (CADR U)))
+	 (ERRORM U])
+
+(ERRORMESS1
+  [LAMBDA (MESS1 MESS2 MESS3)                   (* Prints messages for help and 
+                                                error)
+    (PROG (Z)
+          (COND
+	    ((AND (NULL MESS1)
+		  (NULL MESS2))
+	      (LISPXPRINT MESS3 T T)
+	      (RETURN)))
+          (LISPXPRIN1 MESS1 T)
+          (COND
+	    ((OR (ATOM MESS1)
+		 (STRINGP MESS2))
+	      (LISPXSPACES 1 T))
+	    (T (LISPXTERPRI T)))
+          (SETQ Z MESS1)
+          (COND
+	    ((EQ MESS2 (QUOTE ))
+
+          (* Bell is used for ignore, since NIL might be a reasonable 
+          value for MESS2, e.g. NON-NUMERIC ARG NIL)
+
+
+	      (RETURN))
+	    ((STRINGP MESS2)
+	      (LISPXPRIN1 MESS2 T)
+	      (LISPXTERPRI T))
+	    (T (LISPXPRINT (SETQ Z MESS2)
+			   T T)))               (* The offender is MESS2 if it 
+                                                is not a string, otherwise 
+                                                MESS1.)
+          (AND LISPXHISTORY (LISPXPUT (QUOTE *ERROR*)
+				      Z])
+
+(ERRORX
+  (LAMBDA (ERXM)                                (* ERXM is an optional 
+                                                error number and 
+                                                message.)
+    (ERRORX2 (COND
+	       (ERXM (SETERRORN (CAR ERXM)
+				(CADR ERXM))
+		     ERXM)
+	       (T (ERRORN)))
+	     (STKNTH -1 (QUOTE ERRORX)))))
+
+(ERRORX2
+  [LAMBDA (ERRORMESS ERRORPOS)
+
+          (* ERRORMESS is the error message, ERRORPOS is the stack 
+          position of the last function before any error functions)
+
+
+    (PROG (EX2X EX2Y EX2F ESGAG BREAKCHK)
+          (SETQ BREAKCHK (BREAKCHECK ERRORPOS (CAR ERRORMESS)))
+                                                (* 18 is error number for 
+                                                control-b BREAK.)
+      TOP (COND
+	    ([AND ERRORTYPELST (SETQ EX2X (FASSOC (CAR ERRORMESS)
+						  ERRORTYPELST))
+		  (SETQ EX2X (EVAL (CADR EX2X]
+
+          (* This is an attempt at providing the user with a way of 
+          specifying treatment of certain error conditions.
+          The error number is looked up on ERRORTYPELST and if found, 
+          CADR is evaluated. If this produces a non-nil value, the 
+          function causing the error is reevaluated with the result of 
+          the evaluation substituted for the offender, a la the 
+          alt-mode command. (If Alice fixes the call to ERRORX2 so 
+          that they all continue, e.g. INFILE, RPLACA, etc. then we 
+          can take out the RETEVAL.) Note of course that the user can 
+          always 'take over' by simply having the form on ERRORMESS, 
+          ERRORPOS, to a RETEVAL. In order to make this feature more 
+          convenient to user, ERRORMESS and BREAKCHK are SPECVARS.)
+
+
+	      (RETEVAL ERRORPOS [SUBPAIR (QUOTE (FN ARGS))
+					 (LIST (STKNAME ERRORPOS)
+					       (SUBST EX2X (CADR ERRORMESS)
+						      (STKARGS ERRORPOS)))
+					 (QUOTE (APPLY (QUOTE FN)
+						       (QUOTE ARGS]
+		       T))
+	    ([AND (EQ (CAR ERRORMESS)
+		      26)
+		  (LISTP (SETQ EX2X (CADR ERRORMESS]
+
+          (* Hash table overflow. Done after ERRORTYEPLST check to 
+          allow user to get in and change action, or for example, keep 
+          statistics on which hasha arrays are overflowing, etc.)
+
+
+	      (SETQ EX2F (ARRAYSIZE (CAR EX2X)))
+	      [SETQ EX2Y (HARRAY (COND
+				   ((NULL (SETQ EX2Y (CDR EX2X)))
+				     (FTIMES EX2F 1.5))
+				   ((FLOATP EX2Y)
+				     (FTIMES EX2F EX2Y))
+				   ((NUMBERP EX2Y)
+				     (IPLUS EX2F EX2Y))
+				   (T (GO TOP]
+	      (PRIN1 (QUOTE "rehashing...")
+		     T)
+	      (FRPLACA EX2X (REHASH (CAR EX2X)
+				    EX2Y))
+	      (TERPRI T)
+	      (RELSTK ERRORPOS)
+	      (RETURN EX2X))
+	    [(EQ (CAR ERRORMESS)
+		 43)                            (* User break.)
+	      (COND
+		((SETQ EX2X (FASSOC (CADR ERRORMESS)
+				    USERINTERRUPTS))
+		  (RETEVAL ERRORPOS (CADR EX2X)
+			   T))
+		(T (ERROR (QUOTE "undefined user interrupt")
+			  (CADR ERRORMESS]
+	    ((NULL ESGAG)
+	      (ERRORMESS ERRORMESS)))
+          (COND
+	    ((NULL BREAKCHK)                    (* Causes error to occur just 
+                                                after actual position)
+	      (SETQQ EX2Y (ERROR!))
+	      (GO OUT))
+	    ((EQ (CAR ERRORMESS)
+		 1)
+
+          (* Undefined function call from compiled code.
+          Should never happen as FAULTAPPLY is called for this case.)
+
+
+	      (ERROR (QUOTE "SHOW W.T.")
+		     (QUOTE )
+		     T)))
+          (SETQ EX2F (STKNAME ERRORPOS))
+          (COND
+	    ((EQ (CAR ERRORMESS)
+		 10)                            (* Non-numeric arg.)
+	      (PRIN1 (QUOTE "in ")
+		     T)
+	      (PRINT EX2F T T)
+	      (SETQQ EX2Y (BREAK1 (ERROR (QUOTE "?")
+					 (QUOTE )
+					 T)
+				  T NIL NIL ERRORX))
+	      (GO OUT)))
+          [SETQ EX2X
+	    (SELECTQ (SETQ EX2X (FNTYP EX2F))
+		     ((SUBR* FSUBR FSUBR*)
+		       (QUOTE (ERROR (QUOTE "CAN'T")
+				     (QUOTE )
+				     T)))
+		     [(EXPR FEXPR EXPR* FEXPR*)
+		       (CONS (QUOTE PROGN)
+			     (CDDR (FGETD EX2F]
+		     (NIL                       (* Open lambda See comment in 
+                                                INTERRUPT on use of FGETD.)
+			  (CONS (QUOTE PROGN)
+				(FGETD EX2F)))
+		     [SUBR (COND
+			     ((NULL SPAGHETTIFLG)
+			       (SETSTKARGNAME 1 ERRORPOS (QUOTE U))
+			       (SETSTKARGNAME 2 ERRORPOS (QUOTE V))
+			       (SETSTKARGNAME 3 ERRORPOS (QUOTE W))
+			       (LIST EX2F (QUOTE U)
+				     (QUOTE V)
+				     (QUOTE W)))
+			     (T (PROG ((N (STKNARGS ERRORPOS))
+				       L M)
+				      (SETQ L
+					(NLEFT (QUOTE (Y X W V U))
+					       N))
+				  LP  [COND
+					((ZEROP N)
+					  (RETURN (CONS EX2F M]
+				      (SETSTKARGNAME N ERRORPOS (CAR L))
+				      (SETQ N (SUB1 N))
+				      (SETQ M (CONS (CAR L)
+						    M))
+				      (SETQ L (CDR L))
+				      (GO LP]
+		     (SAVED1 EX2X EX2F (ARGLIST EX2F]
+          (SETQ EX2Y (LIST (QUOTE RETFROM)
+			   ERRORPOS
+			   (LIST (QUOTE BREAK1)
+				 EX2X T EX2F NIL ERRORPOS)
+			   T))
+          (GO OUT1)
+
+          (* ERRORPOS is not released because it will be used by the 
+          RETFROM when BREAK1 returns a value.
+          IN the event that BREAK1 is aborted by ^, it will release 
+          ERRORPOS. If aborted by control-D, evalqt will r release 
+          it.)
+
+
+      OUT (RELSTK ERRORPOS)
+      OUT1(RETEVAL (QUOTE ERRORX)
+		   EX2Y])
+
+(BREAKCHECK
+  (LAMBDA (POS ERXN)                            (* Used by HELP, 
+                                                ERRORX2, and FAULT1.)
+    (PROG (TEM)
+          (COND
+	    ((NULL HELPFLAG)
+	      (FINDERSET POS)                   (* Called to find value 
+                                                fo ESGAG.)
+	      (RETURN NIL))
+	    ((EQ ERXN 18)
+
+          (* Error number for control-b BREAK So no need to 
+          search for errorset position.)
+
+
+	      (GO BREAK)))
+          (COND
+	    ((EQ (SETQ TEM (FINDERSET POS HELPDEPTH))
+		 (QUOTE NOBREAK)))
+	    (TEM (GO BREAK))
+	    ((AND (SETQ TEM (EVQ HELPCLOCK))
+		  HELPTIME
+		  (IGREATERP (IDIFFERENCE (CLOCK 2)
+					  TEM)
+			     HELPTIME))
+	      (GO BREAK)))
+          (RETURN NIL)
+      BREAK
+          (SETQ ESGAG NIL)
+
+          (* ESGAG=T means suppress error message.
+          Since we are going into a BREAK, want to always 
+          print message, even if under NLSETQ way far back.)
+
+
+          (RETURN T))))
+
+(FINDERSET
+  (LAMBDA (POS N)
+
+          (* Scans control stack looking for errorset.
+          If none bound before number of frames plus number of 
+          eval blips exceeds N, returns T, meaning a break 
+          will occur. Otherwise, sets free varaible ESGAG to 
+          value of second argument to errorset.
+          ERRORSET's whose second argument is INTERNAL are 
+          ignored. NOte hoever that they will affect the 
+          return of control in the case that not break 
+          occurs.)
+
+
+    (PROG NIL
+          (AND SPAGHETTIFLG (SETQ POS (STKNTH 0 POS)))
+                                                (* Copies POS.)
+      LP  (COND
+	    ((NULL POS)                         (* Top of stack 
+                                                reached.)
+	      (RETURN NIL)))
+          (COND
+	    ((AND N (MINUSP (SETQ N (IPLUS N
+					   (IMINUS (BLIPEVAL
+						     (QUOTE EVAL)
+						     POS T))
+					   -1))))
+
+          (* The FNDEVAL counts the number of EVALBLIPS in 
+          this frame, the -1 counts the frame.
+          The AND N is for when HELPFLAG is NIL>)
+
+
+	      (RELSTK POS)
+	      (RETURN T)))
+          (COND
+	    ((EQ (STKNAME POS)
+		 (QUOTE ERRORSET))
+	      (SELECTQ (NEWSTKARG 2 POS)
+		       (T (SETQ ESGAG NIL)      (* Print error 
+                                                messages.)
+			  (GO OUT))
+		       (NIL (SETQ ESGAG NLSETQGAG)
+
+          (* NLSETQGAG is normally T.
+          This means dont print error messages.
+          However, it can be set to NIL 
+          (undocumented featre) to make all NLSETQ's act like 
+          ERSETQ's. Sometimes useful for debugging.)
+
+
+			    (GO OUT))
+		       (NOBREAK (SETQ ESGAG T)
+				(RETURN (QUOTE NOBREAK)))
+		       NIL)
+
+          (* ERRORSET'S with second argument INTERNAL or 
+          FAILSET are ignored forr the purposes of deciding 
+          whether or not to break, and whether or not to print 
+          a message.)
+
+
+	      ))
+          (SETQ POS (STKNTH -1 POS POS))
+          (GO LP)
+      OUT (RELSTK POS)
+          (RETURN NIL))))
+
+(STKARGS
+  (LAMBDA (POS)
+    (PROG (N L)
+          (SETQ N (STKNARGS POS))
+      LP  (COND
+	    ((ZEROP N)
+	      (RETURN L)))
+          (SETQ L (CONS (NEWSTKARG N POS)
+			L))
+          (SETQ N (SUB1 N))
+          (GO LP))))
+
+(VARIABLES
+  (LAMBDA (POS)
+    (PROG (N L)
+          (SETQ N (STKNARGS POS))
+      LP  (COND
+	    ((ZEROP N)
+	      (RETURN L)))
+          (SETQ L (CONS (STKARGNAME N POS)
+			L))
+          (SETQ N (SUB1 N))
+          (GO LP))))
+
+(INTERRUPT
+  [LAMBDA (INTFN INTARGS INTYPE)
+    (PROG (INTEXP INTX)
+          (COND
+	    ((NOT (ATOM INTFN))
+	      (SETQ INTFN (FGETD INTFN))
+
+          (* INTFN corresponds to an open lambda expression.
+          FGETD doesnt care whether or not it is given a LITATOM< it 
+          just does (CAR (VAG (ADD1 (LOC INTFN)))) which obtains the 
+          open lambda expression itself)
+
+
+	      ))
+          [SELECTQ INTYPE
+		   (1 (PRIN1 (QUOTE "interrupted before ")
+			     T)
+		      (PRINT [COND
+			       ((ATOM INTFN)
+				 INTFN)
+			       (T (LIST (CAR INTFN)
+					(QUOTE --]
+			     T T)
+		      (SETQ INTEXP (MAKEAPPLY INTFN INTARGS)))
+		   (3 (PRIN1 (QUOTE gctrp)
+			     T))
+		   (-1 
+
+          (* For use in conjunction with GCTRP.
+          After doing the reclaim, the user can conveniently cause the 
+          form that was intrrupted to bbe evaluated by simply setting 
+          INTYPE to NIL.)
+
+
+		       (RETEVAL (QUOTE INTERRUPT)
+				(MAKEAPPLY INTFN INTARGS)))
+		   (COND
+		     [(IGREATERP INTYPE 64)     (* User interrupt)
+		       (COND
+			 ((SETQ INTX (FASSOC (SETQ INTYPE (IDIFFERENCE INTYPE 
+								       64))
+					     USERINTERRUPTS))
+			   (EVAL (CADR INTX))
+			   (RETEVAL (QUOTE INTERRUPT)
+				    (MAKEAPPLY INTFN INTARGS)))
+			 (T (ERROR (QUOTE "undefined user interrupt")
+				   INTYPE]
+		     (T (HELP (QUOTE "bad interrupt type")
+			      INTYPE]
+          (RETEVAL (QUOTE INTERRUPT)
+		   (LIST (QUOTE BREAK1)
+			 INTEXP T INTFN NIL (QUOTE INTERRUPT])
+
+(MAKEAPPLY
+  (LAMBDA (INTFN INTARGS)
+
+          (* Constructs appropriate expression for BREAK1 when 
+          function has not yet been entered but its arguments 
+          have been evaluated. the 'internal is for DWIM's 
+          benefit. If the usr defines the function in the 
+          BREAK or otherwise fixes the error and then 
+          continues the computation, want DWIM to ignore this 
+          APPLY.)
+
+
+    (LIST (QUOTE APPLY)
+	  (LIST (QUOTE QUOTE)
+		INTFN)
+	  (LIST (QUOTE QUOTE)
+		(COND
+		  ((EQ (ARGTYPE INTFN)
+		       3)
+		    (CAR INTARGS))
+		  (T INTARGS)))
+	  (QUOTE (QUOTE INTERNAL)))))
+
+(FAULTEVAL
+  (NLAMBDA FAULTX
+    (FAULT1 FAULTX)))
+
+(FAULTAPPLY
+  (LAMBDA (FAULTFN FAULTARGS)
+    (FAULT1 FAULTFN FAULTARGS T)))
+
+(FAULT1
+  [LAMBDA (FAULTX FAULTARGS FAULTAPPLYFLG FAULTZ)
+
+          (* When DWIM is enabled, and an eror is to occur, DWIM calls 
+          FAULT1 speicyfing FAULTZ so that FAULT1 can print out the 
+          superexpression and function name.)
+
+
+    (PROG ([FAULTPOS (STKNTH -1 (COND
+			       (FAULTAPPLYFLG (QUOTE FAULTAPPLY))
+			       (T (QUOTE FAULTEVAL]
+	   FAULTFN ESGAG)
+          (AND DWIMFLG (ATOM FAULTX)
+	       (NULL FAULTAPPLYFLG)
+	       (SETQ LASTWORD FAULTX))
+
+          (* So user can simply set it by typing $_ form.
+          Not much use to reset lastword for functions, and user might 
+          want to type editf "()" using his earlier context.)
+
+
+          (COND
+	    ((NULL (BREAKCHECK FAULTPOS))
+	      (RELSTK FAULTPOS)
+	      [COND
+		((NULL ESGAG)
+		  [SETQ FAULTX (COND
+		      (FAULTAPPLYFLG (LISPXPRINT (QUOTE u.d.f.)
+						 T T)
+				     (LISPXPRINT FAULTX T T))
+		      ((ATOM FAULTX)
+			(LISPXPRINT (QUOTE u.b.a.)
+				    T T)
+			(LISPXPRINT FAULTX T T))
+		      (T (LISPXPRINT (QUOTE u.d.f.)
+				     T T)
+			 (LISPXPRINT (CAR FAULTX)
+				     T T]
+		  (AND LISPXHISTORY (LISPXPUT (QUOTE *ERROR*)
+					      FAULTX]
+	      (ERROR!)))
+          (COND
+	    (FAULTAPPLYFLG (LISPXPRIN2 (QUOTE u.d.f.)
+				       T T)
+			   (SETQ FAULTX (MAKEAPPLY (SETQ FAULTFN FAULTX)
+						   FAULTARGS)))
+	    ((ATOM FAULTX)
+	      (LISPXPRIN2 (QUOTE u.b.a.)
+			  T T)
+	      (FAULT2 (SETQ FAULTFN FAULTX)
+		      FAULTZ))
+	    (T (LISPXPRIN2 (QUOTE u.d.f.)
+			   T T)
+	       (FAULT2 (SETQ FAULTFN (CAR FAULTX))
+		       FAULTZ)))
+          (AND LISPXHISTORY (LISPXPUT (QUOTE *ERROR*)
+				      FAULTFN))
+          (RETEVAL (COND
+		     (FAULTAPPLYFLG (QUOTE FAULTAPPLY))
+		     (T (QUOTE FAULTEVAL)))
+		   (LIST (QUOTE BREAK1)
+			 FAULTX T FAULTFN NIL
+			 (LIST (PROG1 (BLIPEVAL (QUOTE EVAL)
+						FAULTPOS)
+				      (RELSTK FAULTPOS])
+
+(FAULT2
+  [LAMBDA (X Y)
+    (COND
+      (Y (LISPXPRIN1 (QUOTE " ")
+		     T)
+	 (LISPXPRIN2 X T T)
+	 (LISPXPRIN1 (QUOTE " {in ")
+		     T)
+	 (LISPXPRIN2 (CAR Y)
+		     T T)
+	 (LISPXPRIN1 (QUOTE "} in ")
+		     T)
+	 (LISPXPRIN2 (CDR Y)
+		     T T])
+
+(SEARCHPDL
+  [LAMBDA (SRCHFN SRCHPOS)                      (* Does not release or reuse 
+                                                SRCHPOS)
+    (PROG (SRCHX)
+          (SETQ SRCHPOS (COND
+	      ((NULL SRCHPOS)
+		(STKPOS (QUOTE SEARCHPDL)))
+	      (SPAGHETTIFLG (STKNTH 0 SRCHPOS))
+	      (T SRCHPOS)))
+      LP  [COND
+	    ((NULL (SETQ SRCHPOS (STKNTH -1 SRCHPOS SRCHPOS)))
+	      (RETURN NIL))
+	    ((APPLY* SRCHFN (SETQ SRCHX (STKNAME SRCHPOS))
+		     SRCHPOS)
+	      (RETURN (CONS SRCHX SRCHPOS]
+          (GO LP])
+
+(MAPDL
+  [LAMBDA (MAPDLFN MAPDLPOS)
+    (PROG (MPDLX)
+          (SETQ MAPDLPOS (COND
+	      ((NULL MAPDLPOS)
+		(STKPOS (QUOTE MAPDL)))
+	      (SPAGHETTIFLG (STKNTH 0 MAPDLPOS))
+	      (T MAPDLPOS)))
+      LP  (COND
+	    ((NULL (SETQ MAPDLPOS (STKNTH -1 MAPDLPOS MAPDLPOS)))
+	      (RETURN NIL)))
+          (APPLY* MAPDLFN (STKNAME MAPDLPOS)
+		  MAPDLPOS)
+          (GO LP])
+
+(INTERRUPTCHAR
+  [LAMBDA (CHAR TYP/FORM HARDFLG)
+
+          (* This functionis used for enabling and disabling and redefiing both lisp 
+          and user interrupts. For user nterrupts, the user will specify a form to be 
+          evaluated. For soft interrupts, the form is evaluated and the computation 
+          continues exactly as if control-H were typed.
+          For hard interrupts, the value of the form is returned as the value of the 
+          function interrupted. However, it is expected that for hrd interrupts the 
+          uer will take over and do a RETEVAL or RETFROM himself.
+          userinterrupt is undoable, and its value is a list which is a list 
+          correspnding to theoriginal state of the characters changed, suitable for 
+          input as its first argumentl i.e. interruptchar can be used in a resetform.)
+
+
+
+          (* CHAR is either a terminal interrupt code or a character.
+          TYP is either NIL, T, an atom or a list.
+          NIL means disable, T means return current state without changing, atom means 
+          char is to be enabled as a lisp interrupt char, and atom is either a literla 
+          atom such as DOP, BREAK, etc. and its setinc code is looked up on 
+          LISPINTERRUPT, or else atom is a setinc code itself 
+          (a number between 0 and 8). -
+          A list means CHAR is to be enabled as a user interrupt char and the list is 
+          the form to be evaluated. In this case, hardflg =T means hard interupt, 
+          otherwise soft.)
+
+
+
+          (* CHAR=T means restore all lisp intrrupts to initial state, as determined 
+          by caddr of each entry on lispinterrupts, and disable all userinterrupts.)
+
+
+    (PROG (TEM1 TEM2 VAL)
+          [COND
+	    ((NULL CHAR)
+	      (HELP))
+	    [(EQ CHAR T)
+	      (RETURN (NCONC [MAPCONC LISPINTERRUPTS (FUNCTION (LAMBDA (X)
+                                                            (* The form of lispinterrupts is 
+                                                            (key setinccode origchar))
+					  (AND (CADDR X)
+					       (INTERRUPTCHAR (CADDR X)
+							      (CADR X]
+			     (MAPCONC USERINTERRUPTS (FUNCTION (LAMBDA (X)
+					  (INTERRUPTCHAR (CAR X]
+	    [(LISTP CHAR)
+
+          (* Call from undoing or resetform. CHAR is a list of characters followed by 
+          typ/form arguments. When typ/form is a list, the following element is 
+          hardflg, so thatchar is a linear list where each individual call to 
+          interruptchar corresonds to either 2 or 3 elements of the list.)
+
+
+	      (RETURN (MAPCON CHAR [FUNCTION (LAMBDA (X)
+				  (INTERRUPTCHAR (CAR X)
+						 (CADR X)
+						 (COND
+						   ((LISTP (CADR X))
+						     (SETQ TEM2 (CDDDR X))
+						     (CADDR X))
+						   (T (SETQ TEM2 (CDDR X))
+						      NIL]
+			      (FUNCTION (LAMBDA (X)
+				  TEM2]
+	    ((NOT (NUMBERP CHAR))
+	      (SETQ CHAR (CHCON1 CHAR]
+          (COND
+	    ((IGREATERP CHAR 31)
+	      (SETQ TEM1 CHAR)
+	      (GO BAD)))
+          (SETQ VAL (FASSOC CHAR USERINTERRUPTS))
+          (SETQ TEM1 (ENABLECHAR CHAR 0))
+          [COND
+	    [(EQ TYP/FORM T)                                (* just return value indicating what
+                                                            it was.)
+	      (RETURN (COND
+			((AND (EQ TEM1 T)
+			      VAL)
+			  VAL)
+			(T (LIST CHAR TEM1]
+	    (VAL 
+
+          (* Clear out old entry from userinterrupts.
+          cleaner done this way than trying to reutilize the entry down below)
+
+
+		 (COND
+		   ((CDR USERINTERRUPTS)
+		     (/DREMOVE VAL USERINTERRUPTS))
+		   (T 
+
+          (* VAL was on the list, and since the list consists of only one element, 
+          reset it (undoably) to NIL>)
+
+
+		      (/RPLACA (QUOTE USERINTERRUPTS)
+			       NIL)))
+		 (SETQ VAL (APPEND VAL]
+          [COND
+	    ((NEQ TEM1 T)
+	      (SETQ VAL (LIST CHAR TEM1]
+          (COND
+	    ((NULL TYP/FORM)
+	      (DISABLECHAR CHAR))
+	    [(ATOM TYP/FORM)                                (* Enabling a lisp interrupt 
+                                                            character)
+	      (SETQ TEM1 TYP/FORM)
+	      (COND
+		((NUMBERP TYP/FORM)
+		  (COND
+		    ((NULL (AND (ILESSP TYP/FORM 9)
+				(IGREATERP TYP/FORM -1)))   (* Must be bewteen 0 and 8 to be 
+                                                            valid SETINC number.)
+		      (GO BAD)))
+		  (SETQ TEM2 TYP/FORM))
+		([NULL (SETQ TEM2 (CADR (FASSOC TYP/FORM LISPINTERRUPTS]
+		  (GO BAD)))
+	      (COND
+		((AND (SETQ TEM1 (SETINC TEM2 CHAR))
+		      (NEQ TEM1 CHAR))
+
+          (* The lisp interrupt was previously active, so undoing must also restore 
+          that character as well as reversing the effect of enabling CHAR.)
+
+
+		  (SETQ VAL (NCONC VAL (LIST TEM1 TEM2]
+	    ((LISTP TYP/FORM)
+	      (ENABLECHAR CHAR HARDFLG)
+	      (/RPLACA (QUOTE USERINTERRUPTS)
+		       (CONS (LIST CHAR TYP/FORM HARDFLG)
+			     USERINTERRUPTS)))
+	    (T (SETQ TEM1 TYP/FORM)
+	       (GO BAD)))
+          (AND LISPXHIST (UNDOSAVE (LIST (QUOTE INTERRUPTCHAR)
+					 VAL)
+				   LISPXHIST))
+          (RETURN VAL)
+      BAD (ERROR (QUOTE "illegal arg - userinterrupt")
+		 TEM1])
+)
+  (RPAQ HELPFLAG T)
+  [RPAQ ERSETBLIP (CDR (GETD (QUOTE ERRORSET]
+  [RPAQ EVALDEF (CDR (GETD (QUOTE EVAL]
+  [RPAQ APPLYDEF (CDR (GETD (QUOTE APPLY]
+  (RPAQ HELPDEPTH 9)
+  (RPAQ HELPTIME 1000)
+  (RPAQ HELPCLOCK)
+  (RPAQ ERRORTYPELST)
+  (RPAQQ LISPINTERRUPTS ((HELP 0 8)
+	  (PRINTLEVEL 1 16)
+	  (STORAGE 2 19)
+	  (RUBOUT 3 28)
+	  (ERROR 4 5)
+	  (DOP 5 4)
+	  (RESET 5)
+	  (OUTPUTBUFFER 6 15)
+	  (BREAK 7 2)
+	  (USER 8 21)))
+  (RPAQ USERINTERRUPTS)
+  (RPAQ NLSETQGAG T)
+  [AND (NULL (GETD (QUOTE OLDFAULT1)))
+       (PUTD (QUOTE OLDFAULT1)
+	     (GETD (QUOTE FAULT1]
+  [AND (NULL (GETD (QUOTE ERROR1)))
+       (PUTD (QUOTE ERROR1)
+	     (GETD (QUOTE ERROR]
+  [RPAQQ HELPDLBLOCKS ((HELPDLBLOCK ERRORX ERRORX2 BREAKCHECK FINDERSET 
+				    INTERRUPT MAKEAPPLY FAULT1 FAULT2
+				    (ENTRIES ERRORX INTERRUPT FAULT1 MAKEAPPLY)
+				    (LINKFNS . T)
+				    (SPECVARS ERRORMESS ERRORPOS BREAKCHK INTFN 
+					      INTARGS)
+				    (LOCALFREEVARS ESGAG)
+				    (GLOBALVARS NLSETQGAG))
+	  (NIL HELP ERROR ERRORMESS ERRORMESS1 SEARCHPDL MAPDL FAULTAPPLY
+	       (LINKFNS . T)
+	       (NOLINKFNS FAULT1))
+	  (INTERRUPTCHAR INTERRUPTCHAR (GLOBALVARS LISPINTERRUPTS 
+						   USERINTERRUPTS]
+[DECLARE: DONTEVAL@LOAD DOEVAL@COMPILE DONTCOPY
+  (BLOCK: HELPDLBLOCK ERRORX ERRORX2 BREAKCHECK FINDERSET INTERRUPT MAKEAPPLY 
+	  FAULT1 FAULT2 (ENTRIES ERRORX INTERRUPT FAULT1 MAKEAPPLY)
+	  (LINKFNS . T)
+	  (SPECVARS ERRORMESS ERRORPOS BREAKCHK INTFN INTARGS)
+	  (LOCALFREEVARS ESGAG)
+	  (GLOBALVARS NLSETQGAG))
+  (BLOCK: NIL HELP ERROR ERRORMESS ERRORMESS1 SEARCHPDL MAPDL FAULTAPPLY
+	  (LINKFNS . T)
+	  (NOLINKFNS FAULT1))
+  (BLOCK: INTERRUPTCHAR INTERRUPTCHAR (GLOBALVARS LISPINTERRUPTS USERINTERRUPTS)
+	  )
+]
+[DECLARE: DONTEVAL@LOAD DOEVAL@COMPILE DONTCOPY COMPILERVARS 
+  (ADDTOVAR NLAMA FAULTEVAL)
+  (ADDTOVAR NLAML)
+]
+(DECLARE: DONTCOPY
+  (FILEMAP (NIL (1247 22994 (HELP 1259 . 1455) (ERROR 1459 . 1797) (ERRORMESS
+1801 . 2134) (ERRORMESS1 2138 . 3159) (ERRORX 3163 . 3518) (ERRORX2 3522 .
+8637) (BREAKCHECK 8641 . 9673) (FINDERSET 9677 . 11803) (STKARGS 11807 . 12041)
+(VARIABLES 12045 . 12282) (INTERRUPT 12286 . 13830) (MAKEAPPLY 13834 . 14470)
+(FAULTEVAL 14474 . 14526) (FAULTAPPLY 14530 . 14608) (FAULT1 14612 . 16534)
+(FAULT2 16538 . 16797) (SEARCHPDL 16801 . 17340) (MAPDL 17344 . 17730) (
+INTERRUPTCHAR 17734 . 22991)))))
+STOP

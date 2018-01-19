@@ -1,0 +1,205 @@
+<LISP>ASKUSER.INFO
+This file contains information relavant to systems dated
+May 4, 1975
+or later.
+
+There is a new function ASKUSER which is a fairly general prompt and
+explain function. It is used by COMPSET, DWIM, UNDOSAVE, and other
+system packages, and is also designed to be called by user programs. It
+permits the user to specify a wait time, a default value, a message, a
+prompt/completion list, whether typeahead is to be permitted, and
+whether the transaction is to be stored on the history list.
+
+ASKUSER[WAIT;DEFAULT;MESS;CHARLST;TYPEAHEAD;LISPXPRNTFLG]
+
+WAIT is NIL or a number (of seconds). DEFAULT is a single character or a
+sequence (list) of characters to be used as the default input if WAIT is
+not NIL and more than WAIT seconds elapse without any input. In this
+case, the character(s) from DEFAULT are processed exactly as though they
+had been typed, except that ASKUSER first types ...
+
+If TYPEAHEAD is NIL, ASKUSER clears and saves the input buffers and
+rings the bell if anything has been typed. It then prints MESS if MESS
+is a string, else CAR of MESS.
+
+After printing MESS or CAR of MESS, ASKUSER checks to make sure that
+nothing has been typed yet. If something has been typed, ASKUSER clears
+it and rings the bell. This material i.e. that typed between the entry
+to ASKUSER and this point, will not be restored, since it is ambiguous
+whether it was intended to be read by ASKUSER or another program.
+
+Anything typed after that point is accepted as a response. e.g. UNDO
+calls ASKUSER when UNDOSAVES are exceeded specifying (LIST #UNDOSAVES
+"undosaves, continue saving") for MESS, so that the user can respond as
+soon as the number is typed.
+
+ASKUSER then types the rest of MESS in the case that MESS is a list,
+followed by a ? (if MESS is a string, ASKUSER does not type a ? since
+it presumably is included in the string)
+
+ASKUSER then goes into a wait loop until something is typed. Once
+something has been typed, ASKUSER will not use the default value. Thus
+if the user wants to think, he can type a c.r. or a space, which are
+ignored if they are not specified as acceptable inputs by CHARLST (see
+below) and they are the first thing typed.
+
+As each character is typed, it is matched against CHARLST, and
+appropriate prompting information is given. (CHARLST is explained
+below). ASKUSER uses a terminal table in which CONTROL(T) has been
+performed, all echoes have been turned off, and RAISE(T) has been
+executed. The reason for CONTROL(T) is so that ASKUSER can interact with
+the user after each character. The reason for no echoes is so that
+mistaken responses do not appear on the terminal. The reason for
+RAISE(T) is so that lower case and uppercase responses are equally
+acceptable without requiring doubling the size of CHARLST. If the user
+types an unacceptable character, ASKUSER simply rings the bell and
+allows him to try again.
+
+At any point the user can type ? and receive a list of acceptable
+responses at that point (generated from CHARLST), or type a control-a or
+control-q which causes ASKUSER to reinitialize and start over.
+
+When an acceptable sequence is completed, ASKUSER packs up the
+characters and returns them as its value.
+
+if TYPEAHEAD is T, i.e. acceptable, and the user types an unacceptable
+character, ASKUSER assume that what the user typed ahead was NOT
+intended for it, and clears and saves the typeahead and starts over, as
+though typeahead were not permitted.
+
+if LISPXPRNTFLG is T, the interaction is put on the history list.
+
+
+format of CHARLST:
+
+CHARLST is a list of elements of the form:
+ (1) (char echo . charlst) or
+ (2) (char echo confirm return)
+
+For Case 1, ECHO is an atom or a string, and is printed, and then
+charlst, i.e. cddr of the list, becomes the charlst for the next
+character to be typed.
+
+Case 2 indicates that the character is the last character. ECHO is again
+a string or an atom, and is printed, and then if confirm=T, ASKUSER
+waits for confirmation by a carriage return. If the user types a
+carriage return, return either the contents of the RETURN field, if
+present, or if the RETURN field is absent (as opposed to being NIL),
+return the result of packing all the characters that were typed. If the
+user types control-A, control-Q, or control-X, reinitialize and start
+over. If the user types anything other than a space, which is a no-op,
+prompt with " [confirm] "
+
+If confirm=NIL, the value is computed as described above, and returned
+immediately.
+
+To facilitate the most common usages, (char echo) is the same as (char
+echo NIL), and (char . echo) the same as (char echo T).
+
+For example, dwim uses as CHARLST ((N "No{cr}") (Y "es{cr}")).
+
+This means as soon as the user types Y or N, Yes or No is echoed, and
+the corresponding character returned as its value.
+
+the CHARLST used by COMPSET is more interesting and illustrates most of
+the options:
+
+((S S (T "Tore and redefine " ({cr} "{cr}")
+  (F . "Forget exprs"))
+ ({cr} "ame as last time{cr}"))
+ (F . "File only")
+ (T . "To terminal")
+ (1 . 1)
+ (2 . 2)
+ (Y . "Yes")
+ (N . "No"))
+
+This means if the user types S, he can then type a T or a carriage
+return. If he types a c.r., ASKUSER echoes "Same as last time" and then
+returns without waiting for confirmation. Note that carriage return is
+not included in the answer. If the user types a T, ASKUSER prints "Tore
+and redefine", and waits for more input. The user can then type a c.r.
+or an F. If he types a c.r. ASKUSER returns ST as its value. If he
+types F, ASKUSER types "Forget exprs" and waits for confirmation. If he
+then types a c.r., ASKUSER returns STF.
+
+As mentioned earlier, at any point the user can type a ? and be prompted
+with the possible responses. For example, if the user types S and then ?
+ASKUSER will type:
+
+STore and redefine Forget exprs
+STore and redefine
+Same as last time
+
+Note that the character that the user types is not echoed, even when
+correct. This permits greater flexibility, e.g. carriage returns can be
+used as responses without necessarily going to the next line. If the
+user wants the character echoed, he simply includes it in the echo
+following the character, as in (S S (T -- in the example above.
+
+Miscellaneous special features:
+
+Occasionally it may be desirable to have the prompting in response to ?
+be more elaborate. This can be accomplished by replacing ECHO with by
+(string/atom1 . string/atom2). In this case, string/atom1 is printed
+when the character is typed, but string/atom2 is used in response to a
+?. For example, the (new) facility in the file package which allows the
+user to specify where new functions go uses as its CHARLST:
+
+((& ("File: " . "a file name{cr}"))
+ ({lf} ("" . "{line-feed} - same as previous file"))
+ ({space} ("{cr}" . "{space} - no action"))
+ (%] ("Nowhere{cr}" . "] - nowhere, item is marked as a dummy{cr}")))
+
+Thus if the user types a ], ASKUSER types "Nowhere{cr}" and returns
+without waiting for confirmation. If the user types a ?, askuser types:
+
+a file name
+{line-feed} - same as previous file
+{space} - no action
+] - nowhere, item is marked as a dummy
+
+
+The atom & can be used as in the above example to match with any
+character. The effect is the same as though the character that were
+typed actually appeared in place of the &. (the character is first
+matched with CHARLST, so that in the above example, if the user typed ],
+Nowhere{cr} would be the response, but if the user typed M, "File:"
+would be typed, and M returned as the value of ASKUSER.)
+
+For convenience, CHARLST=NIL is the same as
+((Y "Yes{cr}") (y "yes{cr"}) (N "No{cr}") (n "no{cr}"))
+
+(The inclusion of y and n in addition to Y and N allow specifying y (not
+Y) as a default value, and then being able to distinguish the case where
+the user typed y from the case where he defaulted, should this be
+desirable.
+
+CHARLST can also contain atomic elements. In this case, it matches the
+characters typed against the various atomic elements, only permitting
+those sequences that correspond to elements in the list, and rejecting,
+and typing a bell, those that do not match. At any point the user can
+type an alt-mode and obtain the next n unambiguous characters. The user
+can also type a ? to be prompted, and a control-A, control-Q, or
+control-X to reinitialize.
+
+For example, if CHARLST is (CLISPFLG CLISPIFYPRETTYFLG CLISPIFTRANFLG
+CLISPRETRANFLG), the user can type CL$, at which point ASKUSER will
+respond with ISP, the user can then type R$, and ASKUSER will print
+ETRANFLG, and await for confirmation. If the user types instead I$,
+ASKUSER will print F, and wait for more input.
+
+The value returned will be the corresponding element on the list. Note
+that atoms and elements of the form described above may be combined, e.g.
+the list
+
+(CLISPFLG CLISPIFYPRETTYFLG CLISPIFTRANFLG CLISPRETRANFLG
+ (1 (CLISPFLG . 1) T CLISPFLG)
+ (2 (CLISPIFYPRETTYFLG . 2) T CLISPIFYPRETTYFLG) etc.
+
+would permit the user to select one of four alternatives by either
+typing some or all of the characters of one of the candidates, or by
+typing the corresponding number. For example, if the user typed 2,
+askuser would echo with CLISPIFYPRETTYFLG, and if confirmed, would
+return that, not 2, as its value. If the user typed ?, he would see the
+four alternatives, plus the numbers 1, 2, 3, and 4.

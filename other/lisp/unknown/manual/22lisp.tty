@@ -1,0 +1,3711 @@
+
+
+
+
+
+
+
+
+
+
+
+                                   SECTION 22
+
+                                                         1
+                     THE PROGRAMMER'S ASSISTANT AND LISPX
+
+
+
+
+
+ 22.1  Introduction
+
+
+
+This chapter describes one of the newer additions to INTERLISP: the
+programmer's assistant.  The central idea of the programmer's assistant is that
+the user, rather than talking to a passive system which merely responds to each
+input and waits for the next, is instead addressing an active intermediary,
+namely his assistant.  Normally, the assistant is invisible to the user, and
+simply carries out the user's requests.  However, since the assistant remembers
+what the user has told him, the user can instruct him to repeat a particular
+operation or sequence of operations, with possible modifications, or to undo the
+effect of certain specified operations.  Like DWIM, the programmer's assistant
+is not implemented as a single function or group of functions, but is instead
+                                       2
+dispersed throughout much of INTERLISP.  Like DWIM, the programmer's assistant
+embodies a philosophy and approach to system design whose ultimate goal is to
+construct a programming environment which would "cooperate" with the user in the
+development of his programs, and free him to concentrate more fully on the
+conceptual difficulties and creative aspects of the problem he is trying to
+solve.
+
+
+
+ Example
+
+
+
+The following dialogue, taken from an actual session at the console, gives the
+flavor of the programmer's assistant facility in INTERLISP.  The user is about
+to edit a function  loadf, which contains several constructs of the form
+(PUTD FN2 (GETD FN1)).  The user plans to replace each of these by equivalent
+MOVD expressions.
+
+
+
+
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+1
+    The programmer's assistant was designed and implemented by W. Teitelman.  It
+    is discussed in [Tei4].
+
+
+2
+    Some of the features of the programmer's assistant have been described
+    elsewhere, e.g. the UNDO command in the editor, the file package, etc.
+
+
+
+
+
+                                      22.1
+
+
+
+     _EDITF(LOADFF]                                             [1]
+     =LOADF
+     EDIT
+     *PP
+       [LAMBDA (X Y)
+         [COND
+           ((NULL (GETD (QUOTE READSAVE)))
+             (PUTD (QUOTE READSAVE)
+                   (GETD (QUOTE READ]
+         (PUTD (QUOTE READ)
+                (GETD (QUOTE REED)))
+         (NLSETQ (SETQ X (LOAD X Y)))
+         (@UTD (QUOTE READ)
+               (GETD (QUOTE READSAVE)))
+         X]
+
+     *F PUTD (1 MOVD)                                           [2]
+     *3 (XTRR 2)                                                [3]
+     =XTR
+     *0P                                                        [4]
+     =0 P
+     (MOVD (QUOTE READSAVE) (QUOTE READ))
+     *(SW 2 3)                                                  [5]
+     *
+
+
+
+                                       3
+At [1], the user begins to edit  loadf.  At [2] the user finds PUTD and replaces
+it by MOVD.  He then shifts context to the third subexpression, [3], extracts
+its second subexpression, and ascends one level [4] to print and result.  The
+user now switches the second and third subexpression [5], thereby completing the
+operation for this PUTD.  Note that up to this point, the user has not directly
+addressed the assistant.  The user now requests that the assistant print out the
+operations that the user has performed, [6], and the user then instructs the
+assistant to REDO FROM F, [7], meaning repeat the entire sequence of operations
+15 through 20.  The user then prints the current expression, and observes that
+the second PUTD has now been successfully transformed.
+
+
+
+     *?? FROM F                                                 [6]
+
+     15.  *F PUTD
+     16.  *(1 MOVD)
+     17.  *3
+     18.  *(XTR 2)
+     19.  *0
+     20.  *(SW 2 3)
+
+     *REDO FROM F                                               [7]
+     *P
+     (MOVD (QUOTE REED) (QUOTE READ))
+     *
+
+
+
+The user now asks the assistant to replay the last three steps to him, [8].
+Note that the entire REDO FROM F operation is now grouped together as a single
+unit, [9], since it corresponded to a single user request.  Therefore, the user
+
+
+
+**FOOTNOTES**
+3
+    We prefer to consider the programmer's assistant as the moving force behind
+    this type of spelling correction (even though the program that does the work
+    is part of the DWIM package).  Whereas correcting @PRINT to PRINT, or XTRR
+    to XTR does not require any information about what this user is doing,
+    correcting LOADFF to LOADF clearly required noticing when this user defined
+     loadf.
+
+
+
+
+
+                                      22.2
+
+
+
+can instruct the assistant to carry out the same operation again by simply
+saying REDO.  This time a problem is encountered [10], so the user asks the
+assistant what it was trying to do [11].
+
+
+
+     *?? FROM -3                                                [8]
+
+     19.  *0
+     20.  *(SW 2 3)
+     21.  REDO FROM F                                           [9]
+          *F PUTD
+          *(1 MOVD)
+          *3
+          *(XTR 2)
+          *0
+          *(SW 2 3)
+
+     *REDO
+
+     PUTD ?                                                     [10]
+
+     *?? -1                                                     [11]
+
+     22.  REDO
+          *F PUTD
+          *(1 MOVD)
+          *3
+          *(XTR 2)
+          *0
+
+
+The user then realizes the problem is that the third PUTD is misspelled in the
+definition of LOADF (see page 22.2).  He therefore instructs the assistant to
+USE @UTD FOR PUTD, [12], and the operation now concludes successfully.
+
+
+
+     *USE @UTD FOR PUTD                                         [12]
+     *P
+     (MOVD (QUOTE READSAVE) (QUOTE READ))
+     *^ PP
+        [LAMBDA (X Y)
+          [COND
+            ((NULL (GETD (QUOTE READSAVE)))
+              (MOVD (QUOTE READ)
+                    (QUOTE READSAVE]
+          (MOVD (QUOTE REED)
+                (QUOTE READ))
+          (NLSETQ (SETQ X (LOAD X Y)))
+          (MOVD (QUOTE READSAVE)
+                (QUOTE READ))
+          X]
+     *OK
+     LOADF
+     _
+
+
+
+An important point to note here is that while the user could have defined a
+macro to execute this operation, the operation is sufficiently complicated that
+he would want to try out the individual steps before attempting to combine them.
+At this point, he would already have executed the operation once.  Then he would
+have to type in the steps again to define them as a macro, at which point the
+operation would only be repeated once more before failing.  Then the user would
+have to repair the macro, or else change @UTD to PUTD by hand so that his macro
+would work correctly.  It is far more natural to decide after trying a series of
+operations whether or not one wants them repeated or forgotten.  In addition,
+frequently the user will think that the operation(s) in question will never need
+be repeated, and only discover afterwards that he is mistaken, as occurs when
+the operation was incorrect, but salvageable:
+
+
+
+
+
+                                      22.3
+
+
+
+     *P
+     (LAMBDA (STR FLGCQ VRB) **COMMENT** (PROG & & LP1 & LP2 & &))
+     *-1 -1 P
+     (RETURN (COND &))
+     *(-2 ((EQ BB (QUOTE OUT)) BB]                              [1]
+     *P
+     (RETURN (& BB) (COND &))                                   [2]
+     *UNDO
+     (-2 --) UNDONE
+     *2 P
+     (COND (EXPANS & & T))
+     *REDO EQ
+     *P
+     (COND (& BB) (EXPANS & & T)
+     *
+
+
+
+Here the operation was correct, [1], but the context in which it was executed,
+[2], was wrong.
+
+
+
+This example also illustrates one of the most useful functions of the
+programmer's assistant: its UNDO capability.  In most systems, if a user
+suspected that a disaster might result from a particular operation, e.g. an
+untested program running wild and chewing up a complex data structure, he would
+prepare for this contingency by saving the state of part or all of his
+environment before attempting the operation.  If anything went wrong, he would
+then back up and start over.  However, saving/dumping operations are usually
+expensive and time consuming, especially compared to a short computation, and
+are therefore not performed that frequently, and of course there is always the
+case when diaster strikes as a result of a 'debugged' or at least innocuous
+operation, as shown in the following example:
+
+
+
+     _(MAPC ELTS (FUNCTION (LAMBDA (X) (REMPROP X (QUOTE MORPH] [1]
+     NIL
+     _UNDO                                                      [2]
+     MAPC UNDONE.
+     _USE ELEMENTS FOR ELTS                                     [3]
+     NIL
+     _
+
+
+
+The user types an expression which removes the property MORPH from every member
+of the list ELTS [1], and then realizes that he meant to remove that property
+only from those members of the list ELEMENTS, a much shorter list.  In other
+words, he has deleted a lot of information that he actually wants saved.  He
+therefore simply reverses the effect of the MAPC by typing UNDO [2], and then
+does what he intended via the USE command [3].
+
+
+
+
+ 22.2  Overview
+
+
+
+The programmer's assistant facility is built around a memory structure called
+the 'history list.' The history list is a list of the information associated
+with each of the individual 'events' that have occurred in the system, where
+
+
+
+
+
+
+
+
+
+
+
+
+                                      22.4
+
+
+
+                                         4
+each event corresponds to one user input.  For example, (XTR 2) ([3] on page
+22.2) is a single event, while REDO FROM F ([7] on page 22.2) is also a single
+event, although the latter includes executing the operation (XTR 2), as well as
+several others.
+
+
+
+Associated with each event on the history list is its input and its value, plus
+other optional information such as side-effects, formatting information, etc.
+If the event corresponds to a history command, e.g. REDO FROM F, the input
+corresponds to what the user would have had to type to execute the same
+operation(s), although the user's actual input, i.e. the history command, is
+saved in order to clarify the printout of that event ([9] on page 22.3).  Note
+that if a history command event combines several events, it will have more than
+one value:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+4
+    For various reasons, there are two history lists: one for the editor, and
+    one for  lispx, which processes inputs to  evalqt and  break, see page
+    22.31.
+
+
+
+
+
+                                      22.5
+
+
+
+     _(LOG (ANTILOG 4))
+     4.0
+     _USE 4.0 40 400 FOR 4
+     4.0
+     40.0
+     ARG NOT IN RANGE
+     400
+
+     _USE -40.0 -4.00007 -19.
+     -40.0
+     -4.00007
+     -19.0
+     _USE LOG ANTILOG FOR ANTILOG LOG IN -2 AND -1
+     4.0
+     40.0
+     400.0
+     4.00007
+     19.0
+     _??
+
+     4.  USE LOG ANTILOG FOR ANTILOG LOG IN -2 -1
+         _(ANTILOG (LOG 4.0))
+         4.0
+         _(ANTILOG (LOG 40))
+         40.0
+         _(ANTILOG (LOG 400))
+         400.0
+         _(ANTILOG (LOG -40.0))
+         40.0
+         _(ANTILOG (LOG -4.00007))
+         4.00007
+         _(ANTILOG (LOG -19.0))
+         19.0
+     3.  USE -40.0 -4.00007 -19.0
+         _(LOG (ANTILOG -40.0))
+         -40.0
+         _(LOG (ANTILOG -4.00007))
+         -4.00007
+         _(LOG (ANTILOG -19.0))
+         -19.0
+     2.  USE 4.0 40 400 FOR 4
+         _(LOG (ANTILOG 4.0))
+         4.0
+         (LOG (ANTILOG 40.0)
+         40.0
+         _(LOG (ANTILOG 400))
+
+     1.  _(LOG (ANTILOG 4))
+         4.0
+
+
+
+As new events occur, existing events are aged, and the oldest event is
+'forgotten.' For efficiency, the storage used to represent the forgotten event
+is cannibalized and reused in the representation of the new event, so the
+history list is actually a ring buffer.  The size of this ring buffer is a
+                                            5
+system parameter called the 'time-slice.'  Larger time-slices enable longer
+'memory spans,' but tie up correspondingly greater amounts of storage.  Since
+the user seldom needs really 'ancient history,' and a NAME and RETRIEVE facility
+is provided for saving and remembering selected events, a relatively small time
+slice such as 30 events is more than adequate, although some users prefer to set
+the time slice as large as 100 events.
+
+
+
+
+**FOOTNOTES**
+5
+    Initially 30 events.  The time-slice can be changed with the function
+     changeslice, page 22.38.
+
+
+
+
+
+                                      22.6
+
+
+
+Events on the history list can be referenced in a number of ways.  The output on
+page 22.7 shows a printout of a history list with time-slice 16.  The numbers
+printed at the left of the page are the event numbers.  More recent events have
+higher numbers; the most recent event is event number 52, the oldest and about-
+                                   6
+to-be-forgotten event is number 37.  At this point in time, the user can
+reference event number 51, RECOMPILE(EDIT), by its event number, 51; its
+relative position, -2 (because it occurred two events back from the current
+time), or by a 'description' of its input, e.g. (RECOMPILE (EDIT)), or (&
+(EDIT)), or even just EDIT.  As new events occur, existing events retain their
+absolute event numbers, although their relative positions change.
+
+
+
+Similarly, descriptor references may require more precision to refer to an older
+event.  For example, the description RECOMPILE would have sufficed to refer to
+event 51 had event 52, also containing a RECOMPILE, not intervened.  Event
+specification will be described in detail later.
+
+
+
+     _??
+
+     52. ... HIST UNDO
+         _RECOMPILE(HIST)
+         HIST.COM
+         _RECOMPILE(UNDO)
+         UNDO.COM
+     51. _RECOMPILE(EDIT)
+         EDIT.COM
+     50. _LOGOUT]
+
+     49. _MAKEFILES]
+         (EDIT UNDO HIST)
+     48. _EDITF(UNDOLISPX)
+         UNDOLISPX
+     47. REDO GETD
+         _GETD(FIE)
+         (LAMBDA (X) (MAPC X (F/L (PRINT X))))
+     46. _UNDO
+         FIE
+     45. _GETD(FIE)
+         (LAMBDA (X) (MAPC X (FUNCTION (LAMBDA (X) (PRINT X)))))
+     44. _FIE]
+         NIL
+     43. _DEFINEQ((FIE (LAMBDA (X) (MAPC X (F/L (PRINT X))))))
+         (FIE)
+     42. REDO GETD
+         _GETD(FIE)
+         (LAMBDA (Y) Y)
+     41. _UNDO
+         MOVD
+     40. REDO GETD
+         _GETD(FIE)
+         (LAMBDA (X) X)
+     39. _MOVD(FOO FIE)
+         FIE
+     38. _DEFINEQ((FOO (LAMBDA (X) X)))
+         (FOO)
+     37. _GETD(FIE)
+         (LAMBDA (Y) Y)
+
+
+
+**FOOTNOTES**
+6
+    When the event number of the current event is 100, the next event will be
+    given number 1.  (If the time slice is greater than 100, the 'roll-over'
+    occurs at the next highest hundred, so that at no time will two events ever
+    have the same event number.  For example, if the time slice is 150, event
+    number 1 follows event number 200.)
+
+
+
+
+
+                                      22.7
+
+
+
+The most common interaction with the programmer's assistant occurs at the top
+level  evalqt, or in a break, where the user types in expressions for
+evaluation, and sees the values printed out.  In this mode, the assistant acts
+much like a standard LISP  evalqt, except that before attempting to evaluate an
+input, the assistant first stores it in a new entry on the history list.  Thus
+if the operation is aborted or causes an error, the input is still saved and
+available for modification and/or reexecution.  The assistant also notes new
+functions and variables to be added to its spelling lists to enable future
+corrections.  Then the assistant executes the computation (i.e. evaluates the
+form or applies the function to its arguments), saves the value in the entry on
+the history list corresponding to the input, and prints the result, followed by
+                                                              7
+a prompt character to indicate it is again ready for input.
+
+
+
+If the input typed by the user is recognized as a history command, the
+assistant takes special action.  Commands such as UNDO, ??, NAME, and RETRIEVE
+are immediately performed.  Commands that involved reexecution of previous
+inputs, e.g. REDO and USE, are achieved by computing the corresponding input
+expression(s) and then unreading them.  The effect of this unreading
+operation is to cause the assistant's input routine,  lispxread, to act
+exactly as though these expression were typed in by the user.  Except for the
+fact that these inputs are not saved on new and separate entries on the history
+list, but associated with the history command that generated them, they are
+processed exactly as though they had been typed.
+
+
+
+The advantage of this implementation is that it makes the programmer's assistant
+a callable facility for other system packages as well as for users with their
+own private executives.  For example,  break1 accept user inputs, recognizes and
+executes certain break commands and macros, and interprets anything else as
+INTERLISP expressions for evaluation.  To interface  break1 with the
+programmer's assistant required three small modifications to  break1: (1) input
+was to be obtained via  lispxread instead of  read; (2) instead of calling
+ eval or  apply directly,  break1 was to give those inputs it could not
+interpret to  lispx, and (3) any commands or macros handled by  break1, i.e. not
+given to  lispx, were to be stored on the history list by  break1 by calling
+the function  historysave, a part of the assistant package.
+
+
+
+Thus when the user typed in a break command, the command would be stored on the
+history list as a result of (3).  If the user typed in an expression for
+evaluation, it would be evaluated as before, with the expression and its value
+both saved on the history list as a result of (2).  Now if the user entered a
+break and typed three inputs: EVAL, (CAR !VALUE), and OK, at the next break, he
+could achieve the same effect by typing REDO FROM EVAL.  This would cause the
+assistant to  unread the three expressions EVAL, (CAR !VALUE), and OK.
+Because of (1), the next 'input' seen by  break1 would then be EVAL, which
+ break1 would interpret.  Next would come (CAR !VALUE), which would be given to
+ lispx to evaluate, and then would come OK, which  break1 would again process.
+Thus, by virtue of unreading, history operations will work even for those
+inputs not interpretable by  lispx, in this case, EVAL and OK.
+
+
+
+
+**FOOTNOTES**
+7
+    The function that accepts a user input, saves the input on the history list,
+    performs the indicated computation or history command, and prints the
+    result, is  lispx.   lispx is called by  evalqt and  break1, and in most
+    cases, is synonymous with 'programmer's assistant.' However, for various
+    reasons, the editor saves its own inputs on a history list, carries out the
+    requests, i.e. edit commands, and even handles undoing independently of
+     lispx.  The editor only calls  lispx to execute a history command, such as
+    REDO, USE, etc.  Therefore we use the term assistant (loosely) when the
+    discussion applies to features shared by  evalqt,  break and the editor, and
+    the term  lispx when we are discussing the specific function.
+
+
+
+
+
+                                      22.8
+
+
+
+The net effect of this implementation of the programmer's assistant is to
+provide a facility which is easily inserted at many levels, and embodies a
+consistent set of commands and conventions for talking about past events.  This
+gives the user the subjective feeling that a single agent is watching everything
+he does and says, and is always available to help.
+
+
+
+
+ 22.3  Event Specification
+
+
+
+All history commands use the same conventions and syntax for indicating
+which event or events on the history list the command refers to, even though
+different commands may be concerned with different aspects of the corresponding
+event(s), e.g. side-effects, value, input, etc.  Therefore, before discussing
+the various history commands in the next section, this section describes the
+types of event specifications currently implemented.  All examples refer to the
+history list on page 22.7.
+
+
+
+An event address identifies one event on the history list.  It consists of a
+sequence of 'commands' for moving an imaginary cursor up or down the history
+list, much in the manner of the arguments to the @ command in break (see Section
+15).  The event identified is the one 'under' the imaginary cursor when there
+are no more commands.  (If any command fails, an error is generated and the
+history command is aborted.)
+
+
+
+The commands are interpreted as follows:
+
+
+
+n (n >= 1)                  move forward  n events, i.e. in direction of
+                             increasing event number.  If given as the first
+                             'command,'  n specifies the event with event number
+                              n.
+
+n (n <= -1)                 move backward -n events.
+
+_atom                        search backward for an event whose function matches
+                             atom (i.e. for  apply format only), e.g. whereas
+                             FIE would refer to event 47, _FIE would refer to
+                                                      8
+                             event 44.  Similarly, ED$  would specify event 51,
+                             whereas _ED$ event 48.
+
+   9
+pat                          search backward for an event whose input contains
+                             an expression that matches  pat as described in
+                             Section 9.
+
+_                            next search is to go forward instead of
+                             backward, (if given as the first 'command', next
+                             search begins with last, i.e. oldest, event on
+                             history list), e.g. _ LAMBDA refers to event 38;
+                             MAKEFILES _ RECOMPILE refers to event 51.
+
+
+
+**FOOTNOTES**
+8
+    i.e. EDalt-mode.
+
+
+9
+    i.e. anything else except for _, =, and -, which are interpreted as
+    described above.
+
+
+
+
+
+                                      22.9
+
+
+
+F                            next object is to be searched for, regardless
+                             of what it is, e.g.  F -2 looks for an event
+                             containing a -2.
+
+=                            next search is to look at values, instead of
+                             inputs, e.g. =UNDO refers to event 49; 45 = FIE
+                             refers to event 43; _ = LAMBDA refers to event 37.
+
+\                            specifies the event last located.
+
+
+
+Note: each search skips the current event, i.e. each command always moves the
+cursor.  For example, if FOO refers to event  n, FOO FIE will refer to some
+event before event  n, even if there is a FIE in event  n.
+
+
+
+An  event  specification specifies one or more events:
+
+
+FROM #1 THRU #2              the  sequence  of  events  from  the
+#1 THRU #2                   event with address #1 through event with address
+                                10
+                             #2,   e.g. FROM GETD THRU 49 specifies
+                             events 47, 48, and 49.  #1 can be more recent than
+                             #2, e.g. FROM 49 THRU GETP specifies events 49, 48,
+                             and 47 (note reversal of order).
+
+
+FROM #1 TO #2                Same as THRU but does not include event #2.
+#1 TO #2
+
+
+FROM #1                      Same as FROM #1 THRU -1, e.g. FROM 49 specifies
+                             events 49, 50, 51, and 52.
+
+
+THRU #2                      Same as FROM -1 THRU #2, e.g. THRU 49 specifies
+                             events 52, 51, 50, and 49.  Note reversal of order.
+
+
+TO                           Same as FROM -1 TO #2.
+
+
+#1 AND #2 AND ... AND #n     i.e. a sequence of event addresses separated by
+                             AND's, e.g. FROM 47 TO LOGOUT would be equivalent
+                             to 47 AND 48 AND MAKEFILES.
+
+empty                        i.e. nothing specified, same as -1, unless last
+                                                                             11
+                             event was an UNDO, in which case same as -2.
+
+
+@ atom                       refers to the events named by atom, via the
+                             NAME command, page 22.19 e.g., if the user
+                             names a particular event or events FOO, @ FOO
+                             specifies those events.
+
+
+**FOOTNOTES**
+10
+    i.e. the symbol #1 corresponds to all words between FROM and THRU in the
+    event specification, and #2 to all words from THRU to the end of the event
+    specification.  For example, in FROM FOO 2 THRU FIE -1, #1 is (FOO 2), and
+    #2 is (FIE -1).
+
+
+11
+    For example, if the user types (NCONC FOO FIE), he can then type UNDO,
+    followed by USE NCONC1.
+
+
+
+
+
+                                     22.10
+
+
+
+@@ c                         c
+   /                             / is an event specification and interpreted as
+                             above, but with respect to the archived history
+                             list, as specified on page 22.20.
+
+
+
+
+ 22.4  History Commands
+
+
+All history commands can be input as either lists, or as lines (see
+ readline Section 14, and also page 22.33).
+
+c                                                                        /
+/ is used to denote an event specification.  Unless specified otherwise, c
+omitted is the same as c
+                       / =-1, e.g. REDO and REDO -1 are the same.
+
+
+
+REDO c                        redoes the event or events specified by c
+         /                                                                /,
+                             e.g. REDO FROM -3 redoes the last three events.
+
+USE vars FOR args IN c          substitutes  vars for  args in c
+                                 /                                         /,
+                             and redoes the result, e.g.
+                             USE LOG ANTILOG FOR ANTILOG LOG IN -2 AND -1.
+                             Substitution is done by  esubst, Section 9, and
+                             is carried out as described below.
+
+USE vars1 FOR args1 AND ... AND varsn FOR argsn IN c
+                                                       /
+                             More general form of USE command.  See description
+                             of substitution algorithm below.
+
+
+Every USE command involves three pieces of information: the variables to be
+substituted, the arguments to be substituted for, and an event specification,
+                                                                           12
+which defines the expression (input) in which the substitution takes place.
+
+
+
+If  args are omitted, i.e. the form of the command is USE vars IN c
+                                                                  /, or just USE
+vars (which is equivalent to USE vars IN -1), and the event referred to was
+itself a USE command, the arguments and expression substituted into are the same
+as for the indicated USE command.  In effect, this USE command is thus a
+continuation of the previous USE command.  For example, on page 22.6, when
+the user types (LOG (ANTILOG 4)), followed by USE 4.0 40 400 FOR 4, followed by
+
+USE -40.0 -4.00007 -19., the latter command is equivalent to
+
+USE -40.0 -4.00007 -19. FOR 4 IN -2.
+
+
+
+If  args are omitted and the event referred to was not a USE command,
+substitution is for the operator in that command, i.e. if a  lispx input,
+the name of the function, if an edit command, the name of the command.  For
+example ARGLIST(FF) followed by USE CALLS is equivalent to USE CALLS FOR
+ARGLIST.
+
+
+
+If c
+     is omitted, but  args are specified, the first member of  args is used for
+
+
+
+
+
+**FOOTNOTES**
+12
+    The USE command is parsed by a small finite state parser to distinguish the
+    variables and arguments.  For example, USE FOR FOR AND AND AND FOR FOR will
+    be parsed correctly.
+
+
+
+
+
+                                     22.11
+
+
+
+                                                                       13
+c
+/, e.g. USE PUTD FOR @UTD is equivalent to USE PUTD FOR @UTD IN F @UTD.
+
+
+
+If the USE command has the same number of expressions as arguments, the
+                                          14
+substitution procedure is straightforward,   i.e. USE X Y FOR U V means
+substitute X for U and Y for V, and is equivalent to USE X FOR U AND Y FOR V.
+However, the USE command also permits distributive substitutions, i.e.
+substituting several expressions for the same argument.  For example,
+USE A B C FOR X means first substitute A for X then substitute B for X (in a new
+copy of the expression), then substitute C for X.  The effect is the same as
+three separate USE commands.  Similarly, USE A B C FOR D AND X Y Z FOR W is
+equivalent to USE A FOR D AND X FOR W, followed by USE B FOR D AND Y FOR W,
+                                                                 15
+followed by USE C FOR D AND Z FOR W.  USE A B C FOR D AND X FOR Y   also
+corresponds to three substitions, the first with A for D and X for Y, the second
+with B for D, and X for Y, and the third with C for D, and again X for Y.
+However, USE A B C FOR D AND X Y FOR Z is ambiguous and will cause an error.
+Essentially, the USE command operates by proceeding from left to right handling
+each 'AND' separately.  Whenever the number of expressions exceeds the number of
+                                                16
+expressions available, the expressions multiply.
+
+
+
+FIX c                         puts the user in the editor looking at a copy
+        /
+                             of the input(s) for c
+                                                 /, Whenever the user exits via,
+                             OK, the result is unread and reexecuted exactly as
+                             with REDO.
+
+
+FIX is provided for those cases when the modifications to the input(s) are not
+of the type that can be specified by USE, i.e. not substitutions.  For example:
+
+
+
+
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+13
+    The F is inserted to handle correctly the case where the first member of
+     args is a number, e.g. USE 4.0 4.0 400 FOR 4.  Obviously the user means
+    find the event containing a 4 and perform the indicated substitutions,
+    whereas USE 4.0 40 400 FOR 4 IN 4 would mean perform the substitutions in
+    event number 4.
+
+
+14
+    Except when one of the arguments and one of the variables are the same, e.g.
+    USE  X Y FOR Y  X, or USE  X FOR Y AND Y FOR  X.  This situation is noticed
+    when parsing the command, and handled correctly.
+
+
+15
+    or USE X FOR Y AND A B C FOR D.
+
+
+16
+    Thus USE A B C D FOR E F means substitute A for E at the same time as
+    substituting B for F, then in another copy of the indicated expression,
+    substitute C for E and D for F.  Note that this is also equivalent to
+    USE A C FOR E AND B D FOR F.
+
+
+
+
+
+                                     22.12
+
+
+
+     _(DEFINEQ FOO (LAMBDA (X) (FIXSPELL SPELLINGS2 X 70]
+
+     INCORRECT DEFINING FORM
+     FOO
+
+     _FIX
+     EDIT
+     *P
+     (DEFINEQ FOO (LAMBDA & &))
+     *(LI 2)
+     OK
+     (FOO)
+     _
+
+
+The user can also specify the edit command(s) to  lispx, by typing -
+followed by the command(s) after the event specification, e.g. FIX - (LI 2).  In
+this case, the editor will not type EDIT, or wait for an OK after executing the
+commands.
+
+
+
+
+ Implementation of REDO, USE, and FIX
+
+
+
+The input portion of an event is represented internally on the history list
+simply as a linear sequence of the expressions which were read.  For example, an
+input in  apply format is a list consisting of two expressions, an an input in
+                                              17
+ eval format is a list of just one expression.   Thus if the user wishes to
+convert an input in  apply format to  eval format, he simply moves the function
+name inside of the argument list:
+
+
+
+     _MAPC(FOOFNS (F/L (AND (EXPRP X) (PRINT X]
+     NIL
+     _EXPRP(FOO1)
+     T
+     _FIX MAPC
+     EDIT
+     *P
+     (MAPC (FOOFNS &))
+     *(BO 2)
+     *(LI 1)
+     *P
+     ((MAPC FOOFNS &))
+     OK
+     FOO1
+     FIE2
+     FUM
+     NIL
+     _
+
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+17
+    For inputs in  eval format, i.e. single expressions, FIX calls the editor so
+    that the current expression is that input, rather than the list consisting
+    of that input - see the example on the preceding page.  However, the entire
+    list is actually being edited.  Thus if the user typed ^ P in that example,
+    he would see ((DEFINEQ FOO &)).
+
+
+
+
+
+                                     22.13
+
+
+
+By simply converting the input from two expressions to one expression, the
+desired effect, that of mapping down the list that was the value of  foofns, was
+achieved.
+
+
+
+REDO, USE, and FIX all operate by obtaining the input portion of the
+corresponding event, processing the input (except for REDO), and then storing it
+on the history list as the input portion of a new event.  The history command
+completes operating by simply unreading the input.  When the input is
+subsequently 'reread', the event which already contains the input will be
+retrieved and used for recording the value of the operation, saving side-
+effects, etc., instead of creating a new event.  Otherwise the input is treated
+exactly the same as if it had been typed in directly.
+
+
+
+If c
+   / specifies more than one event, the inputs for the corresponding events are
+simply concatenated into a linear sequence, with special markers representing
+                18
+carriage returns   inserted between each input to indicate where new lines
+start.  The result of this concatenation is then treated as the input referred
+to by c
+      /.  For example, when the user typed REDO FROM F ([7] on page 22.2) the
+inputs for the corresponding six events were concatenated to produce
+(F PUTD #0 (1 MOVD) #0 3 #0 (XTR 2) #0 0 #0 (SW 2 3)).  Similarly, if the user
+had typed USE @UTD FOR PUTD IN 15 THRU 20, (F PUTD #0 (1 MOVD) #0 3 #0 (XTR 2) 
+#0 0 #0 (SW 2 3)) would have been constructed, and then @UTD substituted for
+PUTD throughout it.
+
+
+
+The same convention is used for representing multiple inputs when a USE command
+involves sequential substitutions.  For example, if the user types GETD(FOO) and
+then USE FIE FUM FOR FOO, the input sequence that will be constructed is
+(GETD (FIE) #0 GETD (FUM)), which is the result of substituting FIE for FOO in
+(GETD (FOO)) concatenated with the result of substituting FUM for FOO in
+(GETD (FOO)).
+
+
+
+Once such a multiple input is constructed, it is treated exactly the same as a
+single input, i.e. the input sequence is recorded in a new event, and then
+unread, exactly as described above.  When the inputs are 'reread,' the 'pseudo-
+carriage-returns' are treated by  lispxread and  readline exactly as
+real carriage returns, i.e. they serve to distinguish between  apply and  eval
+formats on inputs to  lispx, and to delimit line commands to the editor.
+Note that once this multiple input has been entered as the input portion of a
+new event, that event can be treated exactly the same as one resulting from type
+in.  In other words, no special checks have to be made when referencing an
+event, to see if it is simple or multiple.  Thus, when the user types REDO
+following REDO FROM F, ([10] page 22.3) REDO does not even notice that the input
+retrieved from the previous event is (F PUTD #0 ... (SW 2 3)) i.e. a multiple
+input, it simply records this input and unreads it.  Similarly, when the user
+then types USE @UTD FOR PUTD on this multiple input, the USE command simply
+carries out the substitution, and the result is the same as though the user had
+typed USE @UTD FOR PUTD IN 15 THRU 20.
+
+
+
+In sum, this implementation permits c
+                                    / to refer to a single simple event, or to
+several events, or to a single event originally constructed from several events
+(which may themselves have been multiple input events, etc.) without having to
+treat each case separately.
+
+
+
+**FOOTNOTES**
+18
+    The value of (VAG 0) is currently used to represent a carriage return on
+    the grounds that it cannot be typed in by the user, and thus cannot cause
+    ambiguities.
+
+
+
+
+
+                                     22.14
+
+
+
+ History Commands Applied to History Commands
+
+
+
+Since history commands themselves do not appear in the input portion of
+events (although they are stored elsewhere in the event), they do not interfere
+with or affect the searching operations of event specifications.  In effect,
+                                                           19
+history commands are invisible to event specifications.   As a result,
+history commands themselves cannot be recovered for execution in the normal way.
+For example, if the user types USE A B C FOR D and follows this with
+USE E FOR D, he will not produce the effect of USE A B C FOR E (but instead will
+simply cause E to be substituted for D in the last event containing a D).  To
+produce this effect, i.e. USE A B C FOR E, the user should type
+USE D FOR E IN USE.  The appearance of the word REDO, USE or FIX in an event
+address specifies a search for the corresponding history command.  (For example,
+the user can also type UNDO REDO.) It also specifies that the text of the
+history command itself be treated as though it were the input.  However, the
+user must remember that the context in which a history command is reexecuted is
+that of the current history, not the original context.  For example, if the user
+types USE FOO FOR FIE IN -1, and then later types REDO USE, the -1 will refer to
+the event before the REDO, not before the USE.  Similarly, if the user types
+REDO REDO followed by REDO REDO, he would cause an infinite loop, except for the
+fact that a special check detects this type of situation.
+
+
+
+
+ History Commands that Fail
+
+
+
+The one exception to the statement that 'history commands are invisible to
+event specifications' occurs when a history command fails to produce any input.
+For example, suppose the user types USE LOG FOR ANTILOG AND ANTILOG FOR LOGG,
+causing  lispx to respond LOGG ?.  Since the USE command did not produce any
+input, the user can repair it by typing USE LOG FOR LOGG (i.e. does not have to
+specify IN USE).  This latter USE command will invoke a search for LOGG, which
+will find the bad USE command.   lispx then performs the indicated
+substitution, and unreads USE LOG FOR ANTILOG AND ANTILOG FOR LOG.  In turn,
+this USE command invokes a search for ANTILOG, which, because it was not typed
+in but reread, ignores the bad USE command which was found by the earlier search
+for LOGG, and which is still on the history list.  In other words, history
+commands that fail to produce input are visible to searches arising from
+event specifications typed in by the user, but not to secondary event
+specifications.
+
+
+
+In addition, if the most recent event is a history command which failed to
+produce input, a secondary event specification will effectively back up the
+history list one event so that relative event numbers for that event
+specification will not count the bad history command.  For example, suppose the
+user types USE LOG FOR ANTILOG AND ANTILOG FOR LOGG IN -2 AND -1, and after
+ lispx types LOGG ?, the user types USE LOG FOR LOGG.  He thus causes the
+command USE LOG FOR ANTILOG AND ANTILOG FOR LOG IN -2 AND -1 to be constructed
+and unread.  In the normal case, -1 would refer to the last event, i.e. the
+'bad' USE command, and -2 to the event before it.  However, in this case, -1
+refers to the event before the bad USE command, and the -2 to the event before
+that.  In short, the caveat that "the user must remember that the context in
+which a history command is reexecuted is that of the current history, not the
+original context" does not apply if the correction is performed immediately.
+
+
+
+
+
+
+**FOOTNOTES**
+19
+    With the exception described below under "History Commands that Fail".
+
+
+
+
+
+                                     22.15
+
+
+
+ More History Commands
+
+
+
+RETRY c                       similar to REDO except sets  helpclock so
+          /
+                             that any errors that occur while executing c
+                                                                        / will
+                             cause breaks.
+
+... vars                     similar to USE except substitutes for the
+                             (first) operand.
+
+
+For example, EXPRP(FOO) followed by ... FIE FUM is equivalent to
+USE FIE FUM FOR FOO.  See also event 52 on page 22.7.
+
+
+
+?? c                     prints history list.  If c
+       /                                              / is omitted, ?? prints
+                             the entire history list, beginning with most recent
+                             events.  Otherwise ?? prints only those events
+                             specified in c
+                                          / (and in the order specified), e.g.
+                             ?? -1, ?? 10 THRU 15, etc.
+
+
+?? commands are not entered on the history list, and so do not affect relative
+event numbers.  In other words, an event specification of -1 typed following
+a ?? command will refer to the event immediately preceding the ?? command.
+
+
+
+?? will print the history command, if any, associated with each event as shown
+at [9] on page 22.3 and page 22.6.  Note that these history commands are not
+                                                                       20
+preceded by prompt characters, indicating they are not stored as input.
+
+
+
+?? prints multiple input events under one event number (see page 22.6).
+
+
+
+Since events are initially stored on the history list with their value field
+equal to bell (control-G), if an operation fails to complete for any reason,
+e.g. causes an error, is aborted, etc., its 'value' will be bell.  This is the
+explanation for the blank line in event 2, page 22.6, and event 50, page 22.7.
+
+
+
+?? is implemented via the function  printhistory, page 22.42, which can also be
+called directly by the user.
+
+
+
+                         *             *              *
+
+
+
+UNDO c                        undoes the side effects of the specified
+         /
+                             events.  For each event undone, UNDO prints a
+                             message: e.g.  RPLACA UNDONE, REDO UNDONE etc.
+                             If nothing is undone because nothing was saved,
+
+
+
+**FOOTNOTES**
+20
+    REDO, RETRY, USE, ..., and FIX commands, i.e. those
+    commands that reexecute previous events, are not stored as inputs, because
+    the input portion for these events are the expressions to be 'reread'.  The
+    history commands UNDO, NAME, RETRIEVE, BEFORE, and AFTER
+    are recorded as inputs, and ?? prints them exactly as they were typed.
+
+
+
+
+
+                                     22.16
+
+
+
+                             UNDO types NOTHING SAVED. If nothing was undone
+                             because the event(s) were already undone, UNDO
+                             types ALREADY UNDONE. If c
+                                                          / is empty, UNDO
+                             searches back for the last event that contained
+                             side effects, was not undone, and itself was not an
+                                          21 22
+                             UNDO command.   
+
+UNDO c                        Each xi refers to a message printed by
+         / : x1 ... xn
+                             DWIM in the event(s) specified by c
+                                                                   /.  The side
+                             effects of the corresponding DWIM corrections, and
+                             only those side effects, are undone.
+
+
+
+For example, if the message PRINTT [IN FOO] -> PRINT were printed, UNDO : PRINTT
+                                          23
+or UNDO : PRINT would undo the correction.
+
+
+
+                         *             *              *
+
+
+
+$ is a special form of the USE command for conveniently specifying character
+substitutions.  In addition, it has a number of useful default options in
+connection with events that involve errors.
+
+
+
+$ x FOR y                    equivalent to USE $x$ FOR $y$
+
+
+
+For example, the user types MOVD(FOO FOOSAVE T), he can then type $ FIE FOR FOO
+to perform MOVD(FIE FIESAVE T).  Note that USE FIE FOR FOO would perform
+MOVD(FIE FOOSAVE T).
+
+
+
+An abbreviated form of $ is available:
+
+
+
+
+**FOOTNOTES**
+21
+    Note that the user can undo UNDO commands themselves by specifying the
+    corresponding event address, e.g.  UNDO -3 or UNDO UNDO.
+
+
+22
+    UNDOing events in the reverse order from which they were executed is
+    guaranteed to restore all pointers correctly, e.g. to undo all effects of
+    last five events, perform UNDO THRU -5, not UNDO FROM -5.  Undoing out
+    of order may have unforseen effects if the operations are dependent.  For
+    example, if the user performed (NCONC1 FOO FIE), followed by
+    (NCONC1 FOO FUM), and then undoes the (NCONC1 FOO FIE), he will also have
+    undone the (NCONC1 FOO FUM).  If he then undoes the (NCONC1 FOO FUM), he
+    will cause the FIE to reappear, by virtue of restoring FOO to its state
+    before the execution of (NCONC1 FOO FUM).  For more details, see page
+    22.30.
+
+
+23
+    Some portions of the messages printed by DWIM are strings, e.g. the message
+    FOO UNSAVED is printed by printing FOO and then " UNSAVED".  Therefore, if
+    the user types UNDO : UNSAVED, the DWIM correction will not be found.  He
+    should instead type UNDO : FOO or UNDO : $UNSAVED$ (alt-modeUNSAVEDalt-mode,
+    see R command in editor, section 9).
+
+
+
+
+
+                                     22.17
+
+
+
+$ y x                        same as $ x FOR y, i.e. y's are changed to x's.
+                             can also be written as $ y TO x, $ y = x, or
+                             $ y -> x.
+
+
+
+$ does event location the same as the USE command, i.e. if IN -- is not
+                              24
+specified, it searches for  y.
+
+
+
+After $ finds the event, it looks to see if an error was involved in that
+      25
+event,   and if the indicated character substitution can be performed in the
+offender.  If so, $ assumes the substitution refers to the offender, performs
+the substitution, and then substitutes the result for the offender throughout.
+For example, the user types (PRETTYDEF FOOFNS 'FOO FOOVARS) causing a
+U.B.A. FOOOVARS error message.  The user can now type $ OO O, which will change
+FOOOVARS to FOOVARS, but not change FOOFNS or FOO.
+
+
+
+If an error did occur in the specified event, the user can also omit specifying
+ y, in which case the offender is used.  Thus, the user could have corrected the
+above example by simply typing $ FOOVARS.  Similarly, if the user types
+LOAD(PRSTRUC PROP), causing the error FILE NOT FOUND PRSTRUC, he can request the
+file to be loaded from LISP's directory by simply typing $ <LISP>$.  Since
+ esubst is used for substituting, this is equivalent to performing
+(R PRSTRUC <LISP>$) on the event, and therefore replaces PRSTRUC by
+<LISP>PRSTRUC (see Section 9).  Note also the usefulness of $ '$, meaning: put a
+' in front of the offender.
+
+
+
+$ also works for events in the editor.  For example, if the user types
+(MOVE COND 33 2 TO BEFORE HERE), and editor types 33 ?, the user can type $ 3,
+causing 3 to be substituted for 33 in the MOVE command.
+
+
+
+Finally, the user can omit both  x and  y.  This specifies that two alt-modes be
+packed onto the end of the offender, and the result substituted throughout the
+specified event.  For example, suppose the user types to the editor
+(MOVE 3 2 TO AFTER CONDD 1), and gets the error message CONDD ?.  because the
+find command failed to find CONDD.  $ will cause the edit command
+(MOVE 3 2 TO AFTER CONDD$$ 1) to be executed, which will search for an atom that
+is "close" to CONDD in the sense used by the spelling corrector (see pattern
+                    26
+type 6b, Section 9).
+
+
+
+
+**FOOTNOTES**
+24
+    However, unlike USE, $ can only be used to specify one substitution at a
+    time.
+
+
+25
+    Whenever an error occurs, the object of the error message, called the
+    offender, is automatically saved on that event's entry in the history list,
+    under the property ERROR.
+
+
+26
+    The same effect could be achieved by $ COND, which specifies substituting
+    COND for CONDD, but not by $ CONDD$$, since the latter is equivalent to
+    performing (R CONDD CONDD$$) on the event, which would result in
+    CONDDCONDDCONDD being substituted for CONDD (as described in Section 9).
+
+
+
+
+
+                                     22.18
+
+
+
+Note that $ never searches for an error.  Thus, if the user types
+LOAD(PRSTRUC PROP) causing a FILE NOT FOUND error, types CLOSEALL(), and then
+types $ <LISP>$,  lispx will complain that there is no error in CLOSEALL().  In
+this case, the user would have to type $ <LISP>$ IN LOAD, or
+$ PRS <LISP>PRS (which would cause a search for PRS).
+
+
+
+Note also that $ operates on input, not on programs.  If the user types FOO(),
+and within the call to FOO gets a U.D.F. CONDD error, he cannot repair this by
+$ COND.  lispx will type CONDD NOT FOUND IN FOO().
+
+
+
+                         *             *              *
+
+
+
+NAME atom c                  saves the event(s) (including side effects)
+               /
+                             specified by c
+                                          / on the property list of  atom (under
+                             the property HISTORY) e.g. NAME FOO 10 THRU 15.
+                             NAME commands are undoable.
+
+RETRIEVE atom                Retrieves and reenters on the history list the
+                             events named by  atom.  Causes an error if  atom
+                             was not named by a NAME command.
+
+
+For example, if the user performs NAME FOO 10 THRU 15, and at some time later
+types RETRIEVE FOO, 6 new events will be recorded on the history list (whether
+or not the corresponding events have been forgotten yet).  Note that RETRIEVE
+does not reexecute the events, it simply retrieves them.  The user can then
+REDO, UNDO, FIX, etc.  any or all of these events.  Note that the user can
+combine the effects of a RETRIEVE and a subsequent history command in a single
+operation by using an event specification of the form @ atom, as described on
+page 22.10, e.g. REDO @ FOO is equivalent to RETRIEVE FOO, followed by an
+                 27
+appropriate REDO.   Note that UNDO @ FOO and ?? @ FOO are permitted.
+
+
+
+BEFORE atom                  undoes the effects of the events named by
+                              atom.
+
+
+
+AFTER atom                   undoes a BEFORE  atom.
+
+
+
+BEFORE/AFTER provide a convenient way of flipping back and forth between two
+states, namely that state before a specified event or events were executed, and
+that state after execution.  For example, if the user has a complex data
+structure which he wants to be able to interrogate before and after certain
+modifications, he can execute the modifications, name the corresponding events
+with the NAME command, and then can turn these modifications off and on via
+
+
+
+
+**FOOTNOTES**
+27
+    Actually, REDO @ FOO is better than RETRIEVE followed by REDO since in the
+    latter case, the corresponding events would be entered on the history list
+    twice, once for the RETRIEVE and once for the REDO.
+
+
+
+
+
+
+
+
+
+
+
+                                     22.19
+
+
+
+                         28
+BEFORE or AFTER commands.   Both BEFORE and AFTER are NOPs if the  atom was
+already in the corresponding state; both generate errors if  atom was not named
+by a NAME command.
+
+
+
+Note: since UNDO, NAME, RETRIEVE, BEFORE, and AFTER are recorded as inputs they
+can be referenced by REDO, USE, etc.  in the normal way.  However, the user must
+again remember that the context in which the command is reexecuted is different
+than the original context.  For example, if the user types
+NAME FOO DEFINEQ THRU COMPILE, then types ... FIE, the input that will be reread
+will be NAME FIE DEFINEQ THRU COMPILE as was intended, but both DEFINEQ and
+COMPILE, will refer to the most recent event containing those atoms, namely the
+event consisting of NAME FOO DEFINEQ THRU COMPILE!
+
+
+
+ARCHIVE c                    records the events specified by c
+             /                                                    / on a
+                             permanent history list.  This history list can be
+                             referenced by preceding a standard event
+                             specification with @@, e.g. ?? @@ prints the
+                             archived history list, REDO @@ -1 will recover the
+                             corresponding event from the archived history list
+                             and redo it, etc.
+
+
+
+The user can also provide for automatic archiving of selected events by
+appropriately defining  archivefn, as described on page 22.24.
+
+
+
+FORGET c                     permanently erases the record of the side
+            /
+                             effects for the events specified by c      / is
+                                                                 /.  If c
+                             omitted, forgets side effects for entire history
+                             list.
+
+
+
+FORGET is provided for users with space problems.  For example, if the user has
+just performed  sets,  rplacas,  rplacds,  putd,  remprops, etc.  to release
+storage, the old pointers would not be garbage collected until the corresponding
+events age sufficiently to drop off the end of the history list and be
+forgotten.  FORGET can be used to force immediate forgetting (of the side-
+effects only).  FORGET is not undoable (obviously).
+
+
+
+
+ 22.5  Miscellaneous Features and Commands
+
+
+
+TYPE-AHEAD                   is a command that allows the user to type-
+                             ahead an indefinite number of inputs.
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+28
+    The alternative to BEFORE/AFTER for repeated switching back and forth
+    involves UNDO, UNDO of the UNDO, UNDO of that etc.  At each stage, the user
+    would have to locate the correct event to undo, and furthermore would run
+    the risk of that event being 'forgotten' if he did not switch at least once
+    per time-slice.
+
+
+
+
+
+                                     22.20
+
+
+
+The assistant responds to TYPE-AHEAD with a prompt character of >.  The user can
+now type in an indefinite number of lines of input, under errorset protection.
+The input lines are saved and unread when the user exits the type-ahead loop
+with the command $GO (alt-modeGO).  While in the type-ahead loop, ?? can be used
+to print the type-ahead, FIX to edit the type-ahead, and $Q to erase the last
+input (may be used repeatedly).  For example:
+
+
+
+     _TYPE-AHEAD
+     >SYSOUT(TEM)
+     >MAKEFILE(EDIT)
+     >BRECOMPILE((EDIT WEDIT))
+     >F
+     >$Q
+     \\F
+     >$Q
+     \\BRECOMPILE
+     >LOAD(WEDIT PROP)
+     >BRECOMPILE((EDIT WEDIT))
+     >F
+     >MAKEFILE(BREAK)
+     >LISTFILES(EDIT BREAK)
+     >SYSOUT(CURRENT)
+     >LOGOUT]
+     >??
+          >SYSOUT(TEM)
+          >MAKEFILE(EDIT)
+          >LOAD(WEDIT PROP)
+          >BRECOMPILE((EDIT WEDIT))
+                                            29
+          >F
+          >MAKEFILE(BREAK)
+          >LISTFILES(EDIT BREAK)
+          >SYSOUT(CURRENT)
+          >LOGOUT]
+     >FIX
+     EDIT
+     *(R BRECOMPILE BCOMPL)
+     *P
+     ((LOGOUT) (SYSOUT &) (LISTFILES &) (MAKEFILE &) (F) (BCOMPL &)
+     (LOAD &) (MAKEFILE &) (SYSOUT &))
+     *(DELETE LOAD)
+     *OK
+     >$GO
+
+
+
+The TYPE-AHEAD command may be aborted by $STOP; control-E simply aborts the
+current line of input.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+29
+    Note that type-ahead can be addressed to the compiler, since it uses
+     lispxread for input.  Type-ahead can also be directed to the editor,
+    but type-ahead to the editor and to  lispx cannot be intermixed.
+
+
+
+
+
+                                     22.21
+
+
+
+                         *             *              *
+
+
+
+$BUFS (alt-modeBUFS)         is a command for recovering the input buffers.
+
+
+
+Whenever an error occurs in executing a  lispx input or  edit command, or a
+control-E or control-D is typed, the input buffers are saved and
+cleared.  The $BUFS command is used to restore the input buffers, i.e. its
+effect is exactly the same as though the user had retyped what was 'lost.' For
+example:
+
+
+
+     *(-2 (SETQ X (COND ((NULL Z) (CONS     (user typed control-E)
+     *P
+     (COND (& &) (T &))
+     *2
+     *$BUFS
+     (-2 (SETQ X (COND ((NULL Z) (CONS
+
+
+
+and user can now finish typing the (-2 ..) command.
+
+
+
+Note: the type-ahead does not have to have been seen by INTERLISP, i.e., echoed,
+since the system buffer is also saved.
+
+
+
+Input buffers are not saved on the history list, but on a free variable.  Thus,
+only the contents of the input buffer as of the last  clearbuf can ever be
+recovered.  However, input buffers cleared at  evalqt are saved independently
+from those cleared by break or the editor.  The procedure followed when the user
+types $BUFS is to recover first from the local buffer, otherwise from the
+                 30
+top level buffer.   Thus the user can lose input in the editor, go back to
+ evalqt, lose input there, then go back into the editor, recover the editor's
+buffer, etc.  Furthermore, a buffer cleared at the top can be recovered in a
+break, and vice versa.
+
+
+
+                         *             *              *
+
+
+
+The following four commands, DO, !F, !E, and !N, are only recognized in the
+editor:
+
+
+
+DO com                       allows the user to supply the command
+                             name when it was omitted.  (USE is used when a
+                             command name is incorrect).
+
+
+
+
+**FOOTNOTES**
+30
+    The local buffer is stored on  lispxbufs; the top level buffer on
+     toplispxbufs.  The forms of both buffers are (CONS (LINBUF) (SYSBUF)) (see
+    Section 14).  Recovery of a buffer is destructive, i.e. $BUFS sets the
+    corresponding variable to NIL.  If the user types $BUFS when both  lispxbufs
+    and  toplispxbufs are NIL, the message NOTHING SAVED is typed, and an error
+    generated.
+
+
+
+
+
+                                     22.22
+
+
+
+For example, suppose the user wants to perform
+
+(-2 (SETQ X (LIST Y Z))) but instead types just (SETQ X (LIST Y Z)).  The editor
+will type SETQ ?, whereupon the user can type DO -2.  The effect is the same as
+though the user had typed FIX, followed by (LI 1), (-1 -2), and OK, i.e. the
+command (-2 (SETQ X (LIST Y Z))) is executed.  DO also works if the last command
+is a line command.
+
+
+
+!F                           same as DO F.
+
+
+
+
+In the case of !F, the previous command is always treated as though it were a
+line command, e.g. if the user types (SETQ X &) and then !F, the effect is the
+same as though he had typed F (SETQ X &), not (F (SETQ X &)).
+
+
+
+!E                           same as DO E.  Note !E works correctly
+                             for 'commands' typed in  eval or  apply format.
+
+
+!N                           same as DO N.
+
+
+
+                         *             *              *
+
+
+
+control-U                    when typed in at any point during an input
+                             being read by  lispxread, permits the user to
+                             edit the input before it is returned to the calling
+                             function.
+
+
+This feature is useful for correcting mistakes noticed in typing before the
+input is executed, instead of waiting till after execution and then performing
+an UNDO and a FIX.  For example, if the user types
+(DEFINEQ (FOO (LAMBDA (X) (FIXSPELL X and at that point notices the missing left
+parenthesis, instead of completing the input and allowing the error to occur,
+                                                        31
+and then fixing the input, he can simply type control-U,   finish typing
+normally, whereupon the editor is called on (FOO (LAMBDA (X) (FIXSPELL X -- ],
+which the user can then repair, e.g. by typing (LI 1).  If the user exits from
+the editor via OK, the (corrected) expression will be returned to whoever called
+                                               32
+ lispxread exactly as though it had been typed.   If the user exits via STOP,
+the expression is returned so that it can be stored on the history list.
+However it will not be executed.  In other words, the effect is the same as
+though the user had typed control-E at exactly the right instant.
+
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+31
+    Control-U can be typed at any point, even in the middle of an atom; it
+    simply sets an internal flag checked by  lispxread.
+
+
+32
+    Control-U also works for calls to  readline, i.e., for line commands.
+
+
+
+
+
+                                     22.23
+
+
+
+                         *             *              *
+
+
+
+valueof                      is an nlambda function for obtaining the value
+                                                                      33
+                             of a particular event, e.g. (VALUEOF -1),
+                             (VALUEOF _FOO -2).
+
+                             The value of an event consisting of several
+                             operations is a list of the values for each of the
+                             individual operations.
+
+
+
+Note: the value field of a history entry is initialized to bell (control-
+      G).  Thus a value of bell indicates that the corresponding operation did
+      not complete, i.e. was aborted or caused an error (or else returned bell).
+
+
+
+                         *             *              *
+
+
+
+prompt#flg                   is a flag which when set to T causes the
+                             current event number to be printed before each
+                             _,: and * prompt characters. See description
+                             of  promptchar, page 22.36.
+
+                              prompt#flg is initially NIL.
+
+
+
+                         *             *              *
+
+
+
+archivefn                    allows the user to specify events to be
+                             automatically archived.
+
+
+
+When  archivefn is set to T, and an event is about to drop off the end of the
+history list and be forgotten,  archivefn is called giving it as its first
+argument the input portion of the event, and as its second argument, the entire
+      34
+event.   If  archivefn returns T, the event is archived.  For example, some
+users like to keep a record of all calls to  load.  Defining  archivefn as:
+(LAMBDA (X Y) (EQ (CAR X) (QUOTE LOAD))) will accomplish this.  Note that
+ archivefn must be both set and defined.   archivefn is initially NIL and
+undefined.
+
+
+
+
+
+**FOOTNOTES**
+33
+    Although the input for  valueof is entered on the history list before
+     valueof is called, valueof[-1] still refers to the value of the expression
+    immediately before the  valueof input, because  valueof effectively backs
+    the history list up one entry when it retrieves the specified event.
+    Similarly, (VALUEOF FOO) will find the first event before this one that
+    contains a FOO.
+
+
+34
+    In case  archivefn needs to examine the value of the event, its side
+    effects, etc.  See page 22.31 for discussion of the format of history
+    lists.
+
+
+
+
+
+                                     22.24
+
+
+
+                         *             *              *
+
+
+
+lispxmacros                  provides a macro facility for  lispx.
+
+
+
+ lispxmacros allows the user to define his own  lispx commands.  It is a
+list of elements of the form (command def).  Whenever  command appears as the
+first expression on a line in a  lispx input, the variable  lispxline is
+bound to the rest of the line, the event is recorded on the history list, and
+ def is evaluated.  Similarly, whenever  command appears as  car of a form in a
+ lispx input, the variable  lispxline is bound to  cdr of the form, the event
+recorded, and  def is evaluated.  (See page 22.42 for an example of a
+ lispxmacro).  RETRIEVE, BEFORE, and AFTER are implemented as
+ lispxmacros.  In addition, LISP, SNDMSG, TECO, and EXEC are
+ lispxmacros which perform the corresponding calls to  subsys (section 21),
+and CONTIN is a  lispxmacro which performs (SUBSYS T).  Finally, SY
+and DIR are  lispxmacros which perform the EXEC, SYSTAT, and DIRECTORY
+commands respectively.  DIR can be given arguments, e.g., DIR *.SAV;*.
+
+
+
+                         *             *              *
+
+
+
+lispxuserfn                  provides a way for a user function to process
+                             selected inputs.
+
+
+                                            35
+When  lispxuserfn is set to T, it is applied   to all inputs not recognized as
+one of the commands described above.  If  lispxuserfn decides to handle this
+input, it simply processes it (the event was already stored on the history list
+before  lispxuserfn was called), sets  lispxvalue to the value for the event,
+and returns T.   lispx will then know not to call  eval or  apply, and will
+simply store  lispxvalue into the value slot for the event, and print it.  If
+ lispxuserfn returns NIL,  lispx proceeds by calling  eval or  apply in the
+usual way.  Thus by appropriately defining (and setting)  lispxuserfn, the user
+can with a minimum of effort incorporate the features of the programmer's
+assistant into his own executive (actually it is the other way around).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+35
+    Like  archivefn,  lispxuserfn must be both set and defined.
+
+
+
+
+
+
+
+
+
+
+
+                                     22.25
+
+
+
+                                                 36
+The following output illustrates such a coupling.
+
+
+
+**SETQ(ALTFORM (MAPCONC NASDIC (F/L (GETP X 'ALTFORMS]     [1]
+=NASDICT
+(AL26 BE7 CO56 CO57 CO60 C13 H3 MN54 NA22 SC46 S34 TI44)
+**(GIVE ME LINES CONTAINING COBALT)                        [2]
+SAMPLE   PHASE     CONSTIT.  CONTENT   UNIT      CITATION  TAG
+S10002   OVERALL   C056      40.0      DPM/KG    D70-237   0
+                   C13       8.8       DEL       D70-228   0
+                   H3        314.0     DPM/KG
+                   MN54      28
+
+**GETP(COBALT ALTFORMS)                                    [3]
+(CO56 CO57 CO60 C13 H3 MN54 NA22 SC46 S34 T144)
+**UNDO MAPCONC                                             [4]
+SETQ UNDONE.
+**REDO GETP                                                [5]
+(CO56 CO57 CO60)
+**REDO COBALT                                              [6]
+SAMPLE   PHASE     CONSTIT.  CONTENT   UNIT      CITATION  TAG
+S10002   OVERALL   CO57      40.0      DPM/KG    D70-237   0
+S10003   OVERALL   CO        15.0                D70-203   0
+                             14.1                D70-216
+                   CO56      43.0      DPM/KG    D70-237   0
+                   CO57      43.0                D70-241   0
+                   CO60      1.0
+**USE MANGANESE FOR COBALT
+
+
+
+The user is running under his own executive program which accepts requests in
+the form of sentences, which it first parses and then executes.  The user first
+'innocently' computes a list of all  ALTERNATIVE- FORMS for the elements in his
+system [1].  He then inputs a request in sentence format [2] expecting to see
+under the column CONSTIT. only cobalt, CO, or its alternate forms, CO56, CO57,
+or CO60.  Seeing C13, H3, and MN54, he aborts the output, and checks the
+property ALTFORMS for COBALT [3].  The appearance of C13, H3, MN54, he aborts
+the output, and checks the property ALTFORMS for COBALT [3].  The appearance of
+C13, H3, MN54 et al, remind him that the  mapconc is destructive, and that in
+the process of making a list of the ALTFORMS, he has inadvertently strung them
+all together.  Recovering from this situation would require him to individually
+examine and correct the ALTFORMs for each element in his dictionary, a tedious
+process.  Instead, he can simply UNDO MAPCONC, [4] check  to make sure the
+ALTFORM has been corrected [5], then redo his original request [6] and continue.
+The UNDO is possible because the first input was executed by  lispx; the
+(GIVE ME LINES CONTAINING COBALT) is possible because the user defined
+ lispxuserfn appropriately; and the REDO and USE are possible because the
+
+(GIVE ME LINES CONTAINING COBALT) was stored on the history list before it was
+transmitted to  lispxuserfn and the user's parsing program.
+
+
+
+ lispxuserfn is a function of two arguments,  x and  line, where  x is the first
+expression typed, and  line the rest of the line, as read by  readline (see
+page 22.33).  For example, if the user types FOO(A B C),  x=FOO, and
+ line=((A B C)); if the user types (FOO A B C),  x=(FOO A B C), and  line=NIL;
+and if the user types FOO A B C,  x=FOO and  line=(A B C).
+
+
+
+
+
+**FOOTNOTES**
+36
+    The output is from the Lunar Sciences Natural Language Information System
+    being developed for the NASA Manned Spacecraft Center by William A. Woods of
+    Bolt Beranek and Newman Inc., Cambridge, Mass.
+
+
+
+
+
+                                     22.26
+
+
+
+Thus in the above example,  lispxuserfn would be defined as:
+
+
+         [LAMBDA (X LINE)
+             (COND
+               ((AND (NULL LINE)
+                     (LISTP X))
+                  (SETQ LISPXVALUE (PARSE X))
+                  T]
+
+
+Note that since  lispxuserfn is called for each input (except for p.a.
+commands), it can also be used to monitor some condition or gather statistics.
+
+
+
+                         *             *              *
+
+
+
+In addition to saving inputs and values,  lispx saves most system messages
+on the history list, e.g.  FILE CREATED --, (fn REDEFINED), (var RESET), output
+of TIME, BREAKDOWN, STORAGE, DWIM messages, etc.  When  printhistory prints
+the event, this output is replicated.  This facility is implemented via the
+functions  lispxprint,  lispxprin1,  lispxprin2,  lispxspaces,
+                            37
+ lispxterpri, and  lispxtab.   In addition to performing the corresponding
+output operation, these functions store an appropriate expression on the history
+                                         38
+event under the property LISPXPRINT.   This expression is used by
+ printhistory to reproduce the output.
+
+
+
+                         *             *              *
+
+
+
+In addition to the above features,  lispx checks to see if  car or  cdr of
+NIL or  car of T have been clobbered, and if so, restores them and prints a
+message.   Lispx also performs spelling corrections using  lispxcoms,
+a list of its commands, as a spelling list whenever it is given an unbound atom
+                                                                    39
+or undefined function, i.e. before attempting to evaluate the input.
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+37
+    In fact, all six of these functions have the same definition.  When called,
+    this function looks back on the stack to see what name it was called by, and
+    determines what to do.  Thus, if the user wanted to make any other output
+    function, e.g.  printdef, record its MOVD(LISPXPRINT LISPXPRINTDEF), and
+    then use  lispxprintdef for  printdef.  (This will work only for functions
+    of three or fewer arguments.)
+
+
+38
+    unless  lispxprintflg is NIL.
+
+
+39
+     lispx is also responsible for rebinding  helpclock, used by
+     breakcheck, Section 16, for computing the amount of time spent in a
+    computation, in order to determine whether to go into a break if and when an
+    error occurs.
+
+
+
+
+
+                                     22.27
+
+
+
+ 22.6  Undoing
+
+
+
+The UNDO capability of the programmer's assistant is implemented by
+requiring that each operation that is to be undoable be responsible itself for
+saving on the history list enough information to enable reversal of its side
+effects.  In other words, the assistant does not 'know' when it is about to
+perform a destructive operation, i.e. it is not constantly checking or
+anticipating.  Instead, it simply executes operations, and any undoable changes
+that occur are automatically saved on the history list by the responsible
+         40
+function.   The operation of UNDOing, which involves recovering the saved
+information and performing the corresponding inverses, works the same way, so
+that the user can UNDO an UNDO, and UNDO that etc.
+
+
+
+At each point, until the user specifically requests an operation to be undone,
+the assistant does not know, or care, whether information has been saved to
+enable the undoing.  Only when the user attempts to undo an operation does the
+assistant check to see whether any information has been saved.  If none has been
+saved, and the user has specifically named the event he wants undone, the
+assistant types NOTHING SAVED.  (When the user simply types UNDO, the
+assistant searches for the last undoable event, ingnoring events already undone
+as well as UNDO operations themselves.)
+
+
+
+This implementation minimizes the overhead for undoing.  Only those operations
+which actually make changes are affected, and the overhead is small: two or
+three cells of storage for saving the information, and an extra function call.
+However, even this small price may be too expensive if the operation is
+sufficiently primitive and repetitive, i.e. if the extra overhead may seriously
+                                               41
+degrade the overall performance of the program.   Hence not every destructive
+operation in a program should necessarily be undoable; the programmer must be
+allowed to decide each case individually.
+
+
+
+Therefore for each primitive destructive operation, we have implemented two
+separate functions, one which always saves information, i.e. is always undoable,
+
+
+
+
+**FOOTNOTES**
+40
+    When the number of changes that have been saved exceeds the value of
+     #undosaves (initially set to 50), the user is asked if he wants to
+    continue saving the undo information for this event.  The purpose of
+    this feature is to avoid tying up large quantities of storage for operations
+    that will never need to be undone.  The interaction is handled by the same
+    routines used by DWIM, so that the input buffers are first saved and
+    cleared, the message typed, then the system waits  dwimwait seconds,
+    and if there is no response, assumes the default answer, which in this case
+    is NO.  Finally the input buffers are restored.  See page 22.39 for
+    details.
+
+
+41
+    The rest of the discussion applies only to  lispx; the editor handles
+    undoing itself in a slightly different fashion, as described on page 22.43.
+
+
+
+
+
+
+
+
+
+
+
+
+                                     22.28
+
+
+
+                                                                  42
+and one which does not, e.g. / rplaca and  rplaca,  /put and  put.   In the
+various system packages, the appropriate function is used.  For example,  break
+uses  /putd and  /remprop so as to be undoable, and DWIM uses  /rplaca and
+                                     43
+ /rplacd, when it makes a correction.   Similarly the user can simply use the
+corresponding / function if he wants to make a destructive operation in his
+own program undoable.  When the / function is called, it will save the undo
+information in the current event on the history list.
+
+
+
+However, all operations that are typed in to  lispx are made undoable,
+                                                    44
+simply by substituting the corresponding / function    for any destructive
+                              45
+function throughout the input.   For example, on page 22.7, when the user typed
+(MAPCONC NASDIC (F/L ...)) it was (/MAPCONC NASDIC (F/L ...)) that was
+evaluated.  Since the system cannot know whether efficiency and overhead are
+serious considerations for the execution of an expression in a user program, the
+user must decide, e.g. call  /mapconc if he wants the operation undoable.
+However, expressions that are typed-in rarely involve iterations or lengthy
+computations directly.  Therefore, if all primitive destructive functions that
+are immediately contained in a type-in are made undoable, there will rarely be a
+significant loss of efficiency.  Thus  lispx scans all user input before
+evaluating it, and substitutes the corresponding undoable function for all
+primitive destructive functions.  Obviously with a more sophisticated analysis
+of both user input and user programs, the decision concerning which operations
+to make undoable could be better advised.  However, we have found the
+configuration described here to be a very satisfactory one.  The user pays a
+very small price for being able to undo what he types in, and if he wishes to
+protect himself from malfunctioning in his own programs, he can have his program
+specifically call undoable functions, or go into  testmode as described
+next.
+
+
+
+
+ Testmode
+
+
+
+
+
+**FOOTNOTES**
+42
+    The 'slash' functions currently implemented are  /addprop,  /attach,
+     /dremove,  /dreverse,  /dsubst,  /lconc,  /mapcon,  /mapconc,  /movd,
+     /nconc, / nconc1,  /put,  /putd,  /putdq,  /puthash,  /remprop,  /rplaca,
+     /rplacd,  /set,  /seta,  /setd, and  /tconc.  Note that  /setq and  /setqq
+    are not included.  If the user wants a set operation undoable in his
+    program, he must see  /set, or  /rplaca.
+
+
+43
+    The effects of the following functions are always undoable (regardless of
+    whether or not they are typed in):  define,  defineq,  defc (used to give a
+    function a compiled code definition),  deflist,  load,  savedef,  unsavedef,
+     break,  unbreak,  rebreak,  trace,  breakin,  unbreakin,  changename,
+     editfns,  editf,  editv,  editp,  edite,  editl,  esubst,  advise,
+     unadvise,  readvise, plus any changes caused by DWIM.
+
+
+44
+    Since there is no  /setq,  setq's appearing in type-in are handled specially
+    by substituting a call to  saveset, page 22.31.
+
+
+45
+    The substitution is performed by the function  lispx/, described on
+    page 22.41.
+
+
+
+
+
+                                     22.29
+
+
+
+Because of efficiency considerations, the user may not want certain functions
+undoable after his program becomes operational.  However, while debugging he may
+find it desirable to protect himself against a program running wild, by making
+primitive destructive operations undoable.  The function  testmode provides
+this capability by temporarily making everything undoable.
+
+
+
+testmode[flg]                testmode[T] redefines all primitive
+                                                  46
+                             destructive functions   with their corresponding
+                             undoable versions and sets  testmodeflg to T.
+                             testmode[] restores the original definitions, and
+                                                      47
+                             sets  testmodeflg to NIL.
+
+Note that  setq's are not undoable, even in  testmode.  To make the
+corresponding operation undoable in  testmode,  set or  rplaca should be used.
+
+
+
+
+ Undoing Out of Order
+
+
+
+ /rplaca and  /rplacd operate by saving the pointer that is to be changed
+and its original contents (i.e.  /rplaca saves  car and  /rplacd saves  cdr).
+Undoing  /rplaca and  /rplacd simply restores the pointer.  Thus, if the user
+types (RPLACA FOO 1), followed by (RPLACA FOO 2), then undoes both events by
+undoing the most recent event first, then undoing the older event, FOO will be
+restored to its state before either  rplaca operated.  However if the user
+undoes the first event, then the second event, (CAR FOO) will be 1, since this
+is what was in  car of FOO before (RPLACA FOO 2) was executed.  Similarly, if
+the user performs (NCONC1 FOO 1) then (NCONC1 FOO 2), undoing just
+(NCONC1 FOO 1) will remove both 1 and 2 from FOO.  The problem in both cases is
+that the two operations are not 'independent.' In general, operations are always
+independent if they affect different lists or different sublists of the same
+     48
+list.   Undoing in reverse order of execution, or undoing independent
+operations, is always guaranteed to do the 'right' thing.  However, undoing
+dependent operations out of order may not always have the predicted effect.
+
+
+
+
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+46
+    i.e. the 'slash' functions; see footnote on page 22.29.
+
+
+47
+     testmode will have no effect on compiled  mapconc's, since they
+    compile open with  frplacd's.
+
+
+48
+    Property list operations, (i.e.  put,  addprop and  remprop) are handled
+    specially so that they are always independent, even when they affect the
+    same property list.  For example, if the user types PUT(FOO FIE1 FUM1) then
+    PUT(FOO FIE2 FUM2), then undoes the first event, the FIE2 property will
+    remain, even though CDR(FOO) may have been NIL at the time the first event
+    was executed.
+
+
+
+
+
+                                     22.30
+
+
+
+ Saveset
+
+
+
+ Setq's are made undoable on type in by substituting a call to  saveset
+(described in detail on page 22.39), whenever  setq is the name of the function
+to be applied, or  car of the form to be evaluated.  In addition to saving
+enough information on the history list to enable undoing,  saveset operates in a
+manner analogous to  savedef when it resets a top level value, i.e. when it
+changes a top level binding from a value other than NOBIND to a new value
+that is not  equal to the old one.  In this case,  saveset saves the old value
+of the variable being set on the variable's property list under the property
+VALUE, and prints the message (variable RESET).  The old value can be
+                                 49
+restored via the function  unset,   which also saves the current value (but does
+not print a message).  Thus  unset can be used to flip back and forth
+between two values.
+
+
+
+ rpaq and  rpaqq are implemented via calls to  saveset.  Thus old
+values will be saved and messages printed for any variables that are reset as
+                             50
+the result of loading a file.   Calls to  set and  setqq appearing in type in
+are also converted to appropriate calls to  saveset.
+
+
+
+For top level variables,  saveset also adds the variable to the appropriate
+spelling list, thereby noticing variables set in files via  rpaqq or  rpaqq, as
+well as those set via type in.
+
+
+
+
+ 22.7  Format and Use of the History List
+
+
+
+There are currently two history lists,  lispxhistory and
+ edithistory.  Both history lists have the same format, and in fact, each
+use the same function,  historysave, for recording events, and the same set
+of functions for implementing commands that refer to the history list, e.g.
+                                            51
+ historyfind,  printhistory,  undosave, etc.
+
+
+
+
+
+
+**FOOTNOTES**
+49
+    Of course, UNDO can be used as long as the event containing this call
+    to  saveset is still active.  Note however that the old value will
+    remain on the property list, and therefore be recoverable via  unset,
+    even after the original event has been forgotten.
+
+
+50
+    To complete the analogy with  define,  saveset will not save old values
+    on property lists if  dfnflg=T, e.g. when  load is called with second
+    argument T, (however, the call to  saveset will still be undoable,) and when
+     dfnflg=ALLPROP, the value is stored directly on the property list under
+    property VALUE (the latter applies only to calls from  rpaqq and
+     rpaq).
+
+
+51
+    A third history list,  archivelst, is used when events are archived, as
+    described on page 22.20.  It too uses the same format.
+
+
+
+
+
+                                     22.31
+
+
+
+Each history list is a list of the form ( l event# size mod), where  l is the
+list of events with the most recent event first,  event# is the event number for
+the most recent event on  l,  size is the size of the time-slice, i.e. the
+maximum length of  l, and  mod is the highest possible event number (see
+footnote on page 22.7).   lispxhistory and  edithistory are both initialized to
+(NIL 0 30 100).  Setting  lispxhistory or  edithistory to NIL is permitted, and
+simply disables all history features, i.e.  lispxhistory and  edithistory act
+like flags as well as repositories of events.
+
+
+
+Each individual event on  l is a list of the form (input id value . props),
+where  input is the input sequence for the event, as described on page 22.13-14,
+                                       52
+ id the prompt character, e.g. _, :, *,   and  value is the value of the event,
+                                53
+and is initialized to bell.
+
+
+
+ props is a property list, i.e. of the form (property value property value --).
+ props can be used to associate arbitrary information with a particular event.
+Currently, the properties SIDE, GROUP, HISTORY, PRINT, USE-ARGS, ...ARGS, ERROR,
+and LISPXPRINT are being used.  The value of property SIDE is a list of the side
+effects of the event.  (See discussion of  undosave, page 22.39, and
+ undolispx, page 22.41).  The HISTORY and GROUP properties are used
+for commands that reexecute previous events, i.e. REDO, RETRY, USE, ..., and
+FIX.  The value of the HISTORY property is the history command itself, i.e. what
+the user actually typed, e.g.  REDO FROM F, and is used by the ?? command for
+printing the event.  The value of the property PRINT is also for use by the
+?? command, when special formatting is required, for example, in printing events
+corresponding to the break commands OK, GO, EVAL, and ?=.  USE-ARGS and
+...ARGS are used to save the arguments and expression for the corresponding
+history command.  ERROR is used by the $ command.  LISPXPRINT is used
+to record calls to  lispxprint,  lispxprin1, et al, See page 22.27.
+
+
+
+When  lispx is given an input, it calls  historysave to record the input in a
+          54
+new event.   Normally,  historysave returns as its value  cddr of the new event,
+i.e.  car of its value is the value field of the event.   lispx binds
+ lispxhist to the value of  historysave, so that when the operation has
+completed,  lispx knows where to store the value, namely in  car of
+           55
+ lispxhist.    lispxhist also provides access to the property list for the
+
+
+**FOOTNOTES**
+52
+     id is one of the arguments to  lispx and to  historysave.  A user
+    can call  lispx giving it any prompt character he wishes (except for *,
+    since in certain cases,  lispx must use the value of  id to tell whether or
+    not it was called from the editor.) For example, on page 22.26, the user's
+    prompt character was **.
+
+
+53
+    On  edithistory, this field is used to save the side effects of each
+    command.
+
+
+54
+    The commands ??, FORGET, TYPE-AHEAD, $BUFS, and ARCHIVE are executed
+    immediately, and are not recorded on the history list.
+
+
+55
+    Note that by the time it completes, the operation may no longer correspond
+    to the most recent event on the history list.  For example, all inputs typed
+    to a lower break will appear later on the history list.
+
+
+
+
+
+                                     22.32
+
+
+
+current event.  For example, the / functions are all implemented to call
+ undosave, which simply adds the corresponding information to
+ lispxhist under the property SIDE, or if there is no property SIDE,
+creates one, and then adds the information.
+
+
+
+After binding  lispxhist,  lispx executes the input, stores its value in  car of
+ lispxhist, prints the value, and returns.
+
+
+
+When the input is a REDO, RETRY, USE, ..., or FIX command, the procedure is
+similar, except that the event is also given a GROUP property, initially
+NIL, and a HISTORY property, and  lispx simply unreads the input and
+returns.  When the input is 'reread', it is  historysave, not  lispx, that
+                                                                            56
+notices this fact, and finds the event from which the input originally came.
+ historysave then adds a new (value . props) entry to the GROUP property for
+this event, and returns this entry as the 'new event.'  lispx then proceeds
+exactly as when its input was typed directly, i.e. it binds  lispxhist to the
+value of  historysave, executes the input, stores the value in  car of
+ lispxhist, prints the value, and returns.  In fact,  lispx never notices
+whether it is working on freshly typed input, or input that was reread.
+Similarly,  undosave will store undo information on  lispxhist under
+the property SIDE the same as always, and does not know or care that  lispxhist
+is not the entire event, but one of the elements of the GROUP property.  Thus
+when the event is finished, its entry will look like:
+
+(input id value HISTORY command GROUP ((value1 SIDE side1)
+                                       (value2 SIDE side2)
+                                                                     57
+                                            ...))
+
+
+
+This implementation removes the burden from the function calling
+ historysave of distinguishing between new input and reexecution of input
+                                            58
+whose history entry has already been set up.  
+
+
+
+
+ 22.8  lispx and readline
+
+
+
+ lispx is called with the first expression typed on a line as its first
+argument,  lispxx.
+
+
+**FOOTNOTES**
+56
+    If  historysave cannot find the event, for example if a user program
+    unreads the input directly, and not via a history command,  historysave
+    proceeds as though the input were typed.
+
+
+57
+    In this case, the value field is not being used;  valueof instead
+    collects each of the values from the GROUP property, i.e. returns
+    mapcar[get[event;GROUP];CAR].  Similarly, undo operates by collecting the
+    SIDE properties from each of the elements of the GROUP property,
+    and then undoing them in reverse order.
+
+
+58
+    Although we have not yet done so, this implementation, i.e. keeping the
+    various 'sub-events' separate with respect to values and properties, also
+    permits constructing commands for operating on just one of the sub-events.
+
+
+
+
+
+                                     22.33
+
+
+
+If this is not a list,  lispx always does a  readline, and treats  lispxx
+plus the line as the input for the event, and stores it accordingly on the
+             59
+history list.   Then it decides what to do with the input, i.e. if it is not
+recognized as a command, a  lispxmacro, or is processed by  lispxuserfn,
+                     60
+call  eval or  apply.    readline normally is terminated either by (1) a
+carriage return that is not preceeded by a space, or (2) a list that is
+terminated by a ], or (3) an unmatched ) or ], which is not included in the
+line.  However, when called from  lispx,  readline operates differently in
+two respects:
+
+
+
+    (1)  If the line consists of a single ) or ],  readline returns (NIL)
+         instead of NIL, i.e. the ) or ] is included in the line.  This permits
+         the user to type FOO) or FOO], meaning call the function' FOO with no
+         arguments, as opposed to FOO
+ (FOOcarriage-return), meaning evaluate
+         the variable FOO.
+
+    (2)  If the first expression on the line is a list that is not preceded by
+         any spaces, the list terminates the line regardless of whether or not
+         it is terminated by ].  This permits the user to type EDITF(FOO) as a
+         single input.
+
+
+
+Note that if any spaces are inserted between the atom and the left parentheses
+or bracket,  readline will assume that the list does not terminate the
+line.  This is to enable the user to type a line command such as
+USE (FOO) FOR FOO.  In this case, a carriage return will be typed after (FOO)
+followed by "..." as described in Section 14.  Therefore, if the user
+accidentially puts an extra space between a function and its arguments, he will
+have to complete the input with another carriage return, e.g.
+
+
+                             _EDITF(FOO)
+                             ...
+                             EDIT
+                             *
+
+
+
+ 22.9  Functions
+
+
+
+                                                    61
+lispx[lispxx;lispxid;lispxxmacros;lispxxuserfn]
+
+                              lispx is like  eval/ apply.  It carries out a
+                             single computation, and returns its value.  The
+                             first argument,  lispxx is the result of a single
+
+
+
+**FOOTNOTES**
+59
+    If  lispxx is a list  car of which is LAMBDA or NLAMBDA,  lispx calls
+     lispxread to obtain the arguments.
+
+
+60
+    If the input consists of one expression,  eval is called; if two,  apply; if
+    more than two, the entire line is treated as a single form and  eval is
+    called.
+
+
+61
+     lispxid corresponds to  id on page 22.32.   Lispx also has a fifth
+    argument,  lispxflg, which is used by the E command in the editor.
+
+
+
+
+
+                                     22.34
+
+
+
+                             call to  lispxread.   lispx will call
+                              readline, if necessary as described on page
+                             22.33.   lispx prints the value of the computation,
+                             as well as saving the input and value on
+                                                62
+                              lispxhistory.
+
+
+
+                             If  lispxx is a history command,  lispx executes
+                             the command, and returns bell as its value.
+
+                             If the value of the fourth argument,  lispxxmacros,
+                             is not NIL, it is used as the lispx macros,
+                             otherwise the top level value of  lispxmacros
+                             is used.  If the value of the fifth argument,
+                              lispxxuserfn, is not NIL, it is used as
+                              lispxuserfn.  In this case, it is not
+                             necessary to both set and define  lispxuserfn as
+                             described on page 22.25.
+
+
+
+The overhead for a call to  lispx is approximately 17 milliseconds, of
+which 12 milliseconds are spent in maintaining the spelling lists.  In other
+words, in INTERLISP, the user pays 17 more milliseconds for each  eval or  apply
+input over a conventional LISP executive, in order to enable the features
+described in this chapter.
+
+
+
+userexec[lispxid;lispxxmacros;lispxxuserfn]
+
+                             repeatedly calls  lispx under errorset
+                             protection specifying  lispxxmacros and
+                              lispxxuserfn, and using  lispxid (or _ if
+                              lispxid=NIL) as a prompt character.   Userexec is
+                             exited via the  lispxmacro OK, or else with a
+                              retfrom.
+
+
+
+lispxread[file]              is a generalized  read.  If  readbuf=NIL,
+                              lispxread performs read[file], which it returns as
+                             its value.  (If the user types control-U
+                             during the call to  read,  lispxread calls the
+                             editor and returns the edited value.)
+
+
+
+                             If  readbuf is not NIL,  lispxread 'reads' the next
+                             expression on  readbuf, i.e. essentially returns
+
+                             (PROG1 (CAR READBUF)
+
+
+
+
+**FOOTNOTES**
+62
+    Note that the history is not one of the arguments to  lispx, i.e. the
+    editor must bind (reset)  lispxhistory to  edithistory before
+    calling  lispx to carry out a history command.
+     Lispx will continue to operate as an  eval/ apply function if  lispxhistory
+    is NIL.  Only those functions and commands that involve the history list
+    will be affected.
+
+
+
+
+
+
+
+
+
+
+                                     22.35
+
+
+
+                                                                  63
+                                    (SETQ READBUF (CDR READBUF))).
+
+
+ readline, described in Section 14, also uses this generalized notion of
+reading.  When  readbuf is not NIL,  readline 'reads' expressions from  readbuf
+until it either reaches the end of  readbuf, or until it reads a (VAG 0).
+In both cases, it returns a list of the expressions it has 'read'.  (The (VAG 0)
+is not included in the list.)
+
+
+
+When  readbuf is not NIL, both  lispxread and  readline actually obtain
+their input by performing (APPLY* LISPXREADFN FILE), where  lispxreadfn is
+initially set to READ.  Thus, if the user wants  lispx, the editor, break, et al
+to do their reading via a different input function, e.g.  uread, he simply sets
+ lispxreadfn to the name of that function (or an appropriate LAMBDA expression).
+
+
+
+lispxreadp[flg]              is a generalized  readp.  If  flg=T,
+                              lispxreadp returns T if there is any input waiting
+                             to be 'read', a la  lispxread.  If  flg=NIL,
+                              lispxreadp returns T only if there is any input
+                             waiting to be 'read' on this line.  In both cases,
+                             leading spaces are ignored, i.e. skipped over with
+                              readc, so that if only spaces have been typed,
+                              lispxreadp will return NIL.
+
+
+
+
+lispxunread[lst]             unreads  lst, a list of expressions to be
+                             read.  If  readbuf is not NIL,
+                              lispxunread attaches  lst at the front of
+                              readbuf, separating it from the rest of  readbuf
+                             with a (VAG 0).  The definition of
+                              lispxunread is:
+
+
+                             (LISPXUNREAD
+                               [LAMBDA (LST)
+                                 (SETQ READBUF (COND
+                                     ((NULL READBUF)
+                                       LST)
+                                     (T (APPEND LST (CONS (VAG 0)
+                                                           READBUF])
+
+
+
+promptchar[id;flg;hist]      prints the prompt character  id.
+
+
+
+                              promptchar will not print anything when the next
+                             input will be 'reread', i.e.   readbuf is not
+                             NIL.   promptchar will also not print when
+                             readp[]=T, unless  flg is T.
+
+
+
+Thus the editor calls  promptchar with  flg=NIL so that extra *'s are not
+
+
+
+**FOOTNOTES**
+63
+    Except that pseudo-carriage returns, as represented by (VAG 0), are
+    ignored, i.e. skipped.   Lispxread also sets  rereadflg to NIL when it
+    reads via  read, and sets  rereadflg to the value of  readbuf when
+    rereading.
+
+
+
+
+
+                                     22.36
+
+
+
+printed when the user types several commands on one line.  However,  evalqt
+calls  promptchar with  flg=T since it always wants the _ printed (except when
+'rereading').
+
+
+
+                             Finally, if  prompt#flg is T and  hist is not
+                             NIL,  promptchar prints the current event number
+                             (of  hist) before printing  id.
+
+
+
+lispxeval[lispxform;lispxid] evaluates  lispxform (using  eval) the same as
+                             though it were typed in to  lispx, i.e. the
+                             event is recorded, and the evaluation is made
+                             undoable by substituting the slash functions for
+                             the corresponding destructive functions, as
+                             described on page 22.29.   lispxeval returns
+                             the value of the form, but does not print it.
+
+
+
+historysave[history;id;input1;input2;input3;props]
+
+                             records one event on  history.  If  input1 is not
+                             NIL, the input is of the form
+                             (input1 input2 . input3).  If  input1 is NIL, and
+                              input2 is not NIL, the input is of the form
+                             (input2 . input3).  Otherwise, the input is just
+                              input3.
+
+
+
+                              historysave creates a new event with the
+                             corresponding input,  id, value field initialized
+                             to bell, and  props.  If the  history has
+                             reached its full size, the last event is removed
+                             and cannibalized.
+
+
+
+                             The value of  historysave is  cddr of the event.
+                             However, if  rereadflg is not NIL, and is a
+                             tail of the input of the most recent event on the
+                             history list, and this event contains a GROUP
+                             property,  historysave does not create a new
+                             event, but simply adds a (bell . props) entry to
+                             the GROUP property and returns that entry.  See
+                             discussion on page 22.33.
+
+
+
+lispxfind[history;line;type;backup]
+
+                              line is an event specification,  type specifies
+                             the format of the value to be returned by
+                              lispxfind, and can be either ENTRY, ENTRIES, COPY,
+                             COPIES, INPUT, or REDO.   lispxfind parses  line,
+                             and uses  historyfind to find the
+                             corresponding events.   lispxfind then assembles
+                             and returns the appropriate structure.
+
+
+
+ lispxfind incorporates the following special features:
+
+
+
+(1) if  backup=T,  lispxfind interprets  line in the context of the history list
+before the current event was added.  This feature is used, for example, by
+ valueof, so that (VALUEOF -1) will not refer to the  valueof event itself;
+
+
+
+
+
+                                     22.37
+
+
+
+(2) if  line=NIL and the last event is an UNDO, the next to the last event is
+taken.  This permits the user to type UNDO followed by REDO or USE;
+
+
+
+(3)  lispxfind recognizes @@, and substitutes  archivelst for  history
+(see page 22.11); and
+
+
+
+(4)  lispxfind recognizes @, and retrieves the corresponding event(s)
+from the property list of the atom following @ (see page 22.10).
+
+
+
+historyfind[lst;index;mod;x;y]
+
+                             searches  lst and returns the tails of  lst
+                             beginning with the event corresponding to  x.
+                              lst,  index, and  mod are as described on page
+                             22.31.
+
+                              x is an event address, as described on page
+                             22.9-11, e.g.  (43), (-1), (FOO FIE), (LOAD _ FOO),
+                                 64
+                             etc.   If  historyfind cannot find  x, it generates
+                             an error.
+
+
+
+entry#[hist;x]                hist is a history list, i.e. of the form
+                             described on page 22.31.   x is one of the events
+                             on  hist, i.e.  (MEMB X (CAR HIST)) is true.  The
+                             value of  entry# is the event number for  x.
+
+
+
+valueof[x]                   is an nlambda, nospread function for obtaining
+                             the value of the event specified by  x, e.g.
+                             (VALUEOF -1), (VALUEOF LOAD 1), etc.   valueof
+                             returns a list of the corresponding values if  x
+                             specifies a multiple event.
+
+
+
+                           65
+changeslice[n;history]       changes time-slice for  history to  n.
+                             If  history is NIL, changes both  edithistory and
+                              lispxhistory.
+
+
+
+Note: the effect of increasing a time-slice is gradual: the history list is
+simply allowed to grow to the corresponding length before any events are
+forgotten.  Decreasing a time-slice will immediately remove a sufficient number
+of the older events to bring the history list down to the proper size.  However,
+ changeslice is undoable, so that these events are (temporarily)
+recoverable.  Thus if the user wants to recover the storage associated with
+
+
+
+**FOOTNOTES**
+64
+    If  y is given, the event address is the list difference between  x and  y,
+    e.g.  x=(FOO FIE AND \ -1),  y=(AND \ -1) is equivalent to
+     x=(FOO FIE),  y=NIL.
+
+
+65
+     changeslice has a third argument used by the system for undoing a
+     changeslice.
+
+
+
+
+
+                                     22.38
+
+
+
+these events without waiting  n more events for the  changeslice event to be
+forgotten, he must perform a FORGET command.
+
+
+
+saveset[name;value;topflg;flg]
+
+                             an undoable  set.  (see page 22.31).   saveset
+                             scans the pushdown list looking for the last
+                             binding of  name, sets  name to  value, and returns
+                              value.
+
+
+
+                             If the binding changed was a top level binding,
+                              name is added to  spellings3 (see
+                             Section 17).  Furthermore, if the old value was not
+                             NOBIND, and was also not  equal to the new
+                             value,  saveset calls the file package to update
+                             the necessary file records.  Then, if  dfnflg
+                             is not equal to T,  saveset prints
+                             (name RESET), and saves the old value on the
+                             property list of  name, under the property
+                             VALUE.  If  flg=NOPRINT,  saveset saves the
+                             old value, but does not print the message.  This
+                             option is used by  unset.
+
+
+
+                             If  topflg=T,  saveset operates as above
+                             except that it does not scan the pushdown list but
+                             goes right to  name's value cell, e.g. rpaqq[x;y]
+                             is simply saveset[x;y;T].  When  topflg is T, and
+                              dfnflg is ALLPROP and the old value was
+                             not NOBIND,  saveset simply stores  value on
+                             the property list of  name under the property
+                             VALUE, and returns  value.  This option is
+                             used for loading files without disturbing the
+                             current value of variables (see Section 14).
+
+
+
+                             If  flg=NOSAVE,  saveset does not save the old
+                             value on the property list, nor does it add  name
+                             to  spellings3.  However, the call to
+                              saveset is still undoable.  This option is
+                             used by  /set.
+
+
+
+unset[name]                  if  name does not contain a property
+                             VALUE,  unset generates an error.
+                             Otherwise  unset calls  saveset with  name, the
+                             property value,  topflg=T, and  flg=NOPRINT.
+
+
+
+                       66
+undosave[undoform]           if  lispxhist is not NIL (see discussion
+                             on page 22.32), and get[lispxhist;SIDE] is not
+                             equal to NOSAVE,  undosave adds  undoform to
+                             the value of the property SIDE on  lispxhist,
+                             creating a SIDE property if one does not already
+
+
+
+**FOOTNOTES**
+66
+     Undosave has a second optional argument,  histentry, which can be used to
+    specify  lispxhist directly, saving the time to look it up.  If both
+     histentry and  lispxhist are NIL,  undosave is a NOP.
+
+
+
+
+
+                                     22.39
+
+
+
+                                                                          67
+                             exist.  The form of  undoform is (fn . args),
+                             i.e.  undoform is undone by performing
+                             apply[car[undoform];cdr[undoform]].  For example,
+                             if the definition of  FOO is  def,
+                             /putd[FOO;newdef] will cause a call  undosave with
+                              undoform =(/PUTD FOO def).
+
+
+
+                              car of the SIDE property is the number of
+                             'undosaves', i.e. length of  cdr of the SIDE
+                             property, which is the list of  undoforms.  Each
+                             call to  undosave increments this count, and adds
+                              undoform to the front of the list, i.e. just after
+                             the count.  When the count reaches the value of
+                                                             68
+                              #undosaves (initially 50),    undosave
+                             prints a message asking the user if he wants to
+                             continue saving.  If the user answers NO or
+                             defaults,  undosave makes NOSAVE be the value
+                             of the property SIDE, which disables any
+                             further saving for this event.  If the user answers
+                             YES,  undosave changes the count to -1, which is
+                                                                          69
+                             then never incremented, and continues saving.
+
+
+
+/rplnode[x;a;d]              Undoably performs rplaca[x;a] and rplacd[x;d].
+                             Value is  x.  The principle advantage of  /rplnode
+                             is that when  x is a list,  /rplnode saves its undo
+                             information as cons[x;cons[car[x];cdr[x]]], i.e.
+                             (x originalcar . originalcdr), and therefore
+                             requires only 3 cells of storage, instead of the 8
+                             that would be required for a  /rplaca and a
+                              /rplacd that saved their information as described
+                                     70
+                             earlier.
+
+
+
+                              /rplnode has a BLKLIBRARYDEF.
+
+
+
+new/fn[fn]                   After the user has defined / fn,  new/fn
+                             performs the necessary housekeeping operations to
+                             make  fn be undoable.
+
+
+**FOOTNOTES**
+67
+    Except for  /rplnode, as described below.
+
+
+68
+     #undosaves=NIL is equivalent to  #undosaves=infinity.
+
+
+69
+     load initializes the count on SIDE to -1, so that regardless of the
+    value of  #undosaves, no message will be printed, and the  load will be
+    undoable.
+
+
+70
+    Actually,  /rplaca and  /rplacd also use this format for saving their undo
+    information when their first arguments are lists.  However, if both a
+     /rplaca and  /rplacd are to be performed, it is still more efficient to use
+     /rplnode (3 cells versus 6 cells).
+
+
+
+
+
+                                     22.40
+
+
+
+For example, the user could define  /radix as
+
+(LAMBDA (X) (UNDOSAVE (LIST (QUOTE /RADIX) (RADIX X))) and then perform
+new/fn[radix], and  radix would then be undoable when typed in or in testmode.
+
+
+
+lispx/[x;fn;vars]            performs the substitution of / functions
+                             for destructive functions.   If  fn is not NIL, it
+                             is the name of a function, and   x is its argument
+                             list.  If  fn is NIL,  x is a form.  In both cases,
+                              lispx/ returns  x with the appropriate
+                             substitutions.   Vars is a list of bound variables
+                             (optional).
+
+
+
+                              lispx/ incorporates information about the
+                             syntax and semantics of INTERLISP expressions.  For
+                             example, it does not bother to make undoable
+                             operations involving variables bound in  x.  It
+                             also knows that substitution should not be
+                             performed inside of expressions  car of which is
+                                                        71
+                             QUOTE, DEFINEQ, BREAK, etc.   Similarly,
+                             substitution should be performed in the arguments
+                             for functions like  mapc,  rptq, etc., since these
+                             contain expressions that will be evaluated or
+                             applied.  For example, if the user types
+                             mapc[(FOO1 FOO2 FOO3);PUTD] the  putd must be
+                             replaced by  /putd.
+
+
+
+undolispx[line]               line is an event specification.   undolispx
+                             is the function that executes UNDO commands by
+                             calling  undolispx1 on the appropriate entry(s).
+
+
+
+undolispx1[event;flg]        undoes one event.  The value of  undolispx1 is
+                             NIL if there is nothing to be undone.  If the event
+                             is already undone,  undolispx1 prints
+                                                               72
+                             ALREADY UNDONE and returns T.   Otherwise,
+                              undolispx1 undoes the event, prints a message,
+                             e.g. SETQ UNDONE, and returns T.
+
+
+
+Undoing an event consists of mapping down ( cdr of) the property value for
+SIDE, and for each element, applying  car to  cdr, and then marking the
+event undone by attaching (with / attach) a NIL to the front of its SIDE
+property.  Note that the undoing of each element on the SIDE property will
+usually cause undosaves to be added to the current  lispxhist, thereby
+enabling the effects of  undolispx1 to be undone.
+
+
+
+
+**FOOTNOTES**
+71
+    Any member of the list  nosubstfns.
+
+
+72
+    If  flg=T and the event is already undone, or is an undo command,
+     undolispx1 takes no action and returns NIL.   Undolispx uses this option to
+    search for the last event to undo.  Thus when  line=NIL,  undolispx simply
+    searches history until it finds an event for which  undolispx1 returns T,
+    i.e.  undolispx performs (SOME (CDAR LISPXHISTORY) (F/L (UNDOLISPX1 X T)))
+
+
+
+
+
+                                     22.41
+
+
+
+undonlsetq[form]             is an nlambda function similar to
+                              nlsetq.   undonlsetq evaluates  form, and if
+                             no error occurs during the evaluation, returns
+                             list[eval[form]] and passes the undo information
+                                                         73
+                             from  form (if any) upwards.   If an error does
+                             occur, the value of  undonlsetq is NIL, and
+                             any changes made by / functions during the
+                             evaluation of  form are undone.
+
+
+
+                              undonlsetq compiles open.
+
+
+
+                              undonlsetq will operate even if  lispxhistory
+                             or  lispxhist are NIL, or if  #undosaves
+                             is or has been exceeded for this event.
+
+
+
+Note that  undonlsetq provides a limited form of backtracking.
+
+
+
+printhistory[history;line;skipfn;novalues]
+
+                              line is an event specification.   printhistory
+                             prints the events on  history specified by  line,
+                             e.g. (-1 THRU -10).   skipfn is an (optional)
+                             functional argument that is applied to each event
+                             before printing.  If its value is true, the event
+                             is skipped, i.e. not printed.  If  novalues=T, or
+                              novalues applied to the corresponding event is
+                                                            74
+                             true, the value is not printed.
+
+
+
+For example, the following  lispxmacro will define ??' as a command for printing
+the history list while skipping all 'large events' and not printing any values.
+
+
+
+              (??' (PRINTHISTORY LISPXHISTORY LISPXLINE
+                       (FUNCTION (LAMBDA (X)
+                          (IGREATERP (COUNT (CAR X)) 5)))
+                        T))
+
+
+
+
+
+
+
+
+
+
+**FOOTNOTES**
+73
+    Actually,  undonlsetq does not rebind  lispxhist, so that any undo
+    information is stored directly on the history event, exactly as though there
+    were no  undonlsetq.  Instead,  undonlsetq simply marks the state of the
+    undo information when it starts, so that if an error occurs, it can then
+    know how much to undo.  The purpose of this is so that if the user control-
+    D's out of the  undonlsetq, the event is still undoable.
+
+
+74
+    For example,  novalues is T when printing events on  edithistory.
+
+
+
+
+
+                                     22.42
+
+
+
+ 22.10  The Editor and the Assistant
+
+
+
+As mentioned earlier, all of the remarks concerning 'the assistant' apply
+equally well to user interactions with  evalqt,  break or the editor.  The
+differences between the editor's implementation of these features and that of
+ lispx are mostly obvious or inconsequential.  However, for completeness, this
+section discusses the editor's implementation of the programmer's assistant.
+
+
+
+The editor uses  promptchar to print its prompt character, and
+ lispxread,  lispxreadp, and  readline for obtaining inputs.
+When the editor is given an input, it calls  historysave to record the
+                                                            75
+input in a new event on its history list,  edithistory.    Edithistory
+follows the same conventions and format as  lispxhistory.  However, since edit
+commands have no value, the editor uses the value field for saving side effects,
+rather than storing them under the property SIDE.
+
+
+
+The editor processes DO, !E, !F, and !N commands itself,
+since  lispx does not recognize these commands.  The editor also processes
+                                                                      76
+UNDO itself, as described below.  All other history commands   are
+simply given to  lispx for execution, after first binding (resetting)
+ lispxhistory to  edithistory.  The editor also calls  lispx when
+                                                  77
+given an E command as described in Section 9.
+
+
+
+The major implementation difference between the editor and  lispx occurs in
+undoing.   Edithistory is a list of only the last  n commands, where
+ n is the value of the time-slice.  However the editor provides for undoing all
+changes made in a single editing session, even if that session consisted of more
+than  n edit commands.  Therefore, the editor saves undo information
+independently of the  edithistory on a list call  undolst, (although it
+also stores each entry on  undolst in the field of the corresponding event on
+ edithistory.) Thus, the commands UNDO, !UNDO, and UNBLOCK, are not dependent on
+
+
+
+
+**FOOTNOTES**
+75
+    Except that the atomic commands OK, STOP, SAVE, P, ?, PP and E are not
+    recorded.  In addition, number commands are grouped together in a single
+    event.  For example, 3 3 -1 is considered as one command for changing
+    position.
+
+
+76
+    as indicated by their appearance on  historycoms, a list of the history
+    commands.   editdefault interrogates  historycoms before attempting
+    spelling correction.  (All of the commands on  historycoms are also on
+     editcomsa and  editcomsl so that they can be corrected if misspelled in the
+    editor.) Thus if the user defines a  lispxmacro and wishes it to operate in
+    the editor as well, he need simply add it to  historycoms.  For example,
+    RETRIEVE is implemented as a  lispxmacro and works equally well in  lispx
+    and the editor.
+
+
+77
+    In this case, the editor uses the fifth argument to  lispx,  lispxflg,
+    to specify that any history commands are to be executed by a recursive call
+    to  lispx, rather than by unreading.  For example, if the user types E REDO
+    in the editor, he wants the last event on  lispxhistory processed as
+     lispx input, and not to be unread and processed by the editor.
+
+
+
+
+
+                                     22.43
+
+
+
+             78
+ edithistory,   i.e. UNDO specifies undoing the last command on  undolst, even
+if that event no longer appears on  edithistory.  The only interaction between
+UNDO and the history list occurs when the user types UNDO followed by an event
+specification.  In this case, the editor calls  lispxfind to find the
+event, and then undoes the corresponding entry on  undolst.  Thus the user
+can only undo a specified command within the scope of the  edithistory.
+(Note that this is also the only way UNDO commands themselves can be undone,
+that is, by using the history feature, to specify the corresponding event, e.g.
+UNDO UNDO.)
+
+
+
+The implementation of the actual undoing is similar to the way it is done in
+ lispx: each command that makes a change in the structure being edited does so
+via a function that records the change on a variable.  After the command has
+completed, this variable contains a list of all the pointers that have been
+changed and their original contents.  Undoing that command simply involves
+mapping down that list and restoring the pointers.
+
+
+
+
+ 22.11  Statistics
+
+
+
+The programmer's assistant keeps various statistics about system usage,
+e.g. number of  lispx inputs, number of undo saves, number of calls to editor,
+number of edit commands, number of p.a. commands, cpu time, console time, et al.
+These can be viewed via the function  lispxstats.
+
+
+
+lispxstats[]                 prints statistics.
+
+
+
+The user can add his own statistics to the  lispx statistics via the function
+ addstats.
+
+
+
+addstats[statlst]            no spread, nlambda.   Statlst is a list of
+                             elements of the form (statistic-name . message),
+                             e.g.  (EDITCALLS CALLS TO EDITOR) (UNDOSTATS
+                             CHANGES UNDONE), etc.   statistic-name is set to
+                             the cell in an unboxed array, where the
+                             corresponding statistic will be stored.  This
+                             statistic can then be incremented by  lispxwatch.
+
+
+
+lispxwatch[stat;n]           increments  stat by  n (or 1 if  n=NIL).
+                              lispxwatch has a BLKLIBRARYDEF.
+
+
+
+The user can save his statistics for loading into a new system by performing
+MAKEFILE(DUMPSTATS).  After the file DUMPSTATS is loaded, the statistics printed
+by  lispxstats will be the same as those that would be printed following the
+ makefile.
+
+
+
+
+
+**FOOTNOTES**
+78
+    and in fact will work if  edithistory=NIL, or even in a system which does
+    not contain  lispx at all.
+
+
+
+
+
+                                     22.44
+
+
+
+ 22.12  Greeting and User Initialization
+
+
+
+Many of the features of INTERLISP are parameterized to allow the user to
+adjust the system to his or her own tastes.  Among the more commonly adjusted
+parameters are  prompt#flg,  dwimwait,  changeslice,  #rpars,  lowercase,
+ archivefn,  #undosaves,  fltfmt, etc.  In addition, the user can modify the
+action of system functions in ways not specifically provided for by using
+ advise (Section 19).
+
+
+
+In order to encourage this procedure, and to make it as painless and automatic
+as possible, the p.a. includes a facility for a user-defined profile.  When
+INTERLISP is first run, a specially formatted file on the LISP file directory is
+indexed into using the user's usernumber as a key.  The expressions (if any)
+found there are then evaluated, and the p.a. prints a greeting, e.g.,
+"HELLO, WARREN." or "GOOD AFTERNOON, DANNY.", etc.
+
+
+
+Greeting (i.e., the initialization) is undoable, and is stored as a separate
+event on the history list.  The user can also specifically invoke the greeting
+operation via the function  greet,  for example, if he wishes to effect another
+user's initialization.
+
+
+
+greet[name;flg]         performs greeting for user whose username is  name,
+                        or if  name=NIL, for login name (see  username and
+                         usernumber, Section 21), i.e., when INTERLISP first
+                        starts up, it performs greet[].  Before  greet performs
+                        the indicated initialization, it first undoes the
+                                                         79
+                        effects of the previous greeting.   If  flg=T,  greet
+                        also resets the counters for the various statistics
+                        reported by  lispxstats (page 22.44).
+
+
+
+ greet also sets the variable  username to the name for which the greeting
+was performed.   Sysin is advised to compare  username with username[], and to
+print a message alerting the user if they are not the same.  For example, if
+user HARTLEY performs a  sysin of a  sysout made by user GOODWIN, the following
+message is printed:
+
+
+
+              ****ATTENTION USER HARTLEY:
+              THIS SYSOUT IS INITIALIZED FOR USER GOODWIN.
+                                                 80
+              TO REINITIALIZE, TYPE GREET()        
+
+
+
+
+
+
+**FOOTNOTES**
+79
+    The side effects of the greeting operation are stored on a global variable
+    as well as the history list, thus enabling the previous greeting to be
+    undone even if it is no longer on the history list.
+
+
+80
+    This message can be suppressed by setting the variable  sysoutgag to
+    NIL (initially T).  Alternatively,  sysoutgag can be a list, in which case
+    it is evaluated (if the user names are different), and thus the user can
+    print his own message.
+
+
+
+
+
+                                     22.45
+
+
+
+ Implementation
+
+
+
+ greet operates off the file <LISP>USERNAMEFILE.  To change an existing
+initialization, or create a new one, a new <LISP>USERNAMEFILE must be written.
+This is accomplished by loading the file <LISP>USERNAMES, editing  usernamelst,
+and then performing makeusernames[], which will create new versions of both
+USERNAMEFILE and USERNAMES.  (Note that the person performing this operation
+must therefore either be connected to the LISP directory, or have write access
+to it.)
+
+
+
+ usernamelst is a list of elements of the form
+(username firstname T . forms), e.g., (TEITELMAN WARREN T (CHANGESLICE 100)
+(SETQ DWIMWAIT 5)).   cadr of the list is used in the greeting message.   cdddr
+is a list of forms that are evaluated.
+
+
+
+ usernamelst can be edited just like any other list, e.g., with  editv.  The
+file USERNAMEFILE, created by  makeusernames, contains  usernamelst along
+with an index block which contains for each user on  usernamelst the address in
+the file (i.e., byte position) of the start of his entry.   greet then simply
+does an  sfptr and a  read.
+
+
+
+If  usernamelst contains an element for which the username is NIL, i.e., an
+element of the form (NIL . forms), this is interpreted to mean that  forms are
+evaluated regardless of user name.  This feature can be used to "patch" an
+INTERLISP system when a bug is found, or to change some default for INTERLISP at
+a particular site, e.g., turn off DWIM, perform lowercase[T], etc.  Individual
+user initialization will still be performed following this system
+initialization.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                     22.46
+
+
+

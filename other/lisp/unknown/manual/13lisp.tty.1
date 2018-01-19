@@ -1,0 +1,843 @@
+
+
+
+
+
+
+
+
+
+
+
+                                  SECTION 13
+
+                       NUMBERS AND ARITHMETIC FUNCTIONS
+
+
+
+
+
+ 13.0  General Comments
+
+
+
+There are three different types of numbers in INTERLISP: small integers,
+                                              1
+large integers, and floating point numbers.  Since a large integer or
+floating point number can be (in value) any full word  quantity (and vice
+versa), it is necessary to distinguish between those full word quantities that
+represent large integers or floating point numbers, and other INTERLISP
+pointers.  We do this by "boxing" the number, which is sort of like a special
+"cons": when a large integer or floating point number is created (via an
+arithmetic operation or by  read), INTERLISP gets a new word from "number
+storage" and puts the large integer or floating point number into that word.
+INTERLISP then passes around the pointer to that word, i.e., the "boxed
+number", rather than the actual  quantity itself.  Then when a numeric
+function needs the actual numeric quantity, it performs the extra level of
+addressing to obtain the "value" of the number.  This latter process is called
+"unboxing".  Note that unboxing does not use any storage, but that each
+boxing operation uses one new word of number storage.  Thus, if a
+computation creates many large integers or floating point numbers, i.e.,
+does lots of boxes, it may cause a garbage collection of large integer space,
+                                                          2
+GC: 18, or of floating point number space, GC: 16.
+
+
+
+
+ 13.1  Integer Arithmetic
+
+
+
+
+**FOOTNOTES**
+1
+    Floating point numbers are created by the read program when a . or an E
+    appears in a number, e.g.  1000 is an integer, 1000.  a floating point
+    number, as are 1E3 and 1.E3.  Note that 1000D, 1000F, and 1E3D are
+    perfectly legal literal atoms.
+
+
+2
+    Different implementations of INTERLISP-10 may use different boxing
+    strategies.  Thus, while lots of arithmetic operations may lead to garbage
+    collections, this is not necessarily always the case.
+
+
+
+
+
+                                     13.1
+
+
+
+ Small Integers
+
+
+
+Small integers are those integers for which  smallp is true. In
+INTERLISP-10, these are  integers whose absolute value is less than 1536.
+Small integers are boxed by offsetting them by a constant so that they overlay
+an area of INTERLISP's address space that does not correspond to any INTERLISP
+data type.  Thus boxing small numbers does not use any storage, and
+furthermore, each small number has a unique representation, so that  eq may be
+used to check equality.  Note that  eq should not be used for large
+integers or floating point numbers, e.g., eq[2000;add1[1999]] is NIL!
+ eqp or  equal must be used instead.
+
+
+
+
+ Integer Functions
+
+
+
+All of the functions described below work on integers.  Unless
+specified otherwise, if given a floating point number, they first convert the
+number to an integer by truncating the fractional bits, e.g., iplus[2.3;3.8]=5;
+if given a non-numeric argument, they generate an error, NON-NUMERIC ARG.
+
+
+
+It is important to use the integer arithmetic functions, whenever possible, in
+place of the more general arithmetic functions which allow mixed floating point
+and integer arithmetic, e.g.,  iplus vs  plus,  igreaterp vs  greaterp, because
+the integer functions compile open, and therefore run faster than the general
+arithmetic functions, and because the compiler is "smart" about eliminating
+unnecessary boxing and unboxing.  Thus, the expression
+
+(IPLUS (IQUOTIENT (ITIMES N 100) M) (ITIMES X Y)) will compile to perform only
+one box, the outer one, and the expression
+
+(IGREATERP (IPLUS X Y) (IDIFFERENCE A B)) will compile to do no boxing at all.
+
+
+
+Note that the PDP-10 is a 36 bit machine, so that in INTERLISP-10 all integers
+                             3
+are between -2^35 and 2^35-1.  Adding two integers which produce a result
+outside this range causes overflow, e.g., 2^34 + 2^34.
+
+
+
+The procedure on overflow is to return the largest possible integer, i.e.
+
+
+
+
+
+**FOOTNOTES**
+3
+    Approximately 34 billion
+
+
+
+
+
+
+
+
+                                     13.2
+
+
+                         4
+in INTERLISP-10 2^35 - 1.
+
+
+
+
+iplus[x1;x2;...;xn]      x1 + x2 + ... + xn
+
+
+
+iminus[x]                - x
+
+
+
+idifference[x;y]              x - y
+
+
+
+add1[x]                       x + 1
+
+
+
+sub1[x]                       x - 1
+
+
+
+itimes[x1;x2;...;xn]          the product of  x1, x2,... xn
+
+
+
+iquotient[x;y]           x/y truncated, e.g., iquotient[3;2]=1,
+
+                             iquotient[-3,2]=-1
+
+
+
+iremainder[x;y]               the remainder when  x is divided by  y, e.g.,
+                             iremainder [3;2]=1
+
+
+
+igreaterp[x;y]           T if x > y; NIL otherwise
+
+
+
+ilessp[x;y]                   T is x < y; NIL otherwise
+
+
+
+zerop[x]                      defined as eq[x;0].
+
+
+
+Note that  zerop should not be used for floating point numbers because it
+uses  eq.  Use eqp[x;0] instead.
+
+
+
+**FOOTNOTES**
+4
+    If the overflow occurs by trying to create a negative number of too large a
+    magnitude, -2^35+1 is used instead of 2^35-1.
+
+
+
+
+
+                                     13.3
+
+
+
+minusp[x]                T if  x is negative; NIL otherwise.  Does not
+                             convert  x to an integer, but simply checks sign
+                             bit.
+
+
+
+eqp[n;m]                      T if  n and  m are  eq, or equal numbers, NIL
+                             otherwise.  ( eq may be used if  n and  m are
+                             known to be small integers.)  eqp does not convert
+                              n and  m to integers, e.g., eqp[2000;2000.3]=NIL,
+                             but it can be used to compare an integer and a
+                             floating point number, e.g., eqp[2000;2000.0]=T.
+                              eqp does not generate an error if  n or  m
+                             are not numbers.
+
+
+
+smallp[n]                T if  n is a small integer, else NIL.   smallp
+                             does not generate an error if  n is not a number.
+
+
+
+fixp[x]                        x if  x is an integer, else NIL.  Does not
+                             generate an error if  x is not a number.
+
+
+
+fix[x]                        Converts  x to an integer by truncating
+                             fractional bits, e.g., fix[2.3] = 2, fix[-1.7] = -
+                             1.  If  x is already an integer, fix[x]=x and
+                                                     5
+                             doesn't use any storage.
+
+
+
+logand[x1;x2;...;xn]          lambda no-spread, value is logical  and of
+                             all its arguments, as an integer, e.g.,
+                             logand[7;5;6]=4.
+
+
+
+logor[x1;x2;...;xn]      lambda no-spread, value is the logical  or of all
+                             its arguments, as an integer, e.g.,
+                             logor[1;3;9]=11.
+
+
+
+logxor[x1;x2;...;xn]          lambda no-spread, value is the logical
+                             exclusive  or of its arguments, as an integer,
+                             e.g., logxor[11;5] = 14,
+
+                             logxor[11;5;9] = logxor[14;9] = 7.
+
+
+
+
+
+**FOOTNOTES**
+5
+    Since FIX is also a  lispx command (Section 22), typing FIX directly to
+     lispx will not cause the function  fix to be called.
+
+
+
+
+
+                                     13.4
+
+
+
+lsh[n;m]                      (arithmetic)  left  shift, value is
+                             n*2^m,i.e.,  n is shifted left  m places.   n can
+                             be positive or negative.  If  m is negative,  n is
+                             shifted right - m places.
+
+
+
+rsh[n;m]                      (arithmetic)  right  shift, value is n*2^-m,
+                             i.e.,  n is shifted right  m places.   n can be
+                             positive or negative.  If  m is negative,  n is
+                             left - m places.
+
+
+
+llsh[n;m]                 logical  left  shift.  On PDP-10,  llsh is
+                             equivalent to  lsh.
+
+
+
+lrsh[n;m]                 logical  right  shift.
+
+
+
+The difference between a logical and arithmetic right shift lies in the
+treatment of the sign bit for negative numbers.  For arithmetic right shifting
+of negative numbers, the sign bit is propagated, i.e., the value is a negative
+number.  For logical right shift, zeroes are propagated.  Note that shifting
+(arithmetic) a negative number 'all the way' to the right yields -1, not 0.
+
+
+
+
+gcd[x;y]                      value is the greatest common divisor of  x
+                             and  y, e.g. gcd[72;64]=8.
+
+
+
+
+
+
+ 13.2  Floating Point Arithmetic
+
+
+
+All of the functions described below work on floating point numbers.
+Unless specified otherwise, if given an integer, they first convert the number
+to a floating point number, e.g., fplus[1;2.3] = fplus[1.0;2.3] = 3.3; if given
+a non-numeric argument, they generate an error, NON-NUMERIC ARG.
+
+
+
+The largest floating point number (in INTERLISP-10)  is 1.7014118E38, the
+smallest positive (non-zero) floating point number is 1.4693679E-39.  The
+procedure on overflow is the same as for integer arithmetic.  For
+underflow, i.e. trying to create a number of too small a magnitude, the value
+will be 0.
+
+
+
+fplus[x1;x2;...xn]            x1 + x2 + ... + xn
+
+
+
+
+
+
+                                     13.5
+
+
+
+fminus[x]                - x
+
+
+
+ftimes[x1;x2;...;xn]          x1 * x2 * ... * xn
+
+
+
+fquotient[x;y]           x/y
+
+
+
+fremainder[x;y]               the remainder when  x is divided by  y, e.g.,
+                             fremainder[1.0;3.0]= 3.72529E-9.
+
+
+
+minusp[x]                T if  x is negative; NIL otherwise.  Works for
+                             both integers and floating point numbers.
+
+
+
+eqp[x;y]                      T if  x and  y are  eq, or equal numbers.
+                             See discussion page 13.4.
+
+
+
+fgtp[x;y]                T if x > y, NIL otherwise.
+
+
+
+floatp[x]                is  x if  x is a floating point number; NIL
+                             otherwise.  Does not give an error if  x is not a
+                             number.
+
+
+
+Note that if numberp[x] is true, then either fixp[x] or floatp[x] is true.
+
+
+
+float[x]                      Converts  x to a floating point number, e.g.,
+                             float[0] = 0.0.
+
+
+
+
+ 13.3  Mixed Arithmetic
+
+
+
+The functions in this section are 'contagious floating point arithmetic'
+functions, i.e., if any of the arguments are floating point numbers, they act
+exactly like floating point functions, and float all arguments, and return a
+floating point number as their value.  Otherwise, they act like the integer
+functions.  If given a non-numeric argument, they generate an error,
+NON-NUMERIC ARG.
+
+
+
+plus[x1;x2;...;xn]            x1 + x2 + ... + xn
+
+
+
+
+
+                                     13.6
+
+
+
+minus[x]                      - x
+
+
+
+difference[x;y]               x - y
+
+
+
+times[x1;x2;...;xn]      x1 * x2 * ... * xn
+
+
+
+quotient[x;y]                 if  x and  y are both integers, value is
+                             iquotient[x;y], otherwise fquotient[x;y].
+
+
+
+remainder[x;y]           if  x and  y are both integers, value is
+                             iremainder[x;y], otherwise fremainder[x;y].
+
+
+
+greaterp[x;y]                 T if x > y, NIL otherwise.
+
+
+
+lessp[x;y]                    T if x < y, NIL otherwise.
+
+
+
+abs[x]                         x if x > 0, otherwise -x.   abs uses
+                              greaterp and  minus, (not  igreaterp and
+                              iminus).
+
+
+
+
+                        6
+ 13.4  Special Functions
+
+
+
+They utilize a power series expansion and their values are (supposed to be) 27
+bits accurate, e.g., sin[30]=.5 exactly.
+
+
+
+expt[m;n]                value is m^n.  If  m is an integer and  n is a
+                             positive integer, value is an integer, e.g,
+                             expt[3;4]=81, otherwise the value is a floating
+                             point number.  If  m is negative and  n
+                             fractional, an error is generated.
+
+
+
+
+**FOOTNOTES**
+6
+    In INTERLISP-10, these functions were implemented by J. W. Goodwin by
+    "borrowing" the corresponding routines from the FORTRAN library, and hand
+    coding them in INTERLISP-10 via ASSEMBLE.
+
+
+
+
+
+                                     13.7
+
+
+
+sqrt[n]                       value is a square root of  n as a floating
+                             point number.   n may be fixed or floating point.
+                             Generates an error if  n is negative. sqrt[n]
+                             is about twice as fast as expt[n;.5]
+
+
+
+log[x]                        value is natural logarithm of  x as a
+                             floating point number.   x can be integer or
+                             floating point.
+
+
+
+antilog[x]                    value is floating point number whose
+                             logarithm is  x.   x can be integer or floating
+                             point, e.g., antilog[1] = e = 2.71828...
+
+
+
+sin[x;radiansflg]              x in degrees unless  radiansflg=T.  Value is
+                             sine of  x as a floating point number.
+
+
+
+cos[x;radiansflg]             Similar to  sin.
+
+
+
+tan[x;radiansflg]             Similar to  sin.
+
+
+
+arcsin[x;radiansflg]           x is a number between -1 and 1 (or an error
+                             is generated).  The value of  arcsin is a
+                             floating point number, and is in degrees unless
+                              radiansflg=T.  In other words, if
+                             arcsin[x;radiansflg]= z then sin[z;radiansflg]= x.
+                             The range of the value of  arcsin is -90 to +90
+                             for degrees, -/2 to /2 for radians.
+
+
+
+arccos[x;radiansflg]          Similar to  arcsin.  Range is 0 to 180, 0 to
+                             .
+
+
+
+arctan[x;radiansflg]          Similar to  arcsin.  Range is 0 to 180, 0 to
+                             .
+
+
+
+rand[lower;upper]             Value is a pseudo-random number between
+                              lower and  upper inclusive, i.e.  rand can be
+                             used to generate a sequence of random numbers.
+                             If both limits are integers, the value of  rand is
+                             an integer, otherwise it is a floating point
+                             number.  The algorithm is completely
+                             deterministic, i.e. given the same initial state,
+                              rand produces the same sequence of values.  The
+                             internal state of  rand is initialized using the
+                             function  randset described below, and is stored
+                             on the free variable  randstate.
+
+
+
+                                     13.8
+
+
+
+randset[x]                    Value is internal state of  rand after
+                              randset has finished operating, as a dotted pair
+                             of two integers.  If  x=NIL, value is current
+                             state.  If  x=T,  randstate is initialized using
+                             the clocks.  Otherwise,  x is interpreted as a
+                             previous internal state, i.e. a value of  randset,
+                             and is used to reset  randstate.  For example,
+
+                             1.   (SETQ OLDSTATE (RANDSET))
+
+                             2.   Use  rand to generate some random numbers.
+
+                             3.   (RANDSET OLDSTATE)
+
+                             4.    rand will generate same sequence as in
+                                  2.
+
+
+
+
+ 13.5  Reusing Boxed Numbers in INTERLISP-10 - SETN
+
+
+
+ rplaca and  rplacd provide a way of cannibalizing list structure for reuse
+                                                                       7
+in order to avoid making new structure and causing garbage collections.  This
+section describes an analogous function in INTERLISP-10 for large integers
+and floating point numbers,  setn.   setn is used like  setq, i.e., its
+first argument is considered as quoted, its second is evaluated.  If the
+current value of the variable being set is a large integer or floating point
+number, the new value is deposited into that word in number storage, i.e., no
+                    8
+new storage is used.  If the current value is not a large integer or floating
+point number, e.g., it can be NIL,  setn operates exactly like  setq, i.e., the
+large integer or floating point number is boxed, and the variable is set.  This
+eliminates initialization of the variable.
+
+
+
+ setn will work interpretively, i.e., reuse a word in number storage, but will
+not yield any savings of storage because the boxing of the second argument
+will still take place, when it is evaluated.  The elimination of a box is
+achieved only when the call to  setn is compiled, since  setn compiles open,
+and does not perform the box if the old value of the variable can be reused.
+
+
+
+
+
+
+
+**FOOTNOTES**
+7
+    This technique is frowned upon except in well-defined, localized situations
+    where efficiency is paramount.
+
+
+8
+    The second argument to  setn must always be a number or a NON-NUMERIC ARG
+    error is generated.
+
+
+
+
+
+                                     13.9
+
+
+
+ Caveats concerning use of SETN
+
+
+
+There are three situations to watch out for when using  setn.  The first occurs
+when the same variable is being used for floating point numbers and large
+integers.  If the current value of the variable is a floating point number, and
+it is reset to a large integer, via  setn, the large integer is simply
+deposited into a word in floating point number storage, and hence will be
+interpreted as a floating point number.  Thus,
+
+
+                        _(SETQ FOO 2.3)
+                        2.3
+                        _(SETN FOO 10000)
+                        2.189529E-43
+
+
+Similarly, if the current value is a large integer, and the new value is a
+floating point number, equally strange results occur.
+
+
+
+The second situation occurs when a  setn variable is reset from a large integer
+to a small integer.  In this case, the small integer is simply deposited into
+large integer storage.  It will then print correctly, and function
+arithmetically correctly, but it is not a small integer, and hence will not be
+ eq to another integer of the same value, e.g.,
+
+
+                        _(SETQ FOO 10000)
+                        10000
+                        _(SETN FOO 1)
+                        1
+                        _(IPLUS FOO 5)
+                        6
+                        _(EQ FOO 1)
+                        NIL
+                        _(SMALLP FOO)
+                        NIL
+
+
+In particular, note that  zerop will return NIL even if the variable is equal
+to 0.  Thus a program which begins with FOO set to a large integer and counts
+it down by (SETN FOO (SUB1 FOO)) must terminate with (EQP FOO 0), not
+(ZEROP FOO).
+
+
+
+Finally, the third situation to watch out for occurs when you want to save the
+current value of a  setn variable for later use.  For example, if FOO is being
+used by  setn, and the user wants to save its current value on FIE,
+(SETQ FOO FIE) is not sufficent, since the next  setn on FOO will also change
+FIE, because its changes the word in number storage pointed to by FOO, and
+hence pointed to by FIE.  The number must be copied, e.g.,
+(SETQ FIE (IPLUS FOO)), which sets FIE to a new word in number storage.
+
+
+
+setn[var;x]                  nlambda function like  setq.   var is quoted,  x
+                             is evaluated, and its value must be a number.
+                              var will be set to this number.  If the current
+
+
+
+
+                                     13.10
+
+
+
+                             value of  var is a large integer or floating point
+                             number, that word in number storage is
+                             cannibalized.  The value of  setn is the (new)
+                             value of  var.
+
+
+
+
+ 13.6  Box and Unbox in INTERLISP-10
+
+
+
+Some applications may require that a user program explicitly perform the
+boxing and unboxing operations that are usually implicit (and
+invisible) to most programs.  The functions that perform these operations are
+ loc and  vag respectively.  For example, if a user program executes
+a TENEX JSYS using the ASSEMBLE directive, the value of the ASSEMBLE
+expression will have to be boxed to be used arithmetically, e.g.,
+(IPLUS X (LOC (ASSEMBLE --))).  It must be emphasized that
+
+
+
+Arbitrary unboxed numbers should  not be passed around as ordinary values
+because they can cause trouble for the garbage collector.
+
+
+
+For example, suppose the value of  x were 150000, and you created (VAG X),
+and this just happened to be an address on the free storage list.  The next
+garbage collection could be disastrous.  For this reason, the function
+ vag must be used with extreme caution when its argument's range is not
+known.
+
+
+
+loc is the inverse of vag.  It takes an address, i.e., a 36 bit quantity, and
+treats it as a number and boxes it.  For example,  loc of an atom, e.g.,
+(LOC (QUOTE FOO)), treats the atom as a 36 bit quantity, and makes a number out
+of it.  If the address of the atom FOO were 125000, (LOC (QUOTE FOO)) would be
+125000, i.e. the location of FOO.  It is for this reason that the box
+                                                           9
+operation is called  loc, which is short for location.
+
+
+
+Note that FOO does not print as #364110 (125000 in octal) because the print
+routine recognizes that it is an atom, and therefore prints it in a special
+way, i.e. by printing the individual characters that comprise it.  Thus
+(VAG 125000) would print as FOO, and would in fact be  FOO.
+
+
+
+loc[x]                       Makes a number out of  x, i.e., returns the
+                             location of  x.
+
+
+
+
+**FOOTNOTES**
+9
+     vag is an abbreviation of  value  get.
+
+
+
+
+
+                                     13.11
+
+
+
+vag[x]                       The inverse of  loc.   x must be a number;
+                             the value of  vag is the unbox of  x.
+
+
+
+The compiler eliminates extra  vag's and  loc's for example
+(IPLUS X (LOC (ASSEMBLE --))) will not box the value of the ASSEMBLE, and then
+unbox it for the addition.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                     13.12
+
+
+
