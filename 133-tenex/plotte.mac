@@ -1,0 +1,468 @@
+;<MON>PLOTTE.MAC;5    27-JUN-75 11:28:29    EDIT BY LIEB
+;PUT IN SPOOLING MECHANISM WITH SPOOL WORD OFF FOR NOW
+;<MON>PLOTTE.MAC;4    28-MAY-75 13:11:36    EDIT BY LIEB
+;MINOR PATCH IN PLTSV
+;<MON>PLOTTE.MAC;3    27-MAY-75 10:59:37    EDIT BY LIEB
+;<MON>PLOTTE.SMX;2    26-MAY-75 22:44:38    EDIT BY LIEB
+;CONVERT TO XY10 AND SIXBIT BYTES (DEC STANDARD)
+;SINCE WE CANT AFFORD ANOTHER BBN BUG BOX
+;<FILESYSTEM>PLOTTE.MAC;14    29-JUN-72 10:25:48	EDIT BY TOMLINSON
+
+	SEARCH	PROLOG,FILEDEF,STENEX
+IFDEF PLTN,<
+	TITLE	PLOTTER
+	SUBTTL	R.S.TOMLINSON
+
+; Ac's
+
+IOS=6
+
+; Parameters
+
+PLT=140		; Plt device code
+PI==4		; Pi device
+PLTDON==10	; Done coni/o bit
+PLTBSY==20	; Busy coni/o bit
+PLTEOT==40	; No paper coni bit
+BUFSIZ==101	; Size of plt buffer
+PLTPIN==^D100	; Plot steps per inch
+
+;DATAO BITS
+PENUP==40
+PENDWN==20
+MINUSX==10
+PLUSX==4
+MINUSY==1
+PLUSY==2
+
+; Entries to this part
+
+INTERN	PLTSV		; Interrupt service routine
+INTERN	PLTCHK		; Entry to clock routine
+INTERN	PLTRST		; Reset
+
+; Externally defined things
+
+EXTERN  CPUSW0,PLTLOK,HLOCKR
+EXTERN	DISET
+EXTERN	PBYTSZ,PBYTPO
+EXTERN	DISLT,DISLET,EDISMS,LCKTST,CPOPJ,SKPRET
+EXTERN	PLTCHR	; Plt interrupt return
+EXTERN	PLTTIM	; Clock word for plt restart
+EXTERN	DISGET	; Greater/equal dismiss test
+EXTERN	JOBDIR,UNLCKF,MULKPG,ASGJFR,RELFRE,MLKPG,FPTA
+
+; Storage
+
+LS(PLTBF1,BUFSIZ)	; First buffer
+LS(PLTBF2,BUFSIZ)	; Second buffer
+LS(PLTSTS)		; Status word
+LS(PLTLCK)		; Plt open lock
+LS(PLTCNT)		; Count of full buffers
+LS(PLTITC)		; Count of items remaining in current buffer
+LS(PLTFDC)		; Count of steps left to feed
+LS(PLTCMD)		;COMMAND TO FEED
+LS(PLTPTR)		; Byte bointer for emptying current buffer
+LS(PLTSVR)		; Interrupt return address
+LS(PLTSIO)		; Saved ios during interrupt
+LS(PLTMAX)		; Maximum x excursion during plot
+LS(PLTXPO)		; Current x position of plot
+
+; Flags in pltsts and ios
+
+FLG(ALTP,L,IOS,400000)	; Buffer 2 for prog
+FLG(ALTI,L,IOS,200000)	; Buffer 1 for int
+FLG(OPN,L,IOS,040000)	; Plt is open
+FLG(STOP,L,IOS,002000)	; Plt is stopped due to no power off
+
+; Plt dispatch table
+
+SPULPL:	0		; .GT. 0 if spooling
+	USE	SWAPPC
+
+PLSDTB::
+PLTDTB::CPOPJ		; Set directory
+	CPOPJ		; Name lookup
+	CPOPJ		; Extension lookup
+	CPOPJ		; Version lookup
+	CPOPJ		; Protection insertion
+	CPOPJ		; Account insertion
+	CPOPJ		; Status insertion
+	PLTOPN		; Plt open
+	CPOPJ		; Input
+	PLTSQO		; Output
+	PLTCLZ		; Close
+	CPOPJ		; Rename
+	CPOPJ		; Delete
+	CPOPJ		; Dumpi
+	CPOPJ		; Dumpo
+	CPOPJ		; Mount
+	CPOPJ		; Dismount
+	CPOPJ		; Init directory
+	PLTOPR		; Mtopr
+	CPOPJ		; Get status
+	CPOPJ		; Set status
+
+; Initialize plotter
+; Call:	PUSHJ P,PLTINI
+; Returns
+;	+1	; Always (called at system initialization time
+
+	USE	RESPC
+
+PLTINI::SETZM PLTSTS
+	SETOM PLTLCK
+	SETOM PLTCNT
+	SETZM PLTFDC
+	POPJ P,
+
+; Plotter reset routine turns plotter back on if it should be
+
+PLTRST:	SKIPL PLTCNT
+	JRST [	SCPU0		;SWITCH TO CPU0
+		CONO PLT,PLTDON+PLTCHN
+		POPJ P,0 ]
+	POPJ P,
+
+; Open plt
+; Call:	JFN	; Jfn
+;	PUSHJ P,PLTOPN
+; Returns
+;	+1	; Error, error number in 1
+;	+2	; Ok
+
+	USE	SWAPPC
+
+PLTOPN:	SCPU0
+	IFDEF PLTSPL,<
+	HLRZ A,FILDDN(JFN)
+	MOVE A,1(A)
+	SKIPE SPULPL		; If not spooling
+	CAMN A,[ASCII /PL1/]	; Or if PL1
+	JRST PL1OPN		; Then don't spool
+
+	MOVEI A,400000
+	PUSH P,CAPENB		; Save current capenb
+	IORM A,CAPENB		; Give ourselves wheel status
+	MOVEI B,^D13
+	PUSHJ P,ASGJFR		; Get some job storage
+	 JRST PLTOPC		; Fail to spool
+	PUSH P,A
+	HRLI A,(<POINT 7,0,35>)	;create file name "<PRINTER>PLX.MUMBLE"
+	HRROI B,[ASCIZ /<PRINTER>/]
+	SETZ C,
+	SOUT
+
+	HLRO B,FILDDN(JFN)	;get spool queue name (PLT, PLA, or PLB)
+	AOJ B,
+	MOVEI C,3		;just 3 characters worth
+	SETZ 4,			;don't stop but for all three characters
+	SOUT
+
+	MOVEI B,"."		;now the period for "LPT."
+	BOUT
+
+	MOVE B,JOBNO
+	HRRZ B,JOBDIR(B)
+	DIRST
+	 BUG(HLT,<PLTOPN: DIRST OF LOGIN DIRECTORY FAILED>)
+	HRROI B,[ASCIZ /;ASYSTEM/]
+	SOUT
+
+	SETZ B,			;NULL CHAR
+	IDPB B,A
+	GTAD			; Use time of day as version
+	ANDI A,177777
+	XOR A,JFN		; Alter for differing jfn's
+	HRLI A,(1B0!1B1!1B8!1B17)
+	MOVE B,0(P)
+	HRLI B,(<POINT 7,0,35>)
+	GTJFN
+	 JRST [	POP P,B
+		MOVEI A,JSBFRE
+		PUSHJ P,RELFRE
+		JRST PLTOPC]
+	POP P,B
+	PUSH P,A
+	MOVEI A,JSBFRE
+	PUSHJ P,RELFRE
+	MOVEI B,100000
+	LDB A,PBYTSZ
+	DPB A,[POINT 6,B,5]
+	MOVE A,0(P)
+	OPENF
+	 JRST [	POP P,A
+		RLJFN
+		 JFCL
+		JRST PLTOPC]
+	NOINT
+	PUSHJ P,UNLCKF
+	POP P,A
+	POP P,CAPENB
+	MOVE B,JFN
+	LSH B,-SJFN
+	SWJFN			;THIS MEANS YOU
+	RLJFN			;CAN PMAP TO THE SPOOLED DEVICE
+	 JFCL
+	MOVE A,MPP
+	AOS (A)
+	JRST MRETN
+
+PLTOPC:	POP P,CAPENB
+>		; Close of ifdef at pltopn
+PL1OPN:	SCPU0			;SWITCH TO CPU0
+	LOCK PLTLCK,<PUSHJ P,LCKTST>
+	MOVE IOS,PLTSTS
+	CONSO PLT,PLTEOT	; Power on?
+	 JRST [	UNLOCK PLTLCK	; No. give error return
+		MOVEI A,OPNX8
+		POPJ P,]
+	TEST(OE,OPN)		; Test and set opn flag
+	 JRST [	UNLOCK PLTLCK	; Already opn
+		MOVEI A,OPNX9	; Give busy error return
+		POPJ P,]
+	TLZ IOS,ALTP!ALTI!STOP
+PLTOP1:	MOVEI B,6		; Get 6 bit bytes
+	DPB B,[POINT 6,PLTPTR,11]
+				; Store in byte pointer
+	MOVEM IOS,PLTSTS	; Store status word
+	SETOM PLTCNT		; No full buffers
+	SETZM PLTITC		; No items left in current buffer
+	SETZM PLTMAX
+	SETZM PLTXPO
+	UNLOCK PLTLCK
+	HRROI B,PENUP		; Pen up command
+	PUSHJ P,DOSTEP		; Wait for it
+	MOVEI A,MINUSY		; Go to right hand side
+	MOVEI B,^D13*PLTPIN	; Do it long it enough to get there
+	PUSHJ P,DOSTEP		; Wait for it
+	MOVEI A,PLUSY
+	MOVEI B,<PLTPIN/2>	; And back up half inch
+	PUSHJ P,DOSTEP
+	MOVEI A,PLUSX
+	MOVEI B,6*PLTPIN	; Move down 6 inchs
+	PUSHJ P,DOSTEP		; Wait for it
+	SETZM FILBYN(JFN)
+	SETZM FILLEN(JFN)
+	TEST(O,WNDF)
+	JRST SKPRET
+; Mtopr to plt
+; Call:	JFN	; Jfn
+;	B	; Operation desired
+;	PUSHJ P,PLTOPR
+; Returns
+;	+1	; Always
+; Oper =3 is move fence, penup at origin. Same as eof
+
+PLTOPR:	CAIE	B,3		; Move fence? (eof)
+	POPJ P,			; No, nop
+	SCPU0
+	SKIPE	FILBYN(JFN)
+	PUSHJ	P,DMPBUF	; Dump rest of buffer
+	MOVE	A,[XWD PLTCNT,DISLT]
+	SKIPL	PLTCNT		; Any buffers left?
+	JSYS	EDISMS		; Yes, wait till they are empty
+	HRROI	B,PENUP		; Get pen up
+	PUSHJ	P,DOSTEP
+	MOVEI	A,MINUSY	; Go to right hand edge
+	MOVEI	B,PLTPIN*^D13	; And make sure we get there
+	PUSHJ	P,DOSTEP
+	MOVEI	A,PLUSY
+	MOVEI	B,<PLTPIN/2>	; Come off edge 1/2 inch
+	PUSHJ	P,DOSTEP
+	MOVE	B,PLTMAX	; Get max plot distance
+	SUB	B,PLTXPO	; How far to get there
+	MOVEI	A,PLUSX		; Spill that much paper
+	PUSHJ	P,DOSTEP
+	SETZM	PLTMAX
+	SETZM	PLTXPO
+	POPJ P,
+
+
+; Close plt
+; Call:	JFN	; Jfn
+;	PUSHJ P,PLTCLZ
+; Returns
+;	+1	; Always
+
+PLTCLZ:	SCPU0
+	SKIPE FILBYN(JFN)
+	PUSHJ P,DMPBUF		; Dump partial buffer
+	MOVE A,[XWD PLTCNT,DISLT]
+	SKIPL PLTCNT
+	JSYS EDISMS		; Dismiss til last buffer being dumped
+	MOVE A,[XWD PLTITC,DISLET]
+	SKIPLE PLTITC
+	JSYS EDISMS		; Dismiss till last buffer out
+	HRROI B,PENUP
+	PUSHJ P,DOSTEP
+	MOVE B,PLTMAX
+	SUB B,PLTXPO		; How far to go to get to last point
+	ADDI B,^D12*PLTPIN	; Plus twelve more inches
+	MOVEI A,PLUSX		;SPILL SOME PAPER ON THE FLOOR
+	PUSHJ P,DOSTEP
+	SETZM PLTSTS
+	JRST SKPRET
+
+	USE	RESPC
+
+DOSTEP:	SCPU0			;SWITCH TO CPU0
+	CONO PI,400		;PIOFF
+	HLOCK PLTLOK		;LOCK PLOTTER INTERRUPT
+	MOVEM B,PLTFDC
+	MOVEM A,PLTCMD		;STORE WHAT WE WANT FOR INTERRUPT SIDE
+	CONO PLT,PLTCHN		;SET PI CHANNEL
+	CONSO PLT,PLTDON	;IF PLOTTER ASLEEP
+	DATAO PLT,[0]		;KICK IT TO WAKE IT UP
+	HULOCK PLTLOK		;UNLOCK INTERRUPT
+	CONO PI,200		;PION
+	MOVE A,[XWD PLTFDC,DISET]
+	JSYS EDISMS
+	POPJ P,
+
+	USE	SWAPPC
+
+; Plt sequential output
+; Call:	A	; Byte
+;	JFN	; Jfn
+;	PUSHJ P,PLTSQO
+; Returns
+;	+1	; Always
+
+PLTSQO:	SCPU0
+	MOVE IOS,PLTSTS		; Get status word
+	PUSH P,A		; Preserve byte
+	TEST(ZE,WNDF)		; Buffers set up yet?
+	PUSHJ P,SETBUF		; No, do it
+	SOSGE FILCNT(JFN)	; Buffer full?
+	PUSHJ P,DMPBUF		; Yes, dump it
+	AOS FILBYN(JFN)		; Count bytes in buffer
+	POP P,A
+	IDPB A,FILBYT(JFN)	; Deposit in buffer
+	POPJ P,
+
+DMPBUF:	SCPU0
+	MOVSI IOS,ALTP
+	XORB IOS,PLTSTS		; Complement buffer
+	MOVEI A,PLTBF1
+	TEST(NN,ALTP)
+	MOVEI A,PLTBF2
+	PUSH P,A
+	MOVEI A,^D36
+	LDB B,PBYTSZ		; User's byte size
+	IDIV A,B		; User bytes per word
+	MOVEI B,6		; 6 bytes per word
+	IMUL B,FILBYN(JFN)
+	IDIV B,A		; Number of output bytes in buffer
+	SKIPE C
+	AOS B			; Round up
+	POP P,A			; Get buffer location
+	HRRZM B,(A)		; Store count in buffer word 0
+	AOSN PLTCNT		; Count one more full buffer
+	CONO PLT,PLTDON+PLTCHN	; If this is first one, start plotter
+	PUSHJ P,SETBUF
+	SOS FILCNT(JFN)
+	POPJ P,
+
+SETBUF:	SCPU0
+	MOVE A,[XWD PLTCNT,DISLET]
+	SKIPLE PLTCNT		; Are all buffers non-empty?
+	JSYS EDISMS		; Yes, wait for one to empty
+	MOVEI A,PLTBF1+1	; Use buffer 1
+	TEST(NE,ALTP)		; Unles alternate flag
+	MOVEI A,PLTBF2+1	; Then use 2
+	HRRM A,FILBYT(JFN)	; Point program byte pointer to buffer
+	MOVEI A,^D36
+	DPB A,PBYTPO		; Position to left of first word
+	MOVEI A,^D36
+	LDB B,PBYTSZ		; User's byte size
+	IDIV A,B		; Bytes per word
+	IMULI A,BUFSIZ-1	; Bytes per buffer
+	MOVEM A,FILCNT(JFN)	; Init filcnt
+	SETZM FILBYN(JFN)	; No bytes written yet
+	POPJ P,
+
+; Plt interrupt routine
+
+	USE	RESPC
+
+PLTSV:	XWD PLTSVR,.+1
+	CONSZ PLT,PLTCHN	; LEAVE IF NO INTERRUPT ASSIGNED
+	CONSO PLT,PLTDON	; Plt interrupt?
+	JRST @PLTSVR		; No
+	AOSE PLTLOK
+	JRST .-1		;LOCK PLOTTER
+	MOVEM IOS,PLTSIO	; Save ios
+	MOVE IOS,PLTSTS		; Get status word
+	CONSO PLT,PLTEOT	; Out of tape?
+	 JRST [	TEST(O,STOP)
+		CONO PLT,0
+		SETZM PLTTIM
+		JRST PLTXIT]
+	SKIPGE PLTFDC		; Negative?
+	 JRST [	DATAO PLT,PLTFDC; Yes, has a special one step plot command
+		SETZM PLTFDC
+		JRST PLTXIT]
+	SKIPG PLTFDC		; Greater than 0?
+	JRST PLTSV1		; No, check for data
+	DATAO PLT,PLTCMD	; Yes, plot special command
+	SOS PLTFDC
+PLTXIT:	MOVEM IOS,PLTSTS
+	MOVE IOS,PLTSIO
+	SETOM PLTLOK		;UNLOCK PLOTTER
+	JRST PLTCHR
+
+PLTSV1:	SKIPG PLTITC		; Items left in buffer?
+	JRST PLTSV2		; No.
+	ILDB A,PLTPTR		; Yes, get one
+	SKIPGE B,PLTXPO		;IF WE GET BACK TO START POINT
+	TRZ A,MINUSX		;DONT LET IT GO FURTHER
+	TRNE A,PLUSX
+	AOS B,PLTXPO		;INC X POS IF +X CMD
+	TRNE A,MINUSX		;WE CAN HAVE BOTH, THOUGH IT WONT WORK
+	SOS B,PLTXPO		;ANY MEATBALL CAN CODE RITE?
+	CAMLE B,PLTMAX
+	MOVEM B,PLTMAX		; Keep track of extent of plot
+	DATAO PLT,A
+	SOSLE PLTITC		; Count items
+	JRST PLTXIT		; Some left
+	SOS PLTCNT
+	JRST PLTXIT
+
+PLTSV2:	SKIPGE PLTCNT
+	JRST [	CONO PLT,0	; Turn off plotter
+		JRST PLTXIT]
+	MOVEI A,PLTBF1
+	TEST(CE,ALTI)
+	MOVEI A,PLTBF2
+	HRRZ B,(A)		; Get item count of buffer
+	AOS A
+	MOVEM B,PLTITC
+	HRRM A,PLTPTR		; Point pointer to the first word
+	MOVEI A,44
+	DPB A,[POINT 6,PLTPTR,5]; Point to left of first byte
+	JRST PLTSV1		; And continue with the new buffer
+
+; This routine is called periodically when plotter power has gone off
+; To restart when power is returned
+
+PLTCHK:	MOVEI A,^D60000
+	MOVEM A,PLTTIM		; 1 minute if not active
+	MOVE A,PLTSTS
+	TLNE A,OPN
+	TLNN A,STOP
+	POPJ P,			; Plotter not in use or not stopped
+	MOVEI A,^D5000
+	MOVEM A,PLTTIM
+	CONSO PLT,PLTEOT
+	POPJ P,			; Power is still off
+	MOVSI A,STOP		; Power back on
+	ANDCAM A,PLTSTS		; Clear stop bit
+	CONO PLT,PLTCHN		; Turn plotter back on
+	CONSO PLT,PLTDON	;IF PLOTTER ASLEEP
+	DATAO PLT,[0]		;KICK IT
+	POPJ P,
+
+>		; End of ifdef pltn on page 1
+	END
+
