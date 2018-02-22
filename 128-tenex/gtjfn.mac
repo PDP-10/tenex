@@ -1,0 +1,1709 @@
+
+	BEGINP	GTJFN		R.S.TOMLINSON	13 OCTOBER 1971	1310:
+
+USE SWAPPC
+
+EXTERN	NXTDMP		; Zero this to cause open files to be written
+EXTERN	MPP		; Saved push pointer on entry to gtjfn
+INTERN	.GTJFN,.GNJFN
+
+DEFINE	TMSG'(M)<
+	HRROI B,[ASCIZ M]
+	PUSHJ P,TSTR>
+
+DEFINE	CHOUT(C)<
+	MOVEI B,C
+	PUSHJ P,OUTCH>
+
+DEFINE	ERUNLK(ERRORN,EXTRA)<
+JRST [	EXTRA
+	IFDIF <ERRORN>,<>,<MOVEI A,ERRORN>
+	JRST ERUNLD]>
+
+DEFINE	ERR(ERRORN,EXTRA)<
+JRST [	EXTRA
+	IFDIF <ERRORN>,<>,<MOVEI A,ERRORN>
+	JRST ERRD]>
+
+DEFINE	ERRLJF(N,EXTRA)<
+JRST	[EXTRA
+	IFDIF <N>,<>,<MOVEI A,N>
+	JRST ERRDO]>
+
+; Get a jfn for a file name
+; Call:	1	; E
+;	2	; String designator
+;	GTJFN
+; Or
+;	LH(1)		; Flags (bit 17 = 1)
+;	RH(1)		; Default version
+;	2		; String designator or xwd infile,outfile
+;	GTJFN
+; Return
+; +1 error, in 1, error code
+; +2 ok, in 1, the jfn for the file
+
+;	LH(E)	; Flags
+;	RH(E)	; Default version
+;	LH(E+1)	; Input jfn (377777 means none)
+;	RH(E+1)	; Output jfn (377777 means none)
+;	E+2	; Default string pointer device
+;	E+3	; Default string pointer directory
+;	E+4	; Default string pointer name
+;	E+5	; Default string pointer extension
+;	E+6	; Default string pointer protection
+;	E+7	; Default string pointer account
+;	E+10	; Desired jfn if jfnf=1 (optional)
+
+; In flags
+
+FLG(^OUTPF,L,F,400000)	; Bit 0 for output use
+FLG(^NEWNF,L,F,200000)	; Bit 1 new file name only
+FLG(^OLDNF,L,F,100000)	; Bit 2 old file only
+FLG(PONFF,L,F,040000)	; Bit 3 print "old file"/"new file" etc.
+FLG(CFRMF,L,F,020000)	; Bit 4 confirmation required
+FLG(^TMPFF,L,F,010000)	; Bit 5 temporary file
+FLG(RTYPF,L,F,004000)	; Bit 6 retype whole file name when complete
+FLG(NACCF,L,F,002000)	; Bit 7 no access to other forks
+FLG(^IGDLF,L,F,001000)	; Bit 8 ignore deleted bit in files
+FLG(JFNF,L,F,000400)	; Bit 9 use jfn given in e+11
+FLG(JFNAF,L,F,000200)	; Bit 10 use alternate if jfn in e+11 na
+FLG(ASTAF,L,F,000100)	; Asterisk allowed
+FLG(OSTRF,L,F,000040)	; Output stars allowed
+FLG(FILF,L,F,000002)	; If short form, 2 has xwd infile,outfile
+FLG(SHTF,L,F,000001)	; Dummy bit to cause 1 to be taken as flags
+
+; If a default string pointer is 0, then it is assumed unspecified
+; If the lh of a default string pointer is 777777, 440700 is assumed
+
+; Flags in rh of f used by gtjfn
+
+FLG(DEVF,R,F,400000)	; Device is specified
+FLG(DIRF,R,F,200000)	; Directory specified
+FLG(NAMF,R,F,100000)	; Name specified
+FLG(EXTF,R,F,040000)	; Extension specified
+FLG(VERF,R,F,020000)	; Version specified
+FLG(PRTF,R,F,010000)	; Protection specified
+FLG(ACTF,R,F,004000)	; Account specified
+FLG(DEVTF,R,F,002000)	; Device was typed in
+FLG(DIRTF,R,F,001000)	; Directory was typed in
+FLG(NAMTF,R,F,000400)	; Name was typed in
+FLG(EXTTF,R,F,000200)	; Extension was typed in
+FLG(VERTF,R,F,000100)	; Version was typed in
+FLG(ACTTF,R,F,000040)	; Account was typed in
+FLG(PRTTF,R,F,000020)	; Protection was typed in
+FLG(TMPTF,R,F,000010)	; Temporary flag was set by type in
+FLG(CNTVF,R,F,000004)	; Control-v typed
+FLG(^NNAMF,R,F,000002)	; No name device
+FLG(^NVERF,R,F,000001)	; No versions etc.
+
+; Flags in rh of sts used locally
+
+FLG(^MTCHF,R,F1,400000)	; Match seen during lookup ooerations
+FLG(^AMBGF,R,F1,200000)	; More than one match seen during operations
+FLG(OCTF,R,F1,100000)	; Octal number is being collected
+FLG(NEGF,R,F1,040000)	; Minus sign was typed
+FLG(^UNLKF,R,F1,020000)	; Used by directory to remember to unlock
+FLG(STRF,R,F1,010000)	; String input exists
+FLG(^NREC,R,F1,004000)	; Don't perform recognition
+FLG(^NREC1,R,F1,002000)	; Used by lookup routines as for norec
+FLG(^DIRXF,R,F1,001000)	; Directory was stepped
+FLG(^NAMXF,R,F1,000400)	; Name was stepped
+FLG(DIRFF,R,F1,000200)	; Directory is being specified
+FLG(EXTFF,R,F1,000100)	; Extension is being specified
+FLG(PRTFF,R,F1,000040)	; Protection is being specified
+FLG(ACTFF,R,F1,000020)	; Account is being specified
+FLG(NUMFF,R,F1,000010)	; Number is being collected
+FLG(KEYFF,R,F1,000004)	; Looking for t, p, a
+FLG(^NEWF,R,F1,000002)	; A new file name was created
+FLG(^NEWVF,R,F1,000001)	; A new version of an existing file was created
+
+; Flags in lh of f1 (scan control)
+
+FLG(^DIRSF,L,F1,100000)	; Scan directories <*>
+FLG(^NAMSF,L,F1,040000)	; Scan names (^*.)
+FLG(^EXTSF,L,F1,020000)	; Scan extensions (^.*)
+FLG(^VERSF,L,F1,010000)	; Scan versions (;*)
+FLG(^RVERF,L,F1,004000)	; Most recent version specified
+FLG(^HVERF,L,F1,002000)	; New version specified
+FLG(^LVERF,L,F1,001000)	; Lowest version specified
+FLG(^FXACT,L,F1,000400)	; Account specified with *'s
+FLG(^FXTMP,L,F1,000200)	; ;t specified with *'s
+FLG(^EXTXF,L,F1,000100)	; Extension was stepped
+FLG(DFSTF,L,F1,000004)	; * in default string
+FLG(STARF,L,F1,000002)	; Set by *
+FLG(^STEPF,L,F1,000001)	; Step flag
+
+; Parameters
+
+^MAXLC__=39
+^MAXLW__8
+
+
+; Table of byte pointers for getting character class
+
+CCSIZE__5			; Width of character class field
+
+	RADIX =10
+
+CPTAB:	FOR Q_CCSIZE-1,=36,CCSIZE
+<	POINT CCSIZE,CCTAB(B),Q
+>
+
+	RADIX 8
+
+; Character classification table
+
+DEFINE	CCN'(C,N)<
+	FOR Q_1,N
+<CC1(C)>>
+
+DEFINE	CC1'(C)<
+QW__QW+C<=36-QQ>
+QQ__QQ+CCSIZE
+IFG QQ-44,<
+	QW
+QW__0
+QQ__CCSIZE
+>
+>
+
+QQ__CCSIZE
+QW__0
+
+CCTAB:	CC1(17)			; Null
+	CC1(2)			; Control-a
+	CCN 17,4		; Control-b to e
+	CC1(3)			; Control-f
+	CCN 17,2		; Control-g & h
+	CCN 7,2			; Control-i, j
+	CC1(17)			; Control-k
+	CCN 7,2			; Control-l, m (ff carret)
+	CCN 17,4		; Control-n - q
+	CC1(4)			; Control-r
+	CCN 17,3		; Control-s, t, u
+	CC1(16)			; Control-v
+	CC1(5)			; Control-w
+	CC1(6)			; Control-x
+	CCN 17,2		; Control-y & z
+	CC1(10)			; Alt-mode
+	CCN 17,3		; 34-36
+	CC1(7)			; Eol
+	CC1(7)			; Space
+	CCN 0,9			; ! to )
+	CC1(20)			; Asterisk
+	CC1(0)			; +
+	CC1(7)			; Comma
+	CC1(30)			; -
+	CC1(14)			; Dot
+	CC1(0)			; Slash
+	CCN 21,12		; Digits
+	CC1(11)			; Colon
+	CC1(15)			; Semi-colon
+	CC1(12)			; <
+	CC1(0)			; =
+	CC1(13)			; >
+	CC1(0)			; ?
+	CC1(7)			; @
+	CC1(24)			; A
+	CCN 0,16		; B - o
+	CC1(23)			; P
+	CCN 0,3			; Q - s
+	CC1(22)			; T
+	CCN 0,6			; U - z
+	CCN 0,4			; [\]^
+	CC1(7)			; _
+	CC1(17)			; Acute accent
+	CC1(27)			; Lower case a
+	CCN 1,16		; Lower case b - o
+	CC1(26)			; Lower case p
+	CCN 1,3			; Lower case q - s
+	CC1(25)			; Lower case t
+	CCN 1,6			; Lower case u - z
+	CCN 17,4		; Curly brackets vert bar complement
+	CC1(17)			; Rubout
+
+	QW
+
+^.GTJFN:JSYS MENTR		; Enter slow code
+	MOVE E,A		; Set pointer to parameter block
+	TLNE E,777777		; Lh is non-zero?
+	HRRI E,1		; Point to ac's
+	XCTUU [HLLZ F,0(E)]	; Get flags from user
+	MOVEI F1,0		; Clear f1
+	TEST(NE,NACCF)
+	TEST(O,FRKF)
+	TLNE E,2		; Is 2 a pointer
+	JRST GTJFZ		; No, skip the following
+	XCTUU [HLRZ A,2]	; Get lh of byte pointer
+	HRLZI B,(<POINT 7,0>)
+	TRNN A,777777
+	XCTUU [SETZM 2]		; Clear pointer if lh = 0
+	CAIN A,777777
+	XCTUU [HLLM B,2]	; Put 7 bit byte into lh if -1
+	CAIE A,0		; Does string pointer exist?
+	TEST(OA,STRF)		; Yes it does
+GTJFZ:	TEST(Z,STRF)		; No it does not
+	PUSHJ P,INFTST
+	JRST GTJFZ1
+	RFCOC
+	PUSH P,B
+	PUSH P,C
+	RFMOD
+	PUSH P,B
+	PUSH P,A
+	TRZ B,777700
+	IORI B,164100
+	SFMOD
+	PUSHJ P,SFCC0
+GTJFZ1:	TLNN E,777777		; Can't specify jfn if short form
+	TEST(NN,JFNF)		; Is user trying to specify jfn?
+	JRST GTJF1		; No.
+	XCTUU [SKIPL JFN,10(E)]	; Yes, get his version of jfn
+	CAIL JFN,NJFN
+	ERRLJF GJFX1,<MOVEM JFN,ERRSAV>
+	NOINT
+	LOCK JFNLCK
+	SKIPN FILSTS(JFN)	; Is this jfn free?
+	JRST [	PUSHJ P,ASGJF1	; Yes, assign it
+		JRST GTJF0]
+	UNLOCK JFNLCK
+	OKINT
+	TEST(NN,JFNAF)
+	ERRLJF GJFX2,<MOVEM JFN,ERRSAV>
+GTJF1:	PUSHJ P,ASGJFN
+	ERR(GJFX3)		; Jfn not available
+GTJF0:	PUSHJ P,SETTMP		; Set up temporary string block
+
+GTJF2:	PUSHJ P,GCH		; Get next character
+	JRST ENDALL		; No more input
+	TEST(ZE,CNTVF)		; Control-v pending?
+	JRST [	PUSHJ P,UCCH	; Yes, ignore any special meanings
+		JRST GTJF2]
+	MOVE B,A
+	IDIVI B,=36/CCSIZE	; Prepare to get character class
+	LDB B,CPTAB(B+1)	; Get character class
+	CAIL B,ECHDTB-CHDTB
+	ERRLJF GJFX4,<MOVEM A,ERRSAV>
+	XCT CHDTB(B)		; Execute the dispatch table
+	JRST GTJF2		; Most action characters return here
+	JRST GTJF2		; Some things skip for other reasons
+
+; Character dispatch table
+
+CHDTB:	PUSHJ P,UCCH		; (0) upper case letter
+	PUSHJ P,LCCH		; (1) lower case letter
+	PUSHJ P,DELCH		; (2) cont-a
+	PUSHJ P,RECFLD		; (3) cont-f
+	PUSHJ P,RETYPE		; (4) cont-r
+	PUSHJ P,DELFLD		; (5) cont-w
+	PUSHJ P,DELALL		; (6) cont-x
+	JRST ENDALL		; (7) cr, lf, ff, tab, _, ,, space, eol
+	JRST RECALL		; (10) alt-mode
+	PUSHJ P,ENDDEV		; (11) colon
+	PUSHJ P,BEGDIR		; (12) <
+	PUSHJ P,ENDDIR		; (13) >
+	PUSHJ P,ENDNAM		; (14) .
+	PUSHJ P,ENDEXT		; (15) ;
+	TEST(O,CNTVF)		; (16) control-v
+	ERRLJF GJFX4,<MOVEM A,ERRSAV>	; (17) illegal character
+	PUSHJ P,STAR	; (20) asterisk
+	PUSHJ P,DIGIT		; (21) digits
+	PUSHJ P,TCH		; (22) t
+	PUSHJ P,PCH		; (23) p
+	PUSHJ P,ACH		; (24) a
+	PUSHJ P,LCTCH		; (25) lower case t
+	PUSHJ P,LCPCH		; (26) lower case p
+	PUSHJ P,LCACH		; (27) lower case a
+	PUSHJ P,MINUS		; (30) minus sign
+ECHDTB:
+
+; Continuation of gtjfn code
+
+; Digits
+
+DIGIT:	MOVE C,FILCNT(JFN)
+	CAIGE C,MAXLC-7		; String longer than 7 digits
+	JRST UCCH
+	TEST(NE,OCTF)
+	CAIGE A,"8"
+	TEST(NN,NUMFF)		; Or not collecting number
+	JRST UCCH		; Treat as letter
+	MOVEI B,12
+	TEST(NE,OCTF)
+	MOVEI B,10
+	IMUL NUM,B		; Otherwise collect number
+	TEST(NN,NEGF)
+	ADDI NUM,-60(A)
+	TEST(NE,NEGF)
+	SUBI NUM,-60(A)
+	JRST LTR		; Also pack into string
+
+; Simple characters
+
+LCCH:	SUBI A,40		; Convert lower case to upper
+UCCH:	TEST(Z,NUMFF)		; Number is invalid now
+LTR:	TEST(NE,STARF)
+	ERRLJF GJFX31
+	SOSGE FILCNT(JFN)
+	ERRLJF GJFX5		; String too long
+	IDPB A,FILOPT(JFN)	; Append character to string
+	POPJ P,
+
+; Letter a
+
+ACH:	TEST(ZN,KEYFF)		; Are we looking for a key letter?
+	JRST UCCH		; No. treat same as other letter
+ACH1:	TEST(NE,ACTF)		; Already have account?
+	ERRLJF GJFX12		; Yes. syntax error
+	TEST(O,ACTFF,NUMFF)	; We are now collecting account number
+	POPJ P,
+
+LCACH:	TEST(ZN,KEYFF)		; Same as for upper case a above
+	JRST LCCH
+	JRST ACH1
+
+; Letter p
+
+PCH:	TEST(ZN,KEYFF)		; Are we looking for key letter?
+	JRST UCCH		; No. treat as for letter
+PCH1:	TEST(NE,PRTF)		; Already have protection?
+	ERRLJF GJFX13		; Yes, illegal syntax
+	TEST(O,PRTFF,NUMFF)
+	TEST(O,OCTF)
+	POPJ P,
+
+LCPCH:	TEST(ZN,KEYFF)
+	JRST LCCH
+	JRST PCH1
+
+; Letter t
+
+TCH:	TEST(NN,KEYFF)		; Looking for key?
+	JRST UCCH		; No. treat as letter
+TCH1:	TEST(O,TMPFF)		; Yes. set temp file flag
+	POPJ P,
+
+LCTCH:	TEST(NN,KEYFF)
+	JRST LCCH
+	JRST TCH1
+
+; Minus sign
+
+MINUS:	JUMPN NUM,UCCH		; If any number has been typed
+	TEST(OE,NEGF)
+	JRST UCCH		; Or 2 minus signs, treat as letter
+	JRST LTR
+
+; Device name terminator (:)
+; The string in the block addressed by tmpptr
+; Is taken as a device. if the device exists, the string is saved
+; As the device name for this file.
+; Exits with tmpptr reset to a null string
+
+ENDDEV:	TEST(NE,STARF)
+	ERRLJF GJFX31
+	TEST(OE,DEVF)
+	ERRLJF GJFX6		; Device already specified (syntax)
+	PUSHJ P,ENDSTR		; Terminate string, get lookup pointer
+	PUSHJ P,DEVLUK		; Lookup device in device tables
+	ERRLJF()		; No such device
+	MOVEM DEV,FILDEV(JFN)	; Value of lookup is initial fildev
+	PUSHJ P,ENDTMP		; Truncate block
+	HRLM A,FILDDN(JFN)	; Store as device name
+	OKINT
+	TEST(O,DEVTF)		; Remember that device was typed in
+	JRST SETTMP		; Reset temp block and return
+
+; Directory name prefix (<)
+; Sets dirff to remember that we are getting a directory name
+
+BEGDIR:	TEST(NN,DIRF)		; Already have directory?
+	TEST(OE,DIRFF)		; Or currently gettin one
+	ERRLJF GJFX7		; Yes. syntax error
+	POPJ P,
+
+; Directory terminator (>)
+; The string in tmpptr is taken as a directory name.
+; If recognized, the corresponding directory number is saved
+; As the directory number for this file.
+; Exits with tmpptr reset to null
+
+ENDDIR:	TEST(ZE,DIRFF)		; Were we collecting it?
+	TEST(OE,DIRF)		; And do we not yet have it?
+	ERRLJF GJFX8		; No. error in syntax
+	TEST(NN,DEVF)		; Do we have a device yet?
+	PUSHJ P,DEFDEV		; No. default it first
+	TEST(ZE,STARF)
+	JRST STRDIR		; User typed <*>
+	PUSHJ P,ENDSTR		; Terminate string, get lookup pointer
+	PUSHJ P,DIRLKX		; Lookup directory (no recognition)
+	JFCL
+	ERRLJF GJFX17		; No such directory
+ENDDI1:	HRRM A,FILDDN(JFN)	; Save directory number
+	TEST(O,DIRTF)		; Remember that directory was typed in
+	JRST SETTMP		; Reset temp block and return
+
+STRDIR:	TEST(O,DIRSF)
+	MOVEI A,1
+	JRST ENDDI1
+
+; Name terminator (.)
+; The string in tmpptr is taken as a file name.
+; If found, the string is saved as the file name of this file.
+; Exits with tmpptr reset to null
+
+ENDNAM:	TEST(OE,NAMF)		; Do we already have a name?
+	ERRLJF GJFX9		; Yes. syntax error
+	TEST(NN,DIRF)		; Do we have a directory yet?
+	PUSHJ P,DEFDIR		; No. default it
+	TEST(ZE,STARF)
+	JRST STRNAM
+	PUSHJ P,ENDSTR		; Terminate string, get lookup pointer
+	PUSHJ P,NAMLKX		; Look up name without recognition
+	JRST ERRDO		; No such file name
+	JRST ERRDO
+	PUSHJ P,ENDTMP		; Truncate temp block
+ENDNA1:	HRLM A,FILNEN(JFN)	; Save as file name
+	OKINT
+	TEST(O,NAMTF)
+	TEST(O,EXTFF)
+	JRST SETTMP		; Reset temp block and return
+
+STRNAM:	TEST(O,NAMSF,STEPF)
+	SETZ A,
+	PUSHJ P,NAMLKX
+	 JRST [	TEST(NN,NNAMF)
+		JRST ERRDO
+		JRST .+2]
+	JRST ERRDO
+	HRRZ A,FILTMP(JFN)
+	NOINT
+	HLLZS FILTMP(JFN)
+	JRST ENDNA1
+
+; Semicolon
+; Control comes here when a semicolon appears in the input
+; Input preceding the semicolon may be:
+; 1. a file name if no name has yet been input
+; 2. an extension if a name has been input, but no extension
+; 3. a protection if neither 1 or 2, and the field was started with p
+; 4. a version number if neither 1,2, or 3 and input was numeric
+; 5. an account number/string if field was preceded by an a
+; Exits with tmpptr reset to null, and keyff=1, numff=1,
+
+ENDEXT:	TEST(NN,NAMF)		; Do we have a name yet?
+	PUSHJ P,ENDNAM		; No. take input string as name
+	TEST(OE,EXTF)		; Do we have an extension yet?
+	JRST ENDEX1		; Yes
+	TEST(ZE,STARF)
+	JRST STREXT
+	PUSHJ P,ENDSTR		; No, terminate, get lookup pointer
+	PUSHJ P,EXTLKX		; Lookup extension without recognition
+	JRST ERRDO		; No extension
+	JRST ERRDO
+	PUSHJ P,ENDTMP		; Truncate temp block
+ENDEX6:	HRRM A,FILNEN(JFN)	; Store as file extension
+	OKINT
+	TEST(O,EXTTF)		; Remember that extension was typed in
+	TEST(Z,EXTFF)
+ENDEX0:	TEST(O,KEYFF,NUMFF)	; Looking for key letters or numbers
+	TEST(Z,OCTF)
+	JRST SETTMP		; Reset temp block and return
+
+ENDEX1:	TEST(ZN,PRTFF)		; Were we collecting a protection
+	JRST ENDEX2		; No
+	SKIPL NUM		; Negative numbers are illegal
+	TEST(NN,NUMFF)		; Must be number for now
+	ERRLJF GJFX14		; Illegal protection
+	TLO NUM,500000
+	MOVEM NUM,FILPRT(JFN)
+	TEST(O,PRTF,PRTTF)	; Have a protection and it was typed
+	JRST ENDEX0
+
+STREXT:	TEST(O,EXTSF,STEPF)
+	SETZ A,
+	PUSHJ P,EXTLKX
+	JRST ERRDO
+	JRST ERRDO
+	HRRZ A,FILTMP(JFN)
+	NOINT
+	HLLZS FILTMP(JFN)
+	JRST ENDEX6
+
+ENDEX2:	TEST(ZN,ACTFF)		; Were we collecting an account
+	JRST ENDEX5		; No
+	SKIPL NUM		; Positive number and
+	TEST(NN,NUMFF)		; Was a number typed?
+	JRST ENDEX3		; No
+	TLO NUM,500000
+	MOVEM NUM,FILACT(JFN)	; Yes, save its negative
+	JRST ENDEX4
+
+ENDEX3:	HRRO A,CAPENB
+	TRNN A,WHEEL!OPR
+	MOVE A,MODES
+	TLNN A,(1B1)
+	ERRLJF(GJFX30)
+	PUSHJ P,ENDSTR		; Account is a string
+	PUSHJ P,ENDTMP
+	MOVEM A,FILACT(JFN)	; Save positive account block pointer
+	OKINT
+ENDEX4:	TEST(O,ACTF,ACTTF)
+	JRST ENDEX0
+
+ENDEX5:	TEST(NN,NUMFF)		; Was a number input?
+	ERRLJF GJFX10
+	TEST(OE,VERF)		; And do we not yet have a version?
+	ERRLJF GJFX11		; No. syntax error
+	TEST(ZE,STARF)
+	JRST STRVER
+	SKIPN A,NUM
+	TEST(O,RVERF)
+	CAMN A,[-1]
+	TEST(O,HVERF)
+	CAMN A,[-2]
+	TEST(O,LVERF)
+	CAMN A,[-3]
+	JRST STRVER
+	PUSHJ P,VERLUK		; Lookup this version
+	ERRLJF GJFX20		; No such version
+STRVR1:	HRRM A,FILVER(JFN)
+	TEST(O,VERTF)		; Remember that version was input
+	JRST ENDEX0
+
+STRVER:	TEST(O,VERSF,STEPF)
+	SETZ A,
+	PUSHJ P,VERLUK
+	ERRLJF(GJFX20)
+	JRST STRVR1
+
+; Default device
+; Call:	PUSHJ P,DEFDEV
+; Return
+;	+1	; Always
+; Gets default device string from user or "dsk"
+; And stores as the device for the file given in jfn
+; Clobbers a,b,c,d
+
+DEFDEV:	TLNN E,777777		; No defaults if short form
+	XCTUU [SKIPN A,2(E)]	; Get user's default pointer
+	JRST DEFDV1		; None specified, use dsk
+	PUSHJ P,REDFLT		; Copy the default string
+	TEST(ZE,DFSTF)
+	JRST [	MOVEI A,GJFX31
+		JRST ERRDO]
+	PUSHJ P,DEVLUK		; Lookup device
+	ERRLJF()		; None such
+	MOVEM DEV,FILDEV(JFN)
+	NOINT
+	HLRZ A,FILTMP(JFN)
+	HRRZS FILTMP(JFN)
+	HRLM A,FILDDN(JFN)
+	OKINT
+	TEST(O,DEVF)
+	POPJ P,
+
+DEFDV1:	MOVEI A,JSBFRE		; Prepare to get a block of storage
+	MOVEI B,2		; Need two words
+	NOINT
+	PUSHJ P,ASGFRE
+	ERRLJF GJFX22		; No space available
+	HRLM A,FILDDN(JFN)	; The block is for the device name
+	OKINT
+	MOVE B,[ASCIZ /DSK/]
+	MOVEM B,1(A)		; The device is "dsk"
+	PUSHJ P,DEVLUK
+	ERRLJF()		; Dsk should always exist
+	MOVEM DEV,FILDEV(JFN)
+	TEST(O,DEVF)
+	POPJ P,
+
+; Default directory
+; Call:	JFN
+;	PUSHJ P,DEFDIR
+; Returns
+;	+	; If successful
+; Does not return if unsuccesfull
+; Clobbers a,b,c,d
+
+DEFDIR:	TEST(NN,DEVF)
+	PUSHJ P,DEFDEV
+	TLNN E,777777		; No default if short form
+	XCTUU [SKIPN A,3(E)]	; Get default pointer
+	JRST DEFDI1		; None specified
+	PUSHJ P,REDFLT		; Copy default string
+	TEST(ZE,DFSTF)
+	JRST STRDIR
+	PUSHJ P,DIRLKX		; Look it up
+	JFCL
+	ERRLJF GJFX17		; None such
+	HRRM A,FILDDN(JFN)
+	MOVEI A,JSBFRE
+	NOINT
+	HLRZ B,FILTMP(JFN)
+	PUSHJ P,RELFRE		; Release the block
+	HRRZS FILTMP(JFN)
+	OKINT
+	TEST(O,DIRF)
+	POPJ P,
+
+DEFDI1:	MOVE A,JOBDNO		; Get the directory number of login
+	HRRM A,FILDDN(JFN)
+	TEST(O,DIRF)
+	POPJ P,
+
+; Default name
+; Call:	JFN, ETC.
+;	PUSHJ P,DEFNAM
+; Return
+;	+1	; No default specified
+;	+2	; If successful, the name specified is set as filnam
+; Does not return if users default does not exist
+; Clobbers a,b,c,d
+
+DEFNAM:	TEST(NN,DIRF)
+	PUSHJ P,DEFDIR
+	TLNN E,777777		; No default for short form
+	XCTUU [SKIPN A,4(E)]	; Get user's default pointer
+	POPJ P,			; None specified
+	PUSHJ P,REDFLT		; Read default string
+	TEST(ZE,DFSTF)
+	JRST DFSTRN
+	PUSHJ P,NAMLKX		; Lookup name
+	JRST [	TEST(NE,NNAMF)
+		POPJ P,
+		JRST ERRDO]
+	JRST ERRDO
+	NOINT
+	HLRZ B,FILTMP(JFN)
+	HRRZS FILTMP(JFN)
+	HRLM B,FILNEN(JFN)
+	OKINT
+	TEST(O,NAMF,NAMTF)
+	AOS (P)
+	TEST(NN,NREC)
+	PUSHJ P,TSTRB		; Output the default name
+	POPJ P,
+
+DFSTRN:	PUSHJ P,STRNAM
+	TEST(Z,EXTFF)
+	TEST(O,NAMF,NAMTF)
+	TEST(NN,NREC)
+	PUSHJ P,TYSTR
+	JRST SKPRET
+
+; Default extension
+; Call:	JFN, ETC.
+;	PUSHJ P,DEFEXT
+; Return
+;	+1	; User default does not exist
+;	+2	; Hunky dory, the string specified by the user becomes
+;		; The extension
+
+DEFEXT:	TLNN E,777777		; No default if short form
+	XCTUU [SKIPN A,5(E)]	; Get user's default pointer
+	POPJ P,
+	TEST(NE,NNAMF)
+	POPJ P,
+	PUSHJ P,REDFLT		; Copy default string
+	TEST(ZE,DFSTF)
+	JRST DFSTRE
+	PUSHJ P,EXTLKX		; Look it up
+	POPJ P,
+	POPJ P,			; None such
+	NOINT
+	HLRZ B,FILTMP(JFN)
+	HRRZS FILTMP(JFN)
+	HRRM B,FILNEN(JFN)
+	OKINT
+	TEST(O,EXTF,EXTTF)
+	AOS (P)
+	TEST(NN,NREC)
+	TEST(NE,NNAMF)
+	POPJ P,
+	PUSH P,B
+	MOVEI B,"."
+	TEST(ZN,EXTFF)
+	PUSHJ P,OUTCH
+	POP P,B
+	PUSHJ P,TSTRB		; Output the default extension
+	TEST(NE,NVERF)
+	POPJ P,
+	CHOUT <";">
+	JRST ENDEX0
+
+DFSTRE:	MOVEI B,"."
+	TEST(ON,EXTFF)
+	TEST(NE,NREC)
+	JRST DFSTE1
+	TEST(NN,NNAMF)
+	PUSHJ P,OUTCH
+DFSTE1:	PUSHJ P,STREXT
+	TEST(NN,NREC)
+	PUSHJ P,TYSTR
+	TEST(NN,NREC)
+	TEST(NE,NVERF)
+	JRST SKPRET
+	CHOUT <";">
+	JRST SKPRET
+
+; Default version
+; Call:	JFN ETC.
+;	PUSHJ P,DEFVER
+; Return
+;	+1	; Unless error
+; Sets the file version number to the default specified by user
+; Clobbers a,b,c,d
+
+DEFVER:	MOVEI A,0
+	TEST(NE,NVERF,NNAMF)
+	POPJ P,
+	XCTUU [HRRE A,0(E)]	; Get default version
+	SKIPN A
+	TEST(NN,OUTPF)
+	JRST .+2
+	SOS A			; 0 default becomes -1 for output
+	TEST(NE,TMPFF)
+	SKIPLE A
+	JRST DEFVR1
+	MOVE A,JOBNO		; Default becomes job number for temp
+	ADDI A,=100000
+DEFVR1:	CAMN A,[-3]
+	JRST DFSTRV
+	CAMN A,[-2]
+	TEST(O,LVERF)
+	CAMN A,[-1]
+	TEST(O,HVERF)
+	SKIPN A
+	TEST(O,RVERF)
+	PUSHJ P,VERLUK		; Extant?
+	JRST ERRDO
+	HRRM A,FILVER(JFN)
+	MOVE B,A
+	TEST(O,VERTF,VERF)
+	TEST(NN,NREC)
+	PUSHJ P,DNOUT
+	POPJ P,
+
+DFSTRV:	PUSHJ P,STRVER
+	TEST(O,VERTF,VERF)
+	TEST(NN,NREC)
+	PUSHJ P,TYSTR
+	POPJ P,
+
+; Default account
+; Call:	JFN ETC.
+;	PUSHJ P,DEFACT
+; Returns
+;	+1	; Always
+; Sets filact to that specified by program
+; Clobbers a,b,c,d
+
+DEFACT:	TEST(NE,NVERF,NNAMF)
+	POPJ P,
+	TLNN E,777777		; No default if short form
+	XCTUU [SKIPN A,7(E)]	; Get default account
+	POPJ P,			; Nono specified
+	TLNN A,777777		; Lh = 0?
+	HRLI A,440700		; Yes, set up 7 bit bytes
+	CAMG A,[577777777777]	; String pointer?
+	CAMGE A,[500000000000]
+	JRST DEFAC2		; Yes
+	MOVEM A,FILACT(JFN)	; No. numeric
+	JRST DEFAC3
+
+DEFAC2:	MOVE B,MODES
+	TLNN B,(1B1)
+	POPJ P,
+	PUSHJ P,REDFLT		; Copy string to temp block
+	NOINT
+	HLRZ A,FILTMP(JFN)
+	HRRZS A,FILTMP(JFN)
+	MOVEM A,FILACT(JFN)
+	OKINT
+DEFAC3:	TEST(O,ACTF)
+	POPJ P,
+
+; Default protection
+; Call:	JFN ETC.
+;	PUSHJ P,DEFPRT
+; Return
+;	+1	; unless error
+; Sets the file protection to default specified by user or directory
+; Clobbers a,b,c,d
+
+DEFPRT:	TEST(NE,NVERF,NNAMF)
+	POPJ P,
+	TLNN E,777777		; No default if short form
+	XCTUU [SKIPN A,6(E)]	; Get the default protection from user
+	POPJ P,
+	CAMG A,[577777777777]	; Must be numeric
+	CAMGE A,[500000000000]
+	ERRLJF GJFX14		; Otherwise error
+	MOVEM A,FILPRT(JFN)
+	TEST(O,PRTF)
+	POPJ P,
+
+; Copy default string
+; Call:	A	; A default string pointer
+;	PUSHJ P,REDFLT
+; Returns
+;	+1	; In a, a lookup pointer
+; Copies the default string into a block addressed by lh(filtmp(jfn))
+; Clobbers a,b,c,d
+
+REDFLT:	PUSH P,A
+	HLRZ A,FILTMP(JFN)
+	JUMPN A,REDFL0
+	MOVEI A,JSBFRE
+	MOVEI B,MAXLW+1
+	NOINT
+	PUSHJ P,ASGFRE
+	ERRLJF GJFX22		; Insufficient space
+	HRLM A,FILTMP(JFN)
+	OKINT
+REDFL0:	HRLI A,(<POINT 7,0>)
+	AOS C,A
+	POP P,A
+	MOVEI D,MAXLC
+	MOVEI B,0		; Null byte if next instruction jumps
+	TEST(Z,DFSTF)
+	JUMPE A,REDFL2		; No pointer
+	TLNE A,777777
+	JUMPGE A,REDFL1
+	CAML A,[777777000000]
+	HRLI A,440700
+REDFL1:	XCTMU [ILDB B,A]
+	PUSH P,C
+	PUSH P,B
+	IDIVI B,=36/CCSIZE
+	LDB C,CPTAB(B+1)
+	POP P,B
+	CAIN C,20
+	JRST REDFST
+	CAIL C,21
+	CAILE C,24
+	CAIN C,30
+	JRST .+3
+	SKIPE C
+	MOVEI B,0
+	POP P,C
+
+REDFL2:	IDPB B,C
+	SOSG D
+	ERRLJF GJFX5
+	JUMPN B,REDFL1
+	HLRZ A,FILTMP(JFN)
+	MOVE B,C
+	PUSHJ P,TRMBLK		; Trim the block and return excess
+	HLRZ A,FILTMP(JFN)
+	MOVN B,(A)
+	HRLI A,2(B)
+	POPJ P,
+
+REDFST:	TEST(O,DFSTF)
+	SUB P,[XWD 1,1]
+	POPJ P,
+
+; Delete character
+
+DELCH:	MOVE C,FILCNT(JFN)
+	CAIL C,MAXLC		; Any character left in string?
+	JRST DELCH2
+	CHOUT "\"		; Output backslash
+	LDB B,FILOPT(JFN)	; Get last character
+	PUSHJ P,OUTCH		; And output it
+	AOS FILCNT(JFN)
+	MOVE A,FILOPT(JFN)
+	PUSHJ P,DBP		; Decrement byte pointer
+	MOVEM A,FILOPT(JFN)
+	MOVE A,NUM
+	TEST(NN,NUMFF)
+	POPJ P,
+	TEST(NE,OCTF)
+	JRST [	IDIVI A,8
+		JRST .+2]
+	IDIVI A,=10
+	MOVE NUM,A
+	POPJ P,
+
+DELCH2:	TEST(ZE,STARF)
+	SKIPA B,["*"]
+DELCH1:	MOVEI B,7
+	JRST OUTCH		; Type bell and return to main loop
+
+; Delete current field
+
+DELFLD:	MOVE C,FILCNT(JFN)
+	CAIL C,MAXLC		; Any thing in this field?
+	JRST [	TEST(ZE,STARF)
+		JRST .+1
+		JRST DELCH1]
+	TMSG </_/>
+	JRST SETTMP		; Reset tmp, return to main loop
+
+; Delete everything
+
+DELALL:	MOVE B,[BYTE (2)0,0,0,0,0,0,0,0,0,0,2,0,0,2,0,0,0,0]
+	MOVE C,[BYTE (2)0,0,0,0,0,0,0,0,0,0,0,0,0,2]
+	PUSHJ P,SFCC
+	TMSG </___
+/>
+	PUSHJ P,SFCC0
+	NOINT
+	PUSHJ P,RELJFN		; Release jfn (to clear free storage)
+	PUSHJ P,ASGJFN		; And reassign
+	ERRLJF GJFX3		; Should not happen, but in case
+	XCTUU [HLLZ F,0(E)]
+	MOVEI F1,0
+	JRST SETTMP		; And start over
+
+; Recognize current field
+; Called from gtjfn loop
+; Decides which field was being input, and then attempts to recognize it
+
+RECFLD:	TLNE F1,DIRSF!NAMSF!EXTSF!VERSF!STARF
+	JRST DING		; Cannot recognize after *
+	TEST(NE,DIRFF)		; Find which field is being input
+	JRST RECDIR		; Directory name is
+	TEST(NE,EXTFF)
+	JRST RECEX0		; Extension is
+	TEST(NN,NAMF)
+	JRST RECNA0		; Recognize name
+	MOVE C,FILCNT(JFN)
+	CAIE C,MAXLC
+	JRST RECFL1		; Some thing typed, treat like cont-f
+	TEST(NE,VERF)
+	JRST DING		; Can recognize no more
+	JRST DEFVER		; Default version
+
+RECFL0:	TEST(NE,DIRFF)
+	JRST RECDIR
+	TEST(NE,EXTFF)
+	JRST RECEXT
+	TEST(NN,NAMF)
+	JRST RECNAM
+RECFL1:	MOVEI B,";"
+	TEST(NN,NREC)
+	PUSHJ P,OUTCH
+	AOS (P)
+	JRST ENDEXT
+
+; Recognize directory name
+; Call:	RH(FILTMP(JFN))	; Pointer to string block to recognize
+;	FILOPT(JFN)	; Pointer to last character in string
+; Flags norec, devf, dirf,dirff,dirtf are updated or used
+;	PUSHJ P,RECDIR
+; Return
+;	+1	; Ambiguous
+;	+2	; Ok
+; Does not return if directory could not exist
+; Clobbers most everything
+
+RECDIR:	TEST(NN,DEVF)
+	PUSHJ P,DEFDEV		; Default device first
+	PUSHJ P,ENDSTR		; Terminate string, get lookup pointer
+	PUSH P,FILOPT(JFN)	; Save filopt(jfn) for typing out tail
+	PUSHJ P,DIRLUK		; Lookup directory name get number
+	ERRLJF GJFX17		; No such directory
+	JRST [	PUSHJ P,DING
+		POP P,FILOPT(JFN)
+		POPJ P,]
+	HRRM A,FILDDN(JFN)	; Store directory number
+	POP P,B
+	PUSHJ P,TSTR		; Output remainder of string
+	CHOUT(">")		; Terminate
+	TEST(O,DIRF,DIRTF)
+	TEST(Z,DIRFF)
+	AOS (P)
+	JRST SETTMP		; Reset temp block and return
+
+; Recognize extension
+; This routine operates in the same way as recdir described above
+
+RECEXT:	PUSHJ P,RECEXX
+	JRST ERRDO
+	JRST DING
+	JRST SKPRET
+
+RECEXX:	PUSHJ P,ENDSTR		; Terminate string, get lookup pointer
+	PUSH P,FILOPT(JFN)	; Save filopt(jfn) for typing out tail
+	PUSHJ P,EXTLUK		; Lookup extension
+	SOS -1(P)		; No such extension
+	JRST [	POP P,FILOPT(JFN)
+		JRST SKPRET]	; Ambiguous
+	PUSHJ P,ENDTMP		; Truncate temp string get pointer
+	HRRM A,FILNEN(JFN)	; Store as extension
+	OKINT
+	TEST(O,EXTF,EXTTF)
+	TEST(Z,EXTFF)
+	POP P,B
+	AOS (P)
+	AOS (P)
+	TEST(NN,NNAMF)
+	TEST(NE,NREC)		; Were we performing recognition?
+	JRST SETTMP		; No. done
+	PUSHJ P,TSTR		; Yes, output tail
+	TEST(NE,NVERF)
+	JRST SETTMP
+	CHOUT <";">		; And semicolon
+	TEST(O,KEYFF,NUMFF)	; And act like the user did it
+	JRST SETTMP		; Reset temp block and return
+
+RECEX0:	PUSHJ P,RECEXX
+	 JFCL
+	 SKIPA
+	 JRST SKPRET
+	MOVE C,FILCNT(JFN)
+	CAIN C,MAXLC
+	PUSHJ P,DEFEXT
+	JRST DING
+	JRST SKPRET
+
+; Recognize name
+; This routine operates in the same way as recdir and recext above
+
+RECNA0:	PUSHJ P,RECNA1
+	JRST [	PUSHJ P,DEFNAM
+		JRST DING
+		JRST .+1]
+	TEST(NE,NNAMF)
+	JRST SKPRET
+	CHOUT "."
+	TEST(O,EXTFF)
+	JRST SKPRET
+
+RECNAM:	PUSHJ P,RECNA1
+	JRST DING
+	JRST SKPRET
+
+RECNA1:	TEST(NN,DIRF)
+	PUSHJ P,DEFDIR		; Default directory
+	PUSHJ P,ENDSTR		; Terminate string, get lookup pointer
+	PUSH P,FILOPT(JFN)	; Save filopt(jfn) for typing tail
+	PUSHJ P,NAMLUK		; Lookup name in directory
+	JRST ERRDO
+	JRST [	POP P,FILOPT(JFN)
+		POPJ P,]	; Ambiguous
+	PUSHJ P,ENDTMP		; Truncate temp block, and get pointer
+	HRLM A,FILNEN(JFN)	; To put in file name
+	OKINT
+	TEST(O,NAMF,NAMTF)
+	POP P,B
+	AOS (P)
+	TEST(NN,NNAMF)
+	TEST(NE,NREC)
+	JRST SETTMP		; Setup new temp, and return
+	PUSHJ P,TSTR		; Type remainder
+	JRST SETTMP
+
+; Retype input so far
+
+RETYPE:	MOVE B,[BYTE (2)0,0,0,0,0,0,0,0,0,0,2,0,0,2,0,0,0,0]
+	MOVE C,[BYTE (2)0,0,0,0,0,0,0,0,0,0,0,0,0,2]
+	PUSHJ P,SFCC
+	TMSG </
+/>
+	PUSHJ P,SFCC0
+	HLRZ B,FILDDN(JFN)
+	TEST(NN,DEVTF)
+	JRST RETY1
+	PUSHJ P,TSTRB
+	CHOUT ":"
+RETY1:	TEST(NN,DIRTF)
+	JRST RETY2
+	CHOUT("<")
+	TEST(NE,DIRSF)
+	JRST [	PUSHJ P,TYSTR
+		JRST RETY1A]
+	HRRZ A,FILDDN(JFN)
+	PUSHJ P,GDIRST		; Get the directory name
+	JRST RETY1A		; Not supposed to happen
+	MOVE B,A
+	PUSHJ P,TSTRB		; Type the string
+	UNLOCK DIRLCK
+	OKINT
+RETY1A:	CHOUT(">")
+RETY2:	TEST(NE,NNAMF)
+	POPJ P,
+	TEST(NN,NAMTF)
+	JRST RETY3
+	TEST(NE,NAMSF)
+	JRST [	PUSHJ P,TYSTR
+		JRST RETY2A]
+	HLRZ B,FILNEN(JFN)
+	PUSHJ P,TSTRB
+RETY2A:	CHOUT "."
+	TEST(NN,EXTTF)
+	JRST RETY3
+	TEST(NE,EXTSF)
+	JRST [	PUSHJ P,TYSTR
+		JRST RETY2B]
+	HRRZ B,FILNEN(JFN)
+	PUSHJ P,TSTRB
+
+RETY2B:	TEST(NE,NVERF)
+	POPJ P,
+	CHOUT <";">
+	TEST(NN,VERTF)
+	JRST RETY4
+	TEST(NE,VERSF)
+	JRST [	PUSHJ P,TYSTR
+		JRST RETY4]
+	HRRZ B,FILVER(JFN)
+	PUSHJ P,DNOUT
+RETY4:	TEST(NN,TMPTF)
+	JRST RETY5
+	TMSG </;T/>
+RETY5:	TEST(NN,PRTF)
+	JRST RETY3
+	TMSG </;P/>
+	MOVE B,FILPRT(JFN)
+	TLNE B,777777
+	JRST [	TLZ B,700000
+		PUSHJ P,ONOUT
+		JRST RETY3]
+	PUSHJ P,TSTRB
+RETY3:	TEST(NN,ACTTF)
+	JRST RETY6
+	TMSG </;A/>
+	SKIPLE B,FILACT(JFN)
+	JRST [	PUSHJ P,TSTRB
+		JRST RETY6]
+	TLZ B,700000
+	PUSHJ P,DNOUT
+RETY6:	PUSHJ P,ENDSTR
+	HRRZ B,A
+	MOVE C,FILCNT(JFN)
+	CAIE C,MAXLC
+	PUSHJ P,TSTRB
+	TEST(NN,STARF)
+	POPJ P,
+TYSTR:	TMSG </*/>
+	POPJ P,
+
+; Terminator seen, finish up
+
+ENDALL:	TEST(O,NREC)		; Suppress recognition
+	TEST(NE,CFRMF)
+	JRST ENDALZ
+	TEST(NN,PONFF,RTYPF)
+	CAIL A,40
+	JRST ENDALZ
+	MOVE B,[BYTE (2)0,0,0,0,0,0,0,0,0,0,2,0,0,2,0,0,0,0]
+	MOVE C,[BYTE (2)0,0,0,0,0,0,0,0,0,0,0,0,0,2]
+	PUSH P,A
+	PUSHJ P,SFCC
+	POP P,B
+	PUSHJ P,OUTCH
+	PUSHJ P,SFCC0
+	JRST ENDALZ
+
+RECALL:	TLNE F1,DIRSF!NAMSF!EXTSF!VERSF!STARF
+	JRST [	PUSHJ P,DING
+		JRST GTJF2]
+ENDALZ:	TEST(NE,STARF)
+	PUSHJ P,[TEST(NN,NAMF)
+		JRST ENDNAM
+		JRST ENDEXT]
+	MOVE C,FILCNT(JFN)
+	CAIE C,MAXLC		; Is input string null?
+	JRST [	PUSHJ P,RECFL0	; No. recognize field first
+		JRST GTJF2	; Ambiguous
+		JRST .+1]
+	TEST(NE,NAMF)		; Do we have a name?
+	JRST ENDAL0		; Yes.
+	PUSHJ P,DEFNAM		; No, try the default name
+	JRST [	PUSHJ P,RECNAM	; No default, try recognizing null
+		JRST GTJF2	; Ambiguous
+		JRST ENDAL0]	; Ok, found
+ENDAL0:	TEST(NE,EXTF)		; After all that, do we have ext?
+	JRST ENDAL4		; Yes
+	TEST(NN,EXTFF)
+	PUSHJ P,DEFEXT		; Attempt to default extension
+	JRST ENDAL6
+ENDAL4:	TEST(NN,VERF)		; Do we have a version?
+	PUSHJ P,DEFVER		; No, default it
+	TEST(NN,NEWF,NEWVF)
+	JRST ENDAL7
+	TEST(NN,PRTF)		; Do we have protection?
+	PUSHJ P,DEFPRT		; No, default it
+	TEST(NN,ACTF)		; Do we have an account?
+	PUSHJ P,DEFACT		; No, default it
+ENDAL7:	TEST(NE,RTYPF)		; User request retyping name?
+	PUSHJ P,RETYPE		; Yes, do it
+	TEST(NN,PONFF)		; User request print of old/new file etc
+	JRST ENDAL3		; No
+
+ENDAL1:	MOVE B,[BYTE (2)0,0,0,0,0,0,0,0,0,0,2,0,0,2,0,0,0,0]
+	MOVE C,[BYTE (2)0,0,0,0,0,0,0,0,0,0,0,0,0,2]
+	PUSHJ P,SFCC
+	HRROI B,[ASCIZ / [Old file]/]
+	TEST(NN,NVERF)
+	HRROI B,[ASCIZ / [Old version]/]
+	TEST(NE,NEWVF)		; Did we generate a new version?
+	HRROI B,[ASCIZ / [New version]/]
+	TEST(NE,NEWF)		; Did we generate a new file
+	HRROI B,[ASCIZ / [New file]/]
+	TEST(NN,NNAMF)
+	JRST ENDAL9
+	HRROI B,[ASCIZ / [OK]/]
+	TEST(NE,CFRMF)
+	HRROI B,[ASCIZ / [Confirm]/]
+ENDAL9:	TLNN F1,DIRSF!NAMSF!EXTSF!VERSF
+	PUSHJ P,TSTR		; Print it
+	PUSHJ P,SFCC0
+ENDAL3:	XCTUU [HLRZ A,1(E)]
+	TLNE E,777777
+	TLNE E,2
+	CAIN A,377777
+	JRST ENDAL2		; No input file
+	TEST(NN,CFRMF)
+	JRST ENDAL2		; Or no confirmation requested
+	MOVE B,[BYTE (2)1,1,1,1,1,1,1,2,1,2,2,2,2,2,1,1,1,0]
+	MOVE C,[BYTE (2)1,1,1,1,1,1,0,1,1,1,1,1,1,2]
+	PUSHJ P,SFCC
+	BIN			; Else read confirmation character
+	IDIVI B,=36/CCSIZE
+	LDB B,CPTAB(B+1)	; Get character class
+	CAIN B,6
+	JRST [	PUSHJ P,DELALL
+		JRST GTJF2]
+	CAIN B,4
+	JRST [	PUSHJ P,RETYPE	; And control-r
+		JRST ENDAL1]
+	CAIE B,7		; Terminator
+	CAIN B,10		; Or alt-mode
+	JRST ENDAL2		; Is ok
+	ERRLJF GJFX15		; Improper confirmation
+
+ENDAL2:	TEST(NE,PRTF)		; Do we have a protection?
+	PUSHJ P,@PLUKD(DEV)	; Insert it into the directory
+	TEST(NE,ACTF)		; Do we have an account string?
+	PUSHJ P,@ALUKD(DEV)	; Yes, insert it into the directory
+	MOVSI B,FDBTMP
+	TEST(NE,TMPFF)		; Is this file to be temp?
+	PUSHJ P,@SLUKD(DEV)
+	NOINT
+	MOVEI A,JSBFRE
+	SKIPLE B,FILACT(JFN)
+	PUSHJ P,RELFRE		; Release storage used to hold account
+	SKIPLE B,FILPRT(JFN)
+	PUSHJ P,RELFRE		; And protection
+	HRRZ B,FILTMP(JFN)
+	SKIPE B
+	PUSHJ P,RELFRE		; And temp
+	HLRZ B,FILTMP(JFN)
+	SKIPE B
+	PUSHJ P,RELFRE
+	FOR @' VAR IN (TMP,PRT,ACT,OPT,CNT),<
+	SETZM FIL'VAR(JFN)>
+	MOVE STS,FILSTS(JFN)
+	TEST(Z,ASGF)		; Clear assign flag
+	TEST(O,NAMEF)		; Set name attached flag
+	TEST(NE,NACCF)
+	TEST(O,FRKF)
+	MOVEM STS,FILSTS(JFN)
+	PUSHJ P,INFTST
+	JRST ENDAL5
+	POP P,A
+	POP P,B
+	SFMOD
+	POP P,C
+	POP P,B
+	SFCOC
+ENDAL5:	OKINT
+	SKIPRT			; Done, skip return
+	TEST(NE,ACTTF)
+	TEST(O,FXACT)
+	TEST(NE,TMPTF)
+	TEST(O,FXTMP)
+	TLNN F1,DIRSF!NAMSF!EXTSF!VERSF
+	 JRST ENDA51
+	HLL JFN,F1
+	AND JFN,[XWD DIRSF!NAMSF!EXTSF!VERSF!HVERF!LVERF!RVERF,-1]
+	TEST(NN,IGDLF)
+	 TLO JFN,(1B12)
+ENDA51:	UMOVEM JFN,1		; Return jfn to user
+	JRST MRETN		; And exit.
+
+ENDAL6:	MOVEI B,"."
+	TEST(ON,EXTFF)
+	TEST(NE,NREC)
+	JRST .+3
+	TEST(NN,NNAMF)
+	PUSHJ P,OUTCH
+	PUSHJ P,RECEXX
+	JRST [	PUSHJ P,DEFEXT
+		JRST ERRDO
+		JRST ENDAL4]
+	JRST [	PUSHJ P,DING
+		JRST GTJF2]
+	JRST ENDAL4
+
+; Star typed
+
+STAR:	MOVE C,FILCNT(JFN)
+	TEST(NE,ASTAF)
+	CAIE C,MAXLC		; Any characters typed?
+	ERRLJF GJFX31		; Illegal *
+	TEST(O,STARF)
+	POPJ P,
+
+; Set up temp string block for this jfn
+; Call:	JFN IN JFN
+;	JSYS SETTMP
+; Sets up filopt(jfn) and rh(filtmp(jfn)) and filcnt(jfn)
+; Clobbers a,b,c
+; Clears num
+
+SETTMP:	HRRZ A,FILTMP(JFN)	; Is block assigned?
+	JUMPN A,SETTM1		; Yes, use it
+	MOVEI A,JSBFRE
+	MOVEI B,MAXLW+1
+	NOINT
+	PUSHJ P,ASGFRE		; Assign a free storage area in psb
+	ERRLJF GJFX22		; No room
+	HRRM A,FILTMP(JFN)	; Save in tmpptr
+	OKINT
+SETTM1:	HRLI A,(<POINT 7,0>)
+	AOS A
+	MOVEM A,FILOPT(JFN)	; Set filopt(jfn)
+	MOVEI A,MAXLC
+	MOVEM A,FILCNT(JFN)
+	MOVEI NUM,0		; Clear number
+	TEST(Z,NEGF)
+	POPJ P,
+
+; Get character from string of file
+; Call:	PUSHJ P,GCH
+; Return
+;	+1	; No more input
+;	+2	; Ok, in a, the character
+; Clobbers b
+
+GCH:	TEST(NN,STRF)		; Does string exist?
+	JRST GCH1		; No, get from file
+	XCTUU [ILDB A,2]	; Get character increment byte ptr
+	JUMPN A,SKPRET		; Return if non-null
+	TEST(Z,STRF)		; No more string input
+GCH1:	XCTUU [HLRZ A,1(E)]
+	TLNE E,777777
+	TLNE E,2
+	CAIN A,377777		; Is there an input file?
+	POPJ P,			; No, error return
+	BIN			; Yes get a byte
+	MOVE A,B
+	AOS (P)
+	POPJ P,
+
+; Assign a jfn
+; Call:	PUSHJ P,ASGJFN
+; Return
+;	+1	; Error none available
+;	+2	; Ok, in jfn the jfn
+; Clobbers jfn
+
+ASGJFN:	MOVSI JFN,-NJFN
+	NOINT
+	LOCK JFNLCK
+	SKIPE FILSTS(JFN)	; Free jfns have zero filsts words
+	AOBJN JFN,.-1
+	JUMPGE JFN,ASGJF2	; None available
+	AOS (P)
+ASGJF1:	HRLI JFN,ASGF
+	HLLZM JFN,FILSTS(JFN)	; Mark this jfn as assigned
+	HRRZS JFN
+	HRRZ A,FORKN		; Get fork number
+	HRLZM A,FILVER(JFN)
+	SETZM FILTMP(JFN)
+	SETZM FILDDN(JFN)
+	SETZM FILNEN(JFN)
+	SETOM FILLCK(JFN)
+ASGJF2:	UNLOCK JFNLCK
+	OKINT
+	POPJ P,
+
+; Release jfn
+; Call:	IN JFN, JFN
+;	PUSHJ P,RELJFN
+; Clobbers a,b,c,d
+
+^RELJFN:NOINT
+	LOCK JFNLCK
+	SKIPN FILSTS(JFN)
+	JRST RELJF2		; Already released
+	MOVEI A,JSBFRE
+	HLRZ B,FILDDN(JFN)
+	SKIPE B
+	PUSHJ P,RELFRE		; Release device string block
+	HLRZ B,FILNEN(JFN)
+	SKIPE B
+	PUSHJ P,RELFRE		; Release name string block
+	HRRZ B,FILNEN(JFN)
+	SKIPE B
+	PUSHJ P,RELFRE		; Release extension string block
+	MOVE B,FILSTS(JFN)
+	TLNN B,ASGF		; Was this jfn being assigned?
+	JRST RELJF2		; No, skip the following
+	HRRZ B,FILTMP(JFN)
+	SKIPE B
+	PUSHJ P,RELFRE		; Release temp block
+	HLRZ B,FILTMP(JFN)
+	SKIPE B
+	PUSHJ P,RELFRE
+	MOVE B,FILPRT(JFN)
+	JUMPE B,RELJF1
+	TLNN B,777777
+	PUSHJ P,RELFRE		; Release space for protection block
+RELJF1:	MOVE B,FILACT(JFN)
+	JUMPE B,RELJF2
+	TLNN B,777777
+	PUSHJ P,RELFRE		; Release storage for account string
+RELJF2:	SETZM FILDDN(JFN)
+	SETZM FILNEN(JFN)
+	SETZM FILPRT(JFN)
+	SETZM FILACT(JFN)
+	SETZB STS,FILSTS(JFN)
+	SETOM FILLCK(JFN)
+	UNLOCK JFNLCK
+	OKINT
+	POPJ P,
+
+; Terminate string
+; Call:	FILOPT(JFN)	; Addresses last byte of string
+;	RH(FILTMP(JFN))	; Addresses beginning of string block
+;	PUSHJ P,ENDSTR
+; Returns with a null deposited on the end of the string and
+; In a, a pointer to the string as required by the recognition routines
+; Does not modify filopt(jfn), clobbers a,b
+
+^ENDSTR:MOVE A,FILOPT(JFN)
+	MOVEI B,0
+	IDPB B,A		; Append null to string
+	SUB A,FILTMP(JFN)
+	MOVNI A,-1(A)		; Number of full words instring
+	HRL A,FILTMP(JFN)
+	MOVSS A			; Yields iowd # fuul words, first word
+	POPJ P,
+
+; Trim temp storage block and return excess to free store pool
+; Call:	FILOPT(JFN)	; Addresses the last byte of the string
+;	RH(FILTMP(JFN))	; Addresses the beginning of the string block
+;	PUSHJ P,ENDTMP
+; Returns in a, origin of the string block
+; Deposits a null byte on the end of the string
+; Returns excess storage in the block to free storage pool
+; Clears rh(filtmp(jfn))
+; Clobbers a,b,c,d
+; Leaves psi off
+
+ENDTMP:	MOVEI B,0
+	IDPB B,FILOPT(JFN)	; Deposit a null on the end
+	HRRZ A,FILTMP(JFN)	; Origin of block
+	MOVE B,FILOPT(JFN)
+	PUSHJ P,TRMBLK		; Trim excess from the block
+	NOINT
+	HRRZ A,FILTMP(JFN)
+	HLLZS FILTMP(JFN)
+	POPJ P,
+
+; Trim excess from a block and return it to free storage
+; Call:	A		; Origin of the block
+;	RH(B)		; Last location in block used
+;	PUSHJ P,TRMBLK
+; Clobbers a,b,c,d
+
+^TRMBLK:MOVEI B,1(B)		; Loc of first unused word
+	HRRE C,(A)		; Original length of block
+	SUBI C,(B)
+	ADDI C,(A)		; Length of excess
+	JUMPLE C,CPOPJ		; No excess
+	NOINT
+	HRROM C,(B)		; Make residue into legit block
+	MOVNS C
+	ADDM C,(A)		; Shorten original block
+	MOVEI B,(B)
+	MOVEI A,JSBFRE
+	PUSHJ P,RELFRE		; Release the residue
+	OKINT
+	POPJ P,
+
+; I-o routines for local use
+; Call:	B		; Pointer to string to be typed
+;	PUSHJ P,TSTRB	; If b addresses a string block
+; Or
+;	PUSHJ P,TSTR	; If b address the first byte
+; Outputs the string to the file specified in the call to gtjfn
+; Clobbers a,b
+
+TSTRB:	ADD B,[XWD 777777,1]
+TSTR:	XCTUU [HRRZ A,1(E)]
+	TLNE E,777777
+	TLNE E,2
+	CAIN A,377777
+	POPJ P,
+	MOVEI C,0
+	SOUT
+	POPJ P,
+
+; Ding the bell
+; Call:	PUSHJ P,DING
+
+DING:	XCTUU [HLRZ A,1(E)]
+	TLNE E,777777
+	TLNE E,2
+	CAIN A,377777
+	POPJ P,
+	MOVEI B,7		; Fall into outch to type a bell
+
+; Output character
+; Call:	B		; The character right justified
+;	PUSHJ P,OUTCH
+; Outputs the character on the file specified in the call to gtjfn
+; Clobbers a
+
+OUTCH:	XCTUU [HRRZ A,1(E)]
+	TLNE E,777777
+	TLNE E,2
+	CAIN A,377777
+	POPJ P,
+	BOUT
+	POPJ P,
+
+INFTST:	XCTUU [HLRZ A,1(E)]
+	TLNE E,777777
+	TLNE E,2
+	CAIN A,377777
+	POPJ P,
+	JRST SKPRET
+
+SFCC0:	MOVE B,[BYTE (2)1,0,1,1,1,1,0,2,1,0,0,1,0,0,1,1,1,1]
+	MOVE C,[BYTE (2)0,1,1,1,0,0,0,1,1,0,1,1,1,0]
+SFCC:	PUSHJ P,INFTST
+	POPJ P,
+	SFCOC
+	POPJ P,
+
+; Output number
+; Call:	B		; The number
+;	PUSHJ P,DNOUT	; For decimal output
+; Or
+;	PUSHJ P,ONOUT	; For octal output
+; Clobbers a,c
+
+DNOUT:	SKIPA C,[12]
+ONOUT:	MOVEI C,10
+	XCTUU [HRRZ A,1(E)]
+	TLNE E,777777
+	TLNE E,2
+	CAIN A,377777
+	POPJ P,
+	NOUT
+	POPJ P,
+	POPJ P,
+
+; Process errors during gtjfn
+; Call:	A	; Error number
+;	JRST ERRDO
+
+ERRDO:	MOVEM A,LSTERR
+	PUSHJ P,RELJFN
+	MOVE A,LSTERR
+	UMOVEM A,1
+	PUSHJ P,INFTST
+	JRST MRETN
+	MOVE A,MPP
+	ADD A,[XWD 4,4]
+	MOVE P,A
+	POP P,A
+	POP P,B
+	SFMOD
+	POP P,C
+	POP P,B
+	SFCOC
+	JRST MRETN
+
+; Get next jfn
+; Call:	LH(1)	; Flags dirsf...hverf
+;	RH(1)	; Jfn
+;	GNJFN
+; Returns
+;	+1	; Error, jfn not attached to name, no more names
+;	+2	; Ok, the jfn refers to the next file in the directory
+
+^.GNJFN:JSYS MENTR
+	HRRZ JFN,1
+	PUSHJ P,CHKJFN
+	ERR()
+	JFCL
+	ERR(DESX4)
+	TEST(NN,OPENF)
+	JRST GNJFN1
+	ERUNLK(OPNX1)
+
+GNJFN1:	SETZM FILTMP(JFN)
+	SETZM FILPRT(JFN)
+	SETZM FILACT(JFN)
+	SETZM FILOPT(JFN)
+	XCTUU [HLLZ F1,1]
+	UMOVE A,1
+	TLZ A,(37B16)
+	HRRZ A,FILVER(JFN)
+	TEST(O,STEPF)
+	MOVSI F,IGDLF
+	TEST(O,OLDNF)
+	TEST(NE,HVERF)
+	MOVNI A,1
+	TEST(NE,RVERF)
+	MOVNI A,0
+	TEST(NE,LVERF)
+	MOVNI A,2
+	TLNE F1,DIRSF!NAMSF!EXTSF!VERSF
+	PUSHJ P,VERLUK
+	ERR(,<PUSHJ P,RELJFN>)
+	HRRM A,FILVER(JFN)
+	HRRZ A,NLUKD(DEV)
+	CAIE A,MDDNAM
+	 JRST [	SETZ A,
+		JRST GNJFN2]	; NOT FDB FOR NON-MDD DEVICES
+	PUSHJ P,GETFDB
+	 JRST GNJFN1
+	PUSH P,A
+	HRLI A,10000
+	PUSHJ P,ACCCHK
+	 JRST [	UNLOCK DIRLCK
+		OKINT
+		POP P,A
+		JRST GNJFN1]
+	MOVSI A,READF
+	PUSHJ P,DIRCHK
+	 JRST [	UNLOCK DIRLCK
+		OKINT
+		POP P,A
+		JRST GNJFN1]
+	POP P,A
+	MOVE A,FDBCTL(A)
+	UNLOCK DIRLCK
+	OKINT
+GNJFN2:	UMOVE B,1
+	TLNN B,(1B12)
+	TLNN A,FDBDEL
+	 JRST [	TLNN B,(1B13)
+		TLNE A,FDBDEL
+		 JRST GNJFN1
+		JRST .+1]
+	PUSHJ P,UNLCKF
+	SETZ A,
+	TEST(NE,DIRXF)
+	TLO A,(1B14)
+	TEST(NE,NAMXF)
+	TLO A,(1B15)
+	TEST(NE,EXTXF)
+	TLO A,(1B16)
+	XCTUU [HLLM A,1]
+	JRST SKMRTN
+
+	BENDP	GTJFN
+                                                                                                     

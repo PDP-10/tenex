@@ -1,0 +1,3378 @@
+
+	BEGINP	JSYS		R.S.Tomlinson	 19 November 1971 1600:
+
+USE SWAPPC
+
+^WHEEL__400000
+^OPR__200000
+^LOG__040000
+
+EXTERN	NXTDMP	; Zero to dump open files
+EXTERN	MAPFKH	; Maps over a fork handle
+EXTERN	SKIIFA	; Skips if fork(a) < fork(b)
+EXTERN	ACCTPT	; Login accoutn string pointer or number
+EXTERN	ACCTSR	; Account string storage
+EXTERN	LOGONM	; Dlm's logon message typer
+EXTERN	LOGCJM	; Type change job number on logtty
+EXTERN	JOBRT	; Job runtime table
+EXTERN	CONSTO	; Console time on word
+EXTERN	MJRSTF	; Thing to execute to leave fast jsys code
+LS(FACTSW)	; Fact switches
+JS(ACCTSL)
+EXTERN	JOBDIR
+EXTERN	NJOBS
+EXTERN	NTTYS	; Number of ttys (not ptys)
+EXTERN	TODCLK	; Time since system start in msec
+EXTERN	SKIIF	; Skip if forkn in a is inferior or equal to self
+JS(MODES)	; Ddbmod word from login
+JS(GROUPS)	; Groups to which login user belongs
+EXTERN	TTBKPT	; Routine to backup tty pointer one character
+EXTERN	JOBPMF	; Jfn of pmf
+EXTERN	MRPT	; Read page table
+EXTERN	SETPT	; Map manipulator routine
+EXTERN	MSPACS	; Set access of a page
+EXTERN	FKHPTN	; Converts fork handle to ptn
+EXTERN	PTNFKH	; Converts ptn to fork handle
+EXTERN	SETLFK,DELOFN
+EXTERN	TTCIBF,TTCOBF,TTSIBE,TTDIBE,TTSOBE,TTSOBF,TTDOBE,TTGTBS,TTSTBS
+EXTERN	TTRMOD,TTSMOD,TTRPOS,TTSPOS,TTRCOC,TTSCOC,TTSTI,TTILIN,TTSOBF
+EXTERN	SYSIFG,LOGBUF	; Logging stuff
+EXTERN	SYSFK	; Table of job forks
+EXTERN	NORMTF,TTICB1,TTICB2,TAB81,TAB82	;TTY MODES
+
+; Entries to this section
+
+INTERN	BOUTA,NOUTXX,CHKTTM,JFNDCR
+INTERN	.GDSTS,.SDSTS
+INTERN	.OPENF,.CLOSF,.RLJFN,.GTSTS,.STSTS,.DELF,.SFPTR,.RFPTR
+INTERN	.DELDF,.CLZFF,.RESET
+INTERN	.JFNS,.RNAMF,.SIZEF,.GACTF,.SACTF,.BKJFN,.RFBSZ,.SFBSZ,.SWJFN
+INTERN	.STDIR,.DIRST,.PMAP,.RPACS,.SPACS,.RMAP,.FFFFP,.FFUFP,.FDFRE
+INTERN	.GTFDB,.CHFDB
+INTERN	.ASND,.RELD,.CSYNO
+INTERN	.DVCHR,.STDEV,.DEVST,.MOUNT,.DSMNT
+INTERN	.INIDR,.RDDIR,.MTOPR,.CRDIR,.GTDIR
+INTERN	.CFIBF,.CFOBF,.SIBE,.SOBE,.DIBE,.DOBE,.GTABS,.STABS
+INTERN	.RFPOS,.SFPOS,.RFCOC,.SFCOC,.STI,.SOBF
+INTERN		.RFMOD,.SFMOD,.ERSTR,.GETER,.STAD,.GTAD
+INTERN	.LOGIN,.CNDIR,.CACCT,.EFACT,.SMON,.TMON
+INTERN	.CRJOB,DELDEL,PASSWC
+
+; Error macro definitions
+
+DEFINE	ERUNLK(ERRORN,EXTRA)<
+JRST [	EXTRA
+	IFDIF <ERRORN>,<>,<MOVEI A,ERRORN>
+	JRST ERUNLD]>
+
+DEFINE	ERR(ERRORN,EXTRA)<
+JRST [	EXTRA
+	IFDIF <ERRORN>,<>,<MOVEI A,ERRORN>
+	JRST ERRD]>
+
+DEFINE	ERABRT(ERRORN,EXTRA)<
+JRST [	EXTRA
+	IFDIF <ERRORN>,<>,<MOVEI A,ERRORN>
+	JRST ERABRD]>
+
+^ERUNLD:PUSH P,A
+	MOVEM A,LSTERR
+	PUSHJ P,UNLCKF
+	XCTMU [POP P,1]
+	JRST MRETN
+
+^ERRD:	UMOVEM A,1
+	MOVEM A,LSTERR
+	JRST MRETN
+
+ERABRD:	MOVEM A,LSTERR
+	JRST ITRAP
+
+DEFINE	NIY'(X)<
+^.'X:	JSYS MENTR
+	JSP A,NIYET
+	ASCIZ /X/>
+
+FOR A IN (CRJOB,CSYNO),<
+	NIY(A)>
+
+^NIYET:	PUSH P,A
+	HRROI B,[ASCIZ /
+JSYS /]
+	MOVEI A,101
+	MOVEI C,0
+	SOUT
+	POP P,B
+	HRLI B,777777
+	SOUT
+	HRROI B,[ASCIZ / IS NOT IMPLEMENTED YET./]
+	SOUT
+	JRST ITRAP
+
+; Open a file
+; Call:	1	; Job file number
+;	2(0-5)	; Byte size
+;	2(6-9)	; Data mode
+;	RH(2)	; Access flags (see jsys manual or filsts description)
+;	OPENF
+; Return
+;	+1	; Cannot open file, error code in 1
+;	+2	; Successful
+
+^.OPENF:JSYS MENTR		; Become slow, save ac's
+	PUSH P,2
+	MOVE JFN,1		; Get jfn
+	PUSHJ P,CHKJFN		; What kind of designator is this?
+	ERR()			; Garbage designator
+	JFCL
+	JRST [	POP P,2		; Tty and byte pointer are always good
+		JRST OPENFZ]
+	TEST(NE,OPENF)
+	ERUNLK OPNX1		; Already open
+	MOVE B,(P)
+		; Get access bits
+	LDB A,[POINT 6,B,5]	; Get byte size
+	CAILE A,=36
+	ERUNLK SFBSX2
+	DPB A,PBYTSZ		; Store as byte size of pointer
+	LDB A,[POINT 4,B,9]	; Get data mode
+	HRRM A,FILSTS(JFN)
+	HRR STS,A
+	ANDCM STS,[XWD READF!WRTF!XCTF!RNDF!ASPF!CALLF!LONGF!EOFF!ERRF!HLTF!WNDF!ENDF!SIZF,777760]
+	ANDI B,774000		; Ignore bits user cant set
+	TRZE B,400000		; Bit 18 = 1?
+	TRO B,HLTF		; Yes, move it down to hltf
+	TLO STS,(B)		; Put user's bits into sts
+	POP P,B
+	ANDI B,17B28
+	IORI STS,(B)
+	MOVE A,CAPENB
+	TRNN  A,OPR!WHEEL	; Have operator or wheel status?
+	TRNN STS,1B27		; Or is he not trying to cheat
+	JRST .+2
+	ERUNLK OPNX11		; Illegal
+	SETZM FILCNT(JFN)
+	PUSHJ P,@OPEND(DEV)	; Call the device dependent routine
+	JRST OPENR		; Cannot open
+	TEST(O,OPENF)		; Success
+	MOVSI B,1
+	HLLM B,FILLFW(JFN)
+OPENFZ:	SKIPRT
+	PUSHJ P,UNLCKF
+	JRST MRETN
+
+OPENR:	CAIE A,OPNX9
+	ERUNLK()
+	HRRZ B,DEV
+IFDEF LPTN,<	CAIN B,LPTDTB
+	TRO STS,1B26>
+	TRNN STS,1B28
+	TRNN STS,1B26
+	ERUNLK()
+	PUSHJ P,UNLCKF
+	SETZM INTDF
+	XCT INTDFF
+	MOVEI A,"["
+	PBOUT
+	MOVEI A,101
+	UMOVE B,1
+	MOVEI C,0
+	JFNS
+	HRROI A,[ASCIZ / Busy-/]
+	PSOUT
+OPENR1:	MOVEI A,=3000
+	DISMS
+	UMOVE A,A
+	UMOVE 2,2
+	TRO B,1B28
+	JSYS 21
+	JRST OPENR1
+	UMOVEM 1,1
+	HRROI 1,[ASCIZ /Go]
+/]
+	PSOUT
+	JRST SKMRTN
+
+; Close a file
+; Call:	RH(1)	; Jfn
+;	1(0)	; If 1 do not release jfn
+;	CLOSF
+; Returns
+;	+1	; Cannot close
+;	+2	; Ok
+
+^.CLOSF:JSYS MENTR
+	CAMN 1,[-1]		; -1 means all
+	JRST CLZALL
+	HRRZ JFN,1
+	PUSHJ P,CLZF
+	ERR()			; Can't close, reason in a
+	XCTUU [SKIPL 1]		; Don't release jfn
+	TEST(NE,OPENF)		; Or still open?
+	JRST SKMRTN		; Yes. all done.
+	PUSHJ P,RELJFN		; No, release jfn.
+	JRST SKMRTN
+
+CLZALL:	MOVE A,[XWD (1B2),400000]
+	CLZFF
+	JRST SKMRTN
+
+^CLZF:	MOVEI A,CLSX2
+	HRRZ B,PRIMRY
+	CAME JFN,JOBPMF
+	CAMN JFN,B
+	POPJ P,
+	HLRZ B,PRIMRY
+	CAME JFN,B
+	PUSHJ P,CHKJFN
+	POPJ P,			; Garbage
+	JFCL
+	JRST SKPRET		; Byte and tty always succeeds
+	TEST(NN,OPENF)
+	JRST [	MOVEI A,CLSX1
+		JRST UNLCKF]
+	MOVSI B,1
+	ANDCAB B,FILLFW(JFN)
+	TLNE B,777777
+	JRST CLZF2
+	PUSHJ P,@CLOSD(DEV)	; Call device dependent stuff
+	JRST UNLCKF
+	TEST(Z,OPENF)
+CLZF2:	AOS (P)
+	JRST UNLCKF
+
+; Release jfn
+; Call:	1	; Jfn
+;	RLJFN
+; Returns
+;	+1	; Error
+;	+2	; Success
+; Cannot release jfn if being assigned unless this same process as
+; Assigner, and not at interrupt level
+
+^.RLJFN:JSYS MENTR
+	CAMN 1,[-1]		; Release all
+	JRST RLALL
+	HRRZ JFN,1
+	PUSHJ P,RLJF
+	ERR()
+	SKIPRT
+	JRST MRETN
+
+RLALL:	MOVSI JFN,-NJFN
+RLAL1:	PUSHJ P,RLJF
+	JFCL			; Ignore errors
+	AOBJN JFN,RLAL1
+	SKIPRT
+	JRST MRETN
+
+RLJF:	PUSH P,JFN
+	HRRZS JFN
+	PUSHJ P,CHKJFN
+	JRST RLJF1		; Garbage jfn
+	JFCL
+	JRST [	MOVEI A,DESX4	; Tty or byte illegal
+		JRST RLJF3]
+	TEST(NE,OPENF)
+	JRST [	MOVEI A,OPNX1	; File is open
+		JRST RLJF4]
+RLJF2:	PUSHJ P,RELJFN		; Finally we can release it
+	AOSA -1(P)
+RLJF4:	PUSHJ P,UNLCKF
+RLJF3:	POP P,JFN
+	POPJ P,
+
+RLJF1:	CAIE A,DESX3		; Is no name attached to this jfn?
+	JRST RLJF3		; Some other error
+	HLRZ B,FILVER(JFN)	; Get fork number of originator
+	SKIPGE SYSFK(B)		; Fork still exists?
+	JRST RLJF2		; No, ok to release
+	CAME B,FORKN		; Is it me?
+	JRST RLJF3		; No
+	SKIPE PSIBIP		; Test if pi in progress
+	JRST RLJF3		; Yes
+	JRST RLJF2		; No pi in progress, ok to release
+
+; Close files given fork handle
+; Call:	RH(1)	; Fork handle
+;	B0(1)	; Not below the fork(s) specified
+;	B1(1)	; Not at the fork(s) specified
+;	B2(1)	; Close only (no release)
+;	B3(1)	; Release only (no close)
+;	B4(1)	; Unrestrict file
+;	B5(1)	; Close regardless of map count
+;	CLZFF
+; Return
+;	+1	; Always
+; Traps if fork handle is bad
+
+^.CLZFF:JSYS MENTR
+	HRRZS A
+	PUSHJ P,MAPFKH		; Call routine to map over the fork hdl
+	PUSHJ P,CLZFF1		; Call this for each fork
+	JRST MRETN
+
+CLZFF1:	MOVSI JFN,-NJFN
+CLZFF2:	HLRZ B,PRIMRY
+	CAIN B,(JFN)
+	JRST CLZFF3		; Don't affect primary files
+	HRRZ B,PRIMRY
+	CAIN B,(JFN)
+	JRST CLZFF3
+	MOVE B,JOBPMF
+	CAIN B,(JFN)
+	JRST CLZFF3		; Or pmf
+	PUSH P,JFN
+	PUSH P,1
+	HRRZS JFN
+	PUSHJ P,CHKJFN		; See if this jfn is in use
+	JRST CLZFF8		; No name check for asgf
+	JRST CLZFF4		; Should not happen
+	JRST CLZFF4
+	MOVSI B,777777
+	TEST(NE,OPENF)		; If file is open
+	TDNE B,FILLFW(JFN)	; And map count is zero
+	SKIPA
+	JRST CLZFF5		; Then it's ok to close it
+	HLRZ B,FILVER(JFN)
+	MOVE A,(P)
+	CAMN B,A		; Was this jfn created by this fork
+	JRST [	UMOVE C,1
+		TLNE C,(1B1)	; Are we to close files at the fork?
+		JRST CLZFF7	; No, skip this jfn
+		JRST CLZFF5]	; Yes, do it
+	EXCH A,B
+	PUSHJ P,SKIIFA		; Skip if fork(a) < fork(b)
+	JRST CLZFF7
+
+CLZFF5:	UMOVE C,1
+	TLNE C,(1B4)		; Un restrict this file?
+	TEST(Z,FRKF)		; Yes
+	TEST(NE,OPENF)
+	TLNE C,(1B3)
+	JRST CLZFF6
+	MOVSI B,1
+	ANDCAB B,FILLFW(JFN)
+	TLNN C,(1B5)
+	TLNN B,777777
+	PUSHJ P,@CLOSD(DEV)
+	JRST CLZFF7
+	TEST(Z,OPENF)
+CLZFF6:	UMOVE C,1
+	TEST(NN,OPENF)
+	TLNE C,(1B2)
+	JRST CLZFF7
+CLZFF9:	PUSHJ P,RELJFN
+	JRST CLZFF4
+
+CLZFF7:	PUSHJ P,UNLCKF
+CLZFF4:	POP P,1
+	POP P,JFN
+CLZFF3:	AOBJN JFN,CLZFF2
+	POPJ P,
+
+CLZFF8:	CAIE A,DESX3
+	JRST CLZFF4		; ??
+	HLRZ B,FILVER(JFN)
+	SKIPGE SYSFK(B)
+	JRST CLZFF9
+	CAME B,FORKN
+	JRST CLZFF4
+	SKIPE PSIBIP
+	JRST CLZFF4
+	JRST CLZFF9
+
+; Reset jsys
+; Call:	RESET
+; Closes all files, resets tty status etc
+
+^.RESET:JSYS MENTR
+	MOVNI A,4
+	KFORK			; Kill all inferior forks
+	MOVEI A,101
+	RFMOD
+	AND B,[1B1!1B2!1B3!1B26!1B27!3B33]	;KEEP HDWR,  LINK AND DUPLEX MODES
+	IOR B,NORMTF		;NORMAL MODES
+	SFMOD
+	MOVE 6,B
+	MOVE B,TTICB1
+	MOVE C,TTICB2		;NORMAL CC MODES
+	TLNE 6,(1B2)
+	TRZ B,200000
+	TLNE 6,(1B1)
+	TRZ B,002000
+	SFCOC
+	MOVE B,TAB81		;8 CHARS/TAB
+	MOVE C,TAB82
+	MOVE D,B
+	STABS
+	MOVEI A,400000
+	CIS
+	DIR
+	MOVNI 2,1
+	DIC
+	MOVEI 1,400000
+	CLZFF
+	JRST MRETN
+
+; Get open file status
+; Call:	1	; Jfn
+;	GTSTS
+; Return
+;	+1
+;	1	; Status word as in filsts
+
+^.GTSTS:NOINT
+	JUMPL 1,GTST1
+	CAIGE 1,NJFN
+	AOSE FILLCK(1)
+	JRST GTST1
+	EXCH 2,FILSTS(1)
+	TLNN 2,NAMEF
+	JRST [	MOVEM 2,FILSTS(1)
+		SETZ 2,
+		JRST GTST0]
+	MOVEM 2,FILSTS(1)
+GTST0:	SETOM FILLCK(1)
+	OKINT
+	XCT MJRSTF
+
+GTST1:	OKINT
+	JSYS MENTR
+	MOVE JFN,1
+	PUSHJ P,CHKJFN
+	JRST GTSTS1		; Illegal, return 0
+	JRST GTSTS2		; Illegal, return 0
+	JRST GTSTS2		; Illegal, return 0
+	PUSHJ P,UNLCKF
+	UMOVEM STS,2
+	JRST MRETN
+
+GTSTS2:	PUSHJ P,UNLCKF
+GTSTS1:	XCTUU [SETZM 2]
+	JRST MRETN
+
+; Set status
+; Call:	1	; Jfn
+;	2	; New status
+;	STSTS
+; Returns
+;	+1	; Erro2
+;	+2	; Ok (only errf, hltf, and frkf can be changed)
+
+^.STSTS:JSYS MENTR
+	MOVE JFN,1
+	PUSHJ P,CHKJFN
+	ERR()			; Bad jfn
+	JFCL
+	ERR(DESX4)		; Tty and byte bad
+	UMOVE A,2		; Get new status
+	ANDCA A,[XWD ERRF!HLTF!FRKF,0]
+	TDZ STS,A
+	PUSHJ P,UNLCKF
+	JRST SKMRTN
+
+; Get device status
+; Call:	1	; Jfn
+;	GDSTS
+; Returns
+;	+1	; Error
+;	+2	; Ok
+
+^.GDSTS:JSYS MENTR
+	MOVE JFN,1
+	PUSHJ P,CHKJFN
+	ERABRT()
+	JFCL
+	ERABRT(DESX4)
+	MOVE A,STS
+	ANDI A,17
+	PUSHJ P,@GDSTD(DEV)
+	UMOVEM A,2
+	JRST UNL
+
+; Set device status
+; Call:	1	; Jfn
+;	SDSTS
+; Returns
+;	+1	; Always unless traps
+
+^.SDSTS:JSYS MENTR
+	MOVE JFN,1
+	PUSHJ P,CHKJFN
+	ERABRT()
+	JFCL
+	ERABRT(DESX4)
+	UMOVE A,2
+	PUSHJ P,@SDSTD(DEV)
+	JRST UNL
+
+; Delete file
+; Call:	1	; Jfn
+;	DELF
+; Return
+;	+1	; Error, cannot delete
+;	+2	; Success
+
+^.DELF:	JSYS MENTR		; Become slow
+	HRRZ JFN,1
+	PUSHJ P,CHKJFN		; Check it out
+	JRST GBGJFN
+	JFCL
+	ERUNLK DESX4		; Tty or byte illegal
+	PUSHJ P,@DELD(DEV)	; Call device dependent routine
+	ERUNLK()		; Couldn't delete
+	UMOVE A,1
+	TLNE A,777777
+	JRST DELF1
+	TEST(NN,OPENF)
+	JRST [	PUSHJ P,RELJFN
+		JRST SKMRTN]
+DELF1:	PUSHJ P,UNLCKF
+	JRST SKMRTN
+
+; Rename file
+; Call:	1	; Jfn 1
+;	2	; Jfn 2
+;	RNAMF
+; Return
+;	+1	; Error
+;	+2	; Ok
+
+^.RNAMF:JSYS MENTR
+	CAMN 1,2
+	JRST SKMRTN
+	MOVE JFN,1
+	PUSHJ P,CHKJFN
+	ERR()
+	JFCL
+	ERR(DESX4)		; Cannot rename tty or byte
+	TEST(NE,OPENF)
+	ERUNLK(OPNX1)		; File must not be open
+	PUSH P,JFN
+	PUSH P,DEV
+	UMOVE JFN,2
+	PUSHJ P,CHKJFN		; Check the second jfn
+	ERUNLK(,<POP P,DEV
+		POP P,JFN>)
+	JFCL
+	ERUNLK(DESX4,<POP P,DEV
+		POP P,JFN>)
+	TEST(NE,OPENF)
+	ERUNLK(OPNX1,<PUSHJ P,UNLCKF
+		POP P,DEV
+		POP P,JFN>)
+	POP P,A
+	CAME A,DEV		; Can only rename on the same device
+	ERUNLK(RNAMX1,<PUSHJ P,UNLCKF
+		POP P,JFN>)
+	MOVE A,(P)
+	PUSH P,JFN
+	PUSHJ P,@REND(DEV)
+	ERUNLK(,<POP P,JFN
+		PUSHJ P,UNLCKF
+		POP P,JFN>)
+	POP P,JFN
+	PUSHJ P,UNLCKF
+	POP P,JFN
+	PUSHJ P,RELJFN
+	AOS (P)
+	JRST MRETN
+
+; Convert jfn to string
+; Call:	1	; Jfn
+;	2	; String pointer
+;	3	; Format specification (see jsys manual)
+
+^.JFNS:	JSYS MENTR
+	HRRZ JFN,2
+	PUSHJ P,CHKJFN
+	ERABRT()
+	JFCL
+	ERABRT(DESX4)
+	PUSHJ P,UNLCKF
+	UMOVE A,1
+	TLNN A,777777
+	 JRST JFNSZ		; Not byte pointer
+	TLC A,777777
+	TLCN A,777777
+	 HRLI A,440700		; -1 in lh, fill in
+	SETZ B,
+	XCTMU [IDPB B,A]	; Deposit initial null in case
+JFNSZ:	XCTUM [HLLZ F1,2]
+	XCTUU [SKIPN E,3]
+	MOVE E,[BYTE (3)2,2,1,1,2,0,0(1)1(4)0(5)0,11]
+	HLRZ A,FILDDN(JFN)	; Get pointer to device block
+	MOVN B,(A)
+	HRLI A,-2(B)
+	PUSHJ P,DEVLUK
+	MOVEI A,0
+	TLNE A,(1B2)
+	TROA E,100
+	TRZ E,100
+	TLNE A,(1B4)
+	TROA E,200
+	TRZ E,200
+	HLRZ A,FILDDN(JFN)
+	MOVE C,1(A)		; The first word of the device name
+	ANDCMI C,377		; Get rid of low byte
+	LDB D,[POINT 3,E,2]	; Get format control byte for device
+	PUSHJ P,TAB4
+	CAIN D,2		; If it is suppress system default
+	CAME C,[ASCIZ /DSK/]	; And the device is dsk, then skip
+	CAIN D,0		; Or if control is "no print"
+	JRST JFNS0		; Don't print
+	PUSHJ P,JFNSS		; Output the string in a
+	MOVEI B,":"
+	PUSHJ P,PUNCT
+JFNS0:	HRRZ A,FILDDN(JFN)	; Get directory number
+	LDB D,[POINT 3,E,5]	; And format control
+	PUSHJ P,TAB4		; Tab before field if desired
+	TEST(NE,DIRSF)
+	JRST JFNS0A
+	CAIN D,2		; If suppressing default,
+	CAME A,JOBDNO		; And it is default
+
+JFNS0A:	CAIN D,0		; Or if no print is wanted
+	JRST JFNS1		; Then don't print
+	MOVEI B,"<"
+	PUSHJ P,PUNCT		; Print punctuation if desired
+	TEST(NE,DIRSF)
+	JRST [	PUSHJ P,JFSTAR
+		JRST JFNS0B]
+	HRRZ A,FILDDN(JFN)
+	PUSHJ P,GDIRST		; Get string for this number
+	BUG(HLT,<JFNS: GDIRST CANNOT FIND STRING FOR DIRECTORY.>)
+	UNLOCK DIRLCK
+	PUSHJ P,JFNSS		; Copy string to output
+	OKINT
+JFNS0B:	MOVEI B,">"
+	PUSHJ P,PUNCT		; And output terminating punct
+
+JFNS1:	HLRZ A,FILNEN(JFN)	; Get location of file name block
+	LDB D,[POINT 3,E,8]	; And output control
+	PUSHJ P,TAB4		; Tab before field if required
+	JUMPE D,JFNS2		; No print wanted
+	TEST(NE,NAMSF)
+	JRST [	PUSHJ P,JFSTAR
+		JRST JFNS2]
+	PUSHJ P,JFNSS		; Copy string to output
+JFNS2:	HRRZ A,FILNEN(JFN)	; Get location of extension block
+	LDB D,[POINT 3,E,11]	; And output control
+	PUSHJ P,TAB4		; Tab before field if required
+	JUMPE D,JFNS3		; No print wanted
+	MOVEI B,"."
+	TRNE E,100
+	PUSHJ P,PUNCT		; Output punctuation if desired
+	TEST(NE,EXTSF)
+	JRST [	PUSHJ P,JFSTAR
+		JRST JFNS3]
+	PUSHJ P,JFNSS		; Copy to output
+JFNS3:	HRRZ A,FILVER(JFN)	; Get version number
+	LDB D,[POINT 3,E,14]	; And output control
+	PUSHJ P,TAB4		; Tab before field if required
+	JUMPE D,JFNS4		; No print wanted
+	TRNN E,200
+	JRST JFNS4
+	MOVEI B,";"
+	PUSHJ P,PUNCT
+	MOVE B,A
+	MOVEI C,12
+	TEST(NE,VERSF)
+	JRST [	PUSHJ P,JFSTAR
+		JRST MRETN]
+	TEST(NE,RVERF)
+	MOVNI B,0
+	TEST(NE,HVERF)
+	MOVNI B,1
+	TEST(NE,LVERF)
+	MOVNI B,2
+	PUSHJ P,NOUTXX
+
+JFNS4:	HRRZ A,NLUKD(DEV)
+	CAIN A,MDDNAM
+	PUSHJ P,GETFDB		; Get a pointer to the fdb
+	JRST MRETN
+	UNLOCK DIRLCK		; Unlock directory
+	PUSH P,A
+	LDB D,[POINT 3,E,17]
+	PUSHJ P,TAB4
+	MOVE B,FDBPRT(A)	; File protection word
+	CAIN D,2
+	CAME B,DIRDPW
+	CAIN D,0
+	JRST JFNS5
+	PUSH P,B
+	MOVEI B,";"
+	PUSHJ P,PUNCT
+	MOVEI B,"P"
+	PUSHJ P,PUNCT
+	POP P,A
+	MOVEI C,10
+	PUSHJ P,JFNSN
+
+JFNS5:	LDB D,[POINT 3,E,20]
+	PUSHJ P,TAB4
+	JUMPE D,JFNS6
+	MOVEI B,";"
+	PUSHJ P,PUNCT
+	MOVEI B,"A"
+	PUSHJ P,PUNCT
+	MOVE A,(P)
+	MOVE A,FDBACT(A)
+	MOVEI C,=10
+	TLNN A,777777
+	ADDI A,DIRORG+1
+	PUSHJ P,JFNSN
+JFNS6:	MOVE A,(P)
+	LDB D,[POINT 1,E,21]
+	PUSHJ P,TAB4
+	MOVE B,FDBCTL(A)
+	TLNE B,FDBTMP
+	CAIN D,0
+	JRST JFNS7
+	MOVEI B,";"
+	PUSHJ P,PUNCT
+	MOVEI B,"T"
+	PUSHJ P,BOUTA
+JFNS7:	LDB D,[POINT 1,E,22]
+	PUSHJ P,JFNCOM
+	PUSHJ P,TAB4
+	JUMPE D,JFNS8
+	MOVE A,(P)
+	LDB B,PFILPC
+	MOVEI C,=10
+	PUSHJ P,NOUTXX
+
+JFNS8:	MOVE A,(P)
+	MOVE B,FDBCRV(A)
+	TRNE E,1B23
+	PUSHJ P,JFNDAT
+	PUSHJ P,TAB4
+	MOVE B,FDBWRT(A)
+	TRNE E,1B24
+	PUSHJ P,JFNDAT
+	PUSHJ P,TAB4
+	MOVE B,FDBREF(A)
+	TRNE E,1B25
+	PUSHJ P,JFNDAT
+	JFCL
+	JRST MRETN
+
+JFNSN:	JUMPG A,JFNSS		; Copy to output
+	MOVE B,A
+	TLZ B,700000
+NOUTXX:	PUSH P,JFN
+	PUSH P,DEV
+	PUSH P,STS
+	PUSH P,F1
+	PUSH P,E
+	PUSH P,D
+	PUSH P,F
+	PUSH P,C
+	PUSH P,B
+	PUSHJ P,NOUTX
+	JFCL
+	POP P,B
+	POP P,C
+	POP P,F
+	POP P,D
+	POP P,E
+	POP P,F1
+	POP P,STS
+	POP P,DEV
+	POP P,JFN
+	POPJ P,
+
+JFNDAT:	PUSH P,B
+	MOVEI D,1
+	PUSHJ P,JFNCOM
+	PUSHJ P,TAB4
+	POP P,B
+	MOVEI C,10
+	AOS (P)
+	JRST NOUTXX
+
+JFNCOM:	MOVEI B,","
+	CAIE D,0
+	TRNN E,10
+	POPJ P,
+	JRST BOUTA
+
+JFSTAR:	MOVEI B,"*"
+	JRST BOUTA
+
+PUNCT:	TRNE E,1
+	JRST BOUTA
+	POPJ P,
+
+TAB4:	MOVEI B,11
+	TRNE E,2
+	CAIG D,0
+	TRNE E,4
+	TRON E,40
+	POPJ P,
+BOUTA:	JRST BOUTN
+
+JFNSS:	MOVE C,A
+	HRLI C,(<POINT 7,0,35>)
+JFNSS1:	ILDB B,C
+	JUMPE B,CPOPJ
+	PUSHJ P,BOUTA
+	JRST JFNSS1
+
+; Get size of file
+; Call:	1	; Jfn
+;	SIZEF
+; Return
+;	+1	; Error, cannot get size of file
+;	+2	; Success
+;	1	; Size in bytes
+;	2	; Size in pages
+
+^.SIZEF:JSYS MENTR
+	MOVE JFN,1
+	PUSHJ P,CHKJFN
+	JRST GBGJFN
+	JFCL
+	ERUNLK DESX4
+	HRRZ B,DEV		; Get dispatch address
+	MOVEI A,DESX7
+	CAIE B,DSKDTB
+	ERUNLK()
+	PUSHJ P,GETFDB		; Get pointer to fdb
+	ERUNLK OPNX2
+	LDB B,PFILPC		; Get number of pages
+	MOVE A,FDBSIZ(A)	; And length
+	UMOVEM A,2
+	UMOVEM B,3
+	UNLOCK DIRLCK
+	PUSHJ P,UNLCKF
+	SKIPRT
+	JRST MRETN
+
+GBGJFN:	UMOVEM A,1
+	JRST MRETN
+
+; Backup file pointer by 1 byte
+; Call:	1	JFN
+;	BKJFN
+; Returns
+;	+1	; Error, cannot backup this designator
+;	+2	; Ok.
+
+^.BKJFN:JSYS MENTR
+	MOVE JFN,1
+	PUSHJ P,CHKJFN
+	ERR()
+	JRST BKJTTY
+	JRST BKJBYT
+	MOVEI A,-TTYDTB(DEV)
+	JUMPE A,BKJTT1
+	TEST(NN,OPENF)
+	ERR(DESX5,<PUSHJ P,UNLCKF>)
+	MOVE A,FILBYN(JFN)
+	SOJL A,[ERR(SFPTX3,<PUSHJ P,UNLCKF>)]
+	PUSHJ P,SFBNR
+	ERR(,<PUSHJ P,UNLCKF>)
+	PUSHJ P,UNLCKF
+	JRST SKMRTN
+
+BKJTT1:	PUSHJ P,UNLCKF
+BKJTTY:	HLRZ 2,DEV
+	PUSHJ P,TTBKPT
+	ERR(BKJFX1)
+	JRST SKMRTN
+
+BKJBYT:	MOVE A,JFN
+	PUSHJ P,DBP
+	UMOVEM A,1
+^SKMRTN:AOS (P)
+	JRST MRETN
+
+; Read file byte number
+; Call:	1	; Jfn
+;	RFPTR
+; Return
+;	+1	; Error
+; 	+2	; Success
+;	2	; File byte number
+
+^.RFPTR:JSYS MENTR
+	MOVE JFN,1
+	PUSHJ P,CHKJFN
+	ERR()
+	JFCL
+	ERR(DESX4)
+	TEST(NN,OPENF)
+	ERUNLK(DESX5)
+	MOVE A,FILBYN(JFN)
+	UMOVEM A,2
+	PUSHJ P,UNLCKF
+	SKIPRT
+	JRST MRETN
+
+
+; Set file byte number
+; Call:	1	; Job file number
+;	2	; Byte number
+;	SFPTR
+; Return
+;	+1	; Error
+;	+2	; Successful
+
+^.SFPTR:JSYS MENTR		; Become slow etc.
+	MOVE JFN,1
+	PUSHJ P,CHKJFN		; Find out what we are dealing with
+	ERR()
+	JFCL
+	ERR(DESX4)		; Tty or byte pointer illegal
+	TEST(NN,OPENF)
+	ERUNLK(CLSX1)
+	UMOVE A,2
+	PUSHJ P,SFBNR		; Set the byte number
+	ERUNLK()
+	SKIPRT			; Skip return
+	PUSHJ P,UNLCKF
+	JRST MRETN
+
+; Set file byte number common code
+; Call:	A	; Byte number
+;	PUSHJ P,SFBNR
+; Return
+;	+1	; Error of some sort, error number in a
+;	+2	; Success
+; Clobbers most temps
+
+^SFBNR:	TEST(NN,RNDF)
+	JRST [	MOVEI A,SFPTX2
+		POPJ P,]	; Illegal to reset pointer for this file
+	CAMN A,[-1]
+	MOVE A,FILLEN(JFN)	; Set to end of file if -1
+	JUMPL A,[MOVEI A,SFPTX3
+		POPJ P,]	; Illegal byte number
+	MOVEM A,FILBYN(JFN)
+	TEST(Z,EOFF)
+	CAML A,FILLEN(JFN)
+	TEST(O,EOFF)
+	PUSHJ P,NEWWND		; Set window pointers
+	AOS (P)
+	POPJ P,
+
+^NFBSZ:	MOVEI C,=36
+	IDIVM C,A		; Number of bytes per word
+	MOVEI C,=36
+	IDIV C,B		; New number of bytes per word
+	PUSH P,C
+	IMUL C,FILBYN(JFN)	; Adjust byte number
+	IDIV C,A
+	CAIE C+1,0
+	AOS C
+	MOVEM C,FILBYN(JFN)
+	POP P,C
+	IMUL C,FILLEN(JFN)	; And adjust file length
+	IDIV C,A
+	CAIE C+1,0
+	AOS C
+	MOVEM C,FILLEN(JFN)
+	DPB B,PBYTSZ		; Deposit new byte size
+	POPJ P,
+
+; Read file byte size
+; Call:	1	; Jfn
+;	RFBSZ
+
+^.RFBSZ:JSYS MENTR
+	MOVE JFN,1
+	PUSHJ P,CHKJFN
+	ERR()
+	JFCL
+	ERABRT(DESX4)
+	TEST(NN,OPENF)
+	ERABRT(DESX5)
+	LDB A,PBYTSZ
+	UMOVEM A,2
+	PUSHJ P,UNLCKF
+	JRST MRETN
+
+
+; Set file byte size jsys
+; Call:	1	; Job file number
+;	2	; Byte size (1 to 36)
+;	SFBSZ
+; Return
+;	+1	; Error number in a
+;	+2	; Success
+
+^.SFBSZ:JSYS MENTR
+	MOVE JFN,1
+	PUSHJ P,CHKJFN
+	ERR()
+	JFCL
+	ERR(DESX4)		; Tty and byte pointers illegal
+	TEST(NN,OPENF)
+	ERUNLK(CLSX1)		; File not open
+	XCTUU [SKIPLE B,2]
+	CAILE B,=36
+	ERUNLK SFBSX2		; Illegal byte size
+	TEST(NE,SIZF)
+	ERUNLK SFBSX1		; Illegal to change byte size
+	LDB A,PBYTSZ		; Get previous byte size
+	PUSHJ P,NFBSZ
+	PUSHJ P,NEWWND		; Recompute window pointers
+	PUSHJ P,UNLCKF		; Unlock file
+	AOS (P)
+	JRST MRETN
+
+; Swap jfn's
+; Call:	1	; Jfn 1
+;	2	; Jfn 2
+;	SWJFN
+
+^.SWJFN:JSYS MENTR
+	MOVE JFN,1
+	PUSHJ P,CHKJFN
+	JRST ERABRD
+	JFCL
+	ERABRT(DESX4)
+	PUSH P,JFN
+	UMOVE JFN,2
+	PUSHJ P,CHKJFN
+	ERABRT(,<POP P,JFN
+		MOVE DEV,FILDEV(JFN)
+		PUSHJ P,UNLCKF>)
+	JFCL
+	ERABRT(DESX4,<POP P,JFN
+		MOVE DEV,FILDEV(JFN)
+		PUSHJ P,UNLCKF>)
+	POP P,A
+	MOVEI B,[FILBYT
+		FILBYN
+		FILLEN
+		FILCNT
+		FILLCK
+		FILWND
+		FILSTS
+		FILDEV
+		FILOFN
+		FILLFW
+		FILDDN
+		FILNEN
+		FILVER]
+	HRLI B,-15
+	HRLI A,D
+	HRLI JFN,D
+SWJFNL:	MOVE D,(B)
+	MOVE C,@JFN
+	EXCH C,@A
+	MOVEM C,@JFN
+	AOBJN B,SWJFNL
+	HRRZS JFN
+	PUSHJ P,UNLCKF
+	HRRZ JFN,A
+	PUSHJ P,UNLCKF
+	JRST MRETN
+
+; Get fdb entry
+; Call:	1	JFN
+;	LH(2)	; Number of words to read
+;	RH(2)	; First word to read
+;	3	; Location to store words
+;	GTJFN
+
+^.GTFDB:JSYS MENTR
+	UMOVE A,2
+	HLRZ B,A		; Get count
+	HRRZS A			; Offset
+	CAIL A,FDBLEN
+	ERABRT(GFDBX1)		; Offset too big
+	ADD A,B
+	CAIE B,0		; 0 words illegal
+	CAILE A,FDBLEN
+	ERABRT(GFDBX2)		; Count too big
+	UMOVE JFN,1
+	PUSHJ P,CHKJFN		; Check the jfn
+	ERABRT()		; Garbage
+	JFCL
+	ERABRT(DESX4)		; Tty or byte illegal
+	HRRZ A,NLUKD(DEV)	; Get name lookup dispatch
+	CAIE A,MDDNAM		; Must be mddnam
+	ERABRT(GFDBX1,<PUSHJ P,UNLCKF>)	; Cannot read fdb for device
+	PUSHJ P,GETFDB		; Get pointer to the fdb
+	ERABRT(DESX3,<PUSHJ P,UNLCKF>)
+	UMOVE B,2
+	ADDI A,(B)		; Offset pointer to fd
+	UMOVE C,3		; To address
+	HRL C,A			; From address
+	HLRZS B			; Count
+	ADDI B,(C)		; Last address+1
+	XCTMU [BLT C,-1(B)]
+	UNLOCK DIRLCK
+	PUSHJ P,UNLCKF
+	JRST MRETN
+
+; Change fdb
+; Call:	LH(1)	; Offset
+;	RH(1)	; Jfn
+;	2	; Mask
+;	3	; Data
+;	CHFDB
+
+^.CHFDB:JSYS MENTR
+	UMOVE A,1
+	HRRZ JFN,A
+	HLRZS A
+	CAIL A,FDBLEN
+	ERABRT(CFDBX1)		; Offset too big
+	PUSHJ P,CHKJFN		; Check jfn
+	ERABRT()		; Garbage
+	JFCL
+	ERABRT(DESX4)		; Tty or byte illegal
+	HRRZ A,NLUKD(DEV)
+	CAIE A,MDDNAM
+	ERABRT(CFDBX1)		; No fdb fon non mdd devices
+	PUSHJ P,GETFDB		; Get the fdb
+	ERABRT(DESX3,<PUSHJ P,UNLCKF>)
+	XCTUU [HLRZ D,1]
+	PUSH P,A		; Save fdb loc
+	UMOVE B,2		; Mask
+	ANDCM B,WRTR(D)		; Writer bits?
+	JUMPN B,CHFDB1		; No, check owner and wheel
+	HRLI A,100000		; Yes check for write access
+	PUSHJ P,ACCCHK
+	JRST CHFDB3		; No write access, still ok if owner
+	JRST CHFDB2		; Ok, go ahead
+
+CHFDB1:	ANDCM B,OWNER(D)
+	JUMPN B,CHFDB4		; Requires mor than owner status
+CHFDB3:	MOVSI A,XCTF
+	PUSHJ P,DIRCHK		; Check if we have owner rights
+	JRST CHFDB5
+	JRST CHFDB2
+
+CHFDB4:	ANDCM B,WOPR(D)
+	JUMPN B,CHFDB6		; Can't be done
+CHFDB5:	MOVE B,CAPENB
+	TRNE B,WHEEL!OPR
+	JRST CHFDB2
+CHFDB6:	MOVEI A,CFDBX2
+	UNLOCK DIRLCK
+	PUSHJ P,UNLCKF
+	JRST ERABRD
+
+CHFDB2:	POP P,A
+	ADD A,D
+	UMOVE C,3		; Data
+	MOVE B,(A)		; Old data
+	UMOVE D,2		; Mask
+	AND C,D			; Retain masked bits of new data
+	ANDCM B,D		; Flush bits to be replaced from old
+	IOR B,C
+	MOVEM B,(A)
+	UNLOCK DIRLCK
+	PUSHJ P,UNLCKF
+	JRST MRETN
+
+; Access tables for chfdb
+
+WRTR:	0
+	0
+	0
+	0
+	0
+	0
+	0
+	0
+	0
+	007700000000
+	777777777777
+	0
+	0
+	0
+	0
+	0
+	0
+	0
+	0
+	0
+	0
+
+OWNER:	0		; Fdbctl
+	463000000000	; Fdbctl
+	0		; Fdbext
+	0		; Fdbadr
+	000000777777	; Fdbprt
+	0		; Fdbcre
+	777777000000	; Fdbuse
+	0		; Fdbver
+	0		; Fdbact
+	777700000000	; Fdbbyv (byte size and # backups)
+	777777777777	; Fdbsiz
+	0		; Fdbcrv
+	0		; Fdbwrt
+	0		; Fdbref
+	0		; Fdbcnt
+	0		; Backup
+	0
+	0
+	0
+	0
+	777777777777	; Fdbusw
+
+WOPR:	0		; Header
+	200000000000
+	0
+	0
+	0
+	777777777777	; Creation date
+	0
+	0
+	0
+	0
+	0
+	777777777777	; Fdbcrv
+	777777777777	; Fdbwrt
+	777777777777	; Fdbref
+	777777777777	; Fdbcnt
+	777777777777
+	777777777777
+	777777777777
+	777777777777
+	777777777777
+	0
+
+; String to directory
+; Call:	1	; Positive for no recognition
+;	2	; Source designato$
+;	STDIR
+; Return
+;	+1	; No match
+;	+2	; Ambiguous
+;	+3	; Unique match
+
+^.STDIR:JSYS MENTR
+	MOVE A,2
+	PUSHJ P,CPYFUS
+	JRST MRETN
+	PUSH P,A		; Save location of the temp block
+	PUSH P,B		; Save string pointer to tail
+	MOVEI JFN,-FILOPT(P)	; Set jfn so filopt(jfn) refers to pdl
+	XCTUU [SKIPL 1]
+	TEST(OA,NREC)
+	TEST(Z,NREC)
+	PUSHJ P,DIRLUK
+	SOS -2(P)		; Undo one skip
+	JRST STDIR1
+	XCTUU [EXCH A,1]	; Return the directory number
+	SUB P,[XWD 1,1]
+	JUMPGE A,STDIR4		; If no recognition, then no tail to copy
+	UMOVE A,2		; Get the user's pointer
+	MOVE B,(P)
+	PUSHJ P,CPYTUS
+STDIR4:	UMOVE A,1		; Get the directory number back
+	PUSHJ P,GETDDB
+	BUG(HLT,<STDIR: GETDDB FAILED WHEN DIRLUK DIDN'T.>)
+	MOVE A,DDBMOD(A)
+	XCTUU [HLLM A,1]
+	UNLOCK DIRLCK
+	AOSA -1(P)
+STDIR1:	POP P,B
+	POP P,B
+	MOVEI A,JSBFRE
+	PUSHJ P,RELFRE
+	SKIPRT
+	JRST MRETN
+
+; Directory number to string conversion
+; Call:	1	; Sink designator
+;	2	; Directory number
+;	DIRST
+; Return
+;	+1	; Error
+;	+2	; Ok
+
+^.DIRST:JSYS MENTR
+	UMOVE A,2
+	PUSHJ P,GDIRST
+	JRST MRETN
+	UNLOCK DIRLCK
+	PUSHJ P,JFNSS
+	AOS (P)
+	JRST MRETN
+
+; Make a new fd
+; Call:	A	; Pointer to parameter block
+;	MAKFD
+; Return
+;	+1	; Error
+;	+2	; Success
+;	1	; User number
+; In parameter block
+;	0	; Pointer to name string
+;	1	; Pointer to password string, 0 if none
+;	2-N	; Copy of ddb image
+
+^.CRDIR:JSYS MENTR
+	MOVE A,CAPENB
+	TRNN A,WHEEL!OPR
+	ERABRT(CRDIX1)
+	UMOVE E,2
+	UMOVE A,1
+	PUSHJ P,CPYFUS		; Copy directory name string
+	ERR CRDIX3		; No room in jsb
+	MOVE B,1(A)
+	TLNN B,774000
+	ERR CRDIX5		; Null name illegal
+	PUSHJ P,DIRLUU		; Look up the name in directory
+	JRST MAKNFD		; Non-existent, must make a new one
+	PUSH P,A
+	MOVE B,DIRINP
+	MOVEI B,-1(B)
+	MOVEI A,JSBFRE
+	PUSHJ P,RELFRE		; Release free storage used for name
+	UNLOCK DIRLCK
+	POP P,A
+	TLNE E,(1B6)
+	XCTUU [CAMN A,6(E)]
+	JRST CRDIR1
+	ERABRT(CRDIX2)		; Directory number disagrees
+
+CRDIR1:	PUSHJ P,GETDDB		; Setup a pointer to the ddb
+	BUG(HLT,<CRDIR: GETDDB FAILED WHEN DIRLUU DIDN'T.>)
+	MOVE NUM,A		; Save pointer in num
+MAKFD0:	TLNN E,(1B1)
+	JRST CRDIR3		; No password change
+	UMOVE A,1(E)		; Get pointer to password
+	PUSHJ P,CPYFUS		; Copy new password to free storage
+	ERR CRDIX3,<UNLOCK DIRLCK>
+	PUSHJ P,SETMSK		; Store in directory
+	PUSHJ P,CPYDIR		; And copy string to directory
+	ERR(CRDIX4,<MOVE B,DIRINP
+		MOVEI B,1(B)
+		MOVEI A,JSBFRE
+		PUSHJ P,RELFRE	; Release job storage
+		UNLOCK DIRLCK>)
+	HLRZ B,DDBNAM(NUM)	; Get old password pointer
+	HRRZS DDBNAM(NUM)	; Zero old pntr
+	PUSH P,A
+	JUMPE B,MAKFD1
+	ADDI B,DIRORG
+	PUSHJ P,RELDFR		; Release storage if any
+MAKFD1:	POP P,A
+	SUBI A,DIRORG
+	HRLM A,DDBNAM(NUM)	; Store as password
+	MOVE B,DIRINP
+	MOVEI B,-1(B)
+	MOVEI A,JSBFRE
+	PUSHJ P,RELFRE		; Release jsb storage
+
+CRDIR3:	UMOVE A,2(E)		; Get max disk storage
+	TLNE E,(1B2)
+	MOVEM A,DDBMAX(NUM)
+	UMOVE A,3(E)		; Get privilege bits
+	TLNE E,(1B3)
+	MOVEM A,DDBPRV(NUM)
+	UMOVE A,4(E)
+	TLNE E,(1B4)
+	MOVEM A,DDBMOD(NUM)
+	SETZM DDBRES(NUM)
+	UMOVE A,13(E)
+	TLNE E,(1B11)
+	MOVEM A,DDBGRP(NUM)
+	PUSH P,DDBNUM(NUM)
+	UNLOCK DIRLCK
+	HRLOI A,600000
+	PUSHJ P,CHKDEV		; Get index for dsk
+	BUG(HLT,<CRDIR: CHKDEV FAILED TO FIND DEV DSK:.>)
+	HLRZ B,DEVDSP(B)	; Get ofn of fd
+	POP P,A
+	PUSHJ P,SETDIR
+	BUG(HLT,<CRDIR: SETDIR FAILED ON DIRECTORY FOUND IN INDEX.>)
+	UMOVE A,7(E)		; Default file protection
+	ANDI A,777777
+	TLO A,500000
+	TLNE E,(1B7)
+	MOVEM A,DIRDPW
+	UMOVE A,10(E)
+	ANDI A,777777
+	TLO A,500000
+	TLNE E,(1B8)
+	MOVEM A,DIRPRT
+	UMOVE A,11(E)
+	ANDI A,777777
+	TLO A,500000
+	TLNE E,(1B9)
+	MOVEM A,DIRDBK
+	UMOVE A,14(E)
+	TLNE E,(1B12)
+	MOVEM A,DIRGRP
+	PUSH P,DIRNUM
+	UNLOCK DIRLCK
+	MOVEI A,JSBFRE
+	MOVEI B,20
+	PUSHJ P,ASGFRE
+	 JRST CRDIR4
+
+	MOVE B,(P)
+	MOVEM A,(P)
+	HRLI A,(<POINT 7,0,34>)
+	MOVEI C,"<"
+	IDPB C,A
+	DIRST
+	 JRST CRDIR5
+	PUSH P,A
+	MOVE B,-1(P)
+	ADDI B,1
+	HRLI B,(<POINT 7,0,6>)
+	SETZ A,
+	STDIR
+	 JFCL
+	 JRST [	POP P,A
+		JRST CRDIR5]
+	TLNE A,(1B0)
+	 JRST [	POP P,A
+		JRST CRDIR5]
+	POP P,A
+	HRROI B,[ASCIZ />MESSAGE.TXT;1;P770404/]
+	SETZ C,
+	SOUT
+	MOVE B,(P)
+	HRLI B,(<POINT 7,0,34>)
+	MOVSI A,400001
+	GTJFN
+	 JRST CRDIR5
+	HRLI A,FDBCTL
+	MOVSI B,FDBPRM!FDBNXF!FDBDEL
+	MOVSI C,FDBPRM!FDBDEL
+	CHFDB
+	HRRZS A
+	RLJFN
+	 JFCL
+CRDIR5:	POP P,B
+	MOVEI A,JSBFRE
+	PUSHJ P,RELFRE
+CRDIR4:	SETZM NXTDMP
+	JRST MRETN
+
+MAKNFD:	MOVEI B,DDBLEN
+	PUSHJ P,ASGDFR		; Assign space for the ddb
+	ERABRT(CRDIX4,<UNLOCK DIRLCK
+		MOVE B,DIRINP
+		MOVEI B,-1(B)
+		MOVEI A,JSBFRE
+		PUSHJ P,RELFRE>)
+	MOVEI NUM,(A)		; Point num to the ddb
+	SETZM DDBNAM(NUM)	; Clear name pointers
+	SETZM DDBNUM(NUM)	; Clear number
+	MOVE A,[=250000/1000]
+	MOVEM A,DDBMAX(NUM)	; Default disc allocation
+	SETZM DDBPRV(NUM)	; Default privileges
+	SETZM DDBMOD(NUM)	; Default modes
+	SETZM DDBGRP(NUM)
+	SETZM DDBRES(NUM)
+	PUSHJ P,CPYDIR		; Copy name to directory
+	ERR CRDIX4,<MOVE B,NUM
+		PUSHJ P,RELDFR
+		UNLOCK DIRLCK>
+	SUBI A,DIRORG		; Convert to relative pointer
+	HRRM A,DDBNAM(NUM)	; Save as name
+	HRLZ C,A		; Right half yet to be filled in
+	SOS B,DIRLOC
+	SOS A,SYMBOT
+	CAMG A,FRETOP
+	PUSHJ P,XPAND
+	CAML A,B
+	JRST MAKNFZ
+	ADDI A,DIRORG
+	HRLI A,1(A)
+	BLT A,DIRORG-1(B)
+MAKNFZ:	MOVEM C,DIRORG(B)
+	MOVE B,DIRINP
+	MOVEI B,-1(B)
+	MOVEI A,JSBFRE
+	PUSHJ P,RELFRE
+	MOVN A,DIRNUM		; Get subindex number
+	IMULI A,10000		; Convert to position in file
+	ADD NUM,A		; Of the ddb
+	SUBI NUM,DIRORG
+	UMOVE A,6(E)
+	TLNE E,(1B6)
+	JRST FNN01
+	MOVEI A,0
+	PUSHJ P,SETDIR		; Look at block 0
+	BUG(HLT,<CRDIR: SETDIR FAILED FOR BLOCK 0.>)
+FNN00:	MOVEI B,1
+FNN0:	MOVN A,DIRHTL
+	HRLZS A
+	HRR A,DIRHTO
+
+FNN:	HRRE C,DIRORG(A)
+	CAMN B,C
+	AOJA B,FNN0
+	AOBJN A,FNN
+	MOVE A,B
+	UNLOCK DIRLCK
+	PUSHJ P,HSHLUK		; Is this number available?
+	JRST FNN2		; Yes, use it
+	JRST FNN00		; No, try another
+
+FNN2:	CAIL A,1
+	CAIL A,NFDIB*100
+	BUG(HLT,<CRDIR: HSHLUK RETURN INVALID DIRECTORY NUMBER.>)
+	MOVEM A,DIRORG(B)	; Store directory number in rh
+	HRLM NUM,DIRORG(B)	; And ddb location in left
+	MOVE B,NUM
+	IDIVI B,10000		; Recover block containing ddb
+	ADDI B+1,DIRORG
+	PUSH P,B+1
+	PUSH P,A
+	UNLOCK DIRLCK
+	MOVN A,B
+	PUSHJ P,MAPDIR		; Return to original subindex
+	POP P,A
+	POP P,NUM
+	HRRM A,DDBNUM(NUM)
+	MOVE B,DIRLOC
+	HRRM A,DIRORG(B)
+	HRRZS A			; Retain only directory number
+	PUSH P,DIRNUM		; Save current directory number
+	PUSH P,A		; And new directory number
+	HRLOI A,600000
+	PUSHJ P,CHKDEV
+	BUG(HLT,<CRDIR: CHKDEV FAILED TO FIND DEVICE DSK:.>)
+	MOVE A,(P)
+	HLRZ B,DEVDSP(B)
+	PUSHJ P,MAPDIR		; Map the new directory
+	PUSHJ P,INIBLK		; Initialize it
+	POP P,DIRNUM		; Set its directory number
+	POP P,A
+	UNLOCK DIRLCK		; Unlock the new directory
+	PUSHJ P,MAPDIR		; Restore to mapping current di
+	JRST MAKFD0
+
+FNN01:	CAIL A,1
+	CAIL A,NFDIB*100
+	JRST FNN05
+	UNLOCK DIRLCK
+	PUSHJ P,HSHLUK
+	JRST FNN2
+FNN05:	UNLOCK DIRLCK		; Number unavailable, abort
+	MOVE B,NUM
+	IDIVI B,10000
+	MOVEI C,DIRORG(B+1)	; Location in subindex of ddb
+	PUSH P,C
+	MOVN A,B		; Subindex number
+	PUSHJ P,MAPDIR		; Get back to it
+	POP P,NUM
+	HRRZ B,DDBNAM(NUM)	; Get location of name string
+	ADDI B,DIRORG
+	PUSHJ P,RELDFR		; Release it
+	MOVE B,NUM		; Location of ddb
+	PUSHJ P,RELDFR		; Release it
+	MOVE B,DIRLOC		; Location where symtab entry was put
+FNN03:	CAMG B,SYMBOT		; Something left to move?
+	JRST FNN04		; No
+	MOVE A,DIRORG-1(B)
+	MOVEM A,DIRORG(B)
+	SOJA B,FNN03
+
+FNN04:	AOS SYMBOT
+	UNLOCK DIRLCK
+	ERABRT(CRDIX6)
+
+; Get directory info
+; Call:	1	; Directory number
+;	2	; Pointer to parameter block
+;	3	; String pointer for password
+;	GTDIR
+
+^.GTDIR:JSYS MENTR
+	MOVE B,CAPENB
+	TRNN B,WHEEL!OPR
+	ERABRT(GTDIX1)		; Not wheel or opr
+	PUSHJ P,GETDDB
+	ERABRT(GTDIX2)
+	UMOVE E,2
+	UMOVE C,3
+	JUMPGE C,GTDIR1
+	CAML C,[777777000000]
+	HRLI C,(<POINT 7,0>)
+GTDIR1:	HLRZ B,DDBNAM(A)
+	ADDI B,DIRORG
+	HRLI B,(<POINT 7,0,35>)
+	UMOVEM C,1(E)
+	UMOVEM C,3
+	ILDB D,B
+	XCTMU [IDPB D,C]
+	JUMPN D,.-3
+	MOVE D,DDBMAX(A)
+	UMOVEM D,2(E)
+	MOVE D,DDBPRV(A)
+	UMOVEM D,3(E)
+	MOVE D,DDBMOD(A)
+	UMOVEM D,4(E)
+	MOVEI D,0
+	UMOVEM D,5(E)
+	MOVE D,DDBNUM(A)
+	UMOVEM D,6(E)
+	HRRZ D,(A)
+	CAIGE D,DDBLEN
+	JRST GTDIR2
+	MOVE D,DDBDAT(A)
+	UMOVEM D,12(E)
+
+GTDIR2:	MOVE D,DDBGRP(A)
+	UMOVEM D,13(E)
+	PUSH P,DDBNUM(A)
+	HRLOI A,600000
+	PUSHJ P,CHKDEV
+	BUG(HLT,<GTDIR: CHKDEV FAILED TO FIND DEVICE DSK:.>)
+	HLRZ B,DEVDSP(B)
+	POP P,A
+	UNLOCK DIRLCK
+	PUSHJ P,MAPDIR
+	MOVE D,DIRDPW
+	UMOVEM D,7(E)
+	MOVE D,DIRPRT
+	UMOVEM D,10(E)
+	MOVE D,DIRDBK
+	UMOVEM D,11(E)
+	MOVE D,DIRGRP
+	UMOVEM D,14(E)
+	JRST MRETN
+
+; Pmap jsys
+; Call:	1	; Page ident (frk.pn or jfn.pn)
+;	2	; Page ident
+;	3	; Bits 2,3,4 to set page table access
+;	PMAP
+
+^.PMAP:	JSYS MENTR
+	IOR 1,2
+	JUMPGE 1,[MOVEI A,PMAPX2
+		JRST PMAPER]
+	UMOVE A,2
+	PUSHJ P,CPMAP
+	TLNN C,(1B3)
+	ERABRT(PMAPX1)
+	PUSH P,A
+	UMOVE A,1
+	CAMN A,[-1]		; Delete wanted?
+	AOJA A,PMAP2		; Yes, put 0 in a
+	PUSHJ P,CPMAP
+PMAP2:	PUSH P,C
+	PUSH P,A
+	XCTUU [SKIPGE A,1]	; Is from a file?
+	JRST PMAP4		; No.
+	HLRZS A			; Yes, get jfn
+	MOVSI B,2
+	ADDM B,FILLFW(A)	; Increment count of reasons for opening
+PMAP4:	XCTUU [SKIPL A,2]	; Is "to" a file?
+	JRST [	XCTUU [SKIPL B,1]
+		ERABRT(PMAPX2)
+		HLRZS A
+		MOVSI C,2
+		CAME B,[-1]
+		ADDM C,FILLFW(A)
+		JRST PMAP3]
+	MOVE A,-2(P)		; Get ptn.pn of "to"
+	PUSHJ P,MRPACS		; Find out what's currently there.
+	JUMPE A,PMAP3		; Jump if empty
+	TLNE A,(1B10)
+	JRST PMAP3		; Or if private
+	MOVE A,-2(P)		; Is indirect or share
+	PUSHJ P,MRPT		; Get it's id
+	JRST PMAP3		; Not file
+	PUSHJ P,OFNJFX		; Convert to jfn
+	JRST PMAP3		; No jfn
+	MOVSI B,-2
+	HLRZS A
+	ADDB B,FILLFW(A)
+	TLNN B,777777
+	CLOSF			; Close the file if count goes to 0
+	JFCL
+
+PMAP3:	POP P,A
+	POP P,C
+	POP P,B
+	TLO C,1407		; Retain write copy bit and disposal
+	XCTUU [AND C,3]
+	PUSHJ P,SETPT
+	JFCL
+	JRST MRETN
+
+PMAPER:	MOVEM A,LSTERR
+	MOVEM B,ERRSAV
+	JRST ITRAP
+
+CPMAP:	JUMPL A,FRKMAP
+	PUSHJ P,JFNOFN
+	ERABRT(,<MOVEM JFN,ERRSAV>)
+	MOVE C,STS
+	AND C,[XWD READF!WRTF!XCTF,0]
+	LSH C,-1
+	TEST(NN,ASPF)
+	POPJ P,
+	PUSH P,A
+	PUSHJ P,MRPACS
+	MOVE C,A
+	POP P,A
+	AND C,[XWD 160000,0]
+	POPJ P,
+
+FRKMAP:	PUSHJ P,FKHPTN
+	BUG(HLT,<FRKMAP: FKHPTN YIELDED IMPOSSIBLE NO-SKIP RETURN.>)
+	MOVSI C,160000
+	POPJ P,
+
+; Rhis routine is called from write copy code in pagem to reduce the
+; The map count of a page
+; Call:	1	; Ofn.pn
+;	PUSHJ P,JFNDCR
+; Returns +1 always
+
+JFNDCR:	PUSHJ P,OFNJFX
+	POPJ P,
+	HLRZS A
+	MOVSI B,-2
+	ADDB B,FILLFW(1)
+	TLNE B,777777
+	 POPJ P,
+	MOVSI B,FRKF
+	ANDCAM B,FILSTS(JFN)
+	POPJ P,
+
+; Read map
+; Call:	LH(1)	; Fork handle
+;	RH(1)	; Page number
+;	RMAP
+; Retrn
+;	+1
+;	LH(1)	; Jfn
+;	RH(1)	; Page number
+;	2	; Access read, write,execute,nonexistent in bits 2-5
+
+^.RMAP:	JSYS MENTR
+	PUSHJ P,FRKMAP		; Convert frk.pn to ptn.pn
+	PUSHJ P,MRPT		; Call map routine
+	 JRST RMAPFK
+	PUSH P,B
+	PUSHJ P,OFNJFN
+RMAP0:	 SETO A,		; Unidentifiable
+RMAP1:	POP P,B
+	UMOVEM A,1
+	UMOVEM B,2
+	JRST MRETN
+
+RMAPFK:	PUSH P,B
+	JUMPE A,RMAP0
+	PUSHJ P,PTNFKH
+	JRST RMAP1
+
+; Read accessiblity of page
+; Call:	LH(A)	; Fork or file handle
+;	RH(A)	; Page number
+;	RPACS
+
+^.RPACS:JSYS MENTR
+	TRNE 1,777000
+	SKIPGE 1
+	JRST RPACS1
+	HLRZS A
+	MOVE A,FILSTS(A)
+	TLNN A,LONGF
+	JRST [	XCTUU [SETZM 2]	; File not long
+		JRST MRETN]
+	UMOVE 1,1
+RPACS1:	PUSHJ P,CPMAP
+	PUSHJ P,MRPACS
+	UMOVEM 1,2
+	JRST MRETN
+
+; Set accessibility of a page
+; Call:	LH(A)	; Fork or file handle
+;	RH(A)	; Page number
+;	SPACS
+
+^.SPACS:JSYS MENTR
+	PUSHJ P,CPMAP		; Convert to ptn.pn
+	UMOVE B,1
+	JUMPL B,SPACFK
+	TEST(NN,WRTF)		; Must be able to write
+SPACER:	JRST [	MOVEI A,SPACX1
+		MOVEM A,LSTERR
+		JRST ITRAP]
+	MOVSI C,160000
+	JRST SPAC1
+
+SPACFK:	PUSH P,A		; Save page handle
+	PUSHJ P,MRPACS		; Get access of page
+	TLNN A,(1B5)
+	JRST SPACER		; Non-existent page
+	TLNE A,(1B10)
+	JRST SPACPR		; Private page
+	PUSH P,A		; Save access
+	MOVE A,-1(P)		; Get back the page handle
+	PUSHJ P,MRPT		; Get map contents
+	JRST SPACP1		; Indirect or shared to fork
+	PUSHJ P,OFNJFN		; Convert to jfn.pn
+	JRST SPACCF		; Closed file
+	PUSHJ P,CPMAP		; Get allowable access
+	SUB P,[XWD 1,1]
+	JRST SPAC2
+
+SPACCF:	POP P,C
+	AND C,[XWD 160000,0]
+	JRST SPAC2
+
+SPACP1:	SUB P,[XWD 1,1]
+SPACPR:	MOVSI C,160000
+SPAC2:	TLO C,1400
+	POP P,A
+SPAC1:	UMOVE B,2
+	AND B,C
+	PUSHJ P,MSPACS
+	JRST MRETN
+
+; Find first free file page
+; Call:	1	; Jfn
+;	FFFFP
+; Return
+;	+1
+;	1	; Jfn.pn of first free page
+
+^.FFFFP:JSYS MENTR
+	HRLZS A
+FFFFPL:	RPACS
+	JUMPE B,FFFFP1
+	AOJA A,FFFFPL
+
+FFFFP1:	UMOVEM A,1
+	JRST MRETN
+
+; Find first used file page
+; Call:	LH(1)	; Jfn
+;	RH(1)	; Page number to start with
+;	FFUFP
+; Returns
+;	+1	; Error
+;	+2	; Success jfn.pn of first used page in 1
+
+^.FFUFP:JSYS MENTR
+	HLRZ JFN,1
+	PUSHJ P,CHKJFN
+	ERR()
+	JFCL
+	ERR(DESX4)		; Tty and byte no good
+	TEST(NN,OPENF)
+	ERUNLK(FFUFX1)		; Not open
+	MOVEI A,@NLUKD(DEV)
+	CAIE A,MDDNAM
+	ERUNLK(FFUFX2)		; Not disk
+	TEST(NE,LONGF)
+	JRST FFUFPL
+	UMOVE A,1
+	TRNE A,777000
+	ERUNLK(FFUFX3)		; Page beyond 777 of short can't exist
+	HLL A,FILOFN(JFN)
+	PUSHJ P,FFUFF
+	ERUNLK(FFUFX3)		; No pages in use
+FFUFPX:	XCTUU [HRRM A,1]
+	PUSHJ P,UNLCKF
+	JRST SKMRTN
+
+FFUFPL:	UMOVE A,1
+	HRRZS A
+FFUFP1:	MOVE B,A
+	LSH B,-9		; Get ptt number
+	ADD B,FILLFW(JFN)
+	SKIPE (B)		; Check for pt existence
+	JRST FFUFP2		; Exists, scan it
+FFUFP3:	ADDI A,1000
+	ANDCMI A,777
+	TLNN A,777777
+	JRST FFUFP1
+	ERUNLK(FFUFX3)
+
+FFUFP2:	PUSH P,A
+	PUSHJ P,JFNOF1		; Get ofn.pn for this page
+	BUG(HLT,<FFUFP: IMPOSSIBLE FAILURE OF JFNOF1.>)
+	PUSHJ P,FFUFF		; Scan the pt for stuff
+	JRST [	POP P,A	; None found
+		JRST FFUFP3]
+	POP P,B
+	ANDI B,777000
+	ADD A,B
+	JRST FFUFPX		; Success
+
+FFUFF:	PUSH P,A
+	PUSHJ P,ASGPAG		; Get a page to map the pt
+	JRST [	POP P,A
+		POPJ P,]
+	MOVE B,A
+	HRLI B,100000
+	HLRZ A,(P)
+	PUSHJ P,SETMPG		; Map the pt
+	HRRZ A,(P)		; Get starting page number
+	ADDI A,(B)		; Location of disc address
+FFUFF0:	SKIPE (A)		; Empty?
+	JRST FFUFF1		; No, found it
+	CAIGE A,777(B)		; Whole pt scanned?
+	AOJA A,FFUFF0		; No, try next one.
+FFUFF2:	MOVEI A,0
+	PUSHJ P,SETMPG		; Unmap the pt
+	HRRZ A,B
+	PUSHJ P,RELPAG		; Release the page
+	POP P,A
+	POPJ P,
+
+FFUFF1:	ANDI A,777		; Get pn part
+	MOVEM A,(P)
+	AOS -1(P)		; Skip return
+	JRST FFUFF2
+
+; Check for tty designator
+
+CHKTTM:	SKIPA JFN,1
+CHKTTY:	UMOVE JFN,1
+	PUSHJ P,CHKJFN
+	ERABRT()
+	JRST .+2
+	ERABRT(DESX6)
+	MOVEI A,-TTYDTB(DEV)
+	JUMPN A,CPOPJ		; Not tty, no skip
+	HLRZ 2,DEV
+	JRST SKPRET
+
+; Jsys's see jsys manual for description of calling sequences
+
+; Clear input buffer
+
+^.CFIBF:JSYS MENTR
+	PUSHJ P,CHKTTY
+	JRST UNL
+	PUSHJ P,TTCIBF
+UNL:	PUSHJ P,UNLCKF
+	JRST MRETN
+
+; Clear file output buffer
+
+^.CFOBF:JSYS MENTR
+	PUSHJ P,CHKTTY
+	JRST UNL
+	PUSHJ P,TTCOBF
+	JRST UNL
+
+; Skip if input buffer empty
+
+^.SIBE:	JSYS MENTR
+	PUSHJ P,CHKTTY
+	JRST SIBE1
+	PUSHJ P,TTSIBE
+	JRST UNL1		; RETURN NO. OF BYTES IN BUFFER
+SKPUNL:	AOS (P)
+	JRST UNL
+
+SIBE1:	TEST(NE,OPENF)
+	TEST(NN,READF)
+	 JRST SKPUNL
+	SKIPLE A,FILCNT(JFN)
+	 JRST UNL1
+IFDEF NETN,<HRRZ A,DEV
+	CAIE A,NETDTB
+	 JRST SKPUNL
+	HLRZ A,DEV
+	SKIPLE A,NETCNT(A)
+	 JRST UNL1>
+	JRST SKPUNL
+
+; Dismiss until input buffer is empty
+
+^.DIBE:	JSYS MENTR
+	PUSHJ P,CHKTTY
+	JRST MRETN
+	PUSHJ P,TTDIBE
+	JRST UNL
+
+; SKIP IF OUTPUT BUFFER FULL
+
+^.SOBF:	JSYS MENTR
+	PUSHJ P,CHKTTY
+	TDZA A,A		;RETURN +1 WITH 0
+	PUSHJ P,TTSOBF
+	JRST UNL1		;RETURN +1 WITH NO. BYTES IN BUFFER
+	AOS (P)
+UNL1:	UMOVEM 1,2		;RETURN COUNT OF BYTES IN BUFFER
+	JRST UNL
+
+; Skip if output buffer is empty
+
+^.SOBE:	JSYS MENTR
+	PUSHJ P,CHKTTY
+	JRST SOBE1
+	PUSHJ P,TTSOBE
+	JRST UNL1
+SOBE1:	AOS (P)
+	JRST UNL
+
+; Dismiss until output buffer is empty
+
+^.DOBE:	JSYS MENTR
+	PUSHJ P,CHKTTY
+	JRST UNL
+	PUSHJ P,TTDOBE
+	JRST UNL
+
+; Get tab settings
+
+^.GTABS:JSYS MENTR
+	PUSHJ P,CHKTTY
+	JRST [	XCTUU [SETZB A,2]
+		UMOVEM A,3
+		UMOVEM A,4
+		JRST UNL]
+	PUSHJ P,TTGTBS
+	UMOVEM 1,2
+	UMOVEM 3,3
+	UMOVEM 4,4
+	JRST UNL
+
+; Set tab stops
+
+^.STABS:JSYS MENTR
+	PUSHJ P,CHKTTY
+	JRST UNL
+	UMOVE 1,2
+	UMOVE 3,3
+	UMOVE 4,4
+	PUSHJ P,TTSTBS
+	JRST UNL
+
+; Read modes
+
+^.RFMOD:JSYS MENTR
+	PUSHJ P,CHKTTY
+	JRST RFMOD1
+	PUSHJ P,TTRMOD
+	UMOVEM 1,2
+	JRST UNL
+
+RFMOD1:	MOVE A,STS
+	ANDI A,17
+	ADD A,[=66B10+=72B17+=7B3]
+	UMOVEM A,2
+	JRST UNL
+
+; Set file modes
+
+^.SFMOD:JSYS MENTR
+	PUSHJ P,CHKTTY
+	JRST UNL
+	UMOVE 1,2
+	PUSHJ P,TTSMOD
+	JRST UNL
+
+; Read file position
+
+^.RFPOS:JSYS MENTR
+	PUSHJ P,CHKTTY
+	JRST [	XCTUU [SETZM 2]
+		JRST UNL]
+	PUSHJ P,TTRPOS
+	UMOVEM 1,2
+	JRST UNL
+
+; Set file position
+
+^.SFPOS:JSYS MENTR
+	PUSHJ P,CHKTTY
+	JRST UNL
+	UMOVE 1,2
+	PUSHJ P,TTSPOS
+	JRST UNL
+
+; Read control character output control
+
+^.RFCOC:JSYS MENTR
+	PUSHJ P,CHKTTY
+	JRST RFCOC1
+	PUSHJ P,TTRCOC
+	UMOVEM 1,2
+	UMOVEM 3,3
+	JRST UNL
+
+RFCOC1:	MOVE A,[BYTE (2)2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2]
+	UMOVEM A,2
+	UMOVEM A,3
+	JRST UNL
+
+; Set control character output control
+
+^.SFCOC:JSYS MENTR
+	PUSHJ P,CHKTTY
+	JRST UNL
+	UMOVE 1,2
+	UMOVE 3,3
+	PUSHJ P,TTSCOC
+	JRST UNL
+
+; Simulate teletype input
+
+^.STI:	JSYS MENTR
+	PUSHJ P,CHKTTY
+	ERABRT(TTYX1)
+	UMOVE 1,2
+	PUSHJ P,TTSTI
+	JRST UNL
+
+; Check device designator
+; Call:	A	; Device designator
+;	PUSHJ P,CHKDEV
+; Return
+;	+1	; Error, number in a
+;	+2	; Ok
+;	B	; Index into device tables
+;	C	; Device characteristics word
+;	A	; Unit number
+;	LH(DEV)	; Unit
+;	RH(DEV)	; Dispatch address
+
+^CHKDEV:TLNN A,777777		; Left half zero means tty designator
+	JRST TTYDEV
+	TLZ A,600000		; These bits always on
+	MOVSI B,-NDEV
+CHKDVL:	HLLZ C,DEVCHR(B)	; Construct device designator for this dev
+	TLZ C,777000
+	HRR C,DEVUNT(B)
+	CAME C,A		; Is it the same as user's
+	AOBJN B,CHKDVL		; No, continue scan
+	JUMPGE B,[MOVEI A,DEVX1
+		POPJ P,]	; Illegal designator
+	HLRZ A,DEVUNT(B)	; Get device assignment
+	CAME A,JOBNO
+	CAIN A,777777
+	JRST CHKDV1		; Assigned this job or unassigned
+	MOVEI A,DEVX2
+	POPJ P,			; Device not available
+
+CHKDV1:	HRRZ A,C		; Leave unit in a
+	MOVE DEV,DEVDSP(B)
+	HRL DEV,A		; Dispatch in dev
+	MOVE C,DEVCHR(B)	; And characteristics in c
+	JRST SKPRET
+
+TTYDEV:	CAIN A,777777
+	JRST CTTYDV
+	TRZ A,400000		; Convert tty designator to
+	HRLI A,600000+12	; To ordinary device designator
+	JRST CHKDEV		; And try again
+
+CTTYDV:	MOVE B,JOBNO
+	HRLZI A,JOBPT(B)
+	HRRI A,DISGET
+	SKIPGE B,JOBPT(B)
+	JSYS EDISMS
+	HLRZ A,B
+	JRST TTYDEV
+
+; Assign device
+; Call:	1	; Device designator
+;	ASND
+; Return
+;	+1	; Error, not assignable or bad designator etc.
+;	+2	; Ok, the device specified is now assigned to this job
+
+^.ASND:	JSYS MENTR
+	LOCK DEVLCK
+	PUSHJ P,CHKDEV
+	ERR(,<UNLOCK DEVLCK>)
+	TLNN C,(1B3)		; Is this an assignable device?
+	ERR(ASNDX1,<UNLOCK DEVLCK>)
+	LDB D,[POINT 9,C,17]
+	CAIN D,12
+	JRST [	HLRZ D,TTFORK(A)
+		CAIE D,777777
+		CAMN D,JOBNO
+		CAMN A,CTRLTT
+		ERR(DEVX2,<UNLOCK DEVLCK>)
+		MOVE D,JOBNO
+		HRLM D,TTFORK(A)
+		JRST .+1]
+	MOVSI A,(1B6)
+	IORM A,DEVCHR(B)	; Mark this device as assigned by asnd
+	MOVE A,JOBNO
+	HRLM A,DEVUNT(B)	; Assign to this job
+	UNLOCK DEVLCK
+	JRST SKMRTN
+
+; Release device
+; Call:	1	; Device designator or -1 to release all devices
+;	RELD
+; Returns
+;	+1	; Error, bad designator or not assigned to this job
+;	+2	; Ok.
+
+^.RELD:	JSYS MENTR
+	LOCK DEVLCK
+	CAMN 1,[-1]
+	JRST RELDAL
+	PUSHJ P,CHKDEV
+	ERR(,<UNLOCK DEVLCK>)
+	PUSHJ P,RELDD
+	UNLOCK DEVLCK
+	JRST SKMRTN
+
+RELDAL:	MOVSI B,-NDEV
+RELDA1:	HLRZ A,DEVUNT(B)
+	CAME A,JOBNO
+	JRST RELDA2
+	PUSHJ P,RELDD
+RELDA2:	AOBJN B,RELDA1
+	UNLOCK DEVLCK
+	JRST SKMRTN
+
+RELDD:	HRROS DEVUNT(B)
+	MOVSI D,(1B6)
+	ANDCA D,DEVCHR(B)
+	EXCH D,DEVCHR(B)
+	TLNN D,(1B6)
+	POPJ P,
+	LDB D,[POINT 9,D,17]
+	MOVE A,DEVUNT(B)
+	CAIN D,12
+	CAMN A,CTRLTT
+	POPJ P,
+	HRROS TTFORK(A)
+IFDEF NETN,<
+	HRRZ B,A
+	CAIL B,NTTYS
+	PUSHJ P,PTYDET
+>
+	POPJ P,
+
+; Get device characteristics
+; Call:	1	; Device designator
+;	DVCHR
+; Return
+;	+1	; Ok
+;	2	; Device characteristics word
+;	LH(3)	; Job to which device is assigned
+;	RH(3)	; Unit number
+
+^.DVCHR:JSYS MENTR
+	HLRZ B,1
+	TRZ B,777
+	CAIL 1,400000		; Is this a tty designator?
+	CAIL 1,400000+NLINES
+	CAIN B,600000		; Or a device designator
+	JRST DVCHR1		; Yes, do directly
+	UMOVE JFN,1		; No. translate first
+	PUSHJ P,CHKJFN
+	ERABRT()
+	JFCL
+	JRST [	UMOVEM JFN,1
+		JRST DVCHR1]
+	HLRZ A,FILDDN(JFN)	; Get pointer to device name block
+	HRLI A,(<POINT 7,0,35>)
+	STDEV			; Convert string to device designator
+	ERABRT(<(2)>,<PUSHJ P,UNLCKF>)
+	PUSHJ P,UNLCKF
+	UMOVEM 2,1
+DVCHR1:	UMOVE A,1
+	PUSHJ P,CHKDEV
+	JRST [	CAIE A,DEVX2	; Was error due to unavailablity
+		JRST ERABRD	; No, abort
+		MOVE C,DEVCHR(B)
+		JRST .+2]
+	TLO C,(1B5)
+	UMOVEM C,2
+	MOVE A,DEVUNT(B)
+	UMOVEM A,3
+	JRST MRETN
+
+; String to device
+; Call:	1	; Device designator
+;	STDEV
+; Return
+;	+1	; Error
+;	+2	; Ok
+;	2	; Device designator
+
+^.STDEV:JSYS MENTR
+	UMOVE A,1
+	PUSHJ P,CPYFUS
+	ERR(GJFX22)
+	PUSH P,A
+	PUSHJ P,DEVLUK		; Look up the device name
+	JRST [	CAIE A,GJFX16
+		JRST .+1
+		MOVEI A,STDVX1
+		UMOVEM A,2
+		JRST STDEV1]	; No such device
+	AOS -1(P)
+	HRRZ A,DEVUNT(B)
+	HLL A,DEVCHR(B)
+	TLZ A,777000
+	TLO A,600000
+	UMOVEM A,2
+STDEV1:	POP P,B
+	MOVEI A,JSBFRE
+	PUSHJ P,RELFRE
+	JRST MRETN
+
+; Device to string
+; Call:	1	; Destination designator
+;	2	; Device designator
+;	DEVST
+; Return
+;	+1	; Ok
+
+^.DEVST:JSYS MENTR
+	UMOVE A,2
+	PUSHJ P,CHKDEV
+	JRST [	CAIE A,DEVX2
+		ERR()
+		JRST .+1]
+	MOVE C,DEVNAM(B)
+	MOVE D,[POINT 6,C]
+DEVST0:	ILDB B,D
+	JUMPE B,DEVST1
+	ADDI B,40
+	PUSHJ P,BOUTN
+	JRST DEVST0
+
+DEVST1:	UMOVE A,1		; Preserve user 1
+	PUSHJ P,BOUTN		; Write the null
+	UMOVEM A,1		; Restore user 1
+	AOS (P)
+	JRST MRETN
+
+; Mount device
+; Call:	1	; Device designator
+;	MOUNT
+; Return
+;	+1	; Error
+;	+2	; Ok
+
+^.MOUNT:JSYS MENTR
+	UMOVE A,1
+	TLZN A,(1B3)		; Directory to be read?
+	TDZA B,B		; Yes
+	SETO B,			; No
+	PUSH P,B
+	PUSHJ P,CHKDEV
+	ERR()
+	UMOVE 1,1
+	TLZ 1,(1B3)
+	TLNE C,(1B8)		; Already mounted?
+	 JRST [	DSMNT		; ATTEMPT TO DISMOUNT FIRST
+		 ERR()		; ERROR IF CAN'T
+		JRST .+1]
+	TLNN C,(1B7)		; Mountable?
+	ERR(MNTX3)		; No
+	EXCH B,(P)		; Save b, get directory read flag
+	PUSHJ P,@MNTD(DEV)	; Call device mount routine
+	ERR(MNTX2)		; Not mountable
+	POP P,B
+	MOVSI C,(1B8)
+	IORB C,DEVCHR(B)	; Mark device as mounted
+	JRST SKMRTN
+
+; Dismount device
+; Call:	1	; Device designator
+;	DSMNT
+; Return
+;	+1	; Error
+;	+2	; Ok
+
+^.DSMNT:JSYS MENTR
+	UMOVE A,1
+	PUSHJ P,CHKDEV
+	ERR()			; Illegal designator or not available
+	TLNN C,(1B8)		; Mounted?
+	ERR(DEVX3)		; No, can't dismount
+	PUSH P,B
+	PUSHJ P,@DSMD(DEV)	; Call device dismount
+	ERR(DSMX1)		; Files open, can't dismount
+	MOVSI C,(1B8)
+	POP P,B
+	ANDCAM C,DEVCHR(B)	; Mark as not mounted
+	AOS (P)
+	JRST MRETN
+
+; Initialize directory
+; Call:	1	; Device designator
+;	INIDR
+; Return
+;	+1	; Error
+;	+2	; Ok
+
+^.INIDR:JSYS MENTR
+	UMOVE A,1
+	PUSHJ P,CHKDEV
+	ERR()
+	TLNN C,(1B8)
+	ERR(DEVX3)		; Not mounted
+	PUSHJ P,@INDD(DEV)
+	AOS (P)
+	JRST MRETN
+
+; Read directory
+
+^.RDDIR:JSYS MENTR
+	PUSHJ P,CHKDEV
+	JRST MRETN
+	MOVEI B,(DEV)
+IFDEF DTAN,<CAIE B,DTADTB>
+	ERR(RDDIX1)
+IFDEF DTAN,<
+	PUSH P,A
+	PUSHJ P,DRWAIT
+	POP P,A
+	MOVS B,DTASTS(A)
+	TRNE B,DIRIC
+	TLNN B,777777
+	ERR(RDDIX1)
+	UMOVE A,2
+	HRR B,A
+	XCTMU [BLT B,177(A)]
+	JRST SKMRTN>
+
+; File directory free space
+; Call:	1	; Device designator (must be dsk for now)
+;	2	; User number
+;	FDFRE
+; Returns
+;	+1	; Error
+;	+2	; Success, in 2 the space left in the specified fd
+^.FDFRE:JSYS MENTR
+	PUSHJ P,CHKDEV
+	ERR()			; Some kind of error
+	TLNN C,(1B4)
+	ERR(FDFRX1)		; Don't know about non-mdd stuff
+	UMOVE A,2		; Get directory number
+	PUSHJ P,GETDDB
+	ERR(FDFRX2)		; No such user
+	UNLOCK DIRLCK
+	UMOVE A,2
+	PUSHJ P,MAPDIR
+	MOVE A,DIRFRE+2
+	UMOVEM A,2
+	JRST SKMRTN
+
+; Special file operation
+; Call:	1	; Jfn
+;	2	; Operation desired
+;	MTOPR
+
+^.MTOPR:JSYS MENTR
+	UMOVE JFN,1
+	PUSHJ P,CHKJFN
+	ERABRT()
+	JFCL
+	ERABRT(DESX4)
+	TEST(NN,OPENF)
+	ERABRT(CLSX1,<PUSHJ P,UNLCKF>)
+	TEST(Z,ERRF,EOFF)
+	UMOVE B,2
+	PUSHJ P,@MTPD(DEV)
+	PUSHJ P,UNLCKF
+	JRST MRETN
+
+; Error number to string
+; Call:	1	; Output designator
+;	2	; Error number
+;	ERSTR
+
+^.ERSTR:JSYS MENTR
+	HLRZ 1,2
+	PUSHJ P,SETLFK		; Map psb of the fork
+	UMOVE B,3
+	HRLZI C,ERRSAV(1)
+	HRRI C,4
+	TRNN B,1B19
+	BLT C,10
+	XCTUU [HRRZ C,2]
+	CAIN C,777777
+	MOVE C,LSTERR(1)
+	ANDI C,37777
+	CAIL C,1000
+	JRST MRETN		; Illegal error number
+; We now have error number in c, parameters in 4-10, bits and count in b
+	PUSH P,B
+	HRROI 2,[ASCIZ /<SYSTEM>ERROR.MNEMONICS/]
+	MOVSI 1,100001
+	GTJFN			; Get jfn for error mnemonics
+	JRST NOFIL
+	MOVE 2,[XWD 440000,200000]
+	PUSH P,1
+	JSYS 21
+	JRST [	POP P,1
+		RLJFN
+		JFCL
+		JRST NOFIL]
+	POP P,1
+	ANDI C,777
+	RIN			; Read byte number of message
+	JUMPE 2,NOFIL2
+	PUSH P,2
+	MOVEI 2,7
+	SFBSZ
+	BUG(HLT,<ERSTR: SFBSZ FAILED FOR ERROR.MNEMONICS.>)
+	POP P,2
+	SFPTR			; Start reading here
+	JRST NOFIL2
+	POP P,C
+	HLRES C
+	SKIPE C
+	AOS C
+
+CPYER1:	BIN
+	CAIN 2,"@"
+	JRST ERSTDN
+	CAIN 2,"%"
+	JRST EXPND
+	PUSHJ P,ERST9
+	JRST [	AOS (P)
+		JRST NOFIL2]
+	JRST CPYER1
+
+ERST9:	SKIPE C
+	SOJLE C,CPOPJ
+	PUSHJ P,SAVAC
+	UMOVE JFN,1
+	PUSHJ P,ERBOUT
+	SOS -NSAC(P)
+	UMOVEM JFN,1
+	PUSHJ P,RESAC
+	JRST SKPRET
+
+ERBOUT:	PUSHJ P,CHKJFN
+	POPJ P,
+	JFCL
+	JFCL
+	TEST(NE,ENDF)
+	JRST UNLCKF
+	TEST(NE,OPENF)
+	TEST(NN,WRTF)
+	JRST UNLCKF
+	AOS (P)
+	JRST BYTOUA
+
+NOFIL:	POP P,B
+	MOVE D,[POINT 7,[ASCIZ /CANNOT FIND ERROR MESSAGE FILE/]]
+NOFILL:	ILDB B,D
+	JUMPE B,MRETN
+	PUSHJ P,ERST9
+	JRST MRETN
+	JRST NOFILL
+
+EXPND:	MOVEI D,0
+	BIN
+	CAIN B,"%"
+	JRST CPYER1
+EXPND1:	CAIG 2,"9"
+	CAIGE 2,"0"
+	JRST EXPNDD
+	IMULI D,=10
+	ADDI D,-60(B)
+	BIN
+	JRST EXPND1
+
+EXPNDD:	CAIN B,"E"
+	JRST EXPEXP
+	CAIL D,5
+	JRST EXPND
+	CAIN B,"A"
+	JRST EXPASC
+	CAIN B,"O"
+	JRST EXPOCT
+	CAIN B,"D"
+	JRST EXPOCT
+	CAIN B,"H"
+	JRST EXPHLF
+	CAIN B,"F"
+	JRST EXPFLT
+	CAIN B,"L"
+	JRST EXPLOC
+	CAIN B,"N"
+	JRST EXPJFN
+	CAIE B,"@"
+	JRST EXPND
+	JRST EXPND
+
+EXPEXP:	JRST EXPND
+
+EXPASC:	MOVE B,ERRSAV(D)
+	PUSHJ P,ERST9
+	JRST ERSTD0
+	JRST EXPND
+
+EXPOCT:	MOVE B,ERRSAV(D)
+	MOVEI D,10
+	PUSHJ P,ERNOUT
+	JRST ERSTD0
+	JRST EXPND
+
+EXPDEC:	MOVE B,ERRSAV(D)
+	MOVEI D,12
+	PUSHJ P,ERNOUT
+	JRST ERSTD0
+	JRST EXPND
+
+ERNOUT:	PUSH P,A
+	MOVE A,B
+	PUSHJ P,ERNOU1
+	SOS -1(P)
+	POP P,A
+	JRST SKPRET
+
+ERNOU1:	IDIV A,D
+	HRLM A+1,(P)
+	JUMPE A,.+3
+	PUSHJ P,ERNOU1
+	POPJ P,
+	HLRZ B,(P)
+	ADDI B,"0"
+	JRST ERST9
+
+EXPHLF:	MOVE D,ERRSAV(D)
+	PUSH P,D
+	HLRZ B,D
+	MOVEI D,10
+	PUSHJ P,ERNOUT
+	JRST ERSTD1
+	POP P,D
+	MOVEI B,","
+	PUSHJ P,ERST9
+	JRST ERSTD0
+	PUSHJ P,ERST9
+	JRST ERSTD0
+	HRRZ B,D
+	MOVEI C,10
+	PUSHJ P,ERNOUT
+	JRST ERSTD0
+	JRST EXPND
+
+EXPFLT:
+EXPLOC:
+EXPJFN:	JRST EXPND
+
+ERSTD1:	POP P,D
+	JRST ERSTD0
+
+ERSTDN:	AOS (P)
+	AOS (P)
+ERSTD0:NOFIL2:	CLOSF
+	JFCL
+NOFIL1:	RLJFN
+	JFCL
+	JRST MRETN
+
+; Get last error
+; Call:	1	; Fork designator
+;	GETER
+
+^.GETER:JSYS MENTR
+	PUSHJ P,SETLFK
+	MOVE B,LSTERR(1)
+	XCTUU [HRL B,1]
+	UMOVEM B,2
+	MOVEI B,4
+	HRLI B,ERRSAV(1)
+	XCTMU [BLT B,10]
+	JRST MRETN
+
+; Delete deleted files
+
+^.DELDF:JSYS MENTR
+	MOVE B,CAPENB
+	CAME A,JOBDNO
+	TRNE B,WHEEL!OPR
+	JRST .+2
+	JRST MRETN
+	PUSHJ P,GETDDB
+	JRST MRETN
+	UNLOCK DIRLCK
+	OKINT
+	UMOVE JFN,1
+	PUSHJ P,DELDEL
+	JRST MRETN
+
+DELDEW:	MOVEI A,=1000
+	DISMS
+DELDEL:	MOVE E,TODCLK
+	ADDI E,=4000
+	SETZ F,
+	HRLOI A,600000
+	PUSHJ P,CHKDEV
+	POPJ P,
+	HLRZ B,DEVDSP(B)
+	MOVE A,JFN
+	PUSHJ P,SETDIR		; Map the appropriate directory
+	POPJ P,
+	PUSHJ P,ASGPAG		; Get a whole page for stack
+	JRST DELP0		; None free
+	MOVEI A,-1(A)
+	HRLI A,-1000		; Makes a stack pointer
+	PUSH A,P		; Save old p as first thing
+	MOVE P,A
+	MOVE D,SYMBOT
+DELP1:	CAMGE D,SYMTOP
+	JRST DELP2
+	MOVEI A,(P)
+	POP P,P
+	PUSHJ P,RELPAG
+	PUSHJ P,GCDIR
+DELP0:	UNLOCK DIRLCK
+	OKINT
+	JUMPN F,DELDEW
+	POPJ P,
+
+DELP2:	HRRZ A,DIRORG(D)
+	TRNE A,700000
+	AOJA D,DELP1
+	PUSH P,D
+	MOVE D,A
+	PUSHJ P,DELP3
+	JUMPE D,DELP4
+	POP P,A
+	HRRM D,DIRORG(A)
+	AOS D,A
+	JRST DELP1
+
+DELP4:	MOVE D,(P)
+	HLRZ B,DIRORG(D)
+	ADDI B,DIRORG
+	PUSHJ P,RELDFR		; Release name block
+	MOVE D,(P)
+DELP5:	CAMG D,SYMBOT
+	JRST DELP6
+	MOVE A,DIRORG-1(D)
+	MOVEM A,DIRORG(D)
+	SOJA D,DELP5
+
+DELP6:	AOS SYMBOT
+	POP P,D
+	AOJA D,DELP1
+
+DELP3:	CAML E,TODCLK
+	SKIPN D
+	POPJ P,
+	PUSH P,D
+	HRRZ D,FDBVER+DIRORG(D)
+	PUSHJ P,DELP7
+	MOVE A,(P)
+	HRRM D,FDBVER+DIRORG(A)
+	MOVE D,A
+	PUSHJ P,DELTST
+	JRST DELP8
+	PUSHJ P,DELFIL
+	JRST DELP8
+	HRRZ A,FDBVER+DIRORG(D)
+	JUMPE A,[HLRZ B,FDBEXT+DIRORG(D)
+		ADDI B,DIRORG
+		CAIE B,DIRORG
+		PUSHJ P,RELDFR
+		MOVE D,(P)
+		HRRZ A,FDBEXT+DIRORG(D)
+		HRRM A,(P)
+		JRST DELP9]
+	HRRM A,(P)
+	HRRZ B,FDBEXT+DIRORG(D)
+	HRRM B,FDBEXT+DIRORG(A)
+DELP9:	MOVEI B,DIRORG(D)
+	PUSHJ P,RELDFR
+	POP P,D
+	JRST DELP3
+
+DELP8:	HRRZ D,FDBEXT+DIRORG(D)
+	PUSHJ P,DELP3
+	POP P,A
+	HRRM D,FDBEXT+DIRORG(A)
+	MOVE D,A
+	POPJ P,
+
+DELP7:	CAML E,TODCLK
+	SKIPN D
+	POPJ P,
+	PUSH P,D
+	PUSHJ P,DELTST
+	JRST DELPA
+	PUSHJ P,DELFIL
+	JRST DELPA
+	MOVEI B,DIRORG(D)
+	HRRZ D,FDBVER(B)
+	HRRM D,(P)
+	PUSHJ P,RELDFR
+	POP P,D
+	JRST DELP7
+
+DELPA:	HRRZ D,FDBVER+DIRORG(D)
+	PUSHJ P,DELP7
+	POP P,A
+	HRRM D,FDBVER+DIRORG(A)
+	MOVE D,A
+	POPJ P,
+
+DELTST:	MOVE A,FDBCTL+DIRORG(D)
+	TLNE A,FDBDEL!FDBNXF!FDBNEX
+	JRST SKPRET
+	TLNN A,FDBTMP
+	POPJ P,
+	HLRZ A,FDBVER+DIRORG(D)
+	SUBI A,=100000
+	SKIPL A			; If not normal temporary
+	CAMN A,JOBNO		; Or temp for this job
+	JRST SKPRET		; Then skip
+	CAIL A,NJOBS
+	JRST SKPRET
+	PUSH P,B
+	HLRZ B,JOBDIR(A)
+	CAMN B,DIRNUM
+	JRST DELTS1
+	HRRZ B,JOBDIR(A)
+	CAME B,DIRNUM
+	AOS -1(P)
+DELTS1:	POP P,B
+	POPJ P,
+
+^DELFIL:PUSH P,F
+	PUSH P,E
+	PUSH P,D
+	SKIPN A,FDBADR+DIRORG(D)
+	JRST DELFI3
+	TLO A,(1B1)
+	PUSHJ P,ASOFN
+	 JRST [	CAIN A,OPNX16
+		JRST DELFI3	; Bad index block, forget it
+		JRST DELFI1]	; File is open, cannot expunge
+	MOVE D,(P)
+	MOVE E,FDBCTL+DIRORG(D)
+	TLNE E,FDBLNG
+	JRST DELFI4		; Long file
+	PUSHJ P,DELPT
+DELFI3:	MOVE D,(P)
+	SETZM FDBADR+DIRORG(D)
+	SETZM FDBSIZ+DIRORG(D)
+	HRLOI B,7777
+	ANDCAM B,FDBBYV+DIRORG(D)
+	SKIPLE B,DIRORG+FDBACT(D)
+	SOS DIRORG+1(B)
+	MOVSI B,FDBLNG!FDBSHT
+	ANDCAB B,FDBCTL+DIRORG(D)
+	TLNN B,FDBPRM
+	AOS -3(P)
+	TLNN B,FDBPRM
+	AOS -2(P)
+DELFI1:	POP P,D
+	POP P,E
+	POP P,F
+	POPJ P,
+
+DELPT:	HRLZ 2,1
+	MOVEI 1,0
+	PUSHJ P,SETPT
+	AOS 2
+	TRNN 2,777000
+	JRST .-3
+	HLRZ 1,2
+	PUSHJ P,DELOFN
+	POPJ P,
+
+DELFI4:	PUSH P,A
+	PUSHJ P,ASGPAG
+	JRST [	POP P,A
+		PUSHJ P,RELOFN
+		JRST DELFI1]
+	PUSH P,A
+	MOVE B,A
+	HRLI B,140000
+	MOVE A,-1(P)
+	PUSHJ P,SETMPG
+	HRLI B,-1000
+DELFI6:	SKIPN A,(B)
+	JRST DELFI5
+	PUSH P,B
+	MOVE B,-2(P)		; Get ofn of pt table
+	HLLZ B,SPTH(B)		; Get class field
+	TLZ B,760017
+	TLZ A,40
+	IOR A,B
+	PUSHJ P,ASOFN
+	 JRST [	CAIN A,OPNX16
+		JRST DELFI7
+		BUG(HLT,<DELFIL: ASOFN GAVE FAIL RETURN (BUSY) FOR A LONG FILE PAGE TABLE.>)]
+	PUSHJ P,DELPT
+DELFI7:	POP P,B
+	SETZM (B)
+DELFI5:	AOBJN B,DELFI6
+	MOVE B,(P)
+	MOVEI A,0
+	PUSHJ P,SETMPG
+	POP P,A
+	PUSHJ P,RELPAG
+	POP P,A
+	PUSHJ P,DELOFN
+	JRST DELFI3
+
+; Set time and date
+; Call:	1	; Date and time in standard format
+;	STAD
+; Return
+;	+1	; Can't set because not wheel or opr
+;	+2	; Ok
+
+^.STAD:	JSYS MENTR
+	MOVE B,CAPENB
+	TRNN B,WHEEL!OPR
+	SKIPGE TADSEC
+	JRST STAD1
+	MOVEI A,STADX1
+	JRST ERRD
+
+STAD1:	SETZ C,
+	MOVE A,TODCLK
+	IDIVI A,=1000		; Convert to seconds
+	XCTUU [HRRZ B,1]	; Get time
+	SUB B,A			; Compute offset
+	JUMPGE B,.+3
+	ADDI B,=24*=3600	; If less than 0, augment
+	AOJA C,.-2
+	XCTUU [HLRZ A,1]
+	SUB A,C
+	MOVEM A,TADDAY
+	MOVEM B,TADSEC
+STAD2:	MOVE A,JOBNO		; This job
+	HRRZ B,JOBDIR(A)	; User number
+	MOVEM B,LOGBUF+1
+	UMOVE B,1		; Tad as given
+	MOVEM B,LOGBUF+2
+	IORI A,(741B8)		; Tad reset code for fact file
+	MOVSM A,LOGBUF
+	MOVE A,CTRLTT
+	DPB A,[POINT 12,LOGBUF,29] ; Tty
+	MOVE 1,[XWD -3,LOGBUF]	;MAKE FACT FILE ENTRY FOR TIME SET
+	EFACT
+	JFCL
+	JRST SKMRTN
+
+; Read time and date
+; Call:	RTAD
+; Return
+;	+1
+;	1	; Current date and time or -1 if not set
+
+^.GTAD:	JSYS MENTR
+	SKIPGE A+1,TADSEC
+	JRST GTAD1		; Not set
+	MOVE A,TODCLK
+	IDIVI A,=1000
+	ADD A,TADSEC
+	IDIVI A,=24*=3600
+	ADD A,TADDAY
+	HRL A+1,A
+GTAD1:	UMOVEM A+1,1
+	JRST MRETN
+
+LS(TADDAY)
+LS(TADSEC)
+
+; Set fact switch
+; Call:	1	; New setting
+;	SMON
+; Traps if process hasn't log privilege
+
+^.SMON:JSYS MENTR
+	MOVE C,CAPENB
+	TLNN C,LOG
+	ERABRT(EFCTX1)
+	ANDCAM 1,FACTSW
+	AND 2,1
+	IORM 2,FACTSW
+	JRST MRETN
+
+; Read fact switch
+; Call:	TMON
+; Return
+;	+1	; Always
+;	1	; The current fact switch setting
+
+^.TMON:	TDNE 1,FACTSW
+	AOS FPC
+	XCT MJRSTF
+
+; Enter fact file
+; Call:	LH(1)	; Minus entry size
+;	RH(1)	; Location of entry
+;	EFACT
+; Return
+;	+1	; Error
+;	+2	; Ok
+
+^.EFACT:JSYS MENTR
+	MOVE B,CAPENB
+	TLNN B,LOG
+	ERR(EFCTX1)
+	MOVE B,FACTSW
+	TLNN B,(1B0)
+	JRST SKMRTN		; Fact file not on
+	HLRO B,A		; Get size
+	CAMG B,[-=64]
+	ERR(EFCTX2)		; Too big
+	NOINT
+	PUSH P,CAPENB		;SAVE CURRENT CAPS
+	MOVEI A,WHEEL+OPR	;SET BITS TO ENSURE ACCESS TO
+	IORM A,CAPENB		;ACCOUNTS DIRECTORY AND FACT FILE
+	MOVEI C,=30
+EFACT2:	HRROI B,[ASCIZ /<ACCOUNTS>FACT/]
+	MOVSI A,1
+	GTJFN
+	JRST EFACT3
+	PUSH P,1
+	MOVE 2,[XWD 440000,20000]
+	JSYS 21			; Open for append
+	JRST EFACT4
+EFACT6:	POP P,1
+	POP P,CAPENB		;RESTORE CAPS
+	UMOVE C,1
+	UMOVE B,(C)
+	HLRE D,C
+	MOVNS D
+	DPB D,[POINT 6,B,35]
+	JRST .+2
+EFACT1:	UMOVE B,(C)
+	BOUT
+	AOBJN C,EFACT1
+	CLOSF
+	BUG(CHK,<EFACT: CLOSF FAILED TO CLOSE FACT FILE.>)
+	JRST SKMRTN
+
+EFACT4:	CAIE A,OPNX9
+	SETZ C,
+	POP P,1
+	RLJFN
+	JFCL
+	SOJLE C,EFACT3
+	MOVEI A,=4000
+	DISMS
+	JRST EFACT2
+
+EFACT3:	HRROI 2,[ASCIZ /<ACCOUNTS>FACT/]
+	MOVSI 1,400001
+	GTJFN
+	JRST EFACT9
+	MOVEI C,=30
+EFACT8:	PUSH P,1
+	MOVE 2,[XWD 440000,20000]
+	JSYS 21
+	JRST EFACT5
+	JRST EFACT6
+
+EFACT5:	CAIE A,OPNX9
+	JRST EFACT7
+	SOJLE C,EFACT7
+	MOVEI A,=4000
+	DISMS
+	POP P,1
+	JRST EFACT8
+
+EFACT7:	POP P,1
+	RLJFN
+	JFCL
+EFACT9:	POP P,CAPENB		;RESTORE CAPS
+	BUG(CHK,<EFFACT: COULD NOT REFERENCE FACT FILE.>)
+	ERR(EFCTX3)
+
+; Set account for file
+; Call:	1	; Jfn
+;	2	; String pointer of 500000000000+account number
+;	SACTF
+; Return
+;	+1	; Error
+;	+2	; Ok
+
+^.SACTF:JSYS MENTR
+	MOVE JFN,1
+	PUSHJ P,CHKJFN
+	ERR()
+	JFCL
+	ERR(DESX4)
+	HRRZ A,NLUKD(DEV)
+	CAIE A,MDDNAM
+	ERUNLK(SACTX1)
+	PUSHJ P,GETFDB
+	ERUNLK(SACTX4)
+	HRLI A,40000
+	PUSHJ P,DIRCHK
+	ERUNLK(SACTX4,<UNLOCK DIRLCK>)
+	UNLOCK DIRLCK
+	PUSH P,FILACT(JFN)	; Save current contents of this cell
+	UMOVE A,2
+	TLNN A,777777
+	HRLI A,440700
+SACTF1:	CAMG A,[577777777777]
+	CAMGE A,[500000000000]
+	JRST SACTF2		; Pointer
+	MOVEM A,FILACT(JFN)
+	PUSHJ P,INSACT
+	JRST SACTF3
+
+SACTF2:	MOVE B,MODES
+	TLNN B,(1B1)
+	ERUNLK(SACTX3)		; Alphanumeric accounts not allowed
+	PUSHJ P,CPYFUS		; Copy from the user
+	ERUNLK(SACTX2)		; Cannot copy
+	HRRZM A,FILACT(JFN)
+	PUSHJ P,INSACT
+	HRRZ B,FILACT(JFN)
+	MOVEI A,JSBFRE
+	PUSHJ P,RELFRE
+SACTF3:	POP P,FILACT(JFN)
+	PUSHJ P,UNLCKF
+	JRST SKMRTN
+
+; Get account of file
+; Call:	1	; Jfn
+;	2	; Core location to put string if any
+;	GACTF
+; Return
+;	+1	; Error
+;	+2
+;	2	; 500000000000+number of string pointer
+
+^.GACTF:JSYS MENTR
+	MOVE JFN,1
+	PUSHJ P,CHKJFN
+	ERR()
+	JFCL
+	ERR(DESX4)
+	HRRZ A,NLUKD(DEV)
+	CAIE A,MDDNAM
+	ERR(GACTX1)
+	PUSHJ P,GETFDB
+	ERUNLK(GACTX2)
+	SKIPLE B,FDBACT(A)
+	JRST GACTF1
+	TLZ B,700000
+	UMOVEM B,2
+	UNLOCK DIRLCK
+	PUSHJ P,UNLCKF
+	AOS (P)
+	JRST SKMRTN
+
+GACTF1:	UMOVE E,2
+	HRLI E,440700
+	UMOVEM E,2
+	HRLI E,DIRORG+2(B)
+	HRRZ B,DIRORG(B)
+	ADDI B,-3(E)
+	XCTMU [BLT E,(B)]
+	UNLOCK DIRLCK
+	PUSHJ P,UNLCKF
+	JRST SKMRTN
+
+; Login
+
+^.LOGIN:JSYS MENTR
+	MOVE A,JOBNO
+	MOVEI B,777777
+	TDNE B,JOBDIR(A)	; Is this job currently logged in?
+	ERR(LGINX5)
+	UMOVE A,1
+	PUSHJ P,GETDDB		; Get directory descriptor block
+	ERR(LGINX2)
+	MOVE B,DDBGRP(A)
+	MOVEM B,GROUPS
+	MOVE B,DDBMOD(A)	; Get mode bits
+	MOVEM B,MODES
+	TLNE B,(1B0)
+	ERR(LGINX2,<UNLOCK DIRLCK>)
+	PUSHJ P,CHKPSW
+	ERR(LGINX4,<UNLOCK DIRLCK>)
+	MOVE B,DDBPRV(A)
+	HRRM B,CAPMSK
+	HLLOS CAPENB
+	PUSH P,A
+	UMOVE A,3
+	PUSHJ P,SETACT		; Set account number/string
+	ERR(LGINX1,<UNLOCK DIRLCK>)	; Bad account number
+	GTAD
+	POP P,B
+	HRRZ C,0(B)
+	CAILE C,DDBDAT		; Does this user have a ddbdat
+	SKIPGE A
+	JRST .+2
+	EXCH A,DDBDAT(B)
+	XCTUU [EXCH A,1]
+	MOVEM A,JOBDNO
+	HRLS A
+	MOVE B,JOBNO
+	MOVEM A,JOBDIR(B)
+	UNLOCK DIRLCK
+	PUSHJ P,LOGONM		; Type logon message
+	TIME
+	MOVEM A,CONSTO
+	MOVE A,JOBNO
+	SETZM JOBRT(A)
+	SETZM CAPENB
+	JRST SKMRTN
+
+; Change account
+
+^.CACCT:JSYS MENTR
+	MOVE A,JOBNO
+	MOVE B,JOBDIR(A)
+	TRNN B,777777
+	ERR(CACTX2)
+	UMOVE A,1
+	PUSHJ P,SETACT
+	ERR(CACTX1)
+	PUSHJ P,LOGCJM
+	TIME
+	MOVEM A,CONSTO
+	MOVE A,JOBNO
+	SETZM JOBRT(A)
+	JRST SKMRTN
+
+SETACT:	CAML A,[500000000000]
+	CAMLE A,[577777777777]
+	JRST .+2
+	JRST SETACN		; Numeric
+	MOVE B,MODES
+	TLNN B,(1B1)
+	POPJ P,			; Numeric account required
+	MOVE B,A
+	MOVEI A,ACCTSR-1
+	PUSHJ P,CPYFU1		; Copy account string
+	BUG(HLT,<CACCT: IMPOSSIBLE FAILURE OF CPYFU1.>)
+	HLRE B,A
+	MOVNS B
+	ADDI B,2
+	MOVEM B,ACCTSL
+	HRLI A,(<POINT 7,0,35>)
+SETACN:	MOVEM A,ACCTPT
+	JRST SKPRET
+
+;PASSWORD CHECK FOR INTERNAL USE
+; 1/ directory number
+; 2/ password string ptr
+
+PASSWC:	MOVEI A,0(A)
+	PUSH P,2
+	PUSHJ P,GETDDB
+	JRST [	POP P,2
+		POPJ P,]
+	POP P,2
+	PUSHJ P,CHKPSX
+	CAIA
+	AOS 0(P)
+	UNLOCK DIRLCK
+	POPJ P,
+
+CHKPSW:	UMOVE B,2
+CHKPSX:	PUSH P,B
+	HLRZ B,DDBNAM(A)	; Get pointer to password
+	JUMPE B,[SUB P,[XWD 1,1]
+		POPJ P,]
+	MOVE C,DIRORG+1(B)
+	TLNN C,774000
+	JRST [	SUB P,[XWD 1,1]
+		POPJ P,]	; Null password never matches
+	HRLI B,(<POINT 7,0,35>)
+	ADDI B,DIRORG
+	POP P,C
+	JUMPGE C,CHKPS1
+	CAML C,[777777000000]
+	HRLI C,(<POINT 7,0>)
+CHKPS1:	XCTMU [ILDB D,C]
+	ILDB E,B
+	CAME D,E
+	POPJ P,
+	JUMPN D,CHKPS1
+	JRST SKPRET
+
+; Connect to directory
+; Call:	1	; Directory number (b0 for check of pswd only)
+;	2	; String pointer to password
+;	CNDIR
+; Return
+;	+1	; Error
+;	+2	; Ok
+
+^.CNDIR:JSYS MENTR
+	MOVE A,JOBNO
+	HRRZ B,JOBDIR(A)	; Get directory of login
+	UMOVE A,1
+	JUMPL A,CNCHK		; Check only wanted
+	CAIN B,0		; Must be logged in to connect
+	ERR(CNDIX5)
+	CAMN A,B
+	JRST CNDIR3		; Can always connect to login directory
+	PUSHJ P,GETDDB
+	ERR(CNDIX3)		; No such directory
+	MOVE B,CAPENB
+	TRNE B,WHEEL!OPR
+	JRST CNDIR2		; Bypass checks for wheels and oprs
+	HLRZ B,DDBNAM(A)	; Does this directory have a password
+	JUMPE B,CNDIR1		; No
+	PUSHJ P,CHKPSW		; Yes, check it
+	JRST CNDIR1		; Wrong password, still ok if access
+	JRST CNDIR2		; Correct password, success
+
+CNDIR1:	UNLOCK DIRLCK
+	OKINT
+	UMOVE A,1
+	HRRZS A
+	PUSHJ P,SETDIR		; Map the directory
+	JRST CNDIRQ
+	MOVSI A,XCTF
+	PUSHJ P,DIRCHK		; Do we have the proper access to this
+	JRST CNDIRE
+CNDIR2:	UNLOCK DIRLCK
+CNDIR3:	UMOVE A,1
+	MOVE B,JOBNO
+	HRLM A,JOBDIR(B)
+	HRRZM A,JOBDNO
+	JRST SKMRTN
+
+CNCHK:	CAIE B,0
+	ERR(CNDIX4)		; Logged in
+	HRRZS A
+	PUSHJ P,GETDDB
+	ERR(CNDIX3)
+	PUSHJ P,CHKPSW
+	JRST CNDIRE
+	UNLOCK DIRLCK
+	JRST SKMRTN
+
+CNDIRQ:	BUG(CHK,<CNDIR - SETDIR FAILED>)
+	MOVEI 1,CNDIX3
+	JRST ERRD
+
+CNDIRE:	MOVEI 1,=3000
+	DISMS			;WAIT 3 SECS TO FOIL PASSWORD THIEVES
+	UNLOCK DIRLCK
+	MOVEI 1,CNDIX1
+	JRST ERRD
+
+	BENDP	JSYS
+
+; Copy string to user
+; Call:	A	; User pointer
+;	B	; Locatin of string block
+;	PUSHJ P,CPYTUS
+
+CPYTUS:	JUMPGE A,STDIR0
+	CAML A,[777777000000]
+	HRLI A,(<POINT 7,0>)
+STDIR0:	HRLI B,(<POINT 7,0,35>)
+STDIR2:	ILDB C,B
+	JUMPE C,STDIR3
+	XCTMU [IDPB C,A]
+	JRST STDIR2
+
+STDIR3:	UMOVEM A,2
+	XCTMU [IDPB C,A]
+	POPJ P,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         

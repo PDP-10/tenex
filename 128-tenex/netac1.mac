@@ -1,0 +1,1772 @@
+IFDEF	NETN,<
+	BEGINP	NETWRK		R.S.TOMLINSON	3 DECEMBER 1971	1700:
+
+USE
+
+; Entries to this part
+
+; Externally defined things
+
+EXTERN	MULKMP
+EXTERN	PSIRQ	; Generate psi request
+EXTERN	MRETNE	; Error return to user
+EXTERN	IMPLCK	; Aos this to prevent control msg processing
+EXTERN	FKINT	; Bit 1 tested to see if deferred int
+EXTERN	EDISMS	; Dismiss til test
+EXTERN	MLKPG	; Lock page
+EXTERN	MULKPG	; Unlock page
+EXTERN	FPTA	; Find page table from address
+EXTERN	PSIBW	; Breaks waiting mask
+EXTERN	INSKED	; Flag says in scheduler
+EXTERN	NSKED
+EXTERN	RSKED
+EXTERN	NETTIM
+EXTERN	IMPBUG	; Bugchk for imp-netwrk stuff
+
+; Linkage to imp driver section
+
+EXTERN	IMPALL,IMPSRO,NETON,IMPCLL,IMPOPL,IMPCLS,IMPINR,IMPINS
+EXTERN	IMPRTS,IMPSTR,IMPRRP,IMSRST,ASNPTY,PTYDET,IMPHRT,IMPRDY
+
+INTERN	NSKT,NHOSTS,HOSTN,HOSTAB,NETHDN,NETDWN,NETCHK,RECRST
+INTERN	RECINS,RECINR,NETKFK
+INTERN	RECSTR,RECRTS,RCRFNM,RECCLS,PLINK,PFHST,PFSM,LHOSTN
+INTERN	PBPBYT,PBFSIZ,PBPBUF,PBPBPO
+INTERN	EOTF,RFNMB,ERRB,.ATPTY,.CVSKT,PTYCLZ
+
+; Macros to turn imp on and off
+
+DEFINE	IMPON<SOS IMPLCK>
+
+DEFINE	IMPOFF<AOS IMPLCK>
+
+; Local accumulators
+
+UNIT_5		; Pseudo-unit number
+IOS_6		; Status flags (loaded from netsts(unit))
+
+; Parameters
+
+BUFSIZ__200	; Buffer size (best if this be power of two)
+NBUF_NNETBF	; Number of buffers
+NAVB__(NBUF+=35)/=36	; Number of words for netavb
+FLINK__2	; First link number to use
+
+; Control messages opcodes
+
+NOP__0		; No operation
+RTS__1		; Receiver to sender request for connection
+STR__2		; Sender to receiver request for connection
+CLS__3		; Close connection
+ALL__4		; Notify sender of space allocated by receiver for messages
+GVB__5		; Give back space (request for neg allocate)
+RET__6		; Space returned (resp to gvb)
+INR__7		; Interrupt receiver???
+INS__10		; Interrupt sender
+ECO__11		; Echo this message
+ERP__12		; This is the echo
+ERR__13		; Here is an error message
+
+; Storage
+
+LS(LSKT,NSKT)		; Local socket number
+LS(FSKT,NSKT)		; Foreign socket number
+LS(NETAWD,NSKT)		; B0-8 -- foreign host number (777 for none)
+			; B9-17 -- link number (0 for none)
+			; B18-23 -- time-out countdown
+			; B24-26 -- unused
+			; B27-35 -- assigned link number
+LS(NETBAL,NSKT)		; Bits of allocation
+LS(NETBUF,NSKT)		; B0-17 -- bytes per buffer
+			; B18-35 -- buffer location -1 (0 for none)
+LS(IMPPTR,NSKT)		; Pointer for emptying/loading buffers
+LS(NETEND,NSKT)		; Byte pointer to last byte of buffer
+LS(NETSTS,NSKT)		; B0-3 -- fsm state
+			; B4-11 -- flag bits
+			; B12-17 -- bit stream byte size
+			; B18-35 -- message allocation
+LS(NETCNT,NSKT)		; Send: bytes remaining to be sent
+			; Recv: bytes remaining to be seen by program
+LS(NETFRK,NSKT)		; B0-b5 -- interrupt channel for ins
+			; B6-b11 -- interrupt channel for inr
+			; B12-b17 -- unused
+			; B18-b35 -- forkx of fork to interrupt
+LS(SKTLCK)		; Lock on assigning socket slots
+LS(NETAVB,NAVB)		; Mask of available net buffers
+LS(NETAVC)		; Count of available buffers
+LS(NETAVL)		; Lock on netavb
+LS(NETCNC)		; Count of total conections opened
+LS(FUNNYC)		; Count of funny inputs to fsm
+NR(NETBFS,NBUF*BUFSIZ)	; Buffers
+
+; Flags in lh of netsts
+
+FLG(BFSND,L,IOS,020000)	; Buffered send mode
+FLG(ERRB,L,IOS,010000)	; Error has occurred
+FLG(EOTF,L,IOS,004000)	; End of transmission flag
+FLG(RFNMB,L,IOS,002000)	; Outstanding rfnm bit
+FLG(ORFNB,L,IOS,001000)	; RFNM NOTICED AS OUTSTANDING
+FLG(DEDF,L,IOS,000400)	; Host is dead
+FLG(KILDF,L,IOS,000200)	; Set if socket is to be freed from kild state
+
+; Pointers to various fields of a connection
+
+PLINK:	POINT 9,NETAWD(UNIT),8	; Pointer to link number
+PLNK2:	POINT 9,NETAWD(UNIT),35	; Pointer to assigned link
+PFHST:	POINT 9,NETAWD(UNIT),17	; Pointer to foreign host number
+PCLKS:	POINT 6,NETAWD(UNIT),23	; Pointer to time-out counter
+PINSCH:	POINT 6,NETFRK(UNIT),5	; Pointer to ins psi channel
+PINRCH:	POINT 6,NETFRK(UNIT),11	; Pointer to inr psi channel
+PFSMCH:	POINT 6,NETFRK(UNIT),17	; POINTER TO PSI CHANNEL FOR FSM CHANGE
+PFSM:	POINT 4,NETSTS(UNIT),3	; Pointer to current state of fsm
+PBPBYT:	POINT 6,NETSTS(UNIT),17	; Pointer to net bit stream byte size
+PBFSIZ:	POINT 18,NETBUF(UNIT),17; Pointer to bytes per buffer
+PBPBUF:	POINT 6,IMPPTR(UNIT),11	; Pointer to buffer byte size
+PBPBPO:	POINT 6,IMPPTR(UNIT),5	; Pointer to byte position
+PBPEBF:	POINT 6,NETEND(UNIT),11	; Pointer to size field of end pointer
+PBPEPO:	POINT 6,NETEND(UNIT),5	; Pointer to posn field of end pointer
+
+; Bbn socket numbers description
+; A socket number is a 32-bit number which in conjunction with
+; A host number specifies one end of a connection
+; For bbn sockets, the 32 bit field is divided in 3 parts:
+; The high 17 bits is used as follows:
+;  if 0:      then this is a system socket
+;  if <100000 then the number is a bbn user number and the socket is
+;             is called a user socket
+;  if >99999  then the number is tss job-number plus 100000, and the
+;             socket is called a job socket
+
+; A job socket is analogous to a temporary file and is guaranteed to
+; Be unique to that job.  a user socket is analogous to a regular file
+; And is guaranteed to be unique to that user.  a system socket is
+; For use as agreed upon by members of the network for such purposes
+; As inter system communication, memo-distribution etc.
+
+; The next 14 bits are an arbitrary number which may be defaulted
+; To the jfn associated with the socket or specified by the name field
+; Of the file name string.  the low order bit is determined by
+; The gender of the socket.  a socket opened for for writing
+; Will have this bit equal to one. a socket opened for reading will
+; Have this bit equal to zero.
+
+; Network dispatch table
+
+USE SWAPPC
+
+^NETDTB:NETSET		; Directory setup
+	NETNAM		; Name lookup
+	NETEXT		; Extension lookup
+	NETVER		; Version lookup
+	CPOPJ		; Protection insert
+	CPOPJ		; Account insert
+	CPOPJ		; Status insert
+	NETOPN		; Open
+	NETSQI		; Byte input
+	NETSQO		; Byte output
+	NETCLZ		; Close
+	CPOPJ		; Rename
+	CPOPJ		; Delete
+	CPOPJ		; Dump
+	CPOPJ
+	CPOPJ		; Mount
+	CPOPJ		; Dismount
+	CPOPJ		; Initialize
+	NETMTP		; Mtopr
+	NETGST		; Get status
+	NETSST		; Set status
+
+; Host tables
+
+USE
+
+HOSTAB:	SIXBIT /  UCLA/
+	SIXBIT /UCLA36/
+	SIXBIT /SRIARC/
+	SIXBIT /   NIC/
+	SIXBIT / SRIAI/
+	SIXBIT /  UCSB/
+	SIXBIT /  UTAH/
+	SIXBIT /   BBN/
+	SIXBIT /  BBNB/
+	SIXBIT /MULTCS/
+	SIXBIT / MITDG/
+	SIXBIT /  RAND/
+	SIXBIT /RAND10/
+	SIXBIT /   SDC/
+	SIXBIT /HARV10/
+	SIXBIT / HARV1/
+	SIXBIT /HARV11/
+	SIXBIT /LNC360/
+	SIXBIT /LNCTX2/
+	SIXBIT /  STAN/
+	SIXBIT /   ILL/
+	SIXBIT /  CASE/
+	SIXBIT /  CARN/
+	SIXBIT / PAOLI/
+	SIXBIT /  AMES/
+	SIXBIT /AMES36/
+	SIXBIT / MITRE/
+	SIXBIT / RADCH/
+	SIXBIT /RADCTP/
+	SIXBIT / NBS11/
+	SIXBIT /NBSTIP/
+	SIXBIT /  ETAC/
+	SIXBIT /TINKER/
+	SIXBIT /MCCLEL/
+	SIXBIT /   USC/
+	SIXBIT /USCTIP/
+	SIXBIT /   GWC/
+	SIXBIT /  NCAR/
+	SIXBIT /NCARTP/
+	SIXBIT /BBNTIP/
+NHOSTS__.-HOSTAB
+	BLOCK 10		; Patch space
+
+HOSTN:	1
+	101
+	2
+	2
+	102
+	3
+	4
+	105
+	205
+	6
+	106
+	7
+	107
+	10
+	11
+	111
+	211
+	12
+	112
+	13
+	14
+	15
+	16
+	17
+	220
+	20
+	221
+	22
+	222
+	23
+	223
+	224
+	25
+	26
+	27
+	227
+	230
+	31
+	231
+	236
+IFN .-HOSTN-NHOSTS,<PRINTX /HOSTN AND HOSTAB ARE NOT THE SAME LENGTH.
+/>
+	BLOCK 10		; Patch space
+
+USE SWAPPC
+
+; Initialize network stuff
+
+USE
+
+^NETINI:SETZM LSKT
+	MOVE A,[XWD LSKT,LSKT+1]
+	BLT A,LSKT+NSKT-1
+	SETZM NETSTS
+	MOVE A,[XWD NETSTS,NETSTS+1]
+	BLT A,NETSTS+NSKT-1
+	SETZM NETCNC
+	IFG NAVB-1,<
+	SETOM NETAVB
+	MOVE A,[XWD NETAVB,NETAVB+1]
+	BLT A,NETAVB+NAVB-1
+>
+	MOVNI A,1
+	LSH A,NAVB*=36-NBUF
+	MOVEM A,NETAVB+NAVB-1
+	MOVEI A,NBUF
+	MOVEM A,NETAVC
+	SETOM SKTLCK
+	SETOM NETAVL
+	SETZM FUNNYC
+	SETOM NETON		; Net on
+	POPJ P,
+
+USE SWAPPC
+
+; Prepare to lookup network names
+
+NETSET:	NOINT
+	JRST SK2RET		; Complicated huh?
+
+; Name lookup routine
+
+NETNAM:	TEST(NN,NREC,NREC1)	; Recognition always
+	JRST AMBRET		; Produces ambiguous return
+	JUMPE A,NAMBAD		; *. -- failure
+	HRLI A,(<POINT 7,0,35>)	; Make lookup pointer into byte pointer
+	PUSHJ P,NAMDEC		; Decode name
+	JRST NAMBAD		; Bad syntax
+OKRET:	TEST(NE,UNLKF)
+	JRST SK2RET
+	OKINT
+	JRST SK2RET
+
+AMBRET:	TEST(NN,UNLKF)
+	AOS (P)
+ERRET:	OKINT
+	POPJ P,
+
+NAMBAD:	MOVEI A,GJFX18
+	JRST ERRET		; Error return
+
+; Extension lookup routine
+
+NETEXT:	TEST(NN,NREC,NREC1)	; Recognition always
+	JRST AMBRET		; Produces ambiguous return
+	JUMPE A,NAMBAD		; .* -- failure
+	HRLI A,(<POINT 7,0,35>)	; Make lookup pointer into byte pointer
+	PUSHJ P,EXTDEC		; Decode extension to check syntax
+	JRST EXTBAD		; Bad syntax
+	PUSHJ P,HSTCHK
+	JRST EXTBAD
+	JRST OKRET		; Success
+
+EXTBAD:	MOVEI A,GJFX19
+	JRST ERRET
+
+; Version lookup
+
+NETVER:	HRRES A			; Extend sign
+	CAIGE A,=100000		; If lss 100000
+	HRRZ A,FILDDN(JFN)	; Then use user number
+	TEST(NE,UNLKF)
+	JRST SKPRET
+	OKINT
+	JRST SKPRET
+	
+; Decode extension string
+; Called both at gtjfn and openf to decode extension string into
+; Foreign socket number and host number
+
+EXTDEC:	MOVEI B,6		; 6 chars max in host name
+	SETZ C,			; Accumulate sixbit name here
+EXTDE0:	ILDB D,A		; Loop to here for each character
+	CAIL D,140
+	SUBI D,40		; Convert lower case to upper case
+	CAIE D,"-"
+	CAIG D,40
+	 JRST EXTDE3
+EXTDE2:	SUBI D,40		; Convert to sixbit
+	ROT D,-=6
+	ROTC C,6		; Shift into name
+	SOJG B,EXTDE0		; Do for six chars
+	ILDB D,A		; Get next
+EXTDE3:	JUMPE D,EXTDE5		; No socket number
+	CAIE D,"-"
+	POPJ P,			; Host name must be followed by -
+	MOVSI B,-NHOSTS
+	CAMN C,HOSTAB(B)	; Search host table for match
+	JRST EXTDE4
+	AOBJN B,.-2
+	TDNN C,[777777505050]	; No such host, was octal number typed?
+	TRNN C,202020		; Will be 2x2x2x if so
+	 POPJ P,		; Not number either
+	ANDI C,070707		; Extract digits
+	LSHC C,-3		; Pack together
+	LSH C,-3
+	LSHC C,-3
+	LSH C,-3
+	LSHC C,6
+	TRNE C,77		; No site 0
+	CAILE C,377		; Nor above 377
+	 POPJ P,
+	PUSH P,A
+	PUSH P,C
+	IDIVI C,=36		; Convert host number to bit address
+	MOVSI B,400000
+	MOVN D,C+1
+	ROT B,(D)
+	TDNE B,IMPHRT(C)	; Is this host alive?
+	 JRST EXTDE6		; Yes, already to go
+	MOVE A,0(P)		; Get host number
+	PUSHJ P,IMSRST		; Send rst
+	MOVEI A,=10000
+	DISMS			; Wait 10 sec
+EXTDE6:	POP P,D
+	POP P,A
+	JRST EXTDE7
+
+EXTDE4:	MOVE D,HOSTN(B)		; Get corresponding host number
+EXTDE7:	MOVEI C,10
+	NIN			; Convert remainder of string to number
+	POPJ P,			; No number there
+	LDB C,A			; Get terminator
+	JUMPN C,CPOPJ		; String too long
+	MOVE A,D
+	JRST SKPRET		; Return in a host number, in b socket
+
+EXTDE5:	JUMPN C,CPOPJ		; If any part of host name spec'ed, fail
+	SETOB A,B
+	JRST SKPRET		; Else return -1's
+
+; Decode name string
+; Called both at gtjfn and openf to decode name string into
+; Local socket number
+
+NAMDEC:	MOVEI C,10		; Perhaps this should be decimal?
+	NIN			; Convert to a number
+	JRST NAMDE1		; Failure: no number there
+	LDB C,A			; Get terminator
+	CAIE C,"#"		; If not number sign
+	JRST NAMDE2		; Then ordinary
+	MOVE C,CAPMSK		; Else system socket
+	TRNN C,WHEEL!OPR	; Must be operator or wheel
+	POPJ P,			; Else fail
+	ILDB C,A		; Get next ch
+	TDZA A,A		; Zero for high 17 bits
+NAMDE2:	HRRZ A,FILVER(JFN)	; Use filver for high 17 bits
+	JUMPN C,CPOPJ		; String too long
+	ANDI B,77776
+	ROT A,=15
+	IOR A,B
+	JRST SKPRET
+
+NAMDE1:	LDB C,A
+	JUMPN C,CPOPJ		; Not number, fail
+	MOVE B,JFN		; Default to jfn
+	LSH B,3			; Jfn will end up lsh'ed 3
+	JRST NAMDE2
+
+; Open network file
+
+NETOPN:	TEST(NE,XCTF,RNDF)
+	JRST ILLACC		; Illegal to access in append or xct
+	TEST(NE,READF)
+	TEST(NN,WRTF)
+	TEST(NN,READF,WRTF)
+	JRST ILLACC		; Must be only one of read or write
+	LDB A,PBYTSZ
+	CAIG A,=36
+	CAIG A,0
+	 JRST [	MOVEI A,SFBSX2
+		POPJ P,]	; Bad byte size
+	HLRZ A,FILNEN(JFN)
+	HRLI A,(<POINT 7,0,35>)
+	PUSHJ P,NAMDEC		; Decode name
+	JRST ILLACC		; Can only happen if wheel lost
+	TEST(NE,WRTF)
+	TROA A,1		; If writing set gender bit for local
+	TRZ A,1			; Else clear it
+	PUSH P,A		; Save for later
+	HRRZ A,FILNEN(JFN)
+	HRLI A,(<POINT 7,0,35>)
+	PUSHJ P,EXTDEC		; Decode extension
+	BUG(HLT,<NETOPN: EXTDEC FAILURE AFTER PREVIOUS NON-FAILURE.>)
+	TEST(NE,READF)
+	TROA B,1		; If reading set gender bit for forskt
+	TRZ B,1			; Else clear
+	POP P,C
+	LDB D,PBYTSZ		; Get file byte size
+	CAIN D,7
+	MOVEI D,8		; Make ascii be net ascii
+	JUMPL A,OPNLSN		; No foreign socket, do a listen
+	PUSHJ P,CONNECT		; Connect
+	 POPJ P,
+	TEST(Z,WNDF)		; Remember this was not a listen
+
+NETOP1:	HRLM UNIT,DEV		; Remember unit number
+	HRLM UNIT,FILDEV(JFN)
+	SETZ IOS,		; Clear status bits
+	LDB A,[POINT 4,STS,35]
+	CAIE A,5		; In modes 5
+	CAIN A,7		; Or 7
+	TEST(O,BFSND)		; Do buffered transmission
+	IORB IOS,NETSTS(UNIT)	; Set it in status word
+	LDB B,PBYTSZ		; Get file's byte size
+	DPB B,PBPBUF		; Store in imp's pointer
+	DPB B,PBPEBF		; Set size of end pointer
+	MOVEI A,=36		; Bits per word
+	LDB B,PBYTSZ		; Bits per byte
+	IDIV A,B		; Gives bytes per word and remainder
+	DPB B,PBPBPO		; Remainder is byte position
+	DPB B,PBPEPO		; Set position of end pointer
+	DPB B,PBYTPO		; And file pointer
+	IMULI A,BUFSIZ		; Bytes per word times words per buffer
+	DPB A,PBFSIZ		; Gives bytes per buffer
+	SETZM NETCNT(UNIT)	; Empty buffer
+	SETZM FILBYN(JFN)	; About to reference byte 0 of buffer
+	SETZM FILOFN(JFN)	; Also started with byte zer0
+	TEST(O,SIZF)		; Cannot change byte size
+	TEST(OE,WNDF)		; No buffer yet. also if listen
+	JRST SKPRET		; Return immediately
+	LDB A,[POINT 4,STS,35]
+	CAIE A,6		; Also in modes 6
+	CAIN A,7		; And 7
+	JRST SKPRET		; Return immediately
+	LDB A,PFSM		; No. get current state
+	CAIN A,RFCS		; Will usually be rfcs
+	PUSHJ P,WATNOT		; If so, wait for it to not be
+	IMPOFF
+	LDB A,PFSM		; Then get the state
+	MOVE IOS,NETSTS(UNIT)	; And get status
+	IMPON			; Imp back on
+	CAIE A,OPND		; If opened
+	TEST(NE,EOTF)		; Or end of file
+	 JRST SKPRET		; Then successful opening
+	JRST OPNFAI		; Else failure
+
+OPNLSN:	PUSHJ P,LISTEN
+	 POPJ P,		; Can't listen
+	TEST(O,WNDF)		; To remember that this was a listen
+	JRST NETOP1		; First bin/out is accept
+
+OPNFAI:	MOVE B,A
+	MOVEI A,CLZR
+	CAIN B,CLZW
+	PUSHJ P,DOFSM
+	MOVEI A,KILD
+	PUSHJ P,WATFOR
+	MOVEI A,FREE
+	DPB A,PFSM		; If so, free the slot
+	MOVEI A,OPNX21
+	POPJ P,			; And give bad return
+
+ILLACC:	MOVEI A,OPNX14
+	POPJ P,
+
+; Wait for fsm to leave state given in a
+
+WATNOT:	HRLI A,NOTTST
+WATNO1:	MOVE B,UNIT
+	ROT B,-9
+	MOVSS A
+	IOR A,B
+	SKIPE INSKED
+	BUG(HLT,<WATNOT: WAS CALLED FROM SCHEDULER LEVEL.>)
+	JSYS EDISMS
+	POPJ P,
+
+; Wait for fsm to enter a particular state
+
+WATFOR:	HRLI A,WATTST
+	JRST WATNO1
+
+USE
+
+NOTTST:	LDB B,[POINT 9,A,26]
+	ANDI A,777
+	EXCH UNIT,B
+	LDB C,PFSM
+	EXCH UNIT,B
+	CAME A,C
+	JRST 1(4)
+	JRST WATTS1
+
+WATTST:	LDB B,[POINT 9,A,26]
+	ANDI A,777
+	EXCH B,UNIT
+	LDB C,PFSM
+	EXCH B,UNIT
+	CAMN C,A
+	JRST 1(4)
+WATTS1:	MOVE C,FKINT(7)		; Look for deferred interrupts
+	TLNN C,(1B1)
+	JRST 0(4)		; None. return no skip
+	EXCH B,UNIT		; Deferred interrupt, get back unit
+	SETZ C,
+	DPB C,PCLKS		; Set clock to zero to hasten time-out
+	EXCH B,UNIT
+	JRST 0(4)
+
+USE SWAPPC
+
+; Close network file
+
+NETCLZ:	HLRZ UNIT,DEV
+	SETOM NETFRK(UNIT)
+	LDB A,PFSM
+	TEST(NN,WNDF)		; If no buffer ever assigned
+	TEST(NN,WRTF)		; Or if reading
+	JRST NETCL1		; Then skip the following
+	MOVE IOS,NETSTS(UNIT)
+	MOVE A,FILBYN(JFN)
+	CAME A,FILOFN(JFN)
+	PUSHJ P,DMPBUF		; Dump last buffer
+	MOVEI 1,NETET
+	HRL 1,UNIT
+	JSYS EDISMS
+NETCL1:	LDB A,PFSM
+	CAIN A,KILD
+	JRST NETCL2
+	IMPOFF
+	UMOVE A,1
+	MOVSI B,KILDF
+	TDNN A,[XWD 1,400000]	; Check for clzff or closf(-1)
+	TLNN A,(1B1)
+	IORM B,NETSTS(UNIT)
+	MOVSI A,RFNMB
+	TDNE A,NETSTS(UNIT)	; If rfnm outstanding
+	TEST(NN,WRTF)		; And sending
+	SKIPA A,[CLZR]
+	MOVEI A,CLZS		; Then do clzs
+	PUSHJ P,DOFSM
+	IMPON
+	UMOVE A,1
+	TDNN A,[XWD 1,400000]
+	TLNN A,(1B1)
+	 JRST SKPRET		; Return immediately if no bit 1
+	LDB B,PFSM
+	MOVEI A,KILD
+	CAIE B,KILD
+	PUSHJ P,WATFOR
+NETCL2:	MOVEI A,FREE
+	DPB A,PFSM
+	JRST SKPRET
+
+USE
+
+NETET:	MOVSI B,EOTF!DEDF
+	TDNN B,NETSTS(1)
+	SKIPG NETCNT(1)
+	JRST 1(4)
+	JRST 0(4)
+
+PTYCLZ:	MOVEI A,CLZR
+	JRST DOFSM
+
+USE SWAPPC
+
+; Network mtopr routines
+
+NETMTP:	HLRZ UNIT,DEV
+	MOVE IOS,NETSTS(UNIT)
+	CAIG B,24
+	CAIGE B,20
+	 POPJ P,
+	JRST .+1-20(B)
+	JRST NETACP
+	JRST NETDMP
+	JRST SNDINS
+	JRST SNDINR
+	JRST NETINT
+
+NETACP:	IMPOFF
+	LDB B,PFSM
+	MOVEI A,ACPT
+	CAIN B,RFCR
+	 PUSHJ P,DOFSM
+	IMPON
+	POPJ P,
+
+NETDMP:	TEST(NE,BFSND)
+	TEST(NN,WRTF)
+	 POPJ P,
+	TEST(NE,WNDF)
+	 POPJ P,
+	PUSHJ P,DMPBUF
+	POPJ P,
+
+SNDINS:	LDB A,PFHST
+	LDB B,PLINK
+	IMPOFF
+	LDB C,PFSM
+	CAIN C,OPND
+	PUSHJ P,IMPINS
+	IMPON
+	POPJ P,
+
+SNDINR:	LDB A,PFHST
+	LDB B,PLINK
+	IMPOFF
+	LDB C,PFSM
+	CAIN C,OPND
+	PUSHJ P,IMPINR
+	IMPON
+	POPJ P,
+
+NETINT:	UMOVE B,3
+	HRR B,FORKX
+	MOVEM B,NETFRK(UNIT)
+	POPJ P,
+
+NETKFK:	PUSH P,UNIT
+	PUSH P,A
+	MOVSI UNIT,-NSKT
+NETKF1:	HRRE A,NETFRK(UNIT)
+	CAMN A,FORKX
+	 SETOM NETFRK(UNIT)
+	AOBJN UNIT,NETKF1
+	POP P,A
+	POP P,UNIT
+	POPJ P,
+
+; Network file sequential byte input
+
+NETSQI:	HLRZ UNIT,DEV
+	MOVE IOS,NETSTS(UNIT)
+	TEST(NE,WNDF)
+	PUSHJ P,FIRSTI		; Wait for listen set up buffers etc.
+	SOSGE FILCNT(JFN)
+	PUSHJ P,LODBUF		; Get another bufferful
+	TEST(NE,EOFF)
+	POPJ P,
+	ILDB A,FILBYT(JFN)
+	AOS FILBYN(JFN)
+	POPJ P,
+
+LODBUF:	MOVSI IOS,ERRB
+	TDNE IOS,NETSTS(UNIT)
+	TEST(O,ERRF)
+	ANDCAB IOS,NETSTS(UNIT)
+	SKIPN B,NETCNT(UNIT)
+	 JRST [	TLNE IOS,EOTF!DEDF
+		JRST [	TEST(O,EOFF)
+			POPJ P,]
+		PUSHJ P,UNLCKF
+		MOVEI A,NETIT
+		HRL A,UNIT
+		JSYS EDISMS	; Wait for non-zero netcnt
+		MOVE P,MPP
+		SOS (P)
+		JRST MRETN]
+	LDB A,PBFSIZ		; Get bytes per buffer
+	SUB A,FILBYN(JFN)	; Room left to end of buffer
+	JUMPLE A,[MOVE A,NETBUF(UNIT)
+		HRRM A,FILBYT(JFN)
+		SETZM FILBYN(JFN)
+		LDB A,PBFSIZ
+		JRST .+1]
+	CAML B,A
+	MOVE B,A		; Keep min of the two
+	LDB A,PBFSIZ
+	ASH A,-1		; Half a buffer
+	CAML B,A
+	MOVE B,A		; Not more than 1/2 buffer at a time
+	MOVN A,B
+	ADDM A,NETCNT(UNIT)	; Extract this many bytes
+	MOVEM B,FILCNT(JFN)	; How many to bin before returning
+	SOS FILCNT(JFN)
+	ADDM B,FILLEN(JFN)
+	PUSHJ P,NETALL
+	POPJ P,
+
+NETALL:	LDB B,PBFSIZ		; Bytes per buffer
+	ADD A,B			; Minus those given to program
+	LDB B,PBPBYT		; Get byte size
+	IMPOFF
+	SUB A,NETCNT(UNIT)	; Bytes currently being held by int rout
+	IMUL A,B		; Convert to bits
+	SUB A,NETBAL(UNIT)	; Minus current outstanding allocation
+	IMPON			; Yields additional allocation to be given
+	PUSH P,C		; Save ac's
+	PUSH P,D
+	LDB C,PBFSIZ		; Bytes per buffer
+	LDB D,PBPBYT		; Bits per byte
+	IMUL C,D		; = bits per buffer
+	ASH C,-2		; 1/4 buffer
+	CAMG A,C		; Don't send allocate of less
+	JRST NETAL1		; Than 1/4 buffer
+	MOVE D,A
+	MOVEI C,1		; Do one message allocation to prime
+	LDB A,PFHST
+	LDB B,PLINK
+	PUSHJ P,IMPALL		; Send allocate
+NETAL1:	POP P,D
+	POP P,C
+	POPJ P,
+
+FIRSTI:	PUSHJ P,WATLSN		; Wait for connection completion
+	PUSHJ P,ASGBUF
+	 JRST WATBUF		; No buffers right now
+	TEST(Z,WNDF)
+	SETZ A,
+	JRST NETALL		; Send allocate, 0 space used by program
+
+WATBUF:	MOVE P,MPP		; Reset stack
+	SOS (P)			; Adjust return to redo jsys
+	PUSHJ P,UNLCKF		; Unlock file and turn on ints
+	MOVE A,[XWD NETAVC,DISGT]
+	JSYS EDISMS
+	JRST MRETN
+
+WATLSN:	IMPOFF
+	LDB A,PFSM		; Get state of this connection
+	CAIN A,OPND
+	 JRST [	IMPON
+		POPJ P,]
+	CAIN A,RFCR
+	 JRST [	MOVEI A,ACPT
+		PUSHJ P,DOFSM
+		IMPON
+		POPJ P,]
+	CAIN A,RFCS		; If still waiting for rfc
+	 JRST WATLS1		; Continue waiting
+	CAIE A,LSNG
+	 JRST [	IMPON
+		MOVSI IOS,EOTF
+		TDNE IOS,NETSTS(UNIT)
+		 POPJ P,	; Null file sent
+		MOVSI IOS,ERRB!EOTF	; Connection never actually opened
+		IORB IOS,NETSTS(UNIT)
+		POPJ P,]
+WATLS1:	IMPON
+	MOVE P,MPP		; Reset stack
+	SOS (P)			; Adjust return to redo jsys
+	PUSHJ P,UNLCKF		; Unlock file and turn ints back on
+	PUSHJ P,WATNOT		; Wait to leave current state
+	JRST MRETN		; Back to user to restart jsys
+
+USE
+NETIT:	MOVSI B,EOTF!DEDF
+	TDNN B,NETSTS(A)
+	SKIPE NETCNT(A)
+	JRST 1(4)
+	JRST 0(4)
+
+USE SWAPPC
+
+; Network file sequential byte output
+
+NETSQO:	HLRZ UNIT,DEV
+	MOVE IOS,NETSTS(UNIT)
+	TEST(NE,DEDF,EOTF)
+	 POPJ P,
+	PUSH P,A
+	TEST(NE,WNDF)
+	PUSHJ P,FIRSTO
+	TEST(NE,BFSND)		; Immediate send
+	 JRST NTSQO1		; No
+	PUSHJ P,WATBFO
+	AOS FILBYN(JFN)
+	POP P,A
+	IDPB A,FILBYT(JFN)	; Deposit the byte
+	AOS A,NETCNT(UNIT)
+	CAIG A,1
+	PUSHJ P,IMPSRO
+	SETZM FILCNT(JFN)
+	MOVE A,FILBYN(JFN)
+	LDB B,PBFSIZ
+	CAIL A,(B)
+	 JRST [	MOVE A,NETBUF(UNIT)
+		HRRM A,FILBYT(JFN)
+		SETZB A,FILBYN(JFN)
+		JRST .+1]
+	MOVEM A,FILOFN(JFN)
+	POPJ P,
+
+WATBFO:	LDB B,PBFSIZ
+	CAMLE B,NETCNT(UNIT)
+	POPJ P,
+	MOVEI A,NETOT
+	HRL A,UNIT
+	JSYS EDISMS
+	POPJ P,
+
+NTSQO1:	SOSGE FILCNT(JFN)
+	PUSHJ P,DMPBUF
+	AOS FILBYN(JFN)
+	POP P,A
+	IDPB A,FILBYT(JFN)
+	POPJ P,
+
+DMPBUF:	MOVSI IOS,ERRB
+	TDNE IOS,NETSTS(UNIT)
+	TEST(O,ERRF)
+	ANDCAB IOS,NETSTS(UNIT)
+	TEST(NE,EOTF)
+	 JRST [	SETZM FILBYT(JFN)
+		SETZM FILBYN(JFN)
+		SETZM FILOFN(JFN)
+		HRLOI A,377777
+		MOVEM A,FILCNT(JFN)
+		POPJ P,]
+	MOVE B,FILBYN(JFN)	; Get where we are in buffer
+	SUB B,FILOFN(JFN)	; Minus where we were give how many
+	IMPOFF
+	ADD B,NETCNT(UNIT)	; Augment netcnt
+	EXCH B,NETCNT(UNIT)	; Get old netcnt
+	IMPON
+	SKIPN B
+	PUSHJ P,IMPSRO		; Restart output
+	PUSHJ P,SETBUF		; Set up next output buffer
+	SOS FILCNT(JFN)
+	POPJ P,
+
+SETBUF:	LDB B,PBFSIZ		; Bytes per buffer
+	SUB B,NETCNT(UNIT)	; Gives room left
+	JUMPE B,[MOVEI A,NETOT
+		HRL A,UNIT
+		JSYS EDISMS
+		JRST SETBUF]
+	LDB A,PBFSIZ
+	SUB A,FILBYN(JFN)	; Room left in buffer
+	CAML B,A
+	MOVE B,A		; Keep the lesser
+	LDB A,PBFSIZ
+	ASH A,-1
+	CAML B,A
+	MOVE B,A		; No more than 1/2 buffer
+SETBU1:	MOVEM B,FILCNT(JFN)
+	ADDM B,FILLEN(JFN)
+	LDB B,PBFSIZ
+	MOVE A,FILBYN(JFN)
+	CAIL A,(B)		; At end of buffer
+	 JRST [	MOVE A,NETBUF(UNIT)	; Yes, reset pointers
+		HRRM A,FILBYT(JFN)
+		SETZB A,FILBYN(JFN)
+		JRST .+1]
+	MOVEM A,FILOFN(JFN)	; Save this filbyn
+	POPJ P,
+
+FIRSTO:	PUSHJ P,WATLSN		; Wat for connection complete
+	PUSHJ P,ASGBUF		; Assign and lock buffers
+	 JRST WATBUF		; None available now
+	TEST(Z,WNDF)
+	TEST(NE,BFSND)
+	JRST SETBUF
+	POPJ P,
+
+USE
+NETOT:	EXCH UNIT,1
+	LDB B,PBFSIZ
+	MOVSI C,EOTF!DEDF
+	TDNE C,NETSTS(UNIT)
+	SETZM NETCNT(UNIT)
+	CAMLE B,NETCNT(UNIT)
+	AOS 4
+	EXCH 1,UNIT
+	JRST 0(4)
+
+USE SWAPPC
+
+; Attach sockets to pty
+; Call:	1	; Receive jfn of opened network connection
+;	2	; Send jfn of opened network connection
+;	ATPTY
+; Returns
+;	+1	; Cannot attach
+;	+2	; Ok.  the jfns are released, ac 1 has line number of
+;		; Attached pty.
+
+^.ATPTY:JSYS MENTR
+	UMOVE JFN,1
+	PUSHJ P,CHKJFN		; Check jfn of receive connection
+	 JRST ATPER0		; Only real jfns are legal
+	 JRST ATPER0
+	 JRST ATPER0
+	MOVEI A,ATPX2		; Error code if test skips
+	TEST(NE,READF)		; Must be opened for reading
+	PUSHJ P,CHKATP		; Check for dev=net, open, no buffer
+	 JRST ATPER1		; Failed one of the above
+	PUSH P,DEV		; Save dev and jfn
+	PUSH P,JFN
+	UMOVE JFN,2		; Get send jfn
+	PUSHJ P,CHKJFN		; Check it
+	JRST ATPER2		; Must also be a real jfn
+	JRST ATPER2
+	JRST ATPER2
+	MOVEI A,ATPX2		; Becomes atpx8 at atper3
+	TEST(NE,WRTF)		; This one must be for writing
+	PUSHJ P,CHKATP		; And dev=net, open, no buffer
+	 JRST ATPER3		; Failed above tests
+	HLRZ UNIT,DEV
+	LDB A,PFSM
+	CAIN A,RFCS
+	PUSHJ P,WATNOT		; Wait for response from foreign host
+	MOVEI A,ATPX12		; Error code for refused send
+	LDB B,PFSM		; Now get state
+	CAIE B,OPND		; If not opnd
+	JRST ATPER4		; Then fail
+	EXCH DEV,-1(P)		; Switch to receive connection
+	HLRZ UNIT,DEV
+	LDB A,PFSM		; Get its state
+	CAIN A,RFCS
+	PUSHJ P,WATNOT		; Wait for response from foreign host
+	MOVEI A,ATPX6		; Error code for refused receive
+	LDB B,PFSM
+	CAIE B,OPND		; If not opnd
+	JRST ATPER4		; Then fail
+	PUSH P,UNIT
+	IMPOFF
+	LDB A,PFSM
+	CAIE A,OPND
+	 JRST [	MOVEI A,ATPX6
+		JRST ATPERZ]
+	HLRZ UNIT,-2(P)
+	LDB A,PFSM
+	CAIE A,OPND
+	 JRST [		MOVEI A,ATPX12
+		JRST ATPERZ]
+	MOVE 1,0(P)		; Set up args, receive unit in 1
+	HLRZ 2,-2(P)		; Send unit in 2
+	PUSHJ P,ASNPTY		; Assign pty to these units
+	 JRST [	MOVEI A,ATPX13	; Can't, no pty's
+		JRST ATPERZ]
+	POP P,UNIT
+	MOVSI B,KILDF		; Cause automatic deletion of this
+	IORM B,NETSTS(UNIT)	; Connection when closed
+	HRRM 1,NETBUF(UNIT)	; Store pty number here
+	HLRZ UNIT,-1(P)
+	IORM B,NETSTS(UNIT)	; Auto delete
+	HRRM 1,NETBUF(UNIT)	; Put pty here also
+	IMPON
+	IORI A,400000		; Convert pty to tty designator
+	UMOVEM A,1		; Return to user
+	PUSHJ P,RELJFN		; Release send jfn
+	POP P,JFN
+	PUSHJ P,RELJFN		; And receive jfn
+	SUB P,[XWD 1,1]
+	JRST SKMRTN		; Return skipping
+
+; Check validity of jfn for atpty
+
+CHKATP:	MOVEI A,ATPX3		; Receive not open
+	TEST(NN,OPENF)
+	POPJ P,
+	HRRZ B,DEV
+	MOVEI A,ATPX4
+	CAIE B,NETDTB
+	POPJ P,
+	MOVEI A,ATPX5
+	TEST(NN,WNDF)
+	POPJ P,
+	JRST SKPRET
+
+ATPERZ:	IMPON
+	POP P,UNIT
+	JRST ATPER4
+
+ATPER2:	MOVEI A,ATPX1		; Bad jfn, modified below
+ATPER3:	ADDI A,ATPX7-ATPX1	; Convert receive errors to send errors
+ATPER4:	PUSHJ P,UNLCKF
+	POP P,JFN
+	POP P,DEV
+ATPER1:	PUSHJ P,UNLCKF
+	JRST MRETNE		; Save error return in ac1
+
+ATPER0:	MOVEI A,ATPX1		; Bad receive jfn
+	JRST MRETNE
+
+; Convert jfn to absolute network socket number
+; Call:	1	; Jfn
+;	CVSKT
+; Returns
+;	+1	; Error
+;	+2	; Ok, in 2 the absolute socket number
+
+.CVSKT:	JSYS MENTR
+	MOVE JFN,1
+	PUSHJ P,CHKJFN
+	 JRST CVSER0
+	 JRST CVSER0
+	 JRST CVSER0
+	HLRZ A,FILNEN(JFN)
+	HRLI A,(<POINT 7,0,35>)
+	PUSHJ P,NAMDEC
+	 JRST CVSER1
+	TRZ A,1
+	PUSHJ P,UNLCKF
+	UMOVEM A,2
+	JRST SKMRTN
+
+CVSER1:	PUSHJ P,UNLCKF
+	SKIPA A,[CVSKX2]
+CVSER0:	MOVEI A,CVSKX1
+	JRST MRETNE
+
+; Get net status
+
+NETGST:	HLRZ UNIT,DEV
+	MOVE A,NETSTS(UNIT)
+	LDB B,PFHST
+	UMOVEM B,3
+	MOVE B,FSKT(UNIT)
+	UMOVEM B,4
+	POPJ P,
+
+; Set net status
+
+NETSST:	POPJ P,
+
+; Assign and lock buffers
+
+ASGBUF:	PUSH P,A		; Save ac's
+	PUSH P,B
+	PUSH P,C
+	MOVSI C,-NAVB		; Set to index through all bit masks
+	LOCK NETAVL		; Set lock
+ASGBFL:	MOVE A,NETAVB(C)	; Loop to here for each bit mask
+	JFFO A,ASGBFG		; Find a one
+	AOBJN C,ASGBFL		; Loop through all masks
+	UNLOCK NETAVL		; Failure
+	POP P,C
+	POP P,B
+	POP P,A
+	POPJ P,
+
+ASGBFG:	MOVSI A,400000
+	MOVNS B
+	ROT A,(B)
+	ANDCAM A,NETAVB(C)
+	SOS NETAVC		; One less available buffer
+	UNLOCK NETAVL
+	HRRZ A,C
+	POP P,C
+	IMULI A,=36
+	SUBM A,B
+	IMULI B,BUFSIZ
+	MOVEI A,NETBFS(B)
+	PUSH P,A
+	MOVES (A)
+	PUSHJ P,FPTA
+	PUSHJ P,MLKPG
+	MOVE A,(P)
+	ADDI A,BUFSIZ-1
+	MOVES (A)
+	PUSHJ P,FPTA
+	PUSHJ P,MLKPG
+	POP P,A
+	SUBI A,1
+	HRRM A,FILBYT(JFN)
+	HRRM A,NETBUF(UNIT)
+	HRRM A,IMPPTR(UNIT)
+	ADDI A,BUFSIZ
+	HRRM A,NETEND(UNIT)
+	SETZM NETCNT(UNIT)
+	POP P,B
+	POP P,A
+	JRST SKPRET
+
+; Release buffers
+
+USE
+
+RELBUF:	HRRZ A,NETBUF(UNIT)
+	AOS A
+	HLLZS NETBUF(UNIT)
+RELBFF:	CAIN A,0
+	POPJ P,
+	PUSH P,A
+	SUBI A,NETBFS
+	IDIVI A,BUFSIZ		; Get buffer number
+	IDIVI A,=36
+	MOVNS B
+	PUSH P,A
+	MOVSI A,400000
+	ROT A,(B)		; Get bit for this buffer
+	POP P,B
+	IORM A,NETAVB(B)
+	AOS NETAVC		; One more buffer available
+	MOVE A,(P)
+	ADDI A,BUFSIZ-1
+	SKIPE INSKED
+	JRST RELBFW
+	PUSHJ P,FPTA
+	PUSHJ P,MULKPG		; Unlock page at end of buffer
+	POP P,A
+	PUSHJ P,FPTA
+	JRST MULKPG		; Unlock page at beginning of buffer
+
+RELBFW:	PUSHJ P,MULKMP
+	POP P,A
+	JRST MULKMP
+
+; The following code and tables implement a finite state machine
+; Implementation of the transitions and actions produced by various
+; Events associated with a connection
+; Assumed are that unit indexes the proper local socket
+
+; Events are numbered as follows
+
+RRFC__0		; Received an rfc
+CLSR__1		; Cls for a receive socket
+CLSS__2		; Cls for a send socket
+CLZR__3		; Close done on a receive socket
+CLZS__4		; Close done on a send socket
+ACPT__5		; Program issued an accept
+CONN__6		; Program issued a connect
+LISN__7		; Program issued a listen
+RRFM__10	; Received a rfnm
+RRFN__11	; Received a rfnm with no more data outstanding
+HUNG__12	; Time out event (happens 2 minutes after last dofsm)
+
+; Actions are numbered as follows
+
+ANOP__0		; No operation
+AFNY__1		; No operation (unexpected event)
+ACLS__2		; Send cls
+ARFC__3		; Send rfc
+ACLL__4		; Close link
+ACLO__5		; Close link and send cls
+AEOR__6		; Finish reception
+ACKR__7		; Simulate rfnm if none outstanding
+
+; States are numbered as follows
+
+DEAD__0		; Never used
+CLZD__1		; Closed
+PNDG__2		; Pending. rfc received while closed
+LSNG__3		; Listening. listen issued while closed
+RFCR__4		; Rfc received while listening
+CLW2__5		; Close wait #2. cls from pndg
+RFCS__6		; Rfc sent
+OPND__7		; Opened
+CLSW__10	; Waiting for a cls
+DATW__11	; Waiting for all data to be sent
+RFN1__12	; Waiting for last rfnm
+CLZW__13	; Waiting for program to do close
+RFN2__14	; Waiting for rfnm after clss
+KILD__15	; Prematurely killed by distant host
+FREE__16	; Not in use
+
+; The following table of byte pointers is used to get to the next state
+; Given the current state and the event
+; This table is indexed by event, the table addressed by this table
+; Is indexed by old state
+
+RADIX =10
+
+CBPFSM:	FOR QQ_3,35,4
+<	POINT 4,NXTSTT(B),QQ
+>
+	FOR QQ_3,35,4
+<	POINT 4,NXTSTT+1(B),QQ
+>
+
+; Following table of pointers is used to get the action to be taken
+; Given the current state and the event
+; This table is indexed by event, the table addressed by this table
+; Is indexed by old state
+
+CBAFSM:	FOR QQ_3,35,4
+<	POINT 4,ACTION(B),QQ
+>
+	FOR QQ_3,35,4
+<	POINT 4,ACTION+1(B),QQ
+>
+
+; This is the transition table
+; Each word contains the new state for a given old state
+; Successive bytes are used for different events
+
+; Event rrfc clsr clss clzr clzs acpt conn lisn rrfm rrfe  old state
+
+NXTSTT:
+BYTE (4)DEAD,DEAD,DEAD,DEAD,DEAD,DEAD,DEAD,DEAD,DEAD,DEAD,DEAD	; Dead
+BYTE (4)PNDG,CLZD,CLZD,CLZD,CLZD,CLZD,RFCS,LSNG,CLZD,CLZD,CLZD	; Clzd
+BYTE (4)PNDG,FREE,FREE,PNDG,PNDG,PNDG,OPND,RFCR,PNDG,PNDG,CLW2	; Pndg
+BYTE (4)RFCR,LSNG,LSNG,KILD,KILD,LSNG,LSNG,LSNG,LSNG,LSNG,LSNG	; Lsng
+BYTE (4)RFCR,KILD,KILD,CLSW,CLSW,OPND,RFCR,RFCR,RFCR,RFCR,RFCR	; Rfcr
+BYTE (4)CLW2,FREE,FREE,CLW2,CLW2,CLW2,CLW2,CLW2,CLW2,CLW2,FREE	; Clw2
+BYTE (4)OPND,KILD,KILD,CLSW,CLSW,RFCS,RFCS,RFCS,RFCS,RFCS,CLSW	; Rfcs
+BYTE (4)OPND,CLZW,RFN2,CLSW,DATW,OPND,OPND,OPND,OPND,OPND,OPND	; Opnd
+BYTE (4)CLSW,KILD,KILD,CLSW,CLSW,CLSW,CLSW,CLSW,CLSW,CLSW,KILD	; Clsw
+BYTE (4)DATW,DATW,RFN1,DATW,DATW,DATW,DATW,DATW,DATW,CLSW,CLSW	; Datw
+BYTE (4)RFN1,RFN1,RFN1,RFN1,RFN1,RFN1,RFN1,RFN1,KILD,KILD,KILD	; Rfn1
+BYTE (4)CLZW,CLZW,CLZW,KILD,KILD,CLZW,CLZW,CLZW,CLZW,CLZW,CLZW	; Clzw
+BYTE (4)RFN2,RFN2,RFN2,RFN1,RFN1,RFN2,RFN2,RFN2,CLZW,CLZW,CLZW	; Rfn2
+BYTE (4)KILD,KILD,KILD,KILD,KILD,KILD,KILD,KILD,KILD,KILD,KILD	; Kild
+BYTE (4)FREE,FREE,FREE,FREE,FREE,FREE,FREE,FREE,FREE,FREE,FREE	; Free
+
+; This is the action table
+; It is referenced the same as the transition table
+
+; Event rrfc clsr clss clzr clzs acpt conn lisn rrfm rrfe  old state
+
+ACTION:
+BYTE (4)AFNY,AFNY,AFNY,AFNY,AFNY,AFNY,AFNY,AFNY,AFNY,AFNY,ANOP	; Dead
+BYTE (4)ANOP,AFNY,AFNY,AFNY,AFNY,AFNY,ARFC,ANOP,AFNY,AFNY,ANOP	; Clzd
+BYTE (4)AFNY,ACLS,ACLS,AFNY,AFNY,AFNY,ARFC,ANOP,AFNY,AFNY,ACLS	; Pndg
+BYTE (4)ANOP,AFNY,AFNY,ANOP,ANOP,AFNY,AFNY,AFNY,AFNY,AFNY,ANOP	; Lsng
+BYTE (4)AFNY,ACLS,ACLS,ACLS,ACLS,ARFC,AFNY,AFNY,AFNY,AFNY,ANOP	; Rfcr
+BYTE (4)AFNY,ANOP,ANOP,AFNY,AFNY,AFNY,AFNY,AFNY,AFNY,AFNY,ANOP	; Clw2
+BYTE (4)ANOP,ACLS,ACLS,ACLS,ACLS,AFNY,AFNY,AFNY,AFNY,AFNY,ACLS	; Rfcs
+BYTE (4)AFNY,AEOR,ACKR,ACLS,ANOP,AFNY,AFNY,AFNY,ANOP,AFNY,ANOP	; Opnd
+BYTE (4)AFNY,ACLL,ACLL,AFNY,AFNY,AFNY,AFNY,AFNY,AFNY,AFNY,ACLL	; Clsw
+BYTE (4)AFNY,AFNY,ACKR,AFNY,AFNY,AFNY,AFNY,AFNY,ANOP,ACLS,ACLS	; Datw
+BYTE (4)AFNY,AFNY,AFNY,AFNY,AFNY,AFNY,AFNY,AFNY,ACLO,ACLO,ACLO	; Rfn1
+BYTE (4)AFNY,AFNY,AFNY,ANOP,ANOP,AFNY,AFNY,AFNY,AFNY,AFNY,ANOP	; Clzw
+BYTE (4)AFNY,AFNY,AFNY,ANOP,ANOP,AFNY,AFNY,AFNY,ACLO,ACLO,ACLO	; Rfn2
+BYTE (4)AFNY,AFNY,AFNY,AFNY,AFNY,AFNY,AFNY,AFNY,AFNY,AFNY,ANOP	; Kild
+BYTE (4)AFNY,AFNY,AFNY,AFNY,AFNY,AFNY,AFNY,AFNY,AFNY,AFNY,ANOP	; Free
+
+; Dispatch table for actions
+; Routines are called effectively by pushj p,@actab(action#)
+
+ACTAB:	CPOPJ		; Nop
+	FUNNY		; Unexpected event
+	SNDCLS		; Send cls
+	SNDRFC		; Send str or rts
+	NETCLL		; Close link
+	NETCLB		; Close link and send cls
+	DOEOR		; Finish up input
+	CHKRFN		; Check and simulate rfnm
+
+RADIX 8
+
+; Unexpected event
+
+FUNNY:	PUSHJ P,IMPBUG
+	AOS FUNNYC		; Count them
+	POPJ P,			; And do nothing
+
+CHKRFN:	MOVSI A,RFNMB
+	TDNE A,NETSTS(UNIT)
+	POPJ P,
+	MOVEI A,RRFM
+	JRST DOFSM
+
+DOEOR:	PUSHJ P,SNDCLS
+	HRRZ B,NETBUF(UNIT)
+	JUMPE B,NETCLL
+	CAIL B,1000
+	JRST NETCLL
+EORPTY:	PUSH P,UNIT
+	PUSHJ P,PTYDET
+	POP P,UNIT
+	MOVE IOS,NETSTS(UNIT)
+NETCLL:	LDB A,PFHST
+	MOVE B,LSKT(UNIT)
+	TRNE B,1
+	IORI A,1000
+	LDB B,PLINK
+	JUMPE B,CPOPJ
+	TEST(NE,DEDF)
+	 POPJ P,
+	JRST IMPCLL
+
+NETCLB:	PUSHJ P,NETCLL
+SNDCLS:	LDB A,PFHST		; Get foreign host
+	MOVE C,FSKT(UNIT)	; And foreign socket
+	MOVE B,LSKT(UNIT)	; And local socket
+	TEST(NN,DEDF)
+	PUSHJ P,IMPCLS		; Send the control message
+	POPJ P,
+
+SNDRFC:	TEST(NE,DEDF)
+	 POPJ P,
+	LDB A,PFHST		; Get foreign host
+	MOVE B,LSKT(UNIT)	; And local socket
+	MOVE C,FSKT(UNIT)
+	LDB D,PBPBYT		; Byte size
+	TRNE B,1
+	JRST IMPSTR
+	MOVEI D,FLINK(UNIT)
+	DPB D,PLNK2
+	JRST IMPRTS		; Send control message
+
+; This here is the main fsm routine
+
+DOFSM:	MOVE IOS,NETSTS(UNIT)
+	TEST(NN,DEDF)
+	 JRST DOFSMA
+	PUSHJ P,DOFSMA
+	LDB A,PFSM
+DOFSMB:	PUSH P,A
+	MOVEI A,HUNG
+	PUSHJ P,DOFSMA
+	LDB A,PFSM
+	POP P,B
+	CAME A,B
+	 JRST DOFSMB
+	POPJ P,
+
+DOFSMA:	IMPOFF			; Allow no control messages while here
+	MOVEI B,=24		; TIME OUT IN 2 MINUTES
+	DPB B,PCLKS
+	LDB B,PFSM		; Get old state
+	PUSH P,B
+	LSH B,1			; Two words per old state
+	LDB C,CBPFSM(A)		; Get new state
+	LDB B,CBAFSM(A)		; Get action
+	DPB C,PFSM
+	PUSH P,B		; Save action
+	MOVE B,-1(P)		; GET OLD STATE
+	CAME C,B		; STATE CHANGED?
+	 JRST [	HRRE A,NETFRK(UNIT)
+		JUMPL A,.+1	; NO FORK FOR INTERRUPTS
+		LDB B,PFSMCH	; GET PSI CHANNEL
+		CAIL B,=36
+		 JRST .+1
+		EXCH A,B
+		PUSHJ P,PSIRQ
+		JRST .+1]
+	MOVE B,-1(P)
+	CAIN C,OPND		; Entering opnd?
+	CAMN C,B		; And not there before?
+	JRST DOFSM0
+	AOS NETCNC
+	PUSH P,C
+	LDB A,PFHST
+	MOVE B,LSKT(UNIT)
+	TRNE B,1
+	IORI A,1000
+	LDB B,PLNK2
+	DPB B,PLINK
+	TEST(NN,DEDF)
+	PUSHJ P,IMPOPL
+	POP P,C
+	POP P,B
+	SUB P,[XWD 1,1]
+	PUSHJ P,@ACTAB(B)
+	IMPON
+	POPJ P,
+
+DOFSM0:	MOVE A,-1(P)
+	CAIN A,OPND
+	CAMN C,A
+	JRST DOFSM1
+	MOVSI A,EOTF
+	IORM A,NETSTS(UNIT)
+DOFSM1:	MOVE A,-1(P)
+	CAME A,C
+	CAIE C,KILD
+	JRST DOFSM2
+	HRRZ A,NETBUF(UNIT)
+	CAIL A,1000
+	PUSHJ P,RELBUF
+	MOVEI A,FREE
+	TEST(NE,KILDF)
+	DPB A,PFSM
+DOFSM2:	POP P,B
+	SUB P,[XWD 1,1]
+	PUSHJ P,@ACTAB(B)	; Call action routine
+	IMPON
+	POPJ P,
+
+; Make a socket or find existing one
+
+GETSKT:	TDZA D,D
+MAKSKT:	SETO D,
+	PUSH P,D
+	PUSH P,A		; Save foreign host
+	PUSH P,B		; Save foreign socket
+	PUSH P,C		; Save local socket
+	MOVE UNIT,C
+	XOR UNIT,B
+	TRNN UNIT,1		; Homosexual?
+	JRST MAKSKX		; Yes. error
+	ROT C,-4
+	MOVS UNIT,C
+	IMULI C,123431
+	XOR UNIT,C		; Randomize from local socket
+	LSH UNIT,-1
+	MULI UNIT,NSKT		; Initial probe
+	MOVEI D,NSKT
+	SETO C,
+MAKSKJ:	IMPOFF
+	LOCK(SKTLCK,<JRST [IMPON
+			MOVE A,[XWD SKTLCK,DISLT]
+			JSYS EDISMS
+			JRST MAKSKJ]>)
+MAKSKL:	LDB A,PFSM		; Get state of this socket
+	CAIE A,FREE
+	CAIN A,DEAD
+	JRST MAKSK1
+	CAIE A,CLZW
+	CAIN A,KILD
+	JRST MAKSKN		; Kild & CLZW sockets are invisible
+	MOVE B,LSKT(UNIT)	; What local socket is this for?
+	CAME B,(P)
+	JRST MAKSKN		; Not the one we're after, try next
+MAKSK3:	SKIPGE -2(P)
+	JRST MAKSK6
+	LDB B,PFHST
+	MOVE A,FSKT(UNIT)
+	CAIN B,777
+	JRST MAKSK4		; Match if no fhost specified
+	CAMN B,-2(P)
+	CAME A,-1(P)
+	JRST MAKSKN
+MAKSK4:	POP P,C
+	JRST MAKSKF
+
+MAKSK6:	POP P,C
+	SUB P,[XWD 3,3]
+	MOVE B,FSKT(UNIT)
+	LDB A,PFHST
+	UNLOCK SKTLCK
+	IMPON
+	JRST SKPRET
+
+MAKSKN:	SOJLE D,MAKSKE		; Full, error
+	SOJGE UNIT,MAKSKL	; Loop back for next slot
+	MOVEI UNIT,NSKT-1
+	JRST MAKSKL
+
+MAKSK1:	SKIPGE C
+	MOVE C,UNIT		; Save where it's at
+	CAIE A,DEAD
+	JRST MAKSKN		; Space keeper, test next
+MAKSK5:	SKIPN -3(P)
+	JRST MAKSKR
+	MOVE UNIT,C
+FOR A IN (NETSTS,NETBUF,NETAWD,NETBAL,IMPPTR,NETEND,NETCNT),<
+	SETZM A(UNIT)>
+	SETOM NETFRK(UNIT)
+	MOVEI A,CLZD
+	DPB A,PFSM		; Set its state to be closed
+	POP P,C
+	MOVEM C,LSKT(UNIT)
+MAKSKF:	POP P,B			; Common for old and new
+	MOVEM B,FSKT(UNIT)
+	POP P,A
+	DPB A,PFHST
+	SUB P,[XWD 1,1]
+	UNLOCK SKTLCK
+	IMPON
+	JRST SKPRET
+
+MAKSKE:	JUMPGE C,MAKSK5
+MAKSKR:	UNLOCK SKTLCK
+	IMPON
+MAKSKX:	POP P,C
+	POP P,B
+	POP P,A
+	SUB P,[XWD 1,1]
+	POPJ P,
+
+; Do a listen (openf for file with no foreign host/socket)
+
+LISTEN:	PUSHJ P,HSTCHK
+	POPJ P,
+	PUSH P,D		; Save byte size
+	PUSHJ P,MAKSKT		; Make a socket
+	 JRST [	POP P,D
+		MOVEI A,OPNX10
+		POPJ P,]	; No room
+	MOVEI A,LISN
+	JRST CONNE1
+
+; Do a connect (openf for file with foreign host/socket specified)
+
+CONNEC:	PUSHJ P,HSTCHK
+	POPJ P,
+	PUSH P,D		; Save byte size
+	PUSHJ P,MAKSKT		; Make a socket or find existing one
+	 JRST [	POP P,D
+		MOVEI A,OPNX10
+		POPJ P,]	; No room
+	MOVEI A,CONN
+CONNE1:	IMPOFF
+	LDB B,PFSM
+	CAIN B,CLZD		; Received any rfc here?
+	 JRST CONNE2		; No
+	CAIN B,PNDG		; Same question
+	 JRST CONNE3		; Yes
+	MOVEI A,OPNX9		; Already in use
+	POP P,D
+	IMPON
+	POPJ P,
+
+CONNE2:	POP P,D			; My choice of byte size
+	DPB D,PBPBYT		; Set byte size
+	PUSHJ P,DOFSM		; Send rfc etc
+	IMPON
+	JRST SKPRET
+
+CONNE3:	TRNE C,1		; Are we sender?
+	 JRST CONNE2		; Also our choice
+	LDB D,PBPBYT		; Get his byte size
+	CAMN D,0(P)		; Does byte size agree?
+	 JRST CONNE2		; Yes, same as if my choice
+	MOVEI A,HUNG		; Flush his connection attempt
+	PUSHJ P,DOFSM
+	POP P,D
+	IMPON
+	MOVEI A,OPNX22		; Bad byte size error
+	POPJ P,
+L
+; Check if host is available
+
+HSTCHK:	SKIPL IMPRDY
+	 JRST [	MOVEI A,OPNX19
+		POPJ P,]
+	JUMPL A,SKPRET
+	PUSH P,A
+	PUSH P,B
+	IDIVI A,=36
+	MOVE A,IMPHRT(A)
+	ROT A,(B)
+	POP P,B
+	JUMPGE A,[POP P,A
+		MOVEI A,OPNX20
+		POPJ P,]
+	POP P,A
+	JRST SKPRET
+
+; Routines to call when control messages are received
+
+; Receive cls
+; Reccls(fhost,fskt,lskt)--nil
+
+RECCLS:	PUSHJ P,GETSKT		; Get the socket entry
+	POPJ P,			; Wasn't there, ignore
+RECCL1:	MOVE B,LSKT(UNIT)
+	TRNN B,1
+	SKIPA A,[CLSR]
+	MOVEI A,CLSS
+	JRST DOFSM
+
+; Receive str
+; Recstr(fhost,fskt,lskt)--nil
+
+RECSTR:	PUSH P,A
+	PUSHJ P,HSTCHK		; Do we consider this host up?
+	 JRST [	POP P,A		; No
+		JRST IMSRST]	; Respond with reset
+	POP P,A
+	PUSH P,D		; Save byte size
+	PUSHJ P,MAKSKT
+	 JRST [	POP P,D
+		POPJ P,]
+	LDB A,PFSM		; What is state of this connection
+	CAIE A,CLZD		; If not clzd
+	 JRST [	LDB D,PBPBYT	; Then get user's byte size
+		CAMN D,0(P)	; If not the same
+		JRST .+1
+		MOVEI A,RRFC
+		PUSHJ P,DOFSM
+		MOVEI A,CLZR
+		PUSHJ P,DOFSM
+		POP P,D
+		POPJ P,]
+	POP P,D
+	DPB D,PBPBYT
+	MOVEI A,FLINK(UNIT)
+	DPB A,PLNK2
+	MOVEI A,RRFC
+	PUSHJ P,DOFSM
+	MOVE A,UNIT
+	LDB B,PLINK
+	POPJ P,
+
+; Receive rts
+; Recrts(fhost,fskt,lskt,link)
+
+RECRTS:	PUSH P,A
+	PUSHJ P,HSTCHK
+	 JRST [	POP P,A
+		JRST IMSRST]
+	POP P,A
+	PUSH P,D
+	PUSHJ P,MAKSKT
+	 JRST [	POP P,D
+		POPJ P,]
+	POP P,A
+	DPB A,PLNK2
+	MOVEI A,RRFC
+	PUSHJ P,DOFSM
+	POPJ P,
+
+; Receive rfnm
+
+RCRFNM:	MOVSI A,ORFNB
+	ANDCAM A,NETSTS(UNIT)
+	MOVSI A,EOTF
+	TDNE A,NETSTS(UNIT)
+	SKIPLE NETCNT(UNIT)
+	SKIPA A,[RRFM]
+	MOVEI A,RRFN
+	JRST DOFSM
+
+; Receive ins/inr
+
+RECINR:	LDB B,PINRCH
+	JRST RCINRS
+
+RECINS:	LDB B,PINSCH
+RCINRS:	LDB A,PFSM
+	CAIE A,OPND
+	 POPJ P,
+	HRRZ A,NETBUF(UNIT)
+	SKIPE A
+	CAIL A,1000
+	CAIA
+	 POPJ P,
+	HRRE A,NETFRK(UNIT)
+	JUMPL A,CPOPJ
+	EXCH A,B
+	PUSHJ P,PSIRQ
+	POPJ P,
+
+; Receive reset message
+
+RECRST:	PUSHJ P,NETHDN
+	JRST IMPRRP
+
+NETDWN:	MOVSI UNIT,-NSKT
+	PUSHJ P,SKTDWN
+	AOBJN UNIT,.-1
+
+NETCHK:	MOVSI UNIT,-NSKT
+NETCKL:	LDB A,PFSM
+	CAIE A,DEAD
+	CAIN A,FREE
+	 JRST NETCKN
+	CAIE A,OPND
+	 JRST NETCK0
+	LDB A,PCLKS
+	SOS A
+	DPB A,PCLKS
+	JUMPG A,NETCK1
+	MOVSI A,ORFNB
+	TDNE A,NETSTS(UNIT)
+	 JRST [	PUSHJ P,SKTDWN	; LOST A RFNM, DECLARE IT DEAD
+		JRST NETCK1]
+	IORM A,NETSTS(UNIT)
+	MOVEI A,12
+	DPB A,PCLKS
+	JRST NETCK1
+
+NETCK0:	MOVSI A,DEDF
+	TDNN A,NETSTS(UNIT)
+	SKIPL IMPRDY
+	JRST NETCK1
+	LDB B,PCLKS
+	SOS B
+	DPB B,PCLKS
+	JUMPG B,NETCKN
+NETCK1:	MOVEI A,HUNG
+	PUSHJ P,DOFSM
+NETCKN:	AOBJN UNIT,NETCKL
+	MOVEI A,=5000
+	ADD A,TODCLK
+	MOVEM A,NETTIM
+	POPJ P,
+
+; Host has died
+
+NETHDN:	MOVSI UNIT,-NSKT
+	PUSH P,A
+NETHDL:	LDB A,PFSM
+	CAIE A,FREE
+	CAIN A,DEAD
+	JRST NETHDX
+	LDB A,PFHST
+	CAMN A,(P)
+	PUSHJ P,SKTDWN
+NETHDX:	AOBJN UNIT,NETHDL
+	POP P,A
+	POPJ P,
+
+SKTDWN:	SETZ A,
+	DPB A,PFHST
+	MOVSI A,ERRB!DEDF
+	IORM A,NETSTS(UNIT)
+	LDB A,PFSM		; Get state
+	CAIN A,OPND		; If opnd
+	PUSHJ P,RECCL1		; Simulate receipt of cls
+	MOVEI A,HUNG
+	PUSHJ P,DOFSM
+	POPJ P,
+
+USE SWAPPC
+
+BENDP	NETWRK>
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                

@@ -1,0 +1,1259 @@
+
+	BEGINP	DISC		R.S.TOMLINSON	22 SEPTEMBER 1971	0850:
+
+INTERN	OFNJFN,JFNOFN
+EXTERN	SPTH		; Contains disc addresses for ofn's
+EXTERN	NSKED
+EXTERN	RSKED
+EXTERN	NXTDMP		; Zero to cause dump of open files
+EXTERN	DIDSCA		; Disc address for di
+EXTERN	DIDSCI		; Initial disc address for di
+
+DEFINE	NOSKED<AOS NSKED>
+DEFINE	OKSKED<SOSG NSKED
+		XCT RSKED>
+
+LS(CLASS)		; Class field counter
+
+USE SWAPPC
+
+^DSKDTB:MDDDIR
+	MDDNAM
+	MDDEXT
+	MDDVER
+	INSPRT
+	INSACT
+	DSKINS		; Insert status
+	DSKOPN
+	DSKSQI
+	DSKSQO
+	DSKCLZ
+	DSKREN
+	DSKDEL
+	CPOPJ
+	CPOPJ
+	CPOPJ
+	CPOPJ
+	CPOPJ
+	CPOPJ
+	CPOPJ		; Device status read
+	CPOPJ		; Device status set
+
+DSKDEL:	PUSHJ P,GETFDB
+	JRST SKPRET
+	PUSH P,A
+	HRLI A,WRTF		;TO DELETE MUST HAVE WRITE ACCESS
+	PUSHJ P,ACCCHK
+	JRST [	POP P,A
+		UNLOCK DIRLCK
+		MOVEI A,DELFX1
+		POPJ P,]
+	POP P,A
+	MOVSI B,FDBDEL
+	IORB B,FDBCTL(A)
+	TLNE B,FDBPRM
+	SETZM FDBSIZ(A)		; Zero size when deleting permanent files
+	UNLOCK DIRLCK
+	JRST SKPRET
+
+DSKINS:	PUSHJ P,GETFDB
+	BUG(HLT,<DSKINS: GETFDB FAILURE.>)
+	MOVSI B,FDBTMP
+	IORM B,FDBCTL(A)
+	UNLOCK DIRLCK
+	POPJ P,
+
+; Disk open routine
+; Call:	LH(STS)	; Access desired
+;	JFN	; Job file number
+;	PUSHJ P,DSKOPN
+; Return
+;	+1	; Cannot open, reason in a
+;	+2	; Success
+
+DSKOPN:	PUSHJ P,GETFDB		; Get pointer to fdb
+	JRST [	MOVEI A,OPNX2
+		POPJ P,]	; File has been deleted
+	PUSH P,A
+	HLL A,STS
+	PUSHJ P,ACCCHK		; Check access
+	JRST [	UNLOCK DIRLCK	; Access not allowed
+		SUB P,[XWD 1,1]
+		POPJ P,]
+	POP P,A
+	TEST(CE,RNDF)		; Change flag from "append" to "random"
+	TEST(O,WRTF)		; And if append, allow writing
+	TRNE STS,17
+	JRST [MOVEI A,OPNX14
+		UNLOCK DIRLCK
+		POPJ P,]	; Illegal mode
+	TEST(NN,WRTF)
+	JRST OPENF1		; Not write
+	TRNE STS,1B27
+	JRST OPENF0
+	MOVE B,JOBNO
+	HRRZ B,JOBDIR(B)
+	HRLM B,FDBUSE(A)	; Save in fdb
+	PUSH P,A
+	GTAD			; Get today
+	MOVE B,A
+	POP P,A
+	SKIPL B
+	MOVEM B,FDBWRT(A)	; Save as date of last write
+	MOVSI B,1
+	ADDM B,FDBCNT(A)	; Count number of writes
+
+OPENF0:	SKIPE B,FDBADR(A)	; Get disc address
+	JRST OPENF1
+	PUSH P,A		; No disc address, must get one
+	MOVEI A,0
+	PUSHJ P,DSKASN		; Assign a disc address
+	JRST [	POP P,A
+	MOVEI A,OPNX10
+		UNLOCK DIRLCK
+		POPJ P,]
+	AOS B,CLASS
+	ANDI B,777
+	MOVEM B,CLASS
+	CAIG B,2
+	JRST .-4
+	ROT B,4
+	TLO A,(1B3)(B)
+	MOVE B,A
+	POP P,A
+	MOVEM B,FDBADR(A)
+OPENF1:	MOVE B,FDBCTL(A)
+	TLNE B,FDBNXF		; Does this file exist
+	TEST(NE,WRTF)		; Or are we writing?
+	JRST OPENF4		; Yes ok.
+OPENF8:	MOVEI A,OPNX2		; No, cannot be opend
+	UNLOCK DIRLCK
+	POPJ P,
+
+OPENF4:	SKIPN FDBADR(A)
+	 JRST OPENF8
+	MOVEI B,0
+	TEST(NE,RNDF)
+	TLNE STS,READF!XCTF!ASPF
+	MOVE B,FDBSIZ(A)	; Get size of file
+	MOVEM B,FILLEN(JFN)	; To open file length
+	MOVEM B,FILBYN(JFN)
+	TEST(NE,RNDF)
+	SETZM FILBYN(JFN)
+	PUSH P,A
+	LDB A,PFILBS		; Get byte size
+	SKIPN A
+	MOVEI A,=36
+	LDB B,PBYTSZ
+	CAILE B,=36
+	JRST [	POP P,A
+		MOVEI A,SFBSX2
+		JRST OPENF6]
+	PUSHJ P,NFBSZ
+	GTAD			; Get now
+	POP P,B
+	TRNE STS,1B27
+	JRST OPENF9
+	SKIPL A
+	MOVEM A,FDBREF(B)	; As last reference date
+	AOS FDBCNT(B)		; Count references
+
+OPENF9:	MOVE A,FDBADR(B)
+	MOVE C,FDBCTL(B)
+	TRNE STS,1B25		; Thawed access?
+	TLO A,(1B2)		; Yes
+	TEST(NE,WRTF)
+	TLO A,(1B1)
+	TLNE C,FDBLNG
+	JRST OPNLNG		; Long files are opened peculiarly
+	TLNN A,(1B3)
+	JRST OPENF2		; Yes
+OPENF7:	PUSH P,B
+	PUSHJ P,ASOFN		; Get an ofn for the file
+	JRST OPENF5
+	HRLM A,FILOFN(JFN)
+	PUSH P,A
+	PUSHJ P,ASGPAG		; Get a free page of memory
+	JRST [	HLRZ A,FILOFN(JFN)
+		PUSHJ P,RELOFN
+		SUB P,[XWD 2,2]
+		MOVEI A,OPNX18
+		JRST OPENF6]
+	MOVE B,A
+	EXCH A,(P)
+	HRLI B,140000
+	PUSHJ P,SETMPG		; Map the index block
+	POP P,A
+	HRLZI B,(A)
+	HRRI B,1(A)
+	SETZM (A)
+	BLT B,777(A)		; Zero the index block
+	POP P,B
+	MOVSI C,(1B3)
+	ANDCAM C,FDBADR(B)	; Clear new ib bit
+	MOVSI C,FDBNXF
+	TRNE STS,1B25
+	ANDCAM C,FDBCTL(B)	; Clear non-existent bit for thawed
+	HRRZ B,A
+	MOVEI A,0
+	PUSH P,B
+	PUSHJ P,SETMPG		; Unmap the page
+	POP P,A
+	PUSHJ P,RELPAG		; Return to free pool
+	SETZM NXTDMP
+	JRST OPENF3
+
+OPENF2:	PUSHJ P,ASOFN		; Get an of for this file
+	JRST OPENF6
+	HRLM A,FILOFN(JFN)
+OPENF3:	TEST(O,WNDF)		; No windows yet, and allow size change
+	UNLOCK DIRLCK
+	OKINT
+	JRST SKPRET
+
+OPENF5:	POP P,B
+OPENF6:	UNLOCK DIRLCK
+	OKINT
+	POPJ P,
+
+OPNLNG:	PUSHJ P,ASOFN		; Assign ofn for pt table
+	JRST OPENF6		; Busy
+	HRRM A,FILOFN(JFN)	; Save ofn
+	PUSHJ P,ASGPAG		; Assign a page to map the pt table
+	JRST OPNLN1		; None available
+	HRRM A,FILLFW(JFN)	; Save long file pt location
+	MOVE B,A
+	HRLI B,140000
+	HRRZ A,FILOFN(JFN)
+	PUSHJ P,SETMPG		; Map the pt table
+	MOVE C,A
+	SKIPN A,(B)
+	BUG(HLT,<OPNLNG: NO PAGE TABLE 0 IN LONG FILE.>)
+	HLLZ C,SPTH(C)
+	TLZ C,760017
+	TLZ A,40
+	IOR A,C
+	PUSHJ P,ASOFN		; Assign an ofn for it
+	JRST OPNLN2		; This should happen rarely (if at all)
+	HRLM A,FILOFN(JFN)	; Save as ofn of current pt
+	TEST(O,LONGF)
+	JRST OPENF3		; Set bits and exit
+
+OPNLN2:	PUSH P,A		; Save error code
+	HRRZ B,FILLFW(JFN)
+	MOVEI A,0
+	PUSHJ P,SETMPG
+	HRRZ A,B
+	PUSHJ P,RELPAG
+	JRST OPNLN3
+
+OPNLN1:	PUSH P,[OPNX17]
+OPNLN3:	HRRZ A,FILOFN(JFN)
+	PUSHJ P,RELOFN
+	POP P,A
+	JRST OPENF6
+
+; Disc sequential input
+; Call:	JFN	; Job file number
+;	STS	; File status
+;	FILBYT ETC. SETUP PROPERLY FOR NEXT BYTE
+;	PUSHJ P,DSKSQI
+; Returns +1 with a byte in a
+
+DSKSQI:	MOVE B,FILBYN(JFN)
+	CAML B,FILLEN(JFN)
+	JRST [	TEST(O,EOFF)
+		POPJ P,]
+	TEST(NE,WNDF)		; Has window been set up yet?
+	PUSHJ P,SETWND		; No, set it up
+	SOSGE FILCNT(JFN)
+	PUSHJ P,NEWWNI
+	ILDB A,FILBYT(JFN)	; Get next byte
+	AOS FILBYN(JFN)		; Count bytes
+	POPJ P,
+
+NEWWNI:	PUSHJ P,NEWWND
+	SOS FILCNT(JFN)
+	POPJ P,
+
+; Disc sequential output
+; Call:	JFN	; Job file number
+;	STS	; File status
+;	FIL BYT ETC SET UP
+;	A	; A byte
+;	PUSHJ P,DSKSQO
+
+DSKSQO:	TEST(NE,WNDF)		; Has a window been set up?
+	PUSHJ P,SETWND		; No, set it up
+	PUSH P,A
+	SOSGE FILCNT(JFN)
+	PUSHJ P,NEWWNI
+	POP P,A
+	IDPB A,FILBYT(JFN)	; Deposit the byte
+	AOS B,FILBYN(JFN)	; Count bytes
+	CAMGE B,FILLEN(JFN)	; Beyond the end?
+	POPJ P,			; No, done.
+	TEST(O,EOFF)		; Yes, set eoff
+	MOVEM B,FILLEN(JFN)	; Update new length
+	POPJ P,
+
+; Set up a window for a file
+; Call:	PUSHJ P,SETWND
+
+SETWND:	PUSH P,A
+	PUSHJ P,ASGPAG		; Assign a job page
+	JRST [	TEST(O,ERRF)
+		POP P,A
+		POP P,0(P)	; Pop return off stack
+		POPJ P,]	; And return one level back
+	HRRZM A,FILWND(JFN)
+	TEST(Z,WNDF)
+	PUSHJ P,NEWWND		; Set up window pointers
+	POP P,A
+	POPJ P,
+
+; Set up pointers to a file
+; Call:	FILBYN(JFN)	; File byte number
+;	FILBYT(JFN)	; Byte size bits
+;	LH(FILWND(JFN))	; Current page number
+;	RH(FILWND(JFN))	; File window location
+;	ETC.
+;	PUSHJ P,NEWWND
+
+^NEWWND:TEST(NE,WNDF)
+	POPJ P,			; Do nothing if no window yet
+	PUSH P,A
+	LDB A,PBYTSZ		; Get current byte size
+	MOVEI C,=36
+	IDIV C,A		; Get bytes per word
+	MOVE B,FILBYN(JFN)	; Get current byte number
+	CAMLE B,FILLEN(JFN)
+	MOVEM B,FILLEN(JFN)
+	IDIV B,C		; Current word in b, offset in b+1
+	IMUL B+1,A		; Offset times byte size
+	MOVN C,B+1
+	ADDI C,=36
+	DPB C,PBYTPO		; Yields byte pointer position
+	MOVE C,B
+	PUSH P,C		; Save for later
+	LSH C,-9		; Get page number
+	HLRZ B,FILWND(JFN)	; Get current page number
+	TRNE B,777
+	CAME B,C
+	JRST NEWWNA		; Need to set up a new window
+NEWWNZ:	POP P,C			; Restore word number
+	ANDI C,777		; Get relative to page origin
+	HRRZ B,FILWND(JFN)
+	IOR B,C			; Get absolute address
+	HRRM B,FILBYT(JFN)	; Put into byte pointer
+	LDB A,PBYTSZ		; Get current byte size
+	MOVEI C,=36
+	IDIV C,A		; Get bytes per word
+	IMULI C,1000		; Get bytes per page
+	MOVEM C,FILCNT(JFN)	; Save as count
+	MOVN B,FILBYN(JFN)	; Get byte number
+	IDIV B,C		; Remainder is negative
+	ADDM B+1,FILCNT(JFN)	; Adjust if not at beginning of page
+	POP P,A			; Restore a
+	POPJ P,
+
+NEWWNA:	HRRZ A,C
+	PUSHJ P,JFNOF1		; Get ofn.pn for this page
+	JRST [	TEST(O,ENDF)
+		POP P,C
+		POP P,A
+		POPJ P,]
+	TEST(NN,ASPF)		; If access is ass specified?
+	JRST NEWWN1
+	PUSH P,A
+	PUSHJ P,MRPACS		; Read access of the page
+	LSH A,1			; Shift bits into position for sts
+	TLZ STS,READF!WRTF!XCTF	; Change access to that of this page
+	AND A,[XWD READF!WRTF!XCTF,0]
+	OR STS,A		; Change file access to that of the page
+	POP P,A
+NEWWN1:	HRRZ B,FILWND(JFN)
+	HRLI B,160000
+	PUSHJ P,SETMPG		; Map the the page
+	MOVE C,(P)
+	LSH C,-9
+	HRLM C,FILWND(JFN)
+	JRST NEWWNZ		; And finish up
+
+; New page table for long file
+
+NEWLFP:	PUSH P,C		; Save pt number
+	TEST(NE,LONGF)		; Is this file already long?
+	JRST NEWLFT		; Yes, no sweat
+	PUSHJ P,GETFDB		; No, let's get the fdb
+	BUG(HLT,<NEWLFP: GETFDB FAILURE FOR OPEN FILE.>)
+	MOVE C,FDBCTL(A)	; And see if it's become long
+	TLNE C,FDBLNG		; Since we opened it
+	JRST NEWFLL		; Yes, it has
+	PUSH P,A		; No. save fdb location
+	MOVE A,FDBADR(A)	; Get disc address of pt 0
+	PUSHJ P,DSKASN		; Assign a page for the pt table
+	BUG(HLT,<NEWLFP: DSKASN FAILURE IN GETTING NEW PAGE TABLE.>)
+	HLRZ B,FILOFN(JFN)	; Get ofn of current pt
+	HLLZ C,SPTH(B)		; Get class field and write and thawed
+	TLZ C,460017
+	IOR A,C
+	MOVSI C,300000
+	ANDCAM C,SPTH(B)	; Clear write and thaw bits
+	PUSH P,A		; Save it for later
+	TLO A,(1B3)		; Mark as new
+	PUSHJ P,NEWLFS		; Assign ofn etc
+	HRLZ A,B
+	HRRI A,1(B)		; Prepare to clear the page
+	SETZM (B)
+	BLT A,777(B)
+	POP P,C			; Get new disc address
+	POP P,A			; And fdb location
+	TLZ C,300000
+	EXCH C,FDBADR(A)	; Store new disc address, get old
+	TLZ C,017760		; No class fields in pt table
+	TLO C,40
+	MOVEM C,(B)		; Store old disc address as pt 0
+	MOVSI D,FDBLNG
+	IORM D,FDBCTL(A)	; Mark fdb as long file
+	JRST NEWLF1		; Continue with rest
+
+NEWLFS:	PUSHJ P,ASOFN		; Assign ofn for new disc address
+	BUG(HLT,<NEWLFP: ASOFN FAILURE AT INOPPORTUNE TIME.>)
+	HRRM A,FILOFN(JFN)	; Save
+	PUSHJ P,ASGPAG		; Get a page to map the pt table
+	BUG(HLT,<NEWLFP: ASGPAG FAILURE AT INOPPORTUNE TIME.>)
+	HRRM A,FILLFW(JFN)	; Store location of pt table
+	MOVE B,A
+	HRLI B,140000
+	HRRZ A,FILOFN(JFN)
+	JRST SETMPG		; Map the pt table
+
+NEWFLL:	MOVE A,FDBADR(A)	; File became long since we opened
+	PUSHJ P,NEWLFS		; Map the pt table
+NEWLF1:	UNLOCK DIRLCK		; Finished with directory
+	OKINT
+	TEST(O,LONGF)
+
+NEWLFT:	HRRZ B,FILLFW(JFN)	; Get location of pt table
+	ADD B,(P)		; Offset by pt # to get disc addr
+	NOSKED			; To prevent others from tampering
+	SKIPE A,(B)		; Is a disc address assigned for this pt
+	JRST NEWLFA		; Yes, use it
+	PUSH P,B		; Save location in pt table
+	HLRZ A,FILOFN(JFN)	; Get ofn of pt table
+	MOVE A,SPTH(A)		; Get disc address of pt table
+	PUSHJ P,DSKASN		; Get a new disc address
+	BUG(HLT,<NEWLFT: INOPPORTUNE FAILURE OF DSKASN.>)
+	PUSH P,A
+	HLRZ A,FILOFN(JFN)
+	HLLZ A,SPTH(A)		; Get class bits
+	TLZ A,760017
+	IOR A,(P)
+	TLO A,(1B3)
+	PUSHJ P,ASOFN		; Assign ofn for new ib
+	BUG(HLT,<NEWLFT: INOPPORTUNE FAILURE OF ASOFN.>)
+	PUSH P,A
+	PUSHJ P,ASGPAG
+	BUG(HLT,<NEWLFT: INOPPORTUNE FAILURE OF ASGPAG.>)
+	MOVE B,A
+	HRLI B,140000
+	MOVE A,(P)
+	PUSHJ P,SETMPG		; Map the pt
+	HRLZ A,B
+	HRRI A,1(B)
+	SETZM (B)
+	BLT A,777(B)		; Clear pt
+	MOVEI A,0
+	PUSHJ P,SETMPG
+	HRRZ A,B
+	PUSHJ P,RELPAG
+	POP P,A
+	PUSHJ P,RELOFN
+	POP P,A
+	POP P,B
+	TLO A,40
+	MOVEM A,(B)
+NEWLFA:	OKSKED
+	HRRZ B,FILOFN(JFN)	; Get pt table ofn
+	HLLZ B,SPTH(B)		; Get class field
+	TLZ B,760017
+	TLZ A,40
+	IOR A,B			; Insert into disc address
+	PUSHJ P,ASOFN
+	BUG(HLT,<NEWLFT: INOPPORTUNE FAILURE OF ASOFN.>)
+	HLRZ B,FILOFN(JFN)
+	HRLM A,FILOFN(JFN)
+	MOVE A,B
+	PUSHJ P,RELOFN
+	POP P,C
+	POPJ P,
+
+; Convert jfn.pn to ofn.pn
+; Call:	LH(A)	; Jfn
+;	RH(A)	; Page number
+;	PUSHJ P,JFNOFN
+; Return
+;	+1	; Error, illegal jfn or page number too big
+;	+2	; Ok
+;	LH(A)	; Ofn
+;	RH(A)	; Page number
+
+^JFNOFN:HLRZ JFN,A
+	PUSH P,A
+	PUSHJ P,CHKJFN
+	JRST [	POP P,ERRSAV
+		POPJ P,]	; Garbage designator
+	JFCL
+	JRST [	POP P,ERRSAV
+		MOVEI A,DESX4
+		POPJ P,]
+	POP P,A
+	TEST(NN,OPENF)
+	JRST [	MOVEI A,DESX5
+		JRST UNLCKF]
+	MOVEI B,-DSKDTB(DEV)
+	SKIPN B
+	TEST(NN,RNDF)
+	JRST [	MOVEI A,PMAPX1
+		JRST UNLCKF]
+	HRRZS A
+	PUSHJ P,JFNOF1
+	JRST .+2
+	AOS (P)
+	JRST UNLCKF
+
+^JFNOF1:TLNE A,777777
+	POPJ P,
+	PUSH P,A
+	HLRZ B,FILWND(JFN)	; Get current page number
+	XOR B,A
+	TRNN B,777000		; If different page tables
+	JRST JFNOF2
+	LSH A,-9		; Need special action
+	MOVE C,A
+	PUSHJ P,NEWLFP		; Change current page
+	SETZM FILCNT(JFN)	; Force any sequential io to remap
+JFNOF2:	MOVE A,(P)
+	TRZ A,777
+	HRLM A,FILWND(JFN)
+	POP P,A
+	HLL A,FILOFN(JFN)
+	ANDCMI A,777000		; Mask out pt number
+	JRST SKPRET
+
+; Convert ofn.pn to jfn.pn
+; Call:	LH(A)	; Ofn
+;	RH(A)	; Pn
+;	PUSHJ P,OFNJFN
+; Return
+;	+1	; No jfn found
+;	+2	; Ok
+;	A	; Jfn.pn
+
+^OFNJFX:TLO A,400000
+^OFNJFN:PUSH P,A
+	HLRZS A
+	ANDI A,377777
+	PUSH P,A
+	NOINT
+	LOCK(JFNLCK,<JRST [
+		OKINT
+		MOVEI A,=500
+		DISMS
+		JRST .-2]>)
+	MOVEI JFN,NJFN-1
+OFNJF1:	MOVE STS,FILSTS(JFN)
+	HRRZ A,FILDEV(JFN)
+	CAIE A,DSKDTB
+	JRST OFNJF2
+	MOVE A,FILLFW(JFN)
+	TLNN A,777776
+	SKIPL -1(P)
+	TEST(NN,OPENF)
+	JRST OFNJF2
+	TEST(NE,LONGF)
+	JRST OFNJF3
+	HLRZ A,FILOFN(JFN)
+	CAME A,(P)
+	JRST OFNJF2
+OFNJF6:	POP P,A
+	POP P,A
+	HRL A,JFN
+	UNLOCK JFNLCK
+	OKINT
+	JRST SKPRET
+
+OFNJF3:	MOVE A,(P)		; Get ofn
+	MOVE A,SPTH(A)		; Get disc address
+	TLZ A,777767
+	TLO A,40
+	PUSH P,B
+	MOVSI B,-1000
+	HRR B,FILLFW(JFN)
+OFNJF4:	CAMN A,(B)
+	JRST OFNJF5
+	AOBJN B,OFNJF4
+	POP P,B
+	JRST OFNJF2
+
+OFNJF5:	POP P,B
+	JRST OFNJF6
+
+OFNJF2:	SOJGE JFN,OFNJF1
+	POP P,A
+	POP P,A
+	UNLOCK JFNLCK
+	OKINT
+	POPJ P,
+
+; Disk close
+; Call:	JFN	; Job file number
+;	PUSHJ P,DSKCLZ
+
+DSKCLZ:	TEST(NE,WRTF,ASPF)
+	PUSHJ P,GETFDB		; Get pointer to the fdb
+	JRST DSKCL1		; If it's been deleted, skip
+	PUSH P,A
+	MOVE A,FILLEN(JFN)
+	TEST(NN,WNDF)
+	CAME A,FILBYN(JFN)
+	JRST DSKCL9
+	MOVEI A,0
+	MOVE B,FILBYT(JFN)
+DSKCL7:	IBP B
+	TRNN B,777
+	JRST DSKCL9
+	DPB A,B
+	JRST DSKCL7
+
+DSKCL9:	PUSHJ P,ASGPAG
+	JRST [	POP P,A
+		JRST DSKCL0]
+	PUSH P,A
+	MOVE B,A
+	TEST(NE,LONGF)
+	JRST CNTLNG
+	HRLI B,100000
+	HLRZ A,FILOFN(JFN)
+	PUSHJ P,SETMPG
+	MOVE A,(P)
+	MOVEI B,0
+	HRLI A,-1000
+	SKIPE (A)
+	AOS B
+	AOBJN A,.-2
+	PUSH P,B
+DSKCL8:	MOVE B,-1(P)
+	MOVEI A,0
+	PUSHJ P,SETMPG
+	POP P,A
+	EXCH A,(P)
+	PUSHJ P,RELPAG
+	POP P,B
+	POP P,A
+	DPB B,PFILPC
+
+DSKCL0:	MOVSI B,FDBNXF
+	ANDCAM B,FDBCTL(A)	; Clear non-existent flag
+	TEST(NE,WNDF)
+	JRST DSKCL3
+	LDB B,PBYTSZ
+	TEST(NN,WNDF)		; Dont if no sequential io done
+	DPB B,PFILBS		; Update byte size
+	MOVE B,FILLEN(JFN)
+	MOVEM B,FDBSIZ(A)
+DSKCL3:	UNLOCK DIRLCK
+	OKINT
+DSKCL1:	NOINT
+	HRRZ B,FILWND(JFN)
+	JUMPE B,DSKCL2
+	MOVEI A,0
+	PUSHJ P,SETMPG		; Unmap window
+	HRRZ A,FILWND(JFN)
+	PUSHJ P,RELPAG		; Return page to free list
+
+DSKCL2:	HLRZ A,FILOFN(JFN)
+	PUSHJ P,RELOFN		; Release the ofn
+	SETZM NXTDMP
+	TEST(NN,LONGF)
+	JRST SKPRET
+	HRRZ B,FILLFW(JFN)
+	MOVEI 1,0
+	PUSHJ P,SETMPG
+	HRRZ A,B
+	PUSHJ P,RELPAG
+	HRRZ A,FILOFN(JFN)
+	PUSHJ P,RELOFN
+	JRST SKPRET
+
+CNTLNG:	MOVSI C,-1000
+	HRR C,FILLFW(JFN)
+	SETZ E,
+CNTLNL:	PUSH P,C
+	SKIPN A,(C)
+	JRST CNTLN1
+	HRRZ B,FILOFN(JFN)
+	HLLZ B,SPTH(B)
+	TLZ B,760017
+	TLZ A,40
+	IOR A,B
+	PUSHJ P,ASOFN
+	JRST CNTLN1
+	MOVE B,-1(P)
+	HRLI B,100000
+	PUSHJ P,SETMPG
+	HRLI B,-1000
+	SKIPE (B)
+	AOS E
+	AOBJN B,.-2
+	PUSHJ P,RELOFN
+CNTLN1:	POP P,C
+	AOBJN C,CNTLNL
+	PUSH P,E
+	JRST DSKCL8
+; Mutlitple directory rename
+; Call:	JFN	; Jfn of new name
+;	A	; Jfn of existing file
+;	PUSHJ P,DSKREN
+
+DSKREN:	PUSH P,A
+	PUSHJ P,GETFDB
+	JRST [	POP P,A
+		MOVEI A,RNAMX2
+		POPJ P,]
+	PUSH P,A
+	HRLI A,WRTF
+	PUSHJ P,ACCCHK
+	JRST [	UNLOCK DIRLCK
+		POP P,A
+		POP P,A
+		MOVEI A,RNAMX2
+		POPJ P,]
+	MOVE A,0(P)
+	SKIPN A,FDBADR(A)
+	JRST [	MOVEI A,0
+		PUSHJ P,DSKASN
+		BUG(HLT,<DSKREN: INOPPORTUNE FAILURE OF DSKASN.>)
+		MOVE B,(P)
+		TLO A,(1B3)
+		MOVEM A,FDBADR(B)
+		JRST .+1]
+	TLO A,1B1
+	PUSHJ P,ASOFN
+	JRST [	POP P,A
+		POP P,A
+		UNLOCK DIRLCK
+		MOVEI A,RNAMX2
+		POPJ P,]
+	MOVEM A,(P)
+	EXCH JFN,-1(P)
+	UNLOCK DIRLCK
+	PUSHJ P,GETFDB
+	JRST [	POP P,A
+		PUSHJ P,RELOFN
+		POP P,JFN
+		MOVEI A,RNAMX2
+		POPJ P,]
+	PUSH P,A		; Fdb loc
+	HRLI A,WRTF
+	PUSHJ P,ACCCHK
+	JRST DSKRE8
+	MOVE A,0(P)
+	SKIPN A,FDBADR(A)
+
+DSKRE8:	JRST [	UNLOCK DIRLCK
+		POP P,A		; Fdb loc
+		POP P,A		; Destination ofn
+		PUSHJ P,RELOFN
+		POP P,A		; Dest jfn
+		MOVEI A,RNAMX2
+		POPJ P,]
+	PUSHJ P,ASOFN
+	JRST DSKRE8		; Source file is open
+	CAMN A,-1(P)
+	JRST [	PUSHJ P,RELOFN	; Rename to self
+		JRST DSKRE8]
+	EXCH A,(P)		; Store ofn, get fdb loc
+	PUSH P,FDBADR(A)
+	LDB B,PFILBS
+	PUSH P,B
+	LDB B,PFILPC
+	PUSH P,B
+	PUSH P,FDBSIZ(A)
+	PUSH P,FDBUSW(A)
+	PUSH P,FDBCTL(A)
+	MOVSI B,FDBNXF!FDBDEL
+	HLLM B,FDBCTL(A)
+	SETZM FDBADR(A)
+	UNLOCK DIRLCK
+	MOVE JFN,-10(P)		; Destination
+
+	PUSHJ P,GETFDB		; Go to other fdb
+	BUG(HLT,<DSKREN: GETFDB FAILURE FOR OPEN FILE.>)
+	PUSH P,A
+	HRRZ A,-7(P)
+	PUSHJ P,RELOFN
+	MOVE A,(P)
+	MOVEI D,-DIRORG(A)
+	PUSH P,E
+	PUSH P,F
+	PUSHJ P,DELFIL
+	JFCL
+	SKIPLE A,FDBACT+DIRORG(D)
+	AOS DIRORG+1(A)
+	POP P,F
+	POP P,E
+	POP P,A
+	POP P,B
+
+DSKRE9:	XOR B,FDBCTL(A)
+	TLZ B,FDBPRM!FDBTMP
+	XOR B,FDBCTL(A)
+	HLLM B,FDBCTL(A)
+	POP P,FDBUSW(A)
+	POP P,FDBSIZ(A)
+	POP P,B
+	DPB B,PFILPC
+	POP P,B
+	DPB B,PFILBS
+	POP P,FDBADR(A)
+	PUSH P,A
+	GTAD
+	POP P,B
+	MOVEM A,FDBWRT(B)
+	POP P,A
+	SUB P,[XWD 2,2]
+	UNLOCK DIRLCK
+	SETZM NXTDMP
+	JRST SKPRET
+
+	BENDP	DISC
+
+	BEGINP	STRING
+
+^STRDEV:REPEAT BIND,<
+	CPOPJ>
+	STRIN
+	STROUT
+	REPEAT SDSTD-BOUTD,<
+	CPOPJ>
+
+STRIN:	XCTMU [ILDB A,JFN]
+	POPJ P,
+
+STROUT:	XCTMU [IDPB A,JFN]
+	POPJ P,
+
+^DBP:	LDB B,[POINT 6,A,5]
+	LDB C,[POINT 6,A,11]
+	ADD B,C
+	IDIVI B,=36
+	JUMPE B,DBP1
+	SUB A,B
+	LDB C,[POINT 6,A,11]
+	MOVEI B,=36
+	PUSH P,C
+	IDIV B,C
+	POP P,C
+	IMUL B,C
+	MOVNI C,-=36(B)
+DBP1:	DPB C,[POINT 6,A,5]
+	POPJ P,
+
+	BENDP	STRING
+
+	BEGINP	TTY
+
+EXTERN	CTRLTT		; Controlling tty
+EXTERN	TCI		; Character type in routine
+EXTERN	TCO		; Character type out routine
+EXTERN	TTFORK		; Lh ==> job to which tty is assigned
+EXTERN	JOBNO		; Current job number
+IFDEF NETN,<EXTERN PTYDET>
+
+; tty dispatch table
+
+^TTYDTB:REPEAT OPEND,<CPOPJ>
+	TTYOPN
+	TTYIN
+	TTYOUT
+	TTYCLZ
+	REPEAT SDSTD-CLOSD,<CPOPJ>
+
+TTYIN:	HLRZ 2,DEV
+	PUSHJ P,SAVAC
+	PUSHJ P,TCI
+	MOVEM 1,A-NSAC+1(P)
+	PUSHJ P,RESAC
+	POPJ P,
+
+TTYOUT:	HLRZ 2,DEV
+	PUSHJ P,SAVAC
+	PUSHJ P,TCO
+	PUSHJ P,RESAC
+	POPJ P,
+
+TTYOPN:	LDB B,PBYTSZ
+	MOVEI A,SFBSX2
+	SUBI B,7		; Must be 0 or 1
+	LDB C,[POINT 4,STS,35]
+	CAME B,C		; And must be right mode
+	POPJ P,
+	MOVEI A,OPNX14
+	CAILE C,1
+	POPJ P,
+	HLRZ B,DEV		; Get tty line number
+	HLRZ C,TTFORK(B)	; Get job to which tty is assigned
+	MOVE A,CAPENB
+	TRNN A,WHEEL!OPR
+	CAMN C,JOBNO		; Is assigned to this job?
+	JRST TTYOP1
+	MOVEI A,OPNX7
+	CAIE C,777777		; Or not assigned?
+	POPJ P,			; No. fail
+	MOVE C,JOBNO
+	HRLM C,TTFORK(B)
+TTYOP1:	HLRZ B,DEV
+	PUSHJ P,TTRMOD		; Get current tty mode
+	LDB C,[POINT 4,STS,35]
+	TRC C,1			; Reverse modes
+	LSH C,6
+	TRZ A,17B29
+	IOR A,C
+	PUSHJ P,TTSMOD
+	TEST(O,SIZF)
+	JRST SKPRET
+
+TTYCLZ:	HLRZ B,DEV
+	HLRZ A,TTFORK(B)
+	CAME B,CTRLTT
+	CAME A,JOBNO
+	JRST SKPRET
+	MOVEI A,400000(B)
+	PUSHJ P,CHKDEV
+	 POPJ P,
+	TLNE C,(1B6)
+	JRST SKPRET
+	HRROS TTFORK(A)
+IFDEF NETN,<
+	HRRZ B,A
+	CAIL B,NTTYS
+	PUSHJ P,PTYDET>
+	JRST SKPRET
+
+	BENDP	TTY
+
+	BEGINP	NIL
+
+; Null device
+
+^NILDTB:NILSET
+	SK2RET
+	SK2RET
+	SKPRET
+	CPOPJ
+	CPOPJ
+	CPOPJ
+	NILOPN
+	NILSQI
+	NILSQO
+	SKPRET
+	CPOPJ
+	CPOPJ
+	CPOPJ
+	CPOPJ
+	CPOPJ
+	CPOPJ
+	CPOPJ
+	CPOPJ
+	CPOPJ		; Device status read
+	CPOPJ		; Device status set
+
+NILOPN:	AOS (P)
+NILSQI:
+NILSQO:	SETZM FILBYT(JFN)
+	HRLOI A,377777
+	MOVEM A,FILCNT(JFN)
+	SETZB A,B
+	POPJ P,
+
+NILSET:	NOINT
+	TEST(O,NNAMF,NVERF)
+	JRST SK2RET
+
+	BENDP NIL
+
+	BEGINP	INIT
+
+EXTERN	DSKBTI,JOBDIR
+INTERN	FILINI,JBFINI
+
+; Initialize file stuff
+
+USE
+
+^JBFINI:MOVEI A,JSFREE		; Origin of free area in jsb
+	HRLZM A,JSBFRE		; To header
+	MOVEI A,200
+	HRRZM A,JSFREE		; One big block free
+	MOVEM A,JSBFRE+2
+	SETOM JSBFRE+1
+	MOVEI A,MAXLW+1
+	MOVEM A,JSBFRE+3
+	MOVE A,[XWD IJBCOR,JBCOR]
+	BLT A,JBCOR+3		; Initial job area assignment
+	SETOM PRIMRY		; Primary io to controlling tty
+	SETOM JFNLCK		; Unlock jfnlck
+	SETZM FILSTS
+	MOVE A,[XWD FILSTS,FILSTS+1]
+	BLT A,FILSTS+NJFN-1	; Clear all filsts words
+	MOVE A,[XWD FILLCK,FILLCK+1]
+	SETOM FILLCK
+	BLT A,FILLCK+NJFN-1
+	MOVEI A,1
+	MOVEM A,JOBDNO
+	MOVE B,JOBNO
+	HRLZM A,JOBDIR(B)	; Connect to directory 1, no log in
+IFDEF NDP,<	SETZM JOBDC>	; No display consoles assigned
+	MOVE A,[XWD 777000,-1]
+	MOVEM A,CAPMSK
+	MOVEM A,CAPENB
+	MOVE A,[XWD 500000,=220100]
+	MOVEM A,ACCTPT
+	POPJ P,
+
+; File system initialization
+
+FILINI:	SKIPE DIDSCA
+	JRST FILINW
+	HRROI A,[ASCIZ /
+DO YOU REALLY WANT TO CLOBBER THE DISC BY RE-INITIALIZING? /]
+FILINQ:	PSOUT
+	PBIN
+	PUSH P,A
+	MOVEI A,37
+	PBOUT
+	POP P,A
+	CAIN A,"Y"
+	JRST [	HRROI A,[ASCIZ /OK, YOU ASKED FOR IT./]
+		PSOUT
+		JRST FILINW]
+	CAIE A,"N"
+	JRST [	HRROI A,[ASCIZ /PLEASE TYPE Y OR N: /]
+		JRST FILINQ]
+	HRROI A,[ASCIZ /I THOUGHT NOT.
+PLEASE BE MORE CAREFUL IN THE FUTURE./]
+	PSOUT
+	MOVE A,DIDSCI
+	MOVEM A,DIDSCA
+
+FILINW:	SKIPN DIDSCA		; Dont init bit table if not fresh start
+	PUSHJ P,DSKBTI
+	PUSHJ P,DEVINI
+IFDEF MTAN,<	PUSHJ P,MTAINI>
+IFDEF LPTN,<	PUSHJ P,LPTINI>
+IFDEF PLTN,<	PUSHJ P,PLTINI>
+IFDEF PTPN,<	PUSHJ P,PTPINI>
+IFDEF PTRN,<	PUSHJ P,PTRINI>
+IFDEF DTAN,<	PUSHJ P,DTAINI>
+IFDEF NETN,<	PUSHJ P,NETINI>
+IFDEF NDP,<	PUSHJ P,DSPINI>
+	PUSHJ P,DMPINI
+	MOVE A,TODCLK
+	ANDI A,777
+	MOVEM A,CLASS
+	SKIPE 1,DIDSCA		; Do we have a disc address for di
+	JRST FILIN1		; Yes, use it
+	PUSHJ P,NEWIB		; No, get an ib ofn
+	MOVEM B,DIDSCA
+	MOVEM A,DIOFN
+	PUSHJ P,NEWIB
+	PUSH P,B
+	PUSH P,A
+	HRLOI A,600000
+	PUSHJ P,CHKDEV
+	BUG(HLT,<FILINI: CHKDEV FAILED TO FIND DEVICE DSK:.>)
+	POP P,A
+	MOVEM A,FDLOFN
+	HRLM A,DEVDSP(B)
+	PUSHJ P,ASGPAG
+	BUG(HLT,<FILINI: ASGPAG FAILURE.>)
+	MOVE B,A
+	HRLI B,140000
+	MOVE A,FDLOFN
+	PUSHJ P,SETMPG
+	HRLI B,C
+	MOVSI C,-NFDIB
+
+FILIN9:	PUSH P,B
+	PUSH P,C
+	PUSHJ P,NEWFD
+	TLO B,40
+	TLZ B,20
+	EXCH B,-1(P)
+	POP P,C
+	MOVEM A,FDOFN(C)
+	POP P,@B
+	AOBJN C,FILIN9
+	MOVEI A,0
+	PUSHJ P,SETMPG
+	HRRZ A,B
+	PUSHJ P,RELPAG
+	MOVEI A,0
+	PUSHJ P,MAPDIR
+	POP P,FDADR		; Store disc address of fd in di
+	PUSH P,FDADR
+	SETOM DIRLCK		; Unlock the block 0
+	MOVEI A,ESBIDT-DIRORG	; End of sbidtb is beginning of hash
+	MOVEM A,DIRHTO
+	SETZM ESBIDT
+	MOVE A,[XWD ESBIDT,ESBIDT+1]
+	BLT A,ESBIDT+177
+	MOVEI A,475
+	MOVEM A,DIRHTL		; Hash table length
+	SETZM DIRFRE		; No free area in block 0
+	SETZM DIRFRE+1
+	SETZM DIRFRE+2
+	SETZM SYMBOT		; No symbol table either
+	SETZM SYMTOP
+	SETZM DIRNUM		; This is block 0
+	MOVE A,[BYTE (7)1,1,1,1,1]
+	MOVEM A,SBIDTB		; All initial chars dispatch to block 1
+	MOVE A,[XWD SBIDTB,SBIDTB+1]
+	BLT A,ESBIDT-1
+	MOVNI A,1
+	PUSHJ P,MAPDIR
+	MOVEI A,DDBLEN
+	PUSHJ P,INIBLK		; Initialize the block
+	MOVNI A,1
+	MOVEM A,DIRNUM
+	UNLOCK DIRLCK
+
+INLP1:	MOVEI A,[ASCIZ /PDP-10/]
+	HRROM A,MKFDBK+1
+	HRROI 1,[ASCIZ /SYSTEM/]
+	MOVE 2,[XWD 260000,MKFDBK]
+	CRDIR
+	JFCL
+	MOVSI 1,200001
+	HRROI 2,[ASCIZ /<SYSTEM>DIRECTORY;1;P774040/]
+	GTJFN
+	BUG(HLT,<FILINI: GTJFN FAILURE FOR <SYSTEM>DIRECTORY.>)
+	MOVE JFN,A
+	MOVEI DEV,DSKDTB
+	PUSHJ P,GETFDB
+	BUG(HLT,<FILINI: GETFDB FAILURE FOR <SYSTEM>DIRECTORY.>)
+	POP P,FDBADR(A)		; Put fd disc address into fdb
+	MOVSI B,FDBNXF
+	ANDCAM B,FDBCTL(A)
+	MOVSI B,FDBLNG
+	IORM B,FDBCTL(A)
+	UNLOCK DIRLCK
+	OKINT
+	MOVSI 1,200001
+	HRROI 2,[ASCIZ /<SYSTEM>INDEX;1;P770000/]
+	GTJFN
+	BUG(HLT,<FILINI: GTJFN FAILURE FOR <SYSTEM>INDEX.>)
+	MOVE JFN,A
+	MOVEI DEV,DSKDTB
+	PUSHJ P,GETFDB
+	BUG(HLT,<FILINI: GETFDB FAILURE FOR <SYSTEM>INDEX.>)
+	MOVE B,DIDSCA
+	MOVEM B,FDBADR(A)
+	MOVSI B,FDBNXF
+	ANDCAM B,FDBCTL(A)
+	UNLOCK DIRLCK
+	OKINT
+	MOVNI 1,1
+	RLJFN
+	JFCL
+	POPJ P,
+
+MKFDBK:	0
+	0
+	0
+	700000
+	0
+
+
+FILIN1:	TLO A,(1B2)
+	PUSHJ P,ASOFN		; Get ofn for di
+	BUG(HLT,<FILINI: ASOFN FAILURE FOR DIRECTORY INDEX.>)
+	MOVEM 1,DIOFN
+	MOVEI A,0
+	PUSHJ P,MAPDIR
+	MOVE 1,FDADR
+	TLO A,(1B2)
+	PUSHJ P,ASOFN		; Get ofn for fd
+	BUG(HLT,<FILINI: ASOFN FAILURE FOR FD.>)
+	MOVEM A,FDLOFN
+	HRLOI A,600000
+	PUSHJ P,CHKDEV
+	BUG(HLT,<FILINI: CHKDEV FAILED TO FIND DEVICE DSK:.>)
+	MOVE A,FDLOFN
+	HRLM A,DEVDSP(B)
+	PUSHJ P,ASGPAG
+	BUG(HLT,<FILINI: ASGPAG FAILURE FOR PAGE TO INIT FD'S.>)
+	MOVE B,A
+	HRLI B,140000
+	MOVE A,FDLOFN
+	PUSHJ P,SETMPG
+	HRLI B,F
+	MOVSI F,-NFDIB
+FILIN2:	MOVE A,@B
+	TLO A,20
+	PUSH P,B
+	TLZE A,40
+	PUSHJ P,ASOFN
+	BUG(HLT,<FILINI: ASOFN FAILURE FOR FD.>)
+	POP P,B
+	MOVEM A,FDOFN(F)
+	AOBJN F,FILIN2
+	MOVEI A,0
+	PUSHJ P,SETMPG
+	HRRZ A,B
+	PUSHJ P,RELPAG
+	POPJ P,
+
+NEWFD:	TDZA A,A
+NEWIB:	MOVSI A,(1B2 )
+	TLO A,(1B3)
+	PUSH P,A
+	MOVE A,DIDSCI		; Parameter dependent on configuration
+	PUSHJ P,DSKASN		; Get a blank disc address
+	BUG(HLT,<NEWIB: DSKASN FAILURE FOR INITIAL SYSTEM PAGE TABLES.>)
+	TLO A,20
+	IORM A,(P)
+	EXCH A,(P)
+	PUSHJ P,ASOFN
+	BUG(HLT,<NEWIB: ASOFN FAILURE FOR INITIAL SYSTEM BLOCKS.>)
+	PUSH P,A		; Save the ofn
+	PUSHJ P,ASGPAG		; Get a page in job area
+	BUG(HLT,<NEWIB: ASGPAG FAILURE FOR INITIALIZING SYTEM PT'S.>)
+	PUSH P,A
+	MOVE B,A
+	TLO B,140000
+	MOVE A,-1(P)
+	PUSHJ P,SETMPG
+	MOVE A,(P)
+	HRLZ B,A
+	HRRI B,1(A)
+	SETZM (A)
+	BLT B,777(A)
+	MOVE B,(P)
+	MOVEI A,0
+	PUSHJ P,SETMPG
+	POP P,A
+	PUSHJ P,RELPAG
+	POP P,A
+	POP P,B			; Get disc address
+	POPJ P,
+
+IJBCOR:	0
+	0
+	7777
+	777777777777
+
+	BENDP	INIT
+                                                                                

@@ -1,0 +1,585 @@
+IFDEF MTAN,<
+	BEGINP	MAGTAP		R.S.TOMLINSON	 23 SEPTEMBER 1971	1625:
+
+; Externally defined symbols used herein
+
+EXTERN	MTACHN		; Flag channel
+EXTERN	MTDCHN		; Data channel
+EXTERN	MTACHR		; Return from magtape interrupt
+EXTERN	MTATIM		; Countdown for testing rewinding tapes
+EXTERN	NSKED		; No schedule flag
+EXTERN	RSKED		; Reschedule instruction
+EXTERN	EDISMS		; Exec dismiss
+
+; Entries to this part
+
+INTERN	MTASV		; Interrupt service routine
+INTERN	MTARST
+INTERN	MTACHK		; Clock level routine to check rewinding tapes
+
+DEFINE	MTALOC<MTDCHN*2+40>
+DEFINE	MTBOTH<MTACHN*10+MTDCHN>
+DEFINE	NOSKED<AOS NSKED>
+DEFINE	OKSKED<SOSG NSKED
+	XCT RSKED>
+
+UNIT_5
+IOS_6
+PI__4
+MTC_340
+MTS_344
+MTTRY__5
+
+; Private storage for magtapes
+
+LS(MTALCK,MTAN)	; Lock word
+LS(MTASTS,MTAN)	; Status of unit
+MTSTKL__20
+LS(MTSTK,MTSTKL); Stack for mta int
+LS(REWCNT)	; Number of rewinding units
+LS(MTIOWD,MTAN)	; Iowd for next transfer
+LS(MTERAS)	; Rewrite erase counter
+LS(MTPNTR)	; Iowd during transfer
+LS(MTAUNT)	; Unit currently attached to controller
+LS(MTERRC)	; Retry counter
+LS(MTERFL)	; State of retry
+LS(MTACOM)	; Cono word of current operation
+LS(MTAINR)	; Return address from flag interrupt
+LS(MTDINR)	; Return address from data interrupt
+LS(MTACLS)	; Clock routine switch, 0 for no clock wanted
+LS(MTARCE,MTAN)	; Total error count
+
+; Pointers to fields of interrest
+
+USE
+
+PMTOP:	POINT 9,MTASTS(UNIT),17	; Mtape operation code
+PDENS:	POINT 3,MTASTS(UNIT),28	; Density and parity
+
+USE	SWAPPC
+
+; Flags in lh of mtasts (or ios)
+
+FLG(IO,L,IOS,400000)	; Direction of transfer
+FLG(IOACT,L,IOS,200000)	; Action in progress or about to be
+FLG(OPN,L,IOS,100000)	; This unit is open
+FLG(REW,L,IOS,040000)	; Rewind in progress
+FLG(MTP,L,IOS,020000)	; Mtape op wanted
+
+; Dispatch table
+
+^MTADTB:MTASET
+	MTANAM
+	MTAEXT
+	MTAVER
+	CPOPJ
+	CPOPJ
+	CPOPJ
+	MTAOPN
+	MTASQI
+	MTASQO
+	MTACLZ
+	MTAREN
+	MTADEL
+	MTDMPI
+	MTDMPO
+	MTAMNT
+	MTADSM
+	MTINID
+	MTMTAP
+	MTSTS
+	MTRTS
+
+; Initialize magtape
+
+USE
+
+^MTAINI:CONO MTC,0
+	SETZM REWCNT
+	SETZM MTAUNT
+	SETZM MTERRC
+	SETOM MTERFL
+	MOVSI UNIT,-MTAN
+MTAINL:	SETOM MTALCK(UNIT)
+	SETZM MTASTS(UNIT)
+	AOBJN UNIT,MTAINL
+	POPJ P,
+
+MTARST:	SKIPN MTAUNT
+	POPJ P,
+	PUSH P,P
+	POPJ P,UNIT
+	PUSH P,IOS
+	MOVE UNIT,MTAUNT
+	MOVE IOS,MTASTS(UNIT)
+	JSYS [XWD MTAINR,MTARS1]
+	POPJ P,
+
+MTARS1:	SKIPL A,MTERFL
+	JRST TRYAGN
+	JRST DATEN1
+
+USE	SWAPPC
+
+; Mount magtape
+
+MTAMNT:	JRST SKPRET		; Any kind of mount is ok for now
+	JUMPL B,SKPRET		; Directoryless mount only
+	POPJ P,
+
+; Dismount magtape
+
+MTADSM:	JRST SKPRET
+
+; Initialize directory
+
+MTINID:	POPJ P,
+
+; Get mag tape status
+
+MTSTS:	HLRZ UNIT,DEV
+	MOVSI A,IOACT
+	TDNE A,MTASTS(UNIT)
+	 PUSHJ P,DISBIT		; WAIT FOR IOACT TO GO OFF
+	MOVE B,MTIOWD(UNIT)
+	UMOVEM B,3
+	IOR A,MTASTS(UNIT)
+	POPJ P,
+
+; Set mag tape status
+
+MTRTS:	HLRZ UNIT,DEV
+	PUSH P,A
+	MOVSI A,IOACT
+	TDNE A,MTASTS(UNIT)
+	 PUSHJ P,DISBIT
+	POP P,A
+	ANDCMI A,17
+	HRRM A,MTASTS(UNIT)
+	POPJ P,
+
+; Set magtape directory
+
+MTASET:	POPJ P,
+
+; Name lookup
+
+MTANAM:	POPJ P,
+
+; Extension lookup
+
+MTAEXT:	POPJ P,
+
+; Version lookup
+
+MTAVER:	MOVEI A,0
+	TEST(NE,UNLKF)
+	JRST SKPRET
+	UNLOCK MTALCK(UNIT)
+	OKINT
+	JRST SKPRET
+
+; Open magtape
+
+MTAOPN:	HLRZ UNIT,DEV
+	MOVE IOS,MTASTS(UNIT)
+	TLNE STS,74000
+	JRST MTAACC		; Execute access etc not allowed
+	LDB A,[POINT 4,STS,35]	; Get mode
+	CAIE A,17
+	JRST MTAILM		; Must be dump mode for now
+	LOCK MTALCK(UNIT),<PUSHJ P,LCKTST>
+	TEST(NE,OPN)
+	JRST BUSY		; Unit is busy, wait
+	MOVSI A,OPN
+	IORM A,MTASTS(UNIT)
+	HLLZS MTASTS(UNIT)
+	UNLOCK MTALCK(UNIT)
+	JRST SKPRET
+
+; Mtape uuo
+; Call:	B	; The operation wanted
+;	PUSHJ P,MTMTAP
+
+MTMTAP:	CAIL B,20
+	POPJ P,
+	HLRZ UNIT,DEV
+	LOCK MTALCK(UNIT),<PUSHJ P,LCKTST>
+	MOVSI A,IOACT
+	TDNE A,MTASTS(UNIT)
+	PUSHJ P,DISBIT
+	MOVE IOS,MTASTS(UNIT)
+	TRZ IOS,1B18!1B19!1B20!1B22!1B23!1B24!1B25!7B31!17B35
+	TEST(O,IOACT,MTP)
+	MOVEM IOS,MTASTS(UNIT)
+	DPB B,PMTOP
+	UNLOCK MTALCK(UNIT)
+	HRROI UNIT,MTAN-1
+	SETZM MTACLS
+	SKIPN MTAUNT
+	PUSHJ P,MTNXT
+	POPJ P,
+
+USE
+
+MTPTBL:	XWD 101,0		; Rew nop
+	XWD 405,0		; Eof nil
+	XWD 0,0			; Nil nil
+	XWD 107,6		; Bkspc rec, skip rec
+	XWD 111,0		; Rew&unload, nil
+	XWD 415,0		; Blank tape, nil
+	XWD 0,0			; Nil nil
+	XWD 117,16		; Back file, skip file
+
+USE	SWAPPC
+
+; Sequential input
+
+MTASQI:	BUG(HLT,<MTASQI: NO WAY TO GET HERE.>)
+
+; Sequential output
+
+MTASQO:	BUG(HLT,<MTASQO: NO WAY TO GET HERE.>)
+
+; Delete file
+
+MTADEL:	POPJ P,
+
+; Rename file
+
+MTAREN:	POPJ P,
+
+MTACLZ:	HLRZ UNIT,DEV
+	MOVSI A,IOACT
+	LOCK MTALCK(UNIT)
+	TDNE A,MTASTS(UNIT)
+	PUSHJ P,DISBIT
+	MOVSI A,OPN
+	ANDCAM A,MTASTS(UNIT)
+	UNLOCK MTALCK(UNIT)
+	JRST SKPRET
+
+MTAACC:	MOVEI A,OPNX15
+	POPJ P,
+
+MTDMPI:	TDZA IOS,IOS
+MTDMPO:	MOVSI IOS,IO
+	HLRZ UNIT,DEV
+	MOVE B,A
+	LOCK MTALCK(UNIT),<PUSHJ P,LCKTST>
+	MOVSI A,IOACT
+	TDNE A,MTASTS(UNIT)
+	PUSHJ P,DISBIT
+	MOVEM B,MTIOWD(UNIT)
+	EXCH IOS,MTASTS(UNIT)
+	TEST(Z,IO)
+	TRZ IOS,1B18!1B19!1B20!1B23!1B25!1B22!1B24
+	TEST(O,IOACT)
+	IORB IOS,MTASTS(UNIT)
+	UNLOCK MTALCK(UNIT)
+	PUSH P,UNIT
+	HRROI UNIT,MTAN-1
+	SETZM MTACLS
+	SKIPN MTAUNT
+	PUSHJ P,MTNXT		; Start up magtape io
+	POP P,UNIT
+	MOVSI A,IOACT
+	PUSHJ P,DISBIT		; Hang til complete
+	HRRZ A,MTASTS(UNIT)	; Get status of transfer
+	TRNE A,1B18!1B19!1B20!1B23!1B25
+	TEST(O,ERRF)		; Set error flag
+	TRNE A,1B22
+	TEST(O,EOFF)
+	POPJ P,
+
+; Routine called periodically to check completion of rewinds
+
+USE
+
+MTACHK:	MOVEI A,=60000
+	MOVEM A,MTATIM
+	SKIPL MTACLS
+	POPJ P,
+	HRROI UNIT,MTAN-1
+
+; Start up mag tape control
+; Scans for mag tape units needing action starting with the
+; One following that in unit
+
+MTNXT:	SETZM MTACLS
+	PUSH P,UNIT		; Save starting point
+MTNXT1:	AOBJN UNIT,MTNXT2
+	MOVSI UNIT,-MTAN
+MTNXT2:	MOVE IOS,MTASTS(UNIT)
+	TEST(NN,IOACT)
+	JRST MTNXT0		; No active, try next
+	MOVEI A,(UNIT)		; Prepare to seize tm10
+	LSH A,=15
+	CONSO MTS,2		; Control free?
+	JRST [	MOVEM UNIT,MTAUNT
+		TRO A,10400+MTACHN*10
+		JRST MTNXT4]	; Do nop with next unit enable
+	PUSHJ P,SETDEN
+	CONO MTC,(A)		; Connect to the rewind tape
+	CONSZ MTS,200000	; Still rewinding?
+	JRST MTNXT9		; Yes, continue
+	TEST(NN,REW)		; Rewinding?
+	JRST MTNXT3		; No.
+	TEST(Z,REW,IOACT)	; Clear rew and ioact
+	HLLM IOS,MTASTS(UNIT)
+	SOS REWCNT		; Decrease count of rewinding units
+MTNXT0:	CAME UNIT,(P)
+	JRST MTNXT1
+	MOVEI A,=1000		; Delay for one second
+	MOVEM A,MTATIM
+MTNXTX:	SKIPLE REWCNT
+	AOS MTACLS		; One more reason for running clock rout
+	SKIPN MTAUNT
+	MOVNS MTACLS		; Make neg if unless controller busy
+	POP P,UNIT
+	POPJ P,
+
+MTNXT9:	TEST(NE,REW)		; Do we think it's rewinding?
+	JRST MTNXT0		; Yes, go to next unit
+	AOS MTACLS		; Have a reason for running clock
+	MOVEI A,=1000
+	MOVEM A,MTATIM
+	CAME UNIT,(P)
+	JRST MTNXT1
+	JRST MTNXTX
+
+MTNXT3:	MOVEM UNIT,MTAUNT
+	TEST(NE,MTP)		; Mtape op wanted?
+	JRST MTDOOP		; Yes
+	MOVSI A,(<BLKI MTC,>)
+	TEST(NE,IO)
+	MOVSI A,(<BLKO MTC,>)
+	HRRI A,MTPNTR
+	MOVEM A,MTALOC
+	MOVE A,[JSYS MTATHR]
+	MOVEM A,MTALOC+1
+	MOVE A,MTIOWD(UNIT)
+	MOVEM A,MTPNTR
+	MOVEI A,MTTRY
+	MOVEM A,MTERRC
+	SETZM MTERAS		; Erase 0 tape initially
+	SETOM MTERFL
+	HRRZ A,UNIT
+	LSH A,=15
+	TEST(NE,IO)
+	TROA A,4000+MTBOTH	; Write function
+	TRO A,2000+MTBOTH	; Read function
+MTNXT4:	PUSHJ P,SETDEN		; Insert density and parity
+	HRRM A,MTACOM
+	CONO MTC,(A)
+	JRST MTNXTX
+
+MTDOOP:	MOVEI A,(UNIT)
+	LSH A,=15
+	PUSHJ P,SETDEN
+	CONO MTC,(A)		; Connect to unit
+	LDB B,PMTOP		; Get mtap word
+	ROT B,-1
+	SKIPL B
+	SKIPA B,MTPTBL(B)
+	HLRZ B,MTPTBL(B)
+	TRZE B,100		; Backward?
+	CONSO MTS,100000	; Yes, and at bot?
+	JRST .+3
+	TRO IOS,1B24		; Set bot bit and
+	MOVEI B,0		; Change to nop
+	ANDI B,17
+	JUMPE B,[TLZ IOS,MTP!IOACT!777
+		MOVEM IOS,MTASTS(UNIT)
+		SETZM MTAUNT
+		JRST MTNXT0]
+	LSH B,9
+	IORI A,MTACHN*10(B)
+	PUSHJ P,SETDEN
+	HRRM A,MTACOM
+	TLZ IOS,777!MTP
+	MOVEM IOS,MTASTS(UNIT)
+	CONO MTC,(A)
+	JRST MTNXTX
+
+SETDEN:	LDB B,PDENS
+	TRZN B,4
+	TRO A,1B21
+	CAIN B,0
+	MOVEI B,3
+	SOS B
+	LSH B,6
+	IOR A,B
+	POPJ P,
+
+; Data done interrupt
+
+MTATHR:	XWD MTDINR,.+1
+	CONO MTS,1
+	JEN @MTDINR
+
+; Flag interrupt
+
+MTASV:	XWD MTAINR,.+1
+	CONSZ MTC,400		; Next unit enable
+	CONSO MTS,2		; And control free
+	CONSZ MTS,440100	; Or illop, hung xprt, job done
+	JRST .+2		; Is reason for interrupt
+	JRST @MTAINR		; Else this is not a mag tape int
+	MOVEI A,MTACHR
+	MOVEM A,MTAINR
+	MOVEM P,MTSTK
+	MOVE P,[XWD -MTSTKL+1,MTSTK]
+	PUSH P,UNIT
+	PUSH P,IOS
+	MOVE UNIT,MTAUNT
+	MOVE IOS,MTASTS(UNIT)
+	CONSZ MTC,400		; Next unit interrupt?
+	JRST MTASV3		; Yes, go look for something to do
+	SKIPL A,MTERFL		; Are we trying to recover from an error
+	JRST TRYAGN		; Yes
+	CONSZ MTS,400000+1B27
+	JRST THRTAP
+	CONSZ MTS,040000
+	JRST ILLOP
+	CONSZ MTC,7		; Data operation?
+	JRST DATEND		; Yes
+	LDB A,[POINT 4,MTACOM,26]	; Get cono word
+	CONSZ MTS,10000		; Eof?
+	TRO IOS,1B22		; Yes, set device eof
+	CAIE A,1		; Rewind
+	CAIN A,11		; Or unload
+	JRST MTARW1
+
+THRTAP:	CONI MTS,A
+	TRNE A,1B20
+	TROA IOS,1B24		; Set bot
+	TRZ IOS,1B24
+	TRNE A,1B24
+	TRO IOS,1B25		; Eot
+	TRNE A,1B22!1B25!1B28
+	TRO IOS,1B20		; Data error
+	TRNE A,1B27!1B18
+
+	TRO IOS,1B19		; Data late or hung xprt
+	LSH A,-=14
+	ANDI A,7B31		; Get character count
+	CONSO MTS,1B26		; Incorrect record length?
+	JRST MTASV1		; No
+	TRZ IOS,7B31		; Yes, clear old character count
+	TRO IOS,1B23		; Set incorrect record length bit
+	IORI IOS,(A)		; And set count
+MTASV1:	TEST(Z,IOACT)		; Io no longer active
+MTASV2:	MOVEM IOS,MTASTS(UNIT)
+MTASV3:	MOVE A,MTACOM
+	TRZ A,17477
+	CONO MTC,(A)		; Clear bits
+	SETZM MTAUNT
+	PUSHJ P,MTNXT		; Find something else
+MTAXIT:	POP P,IOS
+	POP P,UNIT
+	POP P,P
+	JRST @MTAINR
+
+ILLOP:	LDB A,[POINT 4,MTACOM,26]
+	CAIE A,4
+	CAIN A,14
+	SKIPA
+	CAIN A,5
+	CONSO MTS,1B32
+	TROA IOS,1B19
+	TRO IOS,1B18
+	JRST THRTAP
+
+DATEND:	CONSO MTS,21600		; Data errors?
+	JRST DATND1
+DATEN1:	AOS MTARCE(UNIT)
+	TRNE IOS,1B21
+	JRST DATND1
+	SOSG MTERRC
+	JRST PRMERR		; Permanent error
+RETRY0:	MOVE A,MTERAS
+	ADDI A,2
+RETRY1:	MOVEM A,MTERFL		; Initialize error sequence
+	MOVE A,MTACOM		; Get original command
+	ANDI A,760770		; Retain unit, density etc
+	CONO MTC,7000(A)	; Space backward
+	JRST MTAXIT
+
+DATND1:	HRRZ A,MTPNTR
+	SUB A,MTIOWD(UNIT)
+	HRLZM A,MTIOWD(UNIT)
+	CONSZ MTS,10000
+	TRO IOS,1B22
+	JRST THRTAP
+
+PRMERR:	TEST(NN,IO)		; Write?
+	JRST DATND1		; No, report error and quit
+	AOS MTERAS
+	MOVEI A,MTTRY
+	MOVEM A,MTERRC
+	JRST RETRY0
+
+TRYAGN:	CONSZ MTS,100000	; Bot?
+	MOVE A,MTERAS
+	SOJL A,TRYAG1
+	MOVEM A,MTERFL
+	CAMLE A,MTERAS
+	JRST RETRY1
+	CAME A,MTERAS
+	JRST TRYAG2
+	MOVEM A,MTERFL
+	MOVE A,MTACOM		; Now space forward over preceeding rec
+	ANDI A,760770
+	CONO MTC,6000(A)
+	JRST MTAXIT
+
+TRYAG2:	JUMPL A,TRYAG1
+	MOVE A,MTACOM
+	ANDI A,760770
+	CONO MTC,15000(A)	; Erase tape
+	JRST MTAXIT
+
+TRYAG1:	SETOM MTERFL
+	MOVE A,MTIOWD(UNIT)
+	MOVEM A,MTPNTR
+	MOVE A,MTACOM
+	CONO MTC,(A)		; Redo original op
+	JRST MTAXIT
+
+MTARW1:	TEST(O,REW)		; Remember this tape is rewinding
+	AOS REWCNT
+	JRST MTASV2
+
+
+BUSY:	MOVEI A,OPNX9
+	UNLOCK MTALCK(UNIT)
+	POPJ P,
+
+MTAILM:	MOVEI A,OPNX14
+	POPJ P,
+
+DISBIT:	PUSH P,A+1
+	JFFO A,.+1
+	PUSH P,A
+	MOVEI A,BITTST
+	DPB A+1,[POINT 9,A,8]
+	DPB UNIT,[POINT 9,A,17]
+	JSYS EDISMS
+	POP P,A
+	POP P,A+1
+	POPJ P,
+
+USE
+
+BITTST:	LDB 2,[POINT 9,1,26]
+	LDB 3,[POINT 9,1,35]
+	MOVE 3,MTASTS(3)
+	ROT 3,(2)
+	JUMPL 3,0(4)
+	JRST 1(4)
+
+USE	SWAPPC
+
+	BENDP	MAGTAP>
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      

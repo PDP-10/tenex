@@ -1,0 +1,1788 @@
+
+IFDEF DTAN,<
+	BEGINP	DECTAPE		R.S.TOMLINSON	3 DEC 71 1710:
+
+; Entries to the part
+
+INTERN	DTASV	; Flag interrupt routine
+INTERN	DTARST	; Restart dta
+INTERN	DTACHK	; Dta clock check routine
+
+; Externally defined symbols used herein
+
+EXTERN	EDISMS	; Dismiss until test succeeds
+EXTERN	NSKED	; No-schedule flag
+EXTERN	RSKED	; Pending schedule waiting
+EXTERN	MLKPG	; Lock a page of monitor
+EXTERN	MULKPG	; Unlock a page of monitor
+EXTERN	FPTA	; Convert address to ptn.pn
+EXTERN	DTDCHN	; Data interrupt channel
+EXTERN	DTACHN	; Flag interrupt channel
+EXTERN	DTACHR	; Return from dectape interrupt
+EXTERN	DTABIT	; Pi bit for dtachn
+EXTERN	DTATIM	; Dta clock word
+
+; Accumulators used locally
+
+DIR_4		; Pointer to directory entry
+?UNIT_5		; Dectape unit number
+?IOS_6		; Device status word
+
+DEFINE	NOSKED<AOS NSKED>
+DEFINE	OKSKED<SOSG NSKED
+	XCT RSKED>
+DEFINE	PIOFF<NOSKED
+	CONO PI,1000+DTABIT>
+DEFINE	PION <CONO PI,2000+DTABIT
+	OKSKED>
+
+; Parameters
+
+?PI__4
+?DTC_320			; Device definitions
+?DTS_324
+DEFINE DTALOC<40+2*DTDCHN>	; Define interrupt location for data
+DEFINE DTBOTH<10*DTDCHN+DTACHN>	; Interrupt assignment bits
+DEFINE DTTURN<DTBOTH+300200>	; Cono to turn around
+DTTRY__7			; Times to try on errors
+DIRBLK__=100			; Block number for directory
+TOPBLK__1101			; Last legal block number
+NAMSTR__=83			; Location of first name in directory
+EXTSTR__=105			; Location of first extension
+QUANT__5			; Blocks before relinquishing control
+MINDIS__14			; Min dead reckoning search
+SPACE__3			; Minimum spacing of successive blocks
+NBUF__3*DTAN+2			; Number of buffers is one for read
+				; One for write, one for directory, and
+				; 2 more for double buffering 1st files
+NBUF__(NBUF+3)/4*4		; Round to next higher page boundary
+NDBMSK_-1(=36-3*DTAN)		; Mask for unavailble 2nd buffers
+
+; Private storage for dectapes
+
+LS(DTALCK,DTAN)	; Lock word
+LS(DTASTS,DTAN)	; Lh ==> status bits (see below)
+		; Rh ==> directory location (0 if none)
+LS(DTIBF1,DTAN)	; Bit 0 ==> buffer busy
+		; Bit 1 ==> error in this buffer
+		; Bits 2-11 ==> next input block number
+		; Bits 13-17 ==> input file number
+		; Rh ==> location of input buffer 1
+LS(DTIBF2,DTAN)	; Bit 0 ==> buffer busy
+		; Bit 1 ==> error in this buffer
+		; Bits 2-11 ==> current block number
+		; Bit 12 ==> if doing a nop spacing (rew etc)
+		; Bit 13 ==> if unloading
+		; Rh ==> location of input buffer 2 (0 if none)
+LS(DTOBF1,DTAN)	; Bit 0 ==> buffer busy
+		; Bit 1 ==> error in this buffer
+		; Bits 2-11 ==> next output block number
+		; Bit 12 ==> last buffer
+		; Bits 13-17 ==> output file number
+		; Rh ==> location of output buffer 1
+LS(DTOBF2,DTAN)	; Bit 0 ==> buffer busy
+		; Bit 1 ==> error in this buffer
+		; Bits 2-11 ==> first block number of output file
+		; Bit 12 ==> last buffer
+		; Rh ==> location of output buffer 2 (0 if none)
+LS(DTAPTR,DTAN)	; Temp pointer to directory entry
+LS(DTAIOW,DTAN)	; Iowd during dead reckoning
+LS(DTARKN,DTAN)	; Bit 0 ==> dead reckoning for a write
+		; Bit 1 ==> going backward
+		; Bits 8-17 ==> block number
+		; Rh ==> chain to next dead reckoning unit (-1 if end)
+LS(DTARCE,DTAN)	; Total error count
+NRP(DTABUF,NBUF*200)	; Dectape buffers
+LS(PNTR)	; Iowd for blki/o
+LS(SVPNTR)	; Saved pntr for retries
+LS(DTAUNT)	; Unit number of currently attached drive
+LS(DTAUNS)
+LS(DTREQ)	; Non-zero if another dectape request is pending
+LS(DTDTMP)	; Temp for data interrupt channel
+LS(DTABLK)	; Block number currently being sought
+LS(QUANTM)	; Count of operations for currently attached drive
+LS(DTERRC)	; Error counter
+LS(DTASKP)	; Skip count for short records in reverse
+LS(DTAWST)	; Waste word for skipping words in reverse
+LS(DTABIO)	; Blki or blko dtc,for data xfer
+LS(DTAOPR)	; Current operation (read or write)
+LS(DTDINR)	; Return address for dectape interrupt routine
+LS(DTSINR)	; Return address for dectape interrupt routine
+LS(DTBFAV)	; Word of available buffers
+LS(DTBLCK)	; Lock for above word
+
+; Pointers to fields of dectape variables
+
+USE
+
+PCBLK:	POINT 10,DTIBF2(UNIT),11
+PIBLK:	POINT 10,DTIBF1(UNIT),11
+PFBLK:	POINT 10,DTOBF2(UNIT),11
+POBLK:	POINT 10,DTOBF1(UNIT),11
+PIFILN:	POINT 5,DTIBF1(UNIT),17
+POFILN:	POINT 5,DTOBF1(UNIT),17
+
+DTASPC:	SPACE			; MIN BLOCK SPACING
+
+USE	SWAPPC
+
+; Flags in lh(dtasts) (also ios at times)
+
+FLG(IO,L,IOS,400000)	; 1 if current activity is output on this unit
+FLG(INOPN,L,IOS,200000)	; Input side of dta is open
+FLG(OUOPN,L,IOS,100000)	; Output side of dta open
+FLG(ABFIP,L,IOS,040000)	; Alternate buffer for input program
+FLG(ABFII,L,IOS,020000)	; Alternate buffer for input interrupt
+FLG(ABFOP,L,IOS,010000)	; Alternate buffer for output program
+FLG(ABFOI,L,IOS,004000)	; Alternate buffer for output interrupt
+FLG(RVRS,L,IOS,002000)	; Blocks being assigned in reverse order
+FLG(ACTO,L,IOS,001000)	; Output active
+FLG(ACTI,L,IOS,000400)	; Input active
+FLG(NSTD,L,IOS,000200)	; Tape in non-standard mode
+FLG(FSTBK,L,IOS,000100)	; Looking for first block
+FLG(RWDIR,L,IOS,000040)	; Reading or writing the directory
+FLG(^DIRIC,L,IOS,000020); Directory in core
+FLG(MNTF,L,IOS,000010)	; Unit is mounted
+FLG(OUERR,L,IOS,000004)	; Output error flag
+FLG(FULF,L,IOS,000002)	; Tape full flag
+FLG(TFLG1,L,IOS,000001)	; Temp flag
+
+; Dispatch table
+
+^DTADTB:DTASET		; Directory setup
+	DTANAM		; Name lookup
+	DTAEXT		; Extension lookup
+	DTAVER		; Version lookup (always succeeds)
+	CPOPJ		; Protection insertion
+	CPOPJ		; Account insertion
+	CPOPJ		; Status modification
+	DTAOPN		; Open file
+	DTASQI		; Sequential input
+	DTASQO		; Sequential output
+	DTACLZ		; Close file
+	DTAREN		; Rename file
+	DTADEL		; Delete file
+	DTDMPI		; Dump input
+	DTDMPO		; Dump output
+	DTAMNT		; Mount
+	DTADSM		; Dismount
+	DTINID		; Initialize directory
+	DTMTP		; Mtape
+	CPOPJ		; Get status
+	CPOPJ		; Set status
+
+; Initialize dectape controller
+
+USE
+
+^DTAINI:CONO DTC,0		; Stop all activity
+	SETZM DTAUNT		; No unit currently attached
+	SETZM DTAUNS
+	MOVSI UNIT,-DTAN
+DTAIN1:	FOR A IN (DTASTS,DTIBF1,DTIBF2,DTOBF1,DTOBF2),<
+	SETZM A(UNIT)>
+	SETOM DTALCK(UNIT)
+	AOBJN UNIT,DTAIN1
+	MOVSI B,400000
+	ASH B,-NBUF+1		; Get a one for each buffer
+	MOVEM B,DTBFAV		; Save as record of available buffers
+	SETOM DTBLCK		; And leave unlocked
+	MOVEI A,DTAN
+DTAIN2:	SOJL A,CPOPJ
+	HRRZ B,A
+	LSH B,11
+	CONO DTC,30000(B)	; Select the unit
+	CONSZ DTS,100		; See if it's on-line
+	JRST DTAIN2		; Not online, try next
+	HRLM A,(P)		; Save unit number
+	PUSHJ P,DTAIN2		; And get others
+	HLRZ A,(P)		; Get the unit number back
+	HRLI A,600003
+	MOUNT
+	BUG(CHK,<DTAINI: CANNOT MOUNT SELECTED DECTAPE.>)
+	POPJ P,
+
+; Restart dectape
+
+DTARST:	SETZM DTAUNT
+	HRROI UNIT,DTAN-1
+	JRST DTANXT
+
+; Mount dectape
+; Call:	A	; Unit
+;	B	; Bit 0, 1 if no directory, rest reel number
+;	PUSHJ P,DTAMNT
+; Return
+;	+1	; Error, already mounted
+;	+2	; Ok
+
+DTAMNT:	MOVEI UNIT,(A)
+	NOINT
+	LOCK DTALCK(UNIT)
+	PIOFF			; Disable ints so dtasts wont change
+	MOVE IOS,DTASTS(UNIT)
+	TEST(OE,MNTF)
+	JRST DTAMN1		; Already mounted
+	JUMPL B,DTAMN2		; No directory
+	TEST(O,RWDIR)
+	HLLM IOS,DTASTS(UNIT)
+	PION
+	PUSHJ P,ASGBUF
+	HRRM A,DTASTS(UNIT)
+	PUSHJ P,DTSTRI		; Start reading the directory
+	AOS (P)
+	JRST DTAMN3
+
+DTAMN2:	HLLM IOS,DTASTS(UNIT)
+	AOS (P)
+DTAMN1:	PION
+DTAMN3:	UNLOCK DTALCK(UNIT)
+	OKINT
+	POPJ P,
+
+USE	SWAPPC
+
+; Dismount dectape
+; Call:	A	; Unit
+;	PUSHJ P,DTADSM
+; Return
+;	+1	; Cannot dismount (not mounted or files open)
+;	+2	; Ok
+
+DTADSM:	MOVEI UNIT,(A)
+	NOINT
+	LOCK DTALCK(UNIT)
+	MOVSI IOS,INOPN!OUOPN
+	TDNE IOS,DTASTS(UNIT)
+	JRST [	UNLOCK DTALCK(UNIT)
+		OKINT
+		POPJ P,]
+	MOVSI IOS,MNTF
+	TDNN IOS,DTASTS(UNIT)
+	JRST [	UNLOCK DTALCK(UNIT)
+		OKINT
+		POPJ P,]
+	MOVSI A,RWDIR
+	TDNE A,DTASTS(UNIT)
+	PUSHJ P,DISBIT
+	MOVSI IOS,MNTF!DIRIC
+	ANDCAB IOS,DTASTS(UNIT)
+	HRRZ A,DTASTS(UNIT)
+	HLLZS DTASTS(UNIT)
+	SKIPE A
+	PUSHJ P,RELBUF
+	UNLOCK DTALCK(UNIT)
+	OKINT
+	JRST SKPRET
+
+; Initialize dectape directory
+; Call:	1	UNIT
+;	PUSHJ P,DTINID
+; Return
+;	+1	; Error, not mounted
+;	+2	; Ok
+
+DTINID:	MOVEI UNIT,(1)
+	NOINT
+	LOCK DTALCK(UNIT)
+	MOVE IOS,DTASTS(UNIT)
+	TEST(NN,MNTF)
+	JRST DTIND1		; Not mounted, error!
+	MOVSI A,INOPN!OUOPN
+	TDNE A,DTASTS(UNIT)
+	JRST DTIND1
+	MOVSI A,RWDIR
+	TDNE A,DTASTS(UNIT)
+	PUSHJ P,DISBIT
+	MOVE IOS,DTASTS(UNIT)
+	TEST(NE,DIRIC)
+	JRST DTIND2
+	PUSHJ P,ASGBUF
+	HRRM A,DTASTS(UNIT)
+DTIND2:	HRRZ A,DTASTS(UNIT)
+	HRLI B,(A)
+	HRRI B,1(A)
+	SETZM (A)
+	BLT B,177(A)
+	MOVE B,[BYTE (5)36,36]
+	MOVEM B,(A)
+	MOVE B,[BYTE (5)0,36]
+	MOVEM B,16(A)
+	MOVE B,[BYTE (5)0,0,0,37,37,37,37]
+	MOVEM B,=82(A)
+	MOVSI IOS,RWDIR!DIRIC
+	IORB IOS,DTASTS(UNIT)
+	PUSHJ P,DTSTRO
+	UNLOCK DTALCK(UNIT)
+	OKINT
+	POPJ P,
+
+DTIND1:	UNLOCK DTALCK(UNIT)
+	POPJ P,
+
+; Directory setup
+; Call:	B	; Unit number
+;	PUSHJ P,DTASET
+; Return
+;	+1	; Error, no directory for this device
+;	+2	; Ok
+;	DIR	; As required for "dtanam"
+;		; The dectape is locked
+
+USE
+
+DTASET:	MOVEI UNIT,(B)		; Set up unit
+DTASE0:	NOINT
+	LOCK DTALCK(UNIT)
+	PIOFF
+	MOVE IOS,DTASTS(UNIT)
+	TEST(NN,MNTF)
+	JRST DTASEE		; Not mounted
+	TEST(NE,RWDIR)
+	TEST(NE,IO)
+	JRST DTASE1		; Ok if directory in core
+	PION
+	UNLOCK DTALCK(UNIT)
+	OKINT
+	MOVSI A,RWDIR
+	PUSHJ P,DISBIT
+	JRST DTASE0
+
+DTASE1:	TEST(NN,DIRIC)
+	JRST DTASEE
+	HRRZ DIR,DTASTS(UNIT)
+	HRLI DIR,-=22
+	TEST(O,NVERF)
+	AOS (P)
+	AOS (P)
+	NOINT			; So when we leave we will be non-int
+DTASEE:	PION
+	UNLOCK DTALCK(UNIT)
+	OKINT
+	POPJ P,
+
+USE	SWAPPC
+
+; Name lookup
+; Call:	DIR	; Aobjn pointer to first name
+;	UNIT	; Unit number
+;	A	; Lookup pointer
+
+DTANAM:	JUMPE A,DTAFNM
+	PUSH P,DIR
+	PUSHJ P,ASCSIX		; Convert input to sixbit
+	JRST [	POP P,DIR
+		JRST ERRET]
+	POP P,DIR
+DTANA1:	MOVE C,NAMSTR(DIR)	; Get a name
+	JUMPE C,DTANA0
+	CAMN C,A		; Exact match?
+	JRST DTAFNZ		; Yes
+	AND C,B			; No
+	CAMN C,A		; Partial match?
+	JRST DTANA2		; Yes
+DTANA0:	AOBJN DIR,DTANA1	; Scan through all files
+	TEST(NE,NREC,NREC1)	; Recognition wanted?
+	JRST DTANNW		; No, see if new files are ok
+	MOVEI A,GJFX18
+	TEST(NE,AMBGF)		; More than one partial match found?
+	JRST AMBRET		; Yes, give ambiguous return
+	TEST(NN,MTCHF)		; Was a match found?
+	JRST ERRET		; No, give error return
+	MOVE DIR,DTAPTR(UNIT)	; Get pointer to the directory entry
+	ANDCA B,NAMSTR(DIR)	; Get tail of the name
+DTAUNQ:	JUMPE B,DTANA3
+	TLNE B,770000		; Left justify it
+	JRST DTANA3
+	ROT B,6
+	JRST DTAUNQ
+
+DTAFNZ:	TEST(NE,STEPF)
+	TEST(NN,NAMSF)
+	JRST DTANA9
+DTAFNY:	AOBJN DIR,DTAFNM
+DTAFNX:	MOVEI A,GJFX18
+	JRST ERRET
+
+DTAFNM:	MOVEM DIR,DTAPTR(UNIT)
+	SKIPN B,NAMSTR(DIR)
+	JRST DTAFNY
+	MOVE C,DTASTS(UNIT)
+	HRLI C,-=22
+DTAFNV:	CAMN C,DIR
+	JRST DTAUNQ		; Never seen this name before
+	CAMN B,NAMSTR(C)	; Have we seen this
+	JRST DTAFNY		; Yes, try again
+	AOBJN C,DTAFNV
+	JRST DTAFNX
+
+DTANA3:	MOVEI A,0		; Prepare to unpack tail
+	ROTC A,6		; Get a character
+	JUMPE A,DTANA5		; Done if zero
+	ADDI A,40		; Else convert to ascii
+	IDPB A,FILOPT(JFN)	; And deposit on the end 
+	JRST DTANA3		; Copy all characters
+
+DTANA5:	MOVE B,FILOPT(JFN)
+	IDPB A,B		; Deposit a null at the end
+	MOVE DIR,DTAPTR(UNIT)
+DTANA9:	MOVE B,DIR		; Leave the pointer in b and dir
+	TEST(NE,UNLKF)
+	JRST SK2RET		; Done if unlkf=1
+	AOS (P)
+AMBRET:	TEST(NN,UNLKF)
+	AOS (P)			; Single skip if unlkf=1 and ambiguous
+ERRET:	UNLOCK DTALCK(UNIT)
+	OKINT
+	POPJ P,
+
+DTANA2:	TEST(ON,MTCHF)		; Partial match found, any previous?
+	JRST [	MOVEM DIR,DTAPTR(UNIT)
+		JRST DTANA0]
+	MOVE C,DTAPTR(UNIT)
+	MOVE C,NAMSTR(C)
+	CAME C,NAMSTR(DIR)
+	TEST(O,AMBGF)
+	JRST DTANA0
+
+DTANNW:	MOVEI A,GJFX24
+	TEST(NE,OLDNF)		; Are new names allowed?
+	JRST ERRET		; No, error
+	PUSHJ P,FNDNUL		; Yes, is there room for one?
+	JRST [	MOVEI A,GJFX23
+		JRST ERRET]	; No room
+	TEST(O,NEWF)		; Remember this is to be a new file
+	JRST DTANA9		; And proceed as for exact match
+
+; Lookup dectap extension
+; Call:	B	; Pointer to first name
+;	A	; Lookup pointer
+;	UNIT	; Unit number
+;	PUSHJ P,DTAEXT
+; Return
+;	+1	; Not found
+;	+2	; Ambiguous
+;	+3	; Match found
+
+DTAEXT:	JUMPE A,DTAFEX
+	PUSH P,B
+	PUSHJ P,ASC3SX		; Convert three characters to sixbit
+	JRST [	POP P,DIR
+		POPJ P,]
+	POP P,DIR
+	TEST(NE,NEWF)
+	JRST DTANA9		; Always successful if new file
+DTAEX1:	HLLZ C,EXTSTR(DIR)	; Get the extension of this entry
+	CAMN C,A		; Exact match?
+	JRST [	TEST(NE,STEPF)
+		TEST(NN,EXTSF)
+		JRST DTANA9
+		JRST DTAEX4]
+	AND C,B			; Get rid of tail
+	CAMN C,A		; Partial match?
+	JRST DTAEX2		; Yes
+DTAEX0:	MOVE C,NAMSTR(DIR)	; Get the name of this file
+	AOBJP DIR,DTAEX3
+	CAME C,NAMSTR(DIR)
+	JRST .-2		; Scan for a file of the same name
+	JRST DTAEX1
+DTAEX3:	TEST(NE,NREC,NREC1)	; No matches, recognition allowed?
+	JRST DTANNW		; No, check for allowed new files
+	MOVEI A,GJFX19
+	TEST(NE,AMBGF)		; More than one partial match found?
+	JRST AMBRET		; Yes, give ambiguous return
+	TEST(NN,MTCHF)		; Was one match found?
+	JRST ERRET		; No, give error return
+	MOVE DIR,DTAPTR(UNIT)
+	ANDCA B,EXTSTR(DIR)	; Get the tail of the extension
+	HLLZS B
+	JRST DTAUNQ		; And copy to input string
+
+DTAEX2:	TEST(OE,MTCHF)		; Remember a match was found
+	TEST(OA,AMBGF)		; If match already, remember ambiguous
+	MOVEM DIR,DTAPTR(UNIT)	; Save the pointer to the first match
+	JRST DTAEX0		; And continue scan
+
+DTAVER:	MOVEI A,0
+	TEST(NE,UNLKF)
+	JRST SKPRET
+	UNLOCK DTALCK(UNIT)
+	OKINT
+	JRST SKPRET
+
+
+DTAEX4:	MOVE C,NAMSTR(DIR)
+	MOVEI A,GJFX19
+	AOBJP DIR,ERRET
+	CAME C,NAMSTR(DIR)
+	JRST .-2
+	MOVE B,DIR
+DTAFEX:	MOVEM B,DTAPTR(UNIT)
+	HLLZ B,EXTSTR(B)
+	JRST DTAUNQ
+
+; Delete file
+
+DTADEA:	HLRZ UNIT,DEV
+	TEST(Z,NEWF,OLDNF)
+	HRRZ A,FILNEN(JFN)
+	PUSHJ P,EXTLUU
+	POPJ P,
+	POPJ P,
+	SKIPN NAMSTR(DIR)
+	JRST DTADES
+	HLRE B,DIR
+	ADDI B,=23
+	LDB C,PIFILN
+	MOVSI A,INOPN
+	TDNE A,DTASTS(UNIT)
+	CAME B,C
+	JRST DTADE1
+	UNLOCK DTALCK(UNIT)
+	POPJ P,
+
+DTADE1:	LDB C,POFILN
+	MOVSI A,OUOPN
+	TDNE A,DTASTS(UNIT)
+	CAME B,C
+	JRST DTADE3
+	UNLOCK DTALCK(UNIT)
+	POPJ P,
+
+DTADE3:	SETZM NAMSTR(DIR)
+	MOVEI A,1
+DTADE2:	PUSHJ P,BLKSR0
+	JRST SKPRET
+	PUSH P,A
+	MOVEI A,0
+	DPB A,C
+	POP P,A
+	JRST DTADE2
+
+DTADEL:	PUSHJ P,DTADEA
+	POPJ P,
+DTADE9:	MOVSI IOS,RWDIR
+	IORB IOS,DTASTS(UNIT)
+	PUSHJ P,DTSTRO
+DTADES:	UNLOCK DTALCK(UNIT)
+	JRST SKPRET
+
+; Rename dectape file
+; Call:	A	; Jfn of old file
+;	JFN	; Jfn of new file name
+;	PUSHJ P,DTAREN
+
+DTAREN:	PUSH P,A		; Save old name jfn
+	PUSHJ P,DTADEA		; Delete any existing version of new
+	JFCL
+	EXCH JFN,(P)		; Get old name jfn, save new
+	SETZB F,F1
+	HRRZ A,FILNEN(JFN)	; Get extension
+	PUSHJ P,EXTLUU		; And lookup old file
+	JFCL
+	JRST [	POP P,A
+		POPJ P,]
+	POP P,JFN
+	HLRZ A,FILNEN(JFN)	; Get name block of new name
+	PUSH P,DIR
+	PUSHJ P,ASCSIX		; Convert to sixbit
+	BUG(HLT,<DTAREN: ASCSIX FAILURE ON PREVIOUSLY OK NAME.>)
+	MOVE DIR,(P)
+	MOVEM A,NAMSTR(DIR)	; Store new name
+	HRRZ A,FILNEN(JFN)
+	PUSHJ P,ASC3SX		; Convert extension to sixbit
+	BUG(HLT,<DTAREN: ASC3SX FAILURE ON PREVIOUSLY OK EXTENSION.>)
+	POP P,DIR
+	HLLM A,EXTSTR(DIR)
+	JRST DTADE9		; Finish by writing directory
+
+; Open a dectape file
+; Call:	LH(STS)	; Access desired
+;	RH(STS)	; Byte size and mode
+;	PUSHJ P,DTAOPN
+; Return
+;	+1	; Error, cannot open, reason in a
+;	+2	; Ok, the file is opened
+
+DTAOPN:	HLRZ UNIT,DEV
+	MOVE IOS,DTASTS(UNIT)
+	TLNE STS,74000		; Xct etc modes not allowed
+	JRST DTAACC		; Return error
+	HRRZ A,FILNEN(JFN)
+	PUSHJ P,EXTLUU		; Files. lookup the file name
+	JRST DTANXN		; Non-existent name
+	JRST NONSTD		; No directory, check for non-standard
+	LDB A,[POINT 4,STS,9+18]
+	JUMPN A,DTILM		; Illegal mode
+	TEST(NE,WRTF)		; Write access desired?
+	JRST DTAW		; Yes.
+	TEST(NN,READF)		; Read access desired?
+	JRST DTAAC1		; No, user spastic, no access desired
+
+DTAR:	SKIPN NAMSTR(DIR)
+	JRST DTILR		; Cannot read new file
+	TEST(NE,INOPN)		; Is this unit open for input already?
+	JRST INBUSY		; Yes, busy
+	PUSHJ P,WTDIR		; Wait for directory write if necessary
+	HLRES B			; Get file number of this file
+	ADDI B,=23
+	DPB B,PIFILN		; Deposit as input file number
+	PUSHJ P,SAMWAT		; Wait if same file being written
+	JRST BUSY
+	LDB A,PCBLK		; Get current block number
+	SUBI A,SPACE
+	PUSHJ P,BLKSRB		; Search for a block of the file
+	JRST EMPTY		; No blocks, give immediate eof
+	DPB A,PIBLK		; Store as block number for input
+	SETZM FILBYN(JFN)
+	PUSHJ P,BLKCNT		; Count number of blocks in this file
+	IMULI A,177		; Times number of data words per block
+	MOVEM A,FILLEN(JFN)	; Gives best estimate of file length
+	LDB B,PBYTSZ		; Get file's byte size
+	MOVEI A,=36
+	PUSHJ P,NFBSZ		; Convert fillen to desired byte size
+	MOVSI A,FSTBK!INOPN
+	IORM A,DTASTS(UNIT)	; Say looking for the first block
+	MOVSI A,ABFIP!ABFII
+	ANDCAM A,DTASTS(UNIT)	; Start with 1st buffers, (not altrnt)
+	MOVSI A,400000
+	IORM A,DTIBF1(UNIT)	; Make both buffers busy
+	IORM A,DTIBF2(UNIT)
+	PUSHJ P,ASGBUF		; Get a buffer
+	HRRM A,DTIBF1(UNIT)	; For input
+	PUSHJ P,ASGBF1		; Assign second buffer if available
+	HRRM A,DTIBF2(UNIT)	; Yields 0 if none
+	PUSHJ P,DTSTRI		; Mark input active, and start dta
+	TEST(O,WNDF)		; Flag that byte pointer must be set
+	UNLOCK DTALCK(UNIT)
+	OKINT
+	JRST SKPRET
+
+DTAW:	TEST(NE,READF)		; Write desired, read also?
+	JRST DTAAC1		; Yes, can't be done
+	TEST(NE,OUOPN)		; Output side already open?
+	JRST OUBUSY		; Yes, return busy
+	PUSHJ P,WTDIR		; Wait for directory write if necessary
+	HLRES B			; Get file number
+	ADDI B,=23
+	DPB B,POFILN		; Save as output file number
+	PUSHJ P,SAMWAT		; Wait if same file being read
+	JRST BUSY
+	LDB B,PBYTSZ		; Get desired byte size
+	MOVEI A,=36
+	PUSH P,DIR		; Save dir cause nfbsz clobers
+	PUSHJ P,NFBSZ
+	POP P,DIR
+	LDB B,POFILN
+	SKIPE NAMSTR(DIR)
+	JRST DTAW0
+	HLRZ A,FILNEN(JFN)
+	PUSH P,DIR
+	PUSHJ P,ASCSIX		; Get sixbit of name
+	BUG(HLT,<DTAOPN: ASCSIX FAILURE ON PREVIOUSLY OK NAME.>)
+	POP P,DIR
+	MOVEM A,NAMSTR(DIR)	; Store in directory
+	HRRZ A,FILNEN(JFN)
+	PUSH P,DIR
+	PUSHJ P,ASC3SX		; Get sixbit of extension
+	BUG(HLT,<DTAOPN: ASC3SX FAILURE ON PREVIOUSLY OK EXTENSION.>)
+	POP P,DIR
+	HLLZM A,EXTSTR(DIR)	; Store as extension
+	JRST DTAW1
+
+DTAW0:	MOVEI A,1
+	PUSHJ P,BLKSR0		; Search for a block of the file
+	JRST DTAW1		; None left
+	PUSH P,A
+	MOVEI A,0
+	DPB A,C			; Deposit a 0 over it to deassign
+	POP P,A
+	JRST DTAW0		; And find next block
+
+DTAW1:	GTAD			; Get current time and date
+	SKIPGE B,A
+	JRST DTAW1A		; No date, skip it
+	PUSH P,4		; Preserve ac4
+	SETZ 4,			; No special conversion
+	ODCNV			; Convert to month day year
+	HLRZ A,B		; Extract year
+	SUBI A,=1964		; Make relative to 1964 ala dec
+	IMULI A,=12		; Repack like dec dates
+	ADDI A,(B)		; Month
+	IMULI A,=31
+	HLRZS C
+	ADD A,C			; Day
+	POP P,4
+	HRRM A,EXTSTR(DIR)
+DTAW1A:	SETZB A,B		; Search for free block from 0
+	PUSHJ P,BLKSRB		; Backward
+	JRST FULL		; None found
+	LDB B,POFILN
+	DPB B,C			; Assign it
+	DPB A,POBLK		; Deposit as first output block
+	DPB A,PFBLK		; Save as first block of file
+	MOVSI A,OUOPN
+	IORM A,DTASTS(UNIT)
+	MOVSI A,ABFOP!ABFOI!OUERR
+	ANDCAM A,DTASTS(UNIT)	; Not using alternate buffer
+	MOVSI A,(1B0+1B12)
+	ANDCAM A,DTOBF1(UNIT)	; Neither buffer is busy
+	ANDCAM A,DTOBF2(UNIT)
+	PUSHJ P,ASGBUF
+	HRRM A,DTOBF1(UNIT)
+	PUSHJ P,ASGBF1
+	HRRM A,DTOBF2(UNIT)
+	SETZM FILBYN(JFN)
+	SETZM FILLEN(JFN)
+	TEST(O,WNDF)
+	UNLOCK DTALCK(UNIT)
+	OKINT
+	JRST SKPRET
+
+SAMWAT:	PUSH P,A
+	PUSH P,B
+	LDB A,PIFILN
+	LDB B,POFILN
+	TEST(NE,INOPN,OUOPN)
+	CAME A,B
+	AOS -2(P)
+	POP P,B
+	POP P,A
+	POPJ P,
+
+NONSTD:	NOINT
+	LOCK DTALCK(UNIT),<PUSH P,LCKTST>
+	LDB A,[POINT 4,STS,35]
+	CAIE A,17		; Dump mode?
+	JRST DTILM		; Illegal mode
+	TEST(NE,OUOPN,INOPN)
+	JRST BUSY
+	MOVSI A,OUOPN!INOPN!NSTD
+	IORB A,DTASTS(UNIT)	; Set active bits and non-standard bit
+	MOVEI A,1
+	DPB A,PIBLK
+	DPB A,POBLK		; Set input and output block numbers
+	UNLOCK DTALCK(UNIT)
+	OKINT
+	JRST SKPRET
+
+^DRWAIT:MOVE UNIT,1
+WTDIR:	MOVSI A,RWDIR
+	TDNE A,DTASTS(UNIT)
+	PUSHJ P,DISBIT
+	POPJ P,
+
+DTANXN:	MOVEI A,OPNX2		; Non-existent file
+	POPJ P,
+
+DTAACC:	MOVEI A,OPNX15		; Illegal access
+	POPJ P,
+
+DTAAC1:	MOVEI A,OPNX15		; Illegal access
+DTAOPE:	UNLOCK DTALCK(UNIT)
+	OKINT
+	POPJ P,
+
+EMPTY:	TEST(O,EOFF)		; Empty file
+	SETZM FILLEN(JFN)
+	AOS (P)
+	JRST DTAOPE
+
+FULL:	MOVEI A,OPNX10		; No room for new file
+	JRST DTAOPE
+
+DTILM:	MOVEI A,OPNX14		; Illegal mode
+	JRST DTAOPE
+
+DTILR:	MOVEI A,OPNX2		; Attempting to read a new file
+	JRST DTAOPE
+
+INBUSY:
+OUBUSY:
+BUSY:	MOVEI A,OPNX9		; Dectape busy
+	JRST DTAOPE
+
+; Directory block assignment and search routines
+
+; Search backward
+; Call:	A	; Starting block number
+;	B	; Entry number to search for
+;	PUSHJ P,BLKSRB
+; Return
+;	+1	; None-found
+;	+2	; Ok
+;	A	; Blk number
+
+USE
+
+BLKSRB:	MOVSI IOS,RVRS
+	IORB IOS,DTASTS(UNIT)	; Force reverse
+BLKSRC:	TEST(Z,TFLG1)		; Entry to search in current direction
+BLKSR0:	CAIGE A,1
+	MOVEI A,1
+	CAILE A,TOPBLK
+	MOVEI A,TOPBLK
+	PUSH P,B
+	PUSH P,A
+	PUSHJ P,SETPTR		; Compute byte pointer
+	POP P,A
+BLKSRL:	LDB B,C
+	CAMN B,(P)
+	JRST [	POP P,B
+		JRST SKPRET]
+	TEST(NE,RVRS)
+	JRST BLKSR1
+BLKLUP:	CAIL A,TOPBLK		; At end?
+	JRST BLKSR2		; Yes, change direction
+	IBP C			; No, increment to next block
+	AOJA A,BLKSRL
+
+BLKSR2:	TEST(C,RVRS)		; Complement cirection
+	TEST(ON,TFLG1)		; First reversal?
+	JRST BLKSRL
+	POP P,B
+	POPJ P,			; Entire tape scanned without luck
+
+BLKSR1:	CAIG A,1		; At beginning?
+	JRST BLKSR2		; Yes, change direction
+	JUMPL C,BLKSR3		; No, decrement and continue
+	ADD C,[BYTE (6)5]
+	JUMPG C,BLKSR4
+	HRLI C,010500
+	SOJA C,BLKSR4
+
+BLKSR3:	HRLI C,060500
+	SOS C
+BLKSR4:	SOJA A,BLKSRL
+
+; Count number of blocks in a particular file
+; Call:	B	; File number
+;	PUSHJ P,BLKCNT
+; Return
+;	+1
+;	A	; Number of blocks
+
+BLKCNT:	MOVEI A,1
+	PUSH P,[0]
+	TEST(O,TFLG1)		; Quit on first reversal
+	TEST(Z,RVRS)
+	PUSHJ P,BLKSR0
+BLKCN1:	JRST [	POP P,A
+		POPJ P,]
+	AOS (P)
+	PUSH P,[BLKCN1]		; Put a return address on the stack
+	PUSH P,B
+	JRST BLKLUP		; Go back into block search routine
+
+; Convert block number to byte pointer
+; Call:	A	; Block number
+;	PUSHJ P,SETPTR
+
+SETPTR:	SOS A
+	IDIVI A,7
+	IMULI A+1,5
+	MOVN B,A+1
+	ADDI B,=36-5
+	ADD A,DTASTS(UNIT)
+	ROT B,=12
+	MOVSI C,000500(B)
+	HRR C,A
+	POPJ P,
+
+; Find empty directory slot
+; Call:	PUSHJ P,FNDNUL
+; Return
+;	+1	; None found
+;	+2	; Found, dir points to it
+
+FNDNUL:	HRRZ DIR,DTASTS(UNIT)
+	HRLI DIR,-=22
+	SKIPN NAMSTR(DIR)
+	JRST SKPRET
+	AOBJN DIR,.-2
+	POPJ P,
+
+; Assign a buffer
+; Call:	PUSHJ P,ASGBUF	; For first buffer
+; Or
+;	PUSHJ P,ASGBF1	; For second buffer
+
+USE	SWAPPC
+
+ASGBF1:	LOCK DTBLCK
+	MOVE A,DTBFAV
+	ANDCM A,[NDBMSK]	; Enough buffers to allow two?
+	JUMPN A,ASGBF2		; Yes, proceed
+	UNLOCK DTBLCK
+	MOVEI A,0		; No, return 0
+	POPJ P,
+
+ASGBUF:	LOCK DTBLCK
+	MOVE A,DTBFAV		; Get bits
+ASGBF2:	PUSH P,A+1
+	JFFO A,.+1		; Find a one
+	MOVSI A,400000
+	MOVN B,A+1
+	ROT A,(B)
+	ANDCAM A,DTBFAV		; Remove the bit
+	MOVN A,B
+	POP P,A+1
+	IMULI A,200
+	ADDI A,DTABUF		; Convert to address
+	UNLOCK DTBLCK
+	MOVES (A)		; Reference the buffer to make sure
+	PUSHJ P,SAVAC
+	PUSHJ P,FPTA
+	PUSHJ P,MLKPG		; Lock the page
+	PUSHJ P,RESAC
+	POPJ P,
+
+RELBUF:	PUSHJ P,SAVAC
+	PUSHJ P,FPTA
+	PUSHJ P,MULKPG		; Unlock the page
+	PUSHJ P,RESAC
+	SUBI A,DTABUF		; Convert to a bit
+	PUSH P,A+1
+	IDIVI A,200
+	MOVN A+1,A
+	MOVSI A,400000
+	ROT A,(B)
+	IORM A,DTBFAV		; Return to the pool
+	UNLOCK DTBLCK
+	POP P,A+1
+	POPJ P,
+
+; Byte input from dectape
+; Call:	LH(DEV)	; Unit number
+;	LH(STS)	; File status bits
+;	FILLEN(JFN) ETC
+;	PUSHJ P,DTASQI
+; Return
+;	A	; The byte
+
+DTASQI:	HLRZ UNIT,DEV
+	MOVE IOS,DTASTS(UNIT)
+	MOVE B,FILBYN(JFN)
+	CAML B,FILLEN(JFN)
+	JRST [	TEST(O,EOFF)
+		POPJ P,]
+	TEST(ZE,WNDF)
+	PUSHJ P,SETBFI
+	SOSGE FILCNT(JFN)
+	PUSHJ P,LODBFI
+	MOVE B,FILBYN(JFN)
+	CAML B,FILLEN(JFN)
+	JRST [	TEST(O,EOFF)
+		POPJ P,]
+	ILDB A,FILBYT(JFN)	; Load the byte
+	AOS FILBYN(JFN)		; Count bytes
+	POPJ P,			; If first data word, done
+
+USE
+
+DTASI2:	PIOFF			; Prevent dta interrupts
+	MOVE IOS,DTASTS(UNIT)
+	MOVEI B,DTIBF1(UNIT)
+	TEST(CN,ABFIP)
+	MOVEI B,DTIBF2(UNIT)
+	HLLM IOS,DTASTS(UNIT)
+	PION
+	HRRZ B,(B)
+	JUMPE B,DTASI2		; Alternate buffer non-existent
+	UNLOCK DTALCK(UNIT)
+	OKINT
+	POPJ P,
+
+USE	SWAPPC
+
+LODBFI:	MOVSI B,400000
+	MOVEI C,DTIBF1(UNIT)
+	TEST(NE,ABFIP)
+	MOVEI C,DTIBF2(UNIT)
+	IORB B,(C)		; Mark old current buffer as busy
+	LDB B,[POINT 10,(B),17]	; Get block number of continuation
+	JUMPE B,LODBI9
+	PUSHJ P,DTSTRI		; And start up dectape to load it
+	NOINT
+	LOCK DTALCK(UNIT)
+	PUSHJ P,DTASI2
+	PUSHJ P,SETBFI
+	SOSL FILCNT(JFN)
+	POPJ P,
+LODBI9:	MOVE B,FILBYN(JFN)
+	MOVEM B,FILLEN(JFN)
+	POPJ P,
+
+SETBFI:	MOVEI B,DTIBF1(UNIT)	; Get address of buffer pointer
+	TEST(NE,ABFIP)		; Using alternate?
+	MOVEI B,DTIBF2(UNIT)
+	SKIPGE (B)
+	PUSHJ P,BUFWAT		; Yes, wait for non-busy
+	MOVE B,(B)
+	TLNE B,(1B1)
+	TEST(OA,ERRF)
+	TEST(Z,ERRF)
+	HRRM B,FILBYT(JFN)	; Store in byte pointer
+	LDB C,PBYTSZ
+	MOVE A,(B)
+	ANDI A,177
+	MOVEI B,=36
+	IDIV B,C
+	SUBI A,177
+	IMUL A,B
+	ADDB A,FILLEN(JFN)
+	IMULI B,177
+	SUB A,FILBYN(JFN)
+	CAMG A,B
+	MOVE B,A
+	MOVEM B,FILCNT(JFN)
+	MOVEI A,0
+	DPB A,PBYTPO
+	POPJ P,
+
+; Dectape sequential output
+; Call:	A	; The byte to output
+; Everything else like dtasqi
+;	PUSHJ P,DTASQO
+
+DTASQO:	HLRZ UNIT,DEV
+	MOVE IOS,DTASTS(UNIT)
+	TEST(ZE,WNDF)
+	PUSHJ P,SETBUF
+	JRST DTASO0
+
+USE
+
+DTASO0:	PIOFF
+	MOVE IOS,DTASTS(UNIT)
+	TEST(ZE,OUERR)
+	TEST(O,ERRF)
+	HLLM IOS,DTASTS(UNIT)
+	PION
+	JRST DTASO1
+
+USE	SWAPPC
+
+DTASO1:	PUSH P,A
+	SOSGE FILCNT(JFN)
+	PUSHJ P,DMPBUF
+	POP P,A
+	IDPB A,FILBYT(JFN)
+	AOS B,FILBYN(JFN)
+	MOVEM B,FILLEN(JFN)
+	POPJ P,
+
+DMPBUF:	MOVSI B,400000
+	MOVEI C,DTOBF1(UNIT)
+	TEST(NE,ABFOP)
+	MOVEI C,DTOBF2(UNIT)
+	IORM B,(C)
+	PUSHJ P,DTSTRO
+	NOINT
+	LOCK DTALCK(UNIT)
+	PUSHJ P,DTASO2
+	PUSHJ P,SETBUF
+	SOS FILCNT(JFN)
+	POPJ P,
+
+USE
+
+DTASO2:	PIOFF
+	MOVE IOS,DTASTS(UNIT)
+	MOVEI B,DTOBF1(UNIT)
+	TEST(CE,ABFOP)
+	MOVEI B,DTOBF2(UNIT)
+	HLLM IOS,DTASTS(UNIT)
+	PION
+	HRRZ B,(B)
+	JUMPE B,DTASO2
+	UNLOCK DTALCK(UNIT)
+	OKINT
+	TEST(O,WNDF)
+	POPJ P,
+
+USE	SWAPPC
+
+; Check for buffer ready
+
+SETBUF:	MOVEI B,DTOBF1(UNIT)
+	TEST(NE,ABFOP)
+	MOVEI B,DTOBF2(UNIT)
+	SKIPGE (B)
+	PUSHJ P,BUFWAT		; Buffer busy, wait
+	MOVE B,(B)		; Get location of buffer
+	HRRM B,FILBYT(JFN)
+	HRLZ C,B
+	HRRI C,1(B)
+	SETZM (B)
+	BLT C,177(B)
+	MOVEI C,177
+	DPB C,[POINT 8,(B),35]	; Put word count in buffer header
+	MOVEI B,0
+	DPB B,PBYTPO
+	MOVEI B,=36
+	LDB C,PBYTSZ
+	IDIV B,C
+	IMULI B,177
+	MOVEM B,FILCNT(JFN)
+	TEST(Z,WNDF)
+	POPJ P,
+
+; Dismiss until buffer is not busy
+; Call:	B	; Address of buffer header
+;	PUSHJ P,BUFWAT
+; Returns
+;	+1	; When the buffer is no longer busy
+
+BUFWAT:	EXCH A,B
+	PUSHJ P,DISGE
+	EXCH A,B
+	POPJ P,
+
+; Mtopr for dectape
+
+DTMTP:	HLRZ UNIT,DEV
+	LOCK DTALCK(UNIT),<PUSHJ P,LCKTST>
+	MOVSI A,ACTI
+	TDNE A,DTASTS(UNIT)
+	PUSHJ P,DISBIT		; Wait for input to stop
+	MOVSI A,ACTO
+	TDNE A,DTASTS(UNIT)
+	PUSHJ P,DISBIT		; Wait for output to stop
+	MOVE IOS,DTASTS(UNIT)
+	CAIE B,1
+	CAIN B,11
+	JRST RWND		; Rewind and/or unload
+	CAIE B,30		; Space record
+	JRST DTMTPX		; Nop
+	TEST(NN,NSTD)
+	JRST DTMTPX		; Must be non-standard mode
+	UMOVE A,3		; Get block number
+	CAIL A,0
+	CAILE A,TOPBLK
+	JRST DTMTPX		; Out of range
+	DPB A,PIBLK
+	DPB A,POBLK
+DTMTPX:	UNLOCK DTALCK(UNIT)
+	POPJ P,
+
+RWND:	MOVSI A,(1B12)
+	CAIN B,11
+	TLO A,(1B13)
+	IORM A,DTIBF2(UNIT)	; Mark this spacing op
+	PUSHJ P,DTSTRI		; Start input
+	JRST DTMTPX
+
+; Dump i/o for dectape
+
+DTDMPI:	TDZA IOS,IOS
+DTDMPO:	MOVSI IOS,IO
+	HLRZ UNIT,DEV
+	MOVE B,A
+	LOCK DTALCK(UNIT),<PUSHJ P,LCKTST>
+	MOVSI A,ACTI
+	TDNE A,DTASTS(UNIT)
+	PUSHJ P,DISBIT
+	MOVSI A,ACTO
+	TDNE A,DTASTS(UNIT)
+	PUSHJ P,DISBIT
+	HRRM B,DTIBF1(UNIT)
+	HLRES B
+	MOVNS B
+	HRRM B,DTIBF2(UNIT)
+	MOVSI A,(1B1)
+	ANDCAM A,DTIBF1(UNIT)
+	ANDCAM A,DTIBF2(UNIT)
+	TEST(NN,IO)
+	JRST DTDMP1
+	PUSHJ P,DTSTRO
+	MOVSI A,ACTO
+	PUSHJ P,DISBIT
+	JRST DTDMP2
+
+DTDMP1:	PUSHJ P,DTSTRI
+	MOVSI A,ACTI
+	PUSHJ P,DISBIT
+DTDMP2:	MOVE A,DTIBF1(UNIT)
+	TLNE A,(1B1)
+	TEST(O,ERRF)
+	MOVE A,DTIBF2(UNIT)
+	TLNE A,(1B1)
+	TEST(O,EOFF)
+	UNLOCK DTALCK(UNIT)
+	POPJ P,
+
+; Close dectap file
+; Call:	PUSHJ P,DTACLZ
+
+DTACLZ:	HLRZ UNIT,DEV
+	MOVE IOS,DTASTS(UNIT)
+	TEST(NE,NSTD)
+	JRST CLZNST
+	TEST(NE,READF)
+	JRST DTCLZR
+	TEST(ZE,WNDF)
+	PUSHJ P,SETBUF		; Wait if necessary for buffer free
+	MOVEI A,DTOBF1(UNIT)
+	TEST(NE,ABFOP)
+	MOVEI A,DTOBF2(UNIT)
+	MOVSI B,(1B12)
+	IORM B,(A)		; Mark the buffer as the last
+	HRRZ B,FILBYT(JFN)
+	HRRZ A,(A)
+	SUB B,A
+	DPB B,[POINT 8,(A),35]
+	PUSHJ P,DMPBUF		; Write the final buffer
+	MOVSI A,ACTO
+	PUSHJ P,DISBIT		; Dismiss until acto bit goes off
+	MOVSI IOS,RWDIR
+	IORB IOS,DTASTS(UNIT)
+	PUSHJ P,DTSTRO		; Start writing directory
+	HRRZ A,DTOBF1(UNIT)
+	HLLZS DTOBF1(UNIT)
+	PUSHJ P,RELBUF
+	HRRZ A,DTOBF2(UNIT)
+	HLLZS DTOBF2(UNIT)
+	SKIPE A
+	PUSHJ P,RELBUF
+	MOVSI IOS,OUOPN
+	ANDCAB IOS,DTASTS(UNIT)
+	JRST SKPRET
+
+DTCLZR:	MOVSI A,ACTI
+	TDNE A,DTASTS(UNIT)
+	PUSHJ P,DISBIT
+	HRRZ A,DTIBF1(UNIT)
+	HLLZS DTIBF1(UNIT)
+	PUSHJ P,RELBUF
+	HRRZ A,DTIBF2(UNIT)
+	HLLZS DTIBF2(UNIT)
+	SKIPE A
+	PUSHJ P,RELBUF
+	MOVSI IOS,INOPN
+	ANDCAB IOS,DTASTS(UNIT)
+	JRST SKPRET
+
+CLZNST:	MOVSI A,ACTI
+	TDNE A,DTASTS(UNIT)
+	PUSHJ P,DISBIT
+	MOVSI A,ACTO
+	TDNE A,DTASTS(UNIT)
+	PUSHJ P,DISBIT
+	LDB A,PCBLK
+	FOR A IN (DTIBF1,DTIBF2,DTOBF1,DTOBF2),<
+	SETZM A(UNIT)>
+	DPB A,PCBLK
+	MOVSI IOS,OUOPN!INOPN!NSTD
+	ANDCAB IOS,DTASTS(UNIT)
+	JRST SKPRET
+
+; Dismiss until a bit of dtasts goes off
+
+DISBIT:	PUSH P,A+1
+	JFFO A,.+1
+	PUSH P,A
+	MOVEI A,BITTST
+	DPB A+1,[POINT 9,A,8]
+	DPB UNIT,[POINT 9,A,17]
+	JSYS EDISMS
+	POP P,A
+	POP P,A+1
+	POPJ P,
+
+USE
+
+BITTST:	LDB 2,[POINT 9,1,26]
+	LDB 3,[POINT 9,1,35]
+	MOVE 3,DTASTS(3)
+	ROT 3,(2)
+	JUMPL 3,0(4)
+	JRST 1(4)
+
+	BEGINP	DTA DRIVERS
+
+BLK_D
+
+LDTSTK__20
+LS(DTSTK,LDTSTK)		; Stack for dectape interrupt
+
+; Dectape start up routines
+; Call:	UNIT	; The unit to be started
+;	PUSHJ P,DTSTRI	; For input
+; Or
+;	PUSHJ P,DTSTRO	; For output
+; The unit is marked as input or output active, and the control started
+; If necessary
+
+^DTSTRI:MOVSI IOS,ACTI
+	JRST DTSTR1
+
+^DTSTRO:MOVSI IOS,ACTO
+DTSTR1:	IORB IOS,DTASTS(UNIT)
+	PIOFF
+	PUSH P,A
+	SKIPE A,DTAUNT		; Is the controller active?
+	JRST [	CAIE UNIT,(A)	; Yes, for this unit?
+		SETOM DTREQ	; No. request for controller
+		JRST DTSTR2]
+	PUSH P,UNIT
+	HRROI UNIT,DTAN-1
+	PUSHJ P,DTANXT		; Scan dectapes for something to do
+	POP P,UNIT
+DTSTR2:	POP P,A
+	PION
+	POPJ P,
+
+; The following code is executed both at interrupt and non-interrupt
+; Level.  however, it is never executed at both levels simultaneously.
+; It is only run at non-interrupt level, if the dectape control is not
+; Busy
+
+; Find next unit waiting for service
+; Call:	UNIT	; Aobjn pointer to unit to start after
+;	PUSHJ P,DTANXT
+; Return
+;	+1	; Always
+; The dectape found is  started searching for the appropriate block
+
+^DTANXT:PUSH P,UNIT		; Save starting point
+DTANX1:	AOBJN UNIT,.+2
+	MOVSI UNIT,-DTAN
+	MOVSI B,ACTI!ACTO
+	TDNE B,DTASTS(UNIT)
+	JRST DTADO		; A unit requiring service has been found
+	CAME UNIT,(P)
+	JRST DTANX1		; Scann all units
+	SETZM DTREQ
+	POP P,UNIT
+	POPJ P,
+
+DTADO:	SUB P,[XWD 1,1]
+	MOVE IOS,DTASTS(UNIT)
+	TEST(NE,ACTI)
+	TEST(ZA,IO)
+	TEST(O,IO)
+	HLLM IOS,DTASTS(UNIT)
+	MOVE A,DTIBF2(UNIT)
+	TLNE A,(1B12)		; Spacing op?
+	JRST DTAREW
+	TEST(NE,RWDIR)		; Directory read or write?
+	JRST DTADOD
+	TEST(NE,NSTD)
+	JRST DTADNS
+	MOVEI A,QUANT
+	MOVEM A,QUANTM
+	TEST(NE,ACTO)
+	JRST DTADOO		; Do output
+DTADOI:	MOVEI B,DTIBF1(UNIT)
+	TEST(NE,ABFII)
+	MOVEI B,DTIBF2(UNIT)
+	MOVSI A,(1B1)
+	ANDCAM A,(B)		; Clear input error bit
+	LDB BLK,PIBLK		; Get next input block
+	JUMPE BLK,[MOVSI IOS,ACTI
+		ANDCAB IOS,DTASTS(UNIT)
+		POPJ P,]
+	HRRZ B,(B)
+	HRLI B,-200
+	SOS B			; Make into iowd
+	MOVE A,[BLKI DTC,300]
+	JRST DTAOP
+
+DTADOO:	MOVEI B,DTOBF1(UNIT)
+	TEST(NE,ABFOI)
+	MOVEI B,DTOBF2(UNIT)
+	PUSH P,B
+	MOVE B,(B)
+	TLNE B,(1B12)
+	JRST [	MOVEI A,0	; Last buffer, put in 0 link
+		JRST DTDOO1]
+	LDB A,POBLK		; Get block number for this buffer
+	JUMPE A,[MOVSI IOS,ACTO	; Really have no more to do
+		ANDCAM IOS,DTASTS(UNIT)
+		MOVSI IOS,FULF!OUERR
+		IORM IOS,DTASTS(UNIT)
+		MOVEM UNIT,DTAUNT
+		SETOM DTABLK
+		PUSH P,P
+		JSYS [XWD DTSINR,FAKINT]
+		POP P,B
+		POPJ P,]
+	MOVE B,DTASPC		; BLOCK SPACING
+	TEST(NE,RVRS)		; REVERSE?
+	MOVN B,B		; YES, SUBTRACT IT
+	ADD A,B
+	MOVEI B,0
+	PUSHJ P,BLKSRC	; Look for a free block
+	JRST [	MOVEI A,0
+		JRST DTDOO1]
+	MOVSI B,RVRS
+	AND IOS,B
+	ANDCAM B,DTASTS(UNIT)
+	IORB IOS,DTASTS(UNIT)
+	LDB B,POFILN
+	DPB B,C			; Assign the block
+DTDOO1:	POP P,B
+	MOVSI C,(1B1)
+	ANDCAM C,(B)
+	HRRZ B,(B)
+	LDB BLK,POBLK
+	DPB A,POBLK
+	DPB A,[POINT 10,(B),17]
+	LDB A,PFBLK
+	DPB A,[POINT 10,(B),27]
+	HRLI B,-200
+	SOS B			; Make into iowd
+	MOVE A,[BLKO DTC,700]
+
+DTAOP:	MOVEM UNIT,DTAUNT
+	MOVEM B,PNTR		; Iowd for forward xfer
+	MOVEM B,SVPNTR		; Save pntr for error retries
+	MOVEM BLK,DTABLK	; Block number to search for
+	HRRZM A,DTAOPR		; Save read data or write data op
+	HRRI A,PNTR
+	MOVEM A,DTABIO		; Blki/o instruction
+	MOVEI A,DTTRY
+	MOVEM A,DTERRC
+DTREGO:	HRRZ C,UNIT
+	LSH C,11
+	CONSZ DTC,20000		; Unit already selected?
+	JRST [	CONSZ DTC,200000; Yes, setup for current direction
+		TROA C,200000
+		TRO C,100000
+		JRST DTRGO1]
+	CONO DTC,30000(C)	; Connect to dtan
+	HRRZ A,DTAOPR
+	CAIN A,700		; Write op?
+	CONSO DTS,4000		; Yes. write lock?
+	CONSZ DTS,100
+	JRST [	SETOM DTABLK	; Write lock or select error
+		PUSH P,DTSINR
+		PUSH P,P
+		JSYS [XWD DTSINR,FAKINT]
+		POP P,DTSINR
+		POPJ P,]
+	LDB A,PCBLK		; Get current position of tape
+	MOVEI C,230000(C)	; Get ready to go forward
+	CAML A,DTABLK		; Unless desired block is < current
+	TRC C,300000
+DTRGO1:	MOVE A,[JSYS DTASRI]
+	MOVEM A,DTALOC		; Setup data interrupt
+	CONO DTC,DTBOTH+200(C)	; Start up in read block number mode
+	CONO DTS,670000		; Enable all int's except job done
+	POPJ P,			; Go away, all else is done at int level
+
+; Rewind operation
+
+DTAREW:	TLNE A,(1B13)		; Unload?
+	SKIPA A,[JFCL 0(1)]
+	MOVSI A,(<JFCL>)
+	SETZB B,BLK
+	JRST DTAOP
+
+DTADOD:	HRRZ B,DTASTS(UNIT)
+	HRLI B,-200
+	SOS B
+	MOVEI BLK,DIRBLK
+	TEST(NE,ACTI)
+	SKIPA A,[BLKI DTC,300]
+	MOVE A,[BLKO DTC,700]
+	JRST DTAOP
+
+DTADNS:	HRRZ B,DTIBF1(UNIT)
+	HRRZ A,DTIBF2(UNIT)
+	CAILE A,200
+	MOVEI A,200
+	ADDM A,DTIBF1(UNIT)
+	MOVNS A
+	ADDM A,DTIBF2(UNIT)
+	HRL B,A
+	LDB BLK,PIBLK
+	TEST(NE,ACTI)
+	SKIPA A,[BLKI DTC,300]
+	MOVE A,[BLKO DTC,700]
+	JRST DTAOP
+
+; The following code is executed only at interrupt level
+
+
+; Block number search interrupt
+
+DTASRI:	XWD DTDINR,.+1
+	MOVEM A,DTDTMP		; Save working ac
+	DATAI DTC,A		; Read block number
+	ANDI A,1777
+	EXCH UNIT,DTAUNT
+	DPB A,PCBLK		; Keep current block up to date
+	EXCH UNIT,DTAUNT
+	SUB A,DTABLK		; Compare with desired block
+	JUMPE A,FOUND		; If equal, the block is found
+	CONSO DTC,100000
+	MOVNS A			; Complement delta, a is how far to
+	JUMPGE A,SRCHA		; Go in current direction
+SRCHD:	CONO DTC,DTTURN		; Change direction
+	SOSG DTERRC		; Count turnarounds as pseudo-errors
+	JRST SRCHE		; Too many constitute an error
+SRCHXT:	MOVE A,DTDTMP
+	JEN @DTDINR
+
+SRCHA:	JRST SRCHXT		; Dead reckoning stuff goes here
+
+SRCHE:	EXCH UNIT,DTAUNT
+	AOS DTARCE(UNIT)
+	EXCH UNIT,DTAUNT
+	SETOM DTABLK		; Remember bad block encountered
+	CONO DTS,770001		; Generate job done int
+	JRST SRCHXT
+
+FOUND:	SKIPL A,DTABIO
+	JRST ENDSPA
+	CONSZ DTC,100000	; Reverse transfer needed?
+	JRST FNDRVS		; Yes
+	JRST DTAGO
+
+; End spacing
+
+ENDSPA:	CONO DTS,770001			; Cause job done int
+	JRST SRCHXT
+
+FNDRVS:	HLRE A,PNTR		; Get count
+	MOVNS A
+	SOS A
+	ADDM A,PNTR		; Adjust pntr to end of data
+	SUBI A,177		; Yields zero if full block
+	JUMPE A,FNDRV1
+	MOVEM A,DTASKP
+	SKIPA A,[JSYS SKPREV]
+FNDRV1:	MOVE A,[JSYS DTAREV]
+DTAGO:	MOVEM A,DTALOC
+	MOVE A,[JSYS DTATHR]
+	MOVEM A,DTALOC+1	; Set up interrupt loc+1
+	HRRZ A,DTAOPR
+	CONO DTC,DTBOTH(A)
+	CONO DTS,770000
+	JRST SRCHXT
+
+; Data interrupt going reverse
+
+SKPREV:	XWD DTDINR,.+1		; Here while skipping
+	DATAI DTC,DTAWST	; Waste
+	AOSGE DTASKP
+	JEN @DTDINR
+	MOVEM A,DTALOC
+	MOVE A,[JSYS DTAREV]
+	EXCH A,DTALOC
+	JEN @DTDINR
+
+DTAREV:	XWD DTDINR,.+1		; Jsys dispatch
+	XCT DTABIO		; Do the blki/o
+	JRST REVTHR		; Done
+	SOS PNTR
+	SOS PNTR		; Make the iowd increment backward
+	JEN @DTDINR		; Return
+
+; Data interrupt, blki/o done
+
+DTATHR:	XWD DTDINR,REVTHR
+REVTHR:	CONO DTS,770001		; Generate job done interrupt
+	JEN @DTDINR
+
+; Dectape flag interrupt
+
+^DTASV:	XWD DTSINR,.+1
+	CONSO DTS,2
+	JRST @DTSINR		; Not dectape interrupt
+	EXCH A,DTSINR
+	MOVEI A,DTACHR
+	EXCH A,DTSINR
+	CONSZ DTS,20000		; End zone?
+	SKIPGE DTABLK		; And no block error?
+	JRST DTAIN1		; No, check job done etc.
+	CONSZ DTC,500		; Reading block numbers?
+	JRST DTAIN1		; Can only happen with dump mode
+				; Or if system stops
+	CONO DTC,DTTURN		; Reverse direction
+	JRST @DTSINR		; Return
+
+DTAIN1:	MOVEM P,DTSTK		; Set up a stack
+	MOVE P,[XWD -LDTSTK+1,DTSTK]
+FAKINT:	PUSH P,UNIT		; Save ac's not saved by interrupt
+	PUSH P,IOS
+	MOVE UNIT,DTAUNT
+	MOVE IOS,DTASTS(UNIT)
+	SKIPGE DTABLK
+	JRST ERRS		; Some kind of block number error
+	CONSZ DTS,100000
+	CONSZ DTS,670000
+	JRST ERRS
+DTAIN9:	SKIPL DTABIO
+	JRST REWDON
+	TEST(NE,NSTD)
+	JRST DMPTHR		; Dump mode i/o finished
+	TEST(NE,RWDIR)
+	JRST DIRTHR		; Through with a directory op
+	TEST(ZN,FSTBK)		; Looking for first block?
+	JRST DTAIN3		; No.
+	HRRZ A,DTIBF1(UNIT)
+	LDB A,[POINT 10,(A),27]	; Extract first block from header
+	DPB A,PIBLK
+	CAMN A,DTABLK
+	JRST DTAIN3		; Treat same as input if equal
+	HLLM IOS,DTASTS(UNIT)
+	PUSHJ P,DTADOI		; Otherwise start up input
+	JRST DTSXIT
+
+ERRS:	CONO DTC,400000
+	CONO DTC,10000
+	AOS DTARCE(UNIT)
+	SKIPL DTABLK
+	SOSGE DTERRC
+	JRST [	SETOM DTABLK
+		JRST DTAIN9]
+	MOVE B,SVPNTR
+	MOVEM B,PNTR
+	PUSHJ P,DTREGO
+	JRST DTSXIT
+
+DIRTHR:	SKIPL DTABLK
+	TEST(O,DIRIC)
+	TEST(Z,RWDIR,ACTI)
+	JRST DTAGOX
+
+DTAIN3:	TEST(NE,IO)
+	JRST OUTHRU		; Output done
+	MOVEI A,DTIBF1(UNIT)
+	TEST(NE,ABFII)
+	MOVEI A,DTIBF2(UNIT)
+	MOVSI B,400000
+	ANDCAM B,(A)		; Mark buffer not busy
+	MOVSI B,(1B1)
+	SKIPGE DTABLK
+	IORM B,(A)		; Mark buffer as erroneous
+	HRRZ A,(A)
+	LDB C,[POINT 10,(A),17]	; Get next input block
+	DPB C,PIBLK
+DTAIN4:	MOVEI A,DTIBF1(UNIT)
+	TEST(CN,ABFII)
+	MOVEI A,DTIBF2(UNIT)
+	HRRZ B,(A)
+	JUMPE B,DTAIN4
+	JUMPE C,DTAGNX
+	SOSG QUANTM
+	SKIPN DTREQ
+	SKIPL (A)
+	JRST DTAGNX
+	HLLM IOS,DTASTS(UNIT)
+	SKIPGE DTABLK
+	JRST DTAGNX		; Stop if error
+	PUSHJ P,DTADOI
+	JRST DTSXIT
+
+DTAGOX:	TEST(ZA,ACTO)
+DTAGNX:	TEST(Z,ACTI)
+	HLLM IOS,DTASTS(UNIT)
+	SETZM DTAUNT
+	MOVNI A,2
+	CONSZ DTC,200000
+	MOVNS A
+	LDB B,PCBLK
+	ADD B,A			; Bump current block for stop time
+	DPB B,PCBLK
+	CONO DTC,400000
+	CONO DTC,10000
+	PUSHJ P,DTANXT		; Find something else to do
+DTSXIT:	POP P,IOS
+	POP P,UNIT
+	POP P,P
+	JRST @DTSINR
+
+OUTHRU:	MOVEI A,DTOBF1(UNIT)
+	TEST(NE,ABFOI)
+	MOVEI A,DTOBF2(UNIT)
+	MOVSI B,400000
+	ANDCAM B,(A)
+	SKIPGE DTABLK
+	TEST(O,OUERR)
+	HRRZ A,(A)
+	LDB C,[POINT 10,(A),17]
+OUTHR1:	MOVEI A,DTOBF1(UNIT)
+	TEST(CN,ABFOI)
+	MOVEI A,DTOBF2(UNIT)
+	HRRZ B,(A)
+	JUMPE B,OUTHR1		; No second buffer
+	JUMPE C,DTAGOX
+	SOSG QUANTM
+	SKIPN DTREQ
+	SKIPL (A)
+	JRST DTAGOX		; Release the control
+	SKIPGE DTABLK
+	JRST DTAGOX		; No more transfers if error
+	HLLM IOS,DTASTS(UNIT)
+	PUSHJ P,DTADOO
+	JRST DTSXIT
+
+DMPTHR:	LDB A,PIBLK
+	AOS A
+	SKIPGE DTABLK
+	 JRST [	TEST(Z,ACTI,ACTO)
+		MOVSI A,(1B1)
+		IORM A,DTIBF2(UNIT)
+		JRST DTAGNX]
+	CAILE A,TOPBLK
+	JRST DMPTH1
+	DPB A,PIBLK
+	HRRZ A,DTIBF2(UNIT)
+	JUMPE A,[TEST(NN,ACTI)
+		JRST DTAGOX
+		JRST DTAGNX]
+	HLLM IOS,DTASTS(UNIT)
+	PUSHJ P,DTADNS
+	JRST DTSXIT
+
+DMPTH1:	MOVSI A,(1B1)
+	TEST(NN,ACTI)
+	JRST DMPTH2
+	IORM A,DTIBF2(UNIT)
+	JRST DTAGNX
+
+DMPTH2:	IORM A,DTIBF2(UNIT)
+	JRST DTAGOX
+
+REWDON:	MOVSI A,(1B13)
+	TDNE A,DTIBF2(UNIT)
+	JRST REWUNL
+	MOVSI A,(1B12)
+	ANDCAM A,DTIBF2(UNIT)
+	JRST DTAGNX
+
+REWUNL:	CONO DTC,140000		; Continue reverse
+	CONO DTC,10000		; Deselect
+	CONO DTS,0
+	MOVEI A,=3000
+	MOVEM A,DTATIM
+	SETOM DTAUNS
+	JRST DTSXIT
+
+^DTACHK:MOVEI A,=60000
+	MOVEM A,DTATIM
+	SKIPE DTAUNS
+	SKIPN A,DTAUNT
+	POPJ P,
+	SETZM DTAUNS
+	MOVE UNIT,A
+	LSH A,=9
+	ANDI A,7000
+	CONO DTC,20000(A)
+	CONO DTC,200000
+	CONO DTC,400000
+	CONO DTC,10000
+	SETZM DTAUNT
+	MOVSI A,60
+	ANDCAM A,DTIBF2(UNIT)
+	MOVSI A,ACTI
+	ANDCAM A,DTASTS(UNIT)
+	JRST DTANXT
+
+	BENDP	DTA
+	BENDP	DECTAPE>
+                                                                                                                                                                                                                        

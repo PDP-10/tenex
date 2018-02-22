@@ -1,0 +1,4188 @@
+	BEGINP	FREE		R.s.tomlinson	21 SEPTEMBER 1971	1025:
+
+USE	SWAPPC
+
+INTERN	ASGFRE,RELFRE,ASGPAG,RELPAG
+IFN 0,<
+INTERN	PUTITM,RELITM
+EXTERN	INTLVL
+>
+
+; Assign space in free storage region
+; Call:	RH(A)		; Location of free storage header
+;	LH(A)		; Index field for references to a and pointers
+;			; I.e. @a references first word of header
+;	B		; Size of block needed
+;	PUSHJ P,ASGFRE
+; Return
+;	+1	; Not enough space
+;	+2	; Ok, in a, the location of the block (absolute)
+; Clobbers a,b,c,d
+; Calling routine must take measures to prevent loss of free storage
+; Space by inhibiting psi's until the space assigned
+; Has been accounted for
+; Free storage header format is:
+;	0	; Lh points to first free block
+;	1	; Lock
+;	2	; Space counter
+;	3	; Most common block size
+;	4	; Temp 1
+;	5	; Temp 2
+;	6	; Temp 3
+
+^ASGFRE:MOVEI C,@A		; Get origin of header
+	CAMLE B,2(C)		; Any possibility of success?
+	POPJ P,			; No. return immediately
+	LOCK 1(C)		; Lock this free storage list
+	MOVEM B,4(C)		; Save desired block size
+	MOVEI B,377777
+	MOVEM B,5(C)		; Initial best block size
+	SETZM 6(C)		; Initial location of best block
+	MOVE B,A		; Start with the header word
+	HLLZ C,A		; Initialize index field
+	MOVEI A,@A
+ASGFR1:	HLR C,@B		; Get pointer to next block
+	TRNN C,777777
+	JRST ASGFR2		; No more free blocks to examine
+	HRRZ D,@C		; Get size of the block
+	CAMN D,4(A)		; Is it the right size?
+	JRST ASGFR3		; Just right use it
+	CAML D,4(A)		; Too small
+	CAML D,5(A)		; Or bigger than best?
+	JRST ASGFR4		; Yes, ignore it
+	MOVEM D,5(A)		; This one is better
+	MOVEM B,6(A)
+ASGFR4:	MOVE B,C		; Step to next block
+	JRST ASGFR1		; And repeat
+
+ASGFR2:	SKIPN B,6(A)		; Did we find anything?
+	JRST [	UNLOCK 1(A)	; No. unlock and return
+		MOVE B,4(A)	; Make transparent to b on error
+		POPJ P,]
+	MOVE D,4(A)		; Get desired size
+	HLR C,@B		; Get pointer to block to be used
+	HRRM D,@C		; Convert to desired size
+	ADD D,C			; Pointer remainder of block
+	HRLM D,@B		; Point prev to remainder
+	HLLZ B,@C		; Get next
+	HLLM B,@D		; Point remainder to it
+	MOVE B,5(A)
+	SUB B,4(A)		; Size of remainder
+	HRRM B,@D		; To header of remainder
+ASGFR5:	MOVN B,4(A)
+	ADDM B,2(A)		; Reduce count of space left
+	UNLOCK 1(A)
+	MOVEI A,@C		; Get origin of block
+	HRROS (A)		; Set lh to ones
+	HRRZ B,(A)		; Get rh
+	HRRZI C,2(A)
+	HRLI C,1(A)
+	ADD B,A
+	HRRZS B
+	SETZM -1(C)
+	CAIGE B,(C)
+	BLT C,-1(B)		; Zero the block
+	AOS (P)
+	POPJ P,
+
+ASGFR3:	HLL D,@C
+	HLLM D,@B		; Point predecessor to successor
+	JRST ASGFR5
+
+; Release free storage block
+; Call:	A		; Location of free storage header (like asgfre)
+;	B		; Location of the block to be returned
+;	PUSHJ P,RELFRE
+; Clobbers b,c,d
+
+^RELFRE:HRRZ C,B
+	SUBI C,@A
+	CAILE C,6
+	CAILE C,10000
+	 JRST [	BUG(CHK,<RELFRE: BLOCK LOCATION OUT OF RANGE.>)
+		POPJ P,]
+	HLLZ C,A
+	SUBI B,@C
+	MOVEI C,@A
+	LOCK 1(C)
+	HLL B,A
+	MOVEM B,4(C)
+	HLL C,A
+	MOVE B,A
+	PUSH P,A
+	MOVEI A,@A
+RELFR1:	HLR C,@B		; Get loc of next block
+	TRNN C,777777
+	JRST RELFR2		; End of list
+	CAML C,4(A)
+	JRST RELFR2		; Or above block being returned
+	MOVE B,C
+	JRST RELFR1
+
+RELFR2:	CAMN C,4(A)		; Releasing a block already released?
+	 JRST [	POP P,A
+		UNLOCK(<1(A)>)
+		BUG(CHK,<RELFRE: BLOCK ALREADY RELEASED.>)
+		POPJ P,]
+	HRRZ D,@4(A)
+	ADDM D,2(A)		; Augment count of remaining storage
+	ADD D,4(A)		; Get end of block being returned
+	CAME D,C		; Same as following block location?
+	JRST RELFR3		; No
+	HRRZ D,@C		; Get length of following block
+	ADDM D,@4(A)		; Augment length of block being returned
+	HLLZ D,@C		; Get loc of successor of successor
+	HLLM D,@4(A)
+RELFR5:	MOVE C,4(A)
+	HRLM C,@B
+	HRRZ D,@B		; Length of predecessor
+	ADD D,B			; End of predecessor
+	CAME D,C		; Same as new block
+	JRST RELFR4		; No, done
+	MOVE C,@C
+	HLLM C,@B
+	HRRZS C
+	ADDM C,@B
+RELFR4:	UNLOCK 1(A)
+	POP P,A
+	POPJ P,
+
+RELFR3:	HRLM C,@4(A)		; Point returned block to successor
+	JRST RELFR5
+
+; Assign a page in job area
+; Call:	PUSHJ P,ASGPAG
+; Return
+;	+1	; None available
+;	+2	; Success
+;	A	; Address of origin of page
+
+^ASGPAG:MOVSI C,-4		; Four words of bits
+ASGPG1:	SETCM A,JBCOR(C)
+	JFFO A,ASGPG2		; Any bits?
+	AOBJN C,ASGPG1		; No, try next word
+	POPJ P,			; No words left
+
+ASGPG2:	MOVN B,A+1
+	MOVSI A,400000
+	ROT A,(B)
+	IORM A,JBCOR(C)		; Mark as used
+	MOVEI A,(C)
+	IMULI A,=36
+	SUB A,B
+	LSH A,9
+	ADDI A,PJMA		; Origin of job mapped area
+	JRST SKPRET
+
+; Return page
+; Call:	A	; Location of page
+;	PUSHJ P,RELPAG
+
+^RELPAG:SUBI A,PJMA
+	LSH A,-9
+	IDIVI A,=36
+	MOVSI C,400000
+	MOVNS A+1
+	ROT C,(A+1)
+	ANDCAM C,JBCOR(A)	; Clear the bit
+	POPJ P,
+
+; Assign free storage in directory
+; Call:	B	; Size of block needed
+;	PUSHJ P,ASGDFR
+; Return
+;	+1	; Not enough room
+;	+2	; Ok, in a, the location of the block
+; Clobbers a,b,c,d
+
+^ASGDFR:MOVE A,[XWD E,DIRFRE-DIRORG]
+	PUSH P,E
+	MOVEI E,DIRORG
+	PUSHJ P,ASGFRE
+	JRST ASGDF1		; No room, try garbage collection
+ASGDF3:	AOS -1(P)
+ASGDF2:	POP P,E
+	POPJ P,
+
+ASGDF1:	PUSH P,B
+	PUSHJ P,GCDIR
+	POP P,B
+	MOVE A,[XWD E,DIRFRE-DIRORG]
+	PUSHJ P,ASGFRE
+	JRST ASGDF2		; Still no room
+	JRST ASGDF3		; Now ok
+
+; Release free storage in directory
+; Call:	B	; Location of the block to be released
+;	PUSHJ P,RELDFR
+; Returns +1 always
+; Clobbers a,b,c,d
+
+^RELDFR:MOVE A,[XWD E,DIRFRE-DIRORG]
+	PUSH P,E
+	MOVEI E,DIRORG
+	PUSHJ P,RELFRE
+	POP P,E
+	POPJ P,
+
+; Garbage collect a directory
+; Call:	PUSHJ P,GCDIR
+; Transparent
+
+^GCDIR:	FOR A IN (A,B,C,D,E,F,NUM,DEV)
+<	PUSH P,A
+>
+	HLRZ C,DIRFRE		; Get first free block
+	JUMPE C,GCDI5		; No hope
+	MOVE A,C		; Set where to blt to
+GCDI1:	HRRZ B,DIRORG(C)	; Get length of free block
+	ADD B,C			; Plus origin yields first used block
+	HLRZ C,DIRORG(C)	; Get next free block
+	JUMPE C,GCDI4		; If none left, then done
+; All blocks between c(b) and c(c) are to be moved down to a
+	HRLZI D,DIRORG(B)	; Make up a blt pointer
+	HRRI D,DIRORG(A)
+	MOVE E,C
+	SUB E,B			; Length of block
+	ADD E,A			; End of blt
+	BLT D,DIRORG-1(E)
+	MOVE D,A
+	SUB D,B
+	PUSH P,D		; Offset
+	JSP D,GCSCAN		; Start up scanner routine
+GCDI2:	JSP D,(D)		; Get first pointer
+	JRST GCDI3		; None left
+	CAML E,B
+	CAML E,C
+	JRST GCDI2		; Not in range of block just moved
+	ADD E,(P)		; Offset it
+	JRST GCDI2
+
+GCDI3:	POP P,D
+	ADD A,C
+	SUB A,B			; Get new place to blt to
+	CAME C,FRETOP		; Last block?
+	JRST GCDI1		; No, continue
+GCDI4:	MOVE C,FRETOP		; Finish up, get top of free area
+	SUB C,A			; Length of free area
+	HRRZM C,DIRORG(A)	; Make area left into a free block
+	HRLM A,DIRFRE		; And point dirfre to it
+GCDI5:	FOR A IN (DEV,NUM,F,E,D,C,B,A)
+<	POP P,A
+>
+	POPJ P,
+
+; The gc scanner
+; This routine knows where all the good things are
+; And operates as a coroutine with the garbage collector
+; Started up with
+;	JSP D,GCSCAN
+; For each datum,
+;	JSP D,(D)
+; Skips unless no data left
+; Uses f,num,dev
+; Returns datum in e
+
+GCSCAN:	MOVE NUM,SYMBOT		; Start with first symbol table entry
+	JSP D,(D)
+GCSCN1:	CAML NUM,SYMTOP		; Entire table scanned?
+	JRST (D)		; Yes. no skip return
+	HLRZ E,DIRORG(NUM)	; Get pointer to string
+	JSP D,1(D)
+	HRLM E,DIRORG(NUM)	; Put back updated pointer
+	HRRZ E,DIRORG(NUM)	; Get pointer to data block
+	SKIPG DIRNUM
+	JRST GCSCN5
+	TRZE E,700000
+	 AOJA NUM,GCSCN1	; No blocks for current uses of rh
+	JSP D,1(D)
+	HRRM E,DIRORG(NUM)
+GCSCN3:	MOVE DEV,E		; Save root of fdb's
+GCSCN2:	MOVE F,E		; Point to current fdb
+	HRRZ E,FDBCTL+DIRORG(F)	; Pointer to name
+	JSP D,1(D)
+	HRRM E,FDBCTL+DIRORG(F)
+	HLRZ E,FDBEXT+DIRORG(F)
+	JSP D,1(D)
+	HRLM E,FDBEXT+DIRORG(F)
+	HRRZ E,FDBEXT+DIRORG(F)
+	JSP D,1(D)
+	HRRM E,FDBEXT+DIRORG(F)
+	MOVE E,FDBACT+DIRORG(F)
+	TLNN E,777777
+	JSP D,1(D)
+	MOVEM E,FDBACT+DIRORG(F)
+	HRRZ E,FDBVER+DIRORG(F)	; Pointer to next version
+	JSP D,1(D)
+	HRRM E,FDBVER+DIRORG(F)	; Update
+	JUMPN E,GCSCN2		; Scan all versions
+	HRRZ E,FDBEXT+DIRORG(DEV)
+	JUMPN E,GCSCN3		; Scan all extensions
+	AOJA NUM,GCSCN1		; Scan all of the symtab
+
+GCSCN5:	PUSH P,B		; Save temps
+	PUSH P,A
+	PUSH P,C
+	PUSHJ P,HSHLUK		; Get the hash table entry
+	BUG(HLT,<GCDIR: USER INDEX SCRAMBLED.>)
+	POP P,C
+	POP P,A
+	HLRZ E,DIRORG(B)	; Get location of ddb
+	MOVE F,B		; Save location of hash table entry
+	POP P,B
+	ANDI E,7777		; Get rid of subindex number
+	JSP D,1(D)		; Adjust the pointer
+	PUSH P,E
+	PUSH P,B
+	HLRZ B,DIRORG(F)	; Get the pointer
+	ANDCMI B,7777		; Get rid of old stuff
+	IOR E,B			; Insert new
+	HRLM E,DIRORG(F)
+	LSH E,-=12
+	MOVE A,E
+	PUSH P,A
+	PUSH P,C
+	UNLOCK DIRLCK
+	OKINT
+	PUSHJ P,MAPDIR
+	POP P,C
+	POP P,A
+	POP P,B
+	POP P,DEV
+	HLRZ E,DDBNAM(DEV)
+	JSP D,1(D)
+	HRLM E,DDBNAM(DEV)
+	HRRZ E,DDBNAM(DEV)
+	JSP D,1(D)
+	HRRM E,DDBNAM(DEV)
+	AOJA NUM,GCSCN1
+
+IFN 0,<
+; Put item onto deallocation list
+; Call:	LH(A)	; Routine to call to deallocate the item
+;	RH(A)	; Item identifier (address usually)
+;	PUSHJ P,PUTITM
+; Items put on the deallocation are automatically deallocated whenever
+; A psi occurs and the user's program changes the pc such that
+; The monitor routine in progress does not complete
+
+^PUTITM:PUSH P,B		; Free up some ac's
+	PUSH P,A
+PUTIT0:	MOVE A,INTLVL		; Get current interrupt level
+	SKIPE B,ITMHD(A)	; Get the correct item list header
+	JRST PUTIT1
+	PUSH P,A		; No header, create one
+	MOVEI A,PSBFRE
+	MOVEI B,6
+	PUSHJ P,ASGPAG		; Assign a block of psb free storage
+	JSR BUGHLT
+	POP P,B
+	MOVEM A,ITMHD(B)	; Point the header to the block
+	HRLI A,1(B)
+	HRRI A,2(B)
+	SETZM 1(B)
+	BLT A,6(B)		; Clear the block
+PUTIT1:	HRLI B,5
+	AOS B			; Make aobjn pointer
+PUTIT2:	SKIPN (B)		; Search for an empty slot
+	JRST PUTIT3		; Found
+	AOBJN B,PUTIT2
+	MOVE B,INTLVL		; No empty slots
+	MOVEI A,0
+	EXCH A,ITMHD(B)		; Clear header, get old header
+	HRLI A,RELITB		; Make into an item word
+	PUSHJ P,PUTITM		; Call self, making first thing on
+	JRST PUTIT0		; New block the old block. try again
+
+PUTIT3:	POP P,A
+	MOVEM A,(B)
+	POP P,B
+	POPJ P,
+
+; Release all items on interrupt level specified in a
+; Call:	A	; Interrupt level
+;	PUSHJ P,RELITM
+
+^RELITM:PUSH P,ITMHD(A)
+	SETZM ITMHD(A)
+	POP P,A
+	JUMPN A,RELITB
+	POPJ P,
+
+RELITB:	PUSH P,A
+	PUSH P,B
+	HRLI A,-5
+	AOS A
+RELIT1:	SKIPN B,(A)
+	JRST RELIT2
+	PUSH P,A
+	HRRZ A,B
+	HRLZS B
+	PUSHJ P,(B)
+	POP P,A
+RELIT2:	AOBJN A,RELIT1
+	MOVE B,-1(P)
+	MOVEI A,PSBFRE
+	PUSHJ P,RELFRE
+	POP P,B
+	POP P,A
+	POPJ P,
+>
+
+	BENDP	FREE
+	TITLE FILE SYSTEM
+	SUBTTL	R.S.TOMLINSON 22 SPET 71  2320:
+
+; Define a relocatable zero
+
+..ZERO__.
+
+DEFINE	BEGINP(SYM)<
+	BEGIN	SYM
+GLOBAL BUGN
+BBUGN__BUGN
+PRINTX /SYM
+/
+>
+
+DEFINE	BENDP(SYM)<
+..ORAD__10
+RADIX =10
+FOR @' I_BBUGN+1,BUGN
+<
+IFAVL BUG'I,<^BUG'I__BUG'I>
+>
+RADIX ..ORAD
+BEND	SYM
+>
+
+DEFINE %<PRINTX FOOBAR>
+
+SET	SWAPPC,SWPMP0*1000
+
+OPDEF	XCTUU	[XCT 7,0]
+OPDEF	XCTMU	[XCT 1,0]
+OPDEF	XCTUM	[XCT 6,0]
+DEFINE	OKINT	<XCT INTDFF>
+DEFINE	NOINT	<AOS INTDF>
+DEFINE	RSTINT	<SETZM INTDF
+	OKINT>
+DEFINE	LOCK(LCK,FAIL)<
+	AOSE LCK
+	IFIDN <FAIL>,<>,<JSYS BLOCK1>
+	IFDIF <FAIL>,<>,<FAIL>>
+DEFINE	UNLOCK(LCK)<SETOM LCK>
+DEFINE	SKIPRT<AOS (P)>
+
+NJFN__15
+NFDIB__20
+
+; The following macro is used to define flag bits
+; In conjunction with the test macro, it provides for automatic
+; Insertion of the ac holding the flag, and trxx or tlxx to reference
+; The proper halfword
+
+DEFINE	FLG'(FL,LR,REG,BIT)<FL'%__<T'LR'N REG,BIT>
+IFL BIT-20,<FL__BIT>
+IFGE BIT-20,<FL_BIT>>
+
+DEFINE	TEST'(COND,FL1,FL2)<IFIDN <FL2>,<>,<<TR'COND>!FL1'%>
+IFDIF <FL2>,<>,<<TR'COND>!FL1'%!FL2'%
+IFN <FL1'%>&777777000000-<FL2'%>&777777000000,<
+PRINTX	<ASCIZ /FL1 & FL2 ARE IN DIFFERENT HALF WORDS/>>>>
+
+DEFINE	JS(VAR,SIZE)<
+	IFIDN <SIZE>,<>,<ASSIGN VAR,JSBLOC>
+	IFDIF <SIZE>,<>,<ASSIGN VAR,JSBLOC,SIZE>>
+
+DEFINE	LS(VAR,SIZE)<
+	IFIDN <SIZE>,<>,<ASSIGN VAR,RESVLC>
+	IFDIF <SIZE>,<>,<ASSIGN VAR,RESVLC,SIZE>>
+
+DEFINE	PS(VAR,SIZE)<
+	IFIDN <SIZE>,<>,<ASSIGN VAR,TSBLOC>
+	IFDIF <SIZE>,<>,<ASSIGN VAR,TSBLOC,SIZE>>
+
+DEFINE	NR(VAR,SIZE)<
+	IFIDN <SIZE>,<>,<ASSIGN VAR,NRESLC>
+	IFDIF <SIZE>,<>,<ASSIGN VAR,NRESLC,SIZE>>
+
+DEFINE	NRP(VAR,SIZE)<
+	IFIDN <SIZE>,<>,<ASSIGN VAR,NRPLOC>
+	IFDIF <SIZE>,<>,<ASSIGN VAR,NRPLOC,SIZE>>
+
+DEFINE	BUG(TYP,STR)
+<BUGN__BUGN+1
+..ORAD__10
+RADIX =10
+BUGGER(TYP,<STR>,\BUGN)
+RADIX ..ORAD
+>
+
+DEFINE	BUGGER'(TYP,STR,N)
+<^BUG'N:	JSR BUG'TYP
+BUGREM(<XWD BUG'N,[ASCIZ \STR\]
+>)
+>
+DEFINE	BUGREM(C)<BUGCON(<GDEFINE BUGCON"(..A..,..B..)><..A..",<C>"..B..>)>
+GDEFINE	BUGCON"(..A..,..B..)<..A.."..B..>
+
+BUGN__0
+
+; Accumulators
+
+?STS_0		; Lh - file status, rh miscellaneous flags
+?A_1		; General temporary
+?B_2		; General temporary
+?C_3		; General temporary
+?D_4		; Genearl temporary
+?E_7		; Pointer to user parameter block
+?F_10		; Flags
+?JFN_11		; Job file number
+?NUM_12		; Used around gtjfn loop to accumulate numbers
+?DEV_13		; Lh device bits, rh device dispatch table
+?F1_14		; More flags for gtjfn and lookup routines
+NSAC__F1+1	; Number of acs to save when calling other routines
+?P_17
+
+; Variables in jsb associated with files
+
+JS(FILBYT,NJFN)		; Byte pointers to current window
+JS(FILBYN,NJFN)		; Byte number of current byte
+JS(FILLEN,NJFN)		; Total length of file in bytes
+JS(FILCNT,NJFN)		; Bytes remaining in current buffer
+JS(FILLCK,NJFN)		; File lock word
+JS(FILWND,NJFN)		; Lh ==> current page number
+			; Rh ==> location of current window
+JS(FILSTS,NJFN)		; Lh ==> file status bits
+			; Rh ==> device dependent dispatch address
+JS(FILDEV,NJFN)		; Device dependent  information
+JS(FILOFN,NJFN)		; Lh ==> ofn for this file
+			; Rh ==> ofn of long file pt table
+JS(FILLFW,NJFN)		; Lh ==> current page table number
+			; Rh ==> location of page table table
+JS(FILDDN,NJFN)		; Lh ==> pointer to device string block
+			; Rh ==> directory number
+JS(FILNEN,NJFN)		; Lh ==> pointer to file name string block
+			; Rh ==> pointer to extension string block
+JS(FILVER,NJFN)		; Lh ==> fork number of originator of this jfn
+			; Rh ==> version number
+
+; The following variables overlay the space in the above definitions
+; This is possible since they are used only during gtjfn
+
+ASSIGN	FILTMP,FILBYT,0	; Lh ==>0 ptr to temp string block for default
+			; Rh ==>0 point to temp string block
+ASSIGN	FILPRT,FILBYN,0	; Pointer to protection string or protection #
+ASSIGN	FILACT,FILLEN,0	; Pointer to account string or account number
+ASSIGN	FILOPT,FILWND,0	; Byte pointer to store string in gtjfn
+
+JS(JFNLCK)		; Lock to prevent tampering with jfn's
+JS(JOBDNO)		; Cell to hold current directory number
+JS(JBCOR,4)		; Page allocation bit table
+JS(JSBFRE,7)		; Job area free storage header
+JS(JSFREE,200)		; Free storage area in job block
+
+; Variables in psb associated with files
+
+PS(CAPMSK)
+PS(CAPENB)
+PS(PSBFRE,6)
+PS(PSFREE,10)
+PS(ITMHD,4)
+PS(PRIMRY)		; Primary io indirection pointers
+PS(LSTERR)		; Last error number
+PS(ERRSAV,10)		; Block of error parameters
+
+; Resident storage for file system
+
+LS(DIOFN)		; Ofn for directory index file
+LS(FDOFN,NFDIB)		; Table of ofns for fd
+LS(FDLOFN)		; Long file ofn for fd
+
+; Externals
+
+EXTERN	MSTKOV		; Where to go when stack overflows
+EXTERN	ASOFN		; Assign ofn for disc address
+EXTERN	BLOCK1		; Block until previous inst skips
+EXTERN	BUGCHK		; Bug check
+EXTERN	FPC		; Return pc for fast jsys's
+EXTERN	BUGHLT		; Bug halt routine
+EXTERN	DSKASN		; Assign a disk page
+EXTERN	DISGE		; Call schedular to dismiss until a word is +
+EXTERN	DISL		; Call schedular to dismiss until a word is -
+EXTERN	ERRSAV		; Block of words for saving error parameters
+EXTERN	FORKN		; Rh has this fork number
+EXTERN	INTDF		; Cell to aos to disable psi
+EXTERN	INTDFF		; Cell to execute to reenable psi
+EXTERN	ITRAP		; Cause instruction trap
+EXTERN	JOBNO		; Job number of currrent job
+EXTERN	JOBPT		; Lh has controlling tty (indexed by job)
+EXTERN	MENTR		; Routine to set up slow jsys
+EXTERN	MRETN		; Routine to return from slow jsys
+EXTERN	MRPACS		; Routine to read page access
+EXTERN	MRMAP		; Read monitor map
+EXTERN	PJMA		; Origin of job mapped area
+EXTERN	PPMA		; Origin of process mapped area
+EXTERN	PSIRQ0		; Initiates a psi in this process
+EXTERN	PSIBIP		; Word is non-zero if any breaks are in progress
+EXTERN	RELOFN		; Release ofn routine
+EXTERN	SETMPG		; Map page subroutine
+EXTERN	TTFORK		; Lh has job of tty assignment
+EXTERN	TCI		; Tty type character in routine
+EXTERN	TCO		; Tty type character out routine
+
+; Bit definitions in sts (also filsts)
+
+FLG(OPENF,L,STS,400000)	; File is open
+FLG(READF,L,STS,200000)	; File is ok to read
+FLG(WRTF,L,STS,100000)	; File is ok to write
+FLG(XCTF,L,STS,040000)	; File is ok to execute
+FLG(RNDF,L,STS,020000)	; File is ok to reset pointer (i.e. not append)
+FLG(ASPF,L,STS,010000)	; File is ok to access as specified in p.t.
+FLG(CALLF,L,STS,004000)	; File is ok to call as a procedure
+FLG(LONGF,L,STS,002000)	; File is a long file
+FLG(EOFF,L,STS,001000)	; End of file if read attempted
+FLG(ERRF,L,STS,000400)	; Bytes read may be erroneous
+FLG(NAMEF,L,STS,000200)	; Name is associated with this jfn
+FLG(ASTF,L,STS,000100)	; A * was typed in
+FLG(ASGF,L,STS,000040)	; Jfn is being assigned
+FLG(HLTF,L,STS,000020)	; Halt if i-o error
+FLG(WNDF,L,STS,000010)	; A window page has been set up
+FLG(ENDF,L,STS,000004)	; File is past end of maximum length
+FLG(SIZF,L,STS,000002)	; Illegal to change size of byte
+FLG(FRKF,L,STS,000001)	; File is restricted to fork in lh(filver)
+
+; Device dispatch indices
+
+SET TPC,0
+USE TPC
+
+?DLUKD_:BLOCK 1		; Directory setup routine
+?NLUKD_:BLOCK 1		; Name lookup
+?ELUKD_:BLOCK 1		; Extension lookup
+?VLUKD_:BLOCK 1		; Version lookup
+?PLUKD_:BLOCK 1		; Protection insertion
+?ALUKD_:BLOCK 1		; Account insertion
+?SLUKD_:BLOCK 1		; Status insertion (temporary permanent etc)
+?OPEND_:BLOCK 1		; Open file
+?BIND_:	BLOCK 1		; Byte input
+?BOUTD_:BLOCK 1		; Byte output
+?CLOSD_:BLOCK 1		; Close file
+?REND_:	BLOCK 1		; Rename
+?DELD_:	BLOCK 1		; Delete file
+?DMPID_:BLOCK 1		; Dump mode input
+?DMPOD_:BLOCK 1		; Dump mode output
+?MNTD_:	BLOCK 1		; Mount device
+?DSMD_:	BLOCK 1		; Dismount device
+?INDD_:	BLOCK 1		; Initialize directory of device
+?MTPD_:	BLOCK 1		; Do mtape operation
+?GDSTD_:BLOCK 1		; Get device status
+?SDSTD_:BLOCK 1		; Set device status
+
+USE
+
+; Byte pointers to various fields of interest
+
+PBYTPO:	POINT 6,FILBYT(JFN),5	; Points to "p" of file byte pointer
+PBYTSZ:	POINT 6,FILBYT(JFN),11	; Points to "s" of file byte pointer
+
+; Save ac's before monitor call
+
+SAVAC:	ADD P,[XWD NSAC-1,NSAC-1]	; Make room for nsac ac's
+	JUMPGE P,MSTKOV
+	PUSH P,-<NSAC-1>(P)		; Move return to end
+	MOVEM NSAC-1,-1(P)		; Save last ac
+	MOVEI NSAC-1,-NSAC(P)		; Make blt pointer
+	BLT NSAC-1,-2(P)		; Blt onto stack
+	POPJ P,
+
+RESAC:	MOVSI NSAC-1,-NSAC(P)		; Blt from stack to 0
+	BLT NSAC-1,NSAC-1
+	POP P,-NSAC(P)			; Move return to new top
+	SUB P,[XWD NSAC-1,NSAC-1]	; Flush the room on the stack
+	POPJ P,
+
+PRINTX /
+FILE SYSTEM ASSEMBLED FOR BBN SYSTEM A
+/
+
+?SWPMP0_240		; First swappable monitor page
+?MAXSWP_261000		; Beginning of swpmon code
+INTERN	SWPMP0
+
+?DTAN__4		; 4 dectape units
+?MTAN__4		; 4 mag tape units 
+?LPTN__1		; Line printer exists
+?NETN__1		; We have a network
+?NSKT__=46		; Number of network sockets
+?NNETBF__=20		; Number of network buffers
+?LHOSTN__105		; Local host number for bbn
+?PLTN__1		; Plotter exists
+?PTPN__1		; Paper tape punch exists
+?PTRN__1		; Paper tape reader exists
+?NLINES__=73		; Number of scanner lines plus cty plus network tty's
+
+;2 DEC 71, 1651:
+
+;DEVICE INDEPENDENT DISK RELATED STUFF - D. MURPHY
+
+	INTERN SMDSKA,RLRMON,WRMON
+	INTERN DSKASN,DEDSK,DSKASA,DSKBTI,MAPBTF,SETBTF,DSKRBS
+	INTERN .GDSKC,DSKSP,.DSKOP,CHKBT
+	EXTERN SWPCOR
+
+;ROUTINES TO SAVE AND GET MON ON DISK
+
+;WRITE RES MON ON DISK
+
+WRMON:	MOVN 10,SWPCOR
+	MOVSI 10,1(10)
+	MOVEI 11,RLRCA		;START AT LOC 100
+WRMN1:	CAIGE 11,RLRMA+1000	;SKIP OVER PLACE WHERE RELOAD CODE LIVES
+	CAIGE 11,RLRMA
+	CAIA
+	ADDI 11,1000
+	MOVE 1,RLMX0(10)	;NEXT DISK ADDRESS IN HARDWARE FORMAT
+	MOVE 2,[1B14+1000]	;WRITE ONE PAGE
+	MOVEI 3,0(11)
+	MOVEI 4,0(3)
+	ANDI 4,777
+	SUBI 2,0(4)		;ADJUST WORD COUNT FOR PARTIAL PAGE
+	DSKOP
+	ANDCMI 11,777		;BUMP CORE ADDRESS TO NEXT PAGE
+	ADDI 11,1000
+	AOBJN 10,WRMN1
+	RET
+
+;BUILD TABLE OF HARDWARE FORMAT ADDRESSES - CALLED FROM POSTLD
+
+SMDSKA:	MOVSI 10,-PPRMPG
+	MOVE 11,[DSKRMA]	;LINEAR ADDRESS OF MON STORAGE AREA
+SMDS1:	MOVE 1,11
+	CALL CVDSK		;CONVERT TO HARDWARE FORMAT
+	MOVEM 1,RLMX0(10)	;BUILD TABLE
+	ADDI 11,NSECPG
+	AOBJN 10,SMDS1
+	MOVE 1,[XWD RLMX0,RLRMA]
+	BLT 1,RLRMA+777		;MOVE RELOAD ROUTINE TO RUN LOCATION
+	MOVE 1,400000
+	MOVE 2,[JRST MNBOOT]
+	SEVEC			;ENTRY VECTOR FOR RELOAD ROUTINE
+	MOVE 1,[1B0+1B17+SVNM]
+	HRROI 2,[ASCIZ /RLRMON.SAV/]
+	GTJFN
+	0
+	HRLI 1,400000
+	MOVE 2,[XWD 400,RLRMA]	;TENDMP WON'T LOAD 1 BLOCK FILE
+	SAVE			;MAKE SAVE FILE OF RELOAD ROUTINE
+	RET
+
+;PUT SWP MON ON DISK
+
+WRSWM:	MOVEI 7,SWPMP0
+	MOVE 10,[DSKSMA]
+DSWM1:	NOSKED
+	MOVE 1,10		;DISK ADDRESS
+	TLO 1,(1B0)		;FLAG LINEAR ADDRESS
+	MOVE 2,[1B14+1000]	;WRITE A PAGE
+	MOVEI 3,0(7)		;MMAP PAGE NUMBER
+	LSH 3,^D9
+	DSKOP
+	ADDI 10,NSECPG		;NEXT DISK ADDRESS
+	OKSKED
+	CAMGE 7,SWCEND
+	AOJA 7,DSWM1
+	RET
+
+;ASSIGN PAGE ON DISK
+;IF AC1=0, ASSIGN FROM TRACK WITH .GE. NMINFP FREE PAGES
+;OTHERWISE, TAKE AC1 AS DISK ADDRESS AND ASSIGN FROM SAME TRACK
+;  IF NOT FULL, OR FROM NEAREST TRACK WITH .GE. NMINFP FREE PAGES
+;IN EITHER CASE, IF NO TRACK HAS .GE. NMINFP FREE PAGES, THE TRACK
+;  WITH THE MAX NUMBER OF FREE PAGES WILL BE USED
+
+DSKASN:	SKIPN DISKP		;DISK ON SYSTEM?
+	JRST DRMASF		;NO, USE DRUM
+	CALL DSKLBT		;LOCK BIT TABLE AND WRITE-ENABLE IT
+	JUMPE 1,DSKA1		;FREE CHOICE
+	TLZ 1,DSKMSK		;FLUSH GARBAGE BITS
+	IDIVI 1,NSECTK		;SEPARATE INTO TRACK AND SECTOR
+	CAIG 1,HITRK		;REASONABLE TRACK?
+	CAIGE 1,LOTRK
+	JRST DSKA1		;NO, USE FREE CHOICE ALGORITHM
+	SKIPN DSKFCT(1)		;ANY PAGES FREE ON REQUESTED TRACK?
+	JRST DSKB1		;SORRY
+DSKA9:	SOS DSKFCT(1)		;ASSIGN PAGE THIS TRACK, REDUCE COUNT
+	PUSH P,1		;SAVE TRACK NUMBER
+	IMULI 1,NBWTK		;COMPUTE ADDRESS OF START OF BITS
+	SETZ 2,
+DSKA2:	SKIPE 3,DSKBTB(1)	;ANY FREE BLOCKS THIS WORD?
+	JRST DSKA3		;YES
+	ADDI 2,^D36		;THAT'S 36 PAGES
+	CAIL 2,NPGTK		;LOOKED AT BITS FOR ALL PAGES?
+	BUG(HLT,<DSK BIT TABLE FOULED, CAN'T FIND FREE PAGE ON TRACK WITH NON-0 COUNT>)
+	AOJA 1,DSKA2		;THERE MUST BE ONE THERE
+
+;DSKASN...
+
+DSKA3:	JFFO 3,.+1		;FIND FIRST FREE BLOCK
+	MOVE 3,BITS(4)		;MAKE IT NO LONGER FREE
+	ANDCAM 3,DSKBTB(1)
+	ADDI 2,0(4)		;PAGE NUMBER WITHIN THIS TRACK
+	IMULI 2,NSECPG		;CONVERT TO SECTOR NUMBER
+	POP P,1			;RECOVER TRACK NUMBER
+	IMULI 1,NSECTK		;COMPUTE LINEAR ADDRESS
+	ADD 1,2
+	TLO 1,DSKABT		;INDICATE DISK ADDRESS, NEWLY ASSIGNED
+DSKLVD:	SETZM NXTDMP		;REQUEST SWAP TO DISK
+DSKLV1:	AOS 0(P)		;SKIP RETURN
+DSKLEV:	PUSH P,1
+	PUSH P,2
+	PUSH P,7
+	MOVSI 1,WRITEB		;CLEAR WRITE BIT ON BITTBL PAGES
+	MOVEI 7,DSKFCT
+DSKUB1:	MOVEI 2,0(7)
+	LSH 2,-^D9		;PAGE NUMBER
+	ANDCAM 1,MMAP(2)	;CLEAR WRITE BIT IN MON MAP
+	ADDI 7,1000		;NEXT PAGE
+	CAIGE 7,DSKBTB+NTRACK*NBWTK
+	JRST DSKUB1
+	POP P,7
+	POP P,2
+	POP P,1
+	SETOM DSKBLK
+	OKSKED
+	RET
+
+;THE SEARCH FOR THE BEST TRACK
+
+DSKA1:	MOVEI 1,<HITRK-LOTRK>/2+LOTRK	;START IN MIDDLE FOR FREE CHOICE
+DSKB1:	MOVEI 6,NMINFP		;MIN FREE
+	SETZB 3,5
+	PUSH P,1		;SAVE ORIGINAL TRACK
+DSKA6:	CAML 5,DSKFCT(1)	;THIS TRACK HAVE MORE FREE THAN CURRENT?
+	JRST DSKA4		;NO
+	MOVE 5,DSKFCT(1)	;GET NEW MAX
+	MOVEI 4,0(1)		;REMEMBER WHAT TRACK HAD IT
+	CAIL 5,0(6)		;LARGE ENOUGH TO STOP?
+	JRST DSKA8		;YES
+DSKA4:	MOVE 1,0(P)		;KEEP LOOKING, GET ORIGINAL TRACK NO.
+	MOVN 3,3		;MAKE INCREMENT IN OPPOSITE DIRECTION
+	JUMPGE 3,DSKA5		;FORWARD AGAIN?
+DSKA7:	ADD 1,3			;COMPUTE NEXT TRACK TO LOOK AT
+	CAIGE 1,HITRK		;WITHIN USABLE RANGE?
+	CAIGE 1,LOTRK
+	JRST DSKA4		;NO, RECOMPUTE
+	JRST DSKA6		;GO LOOK
+
+DSKA5:	CAIGE 3,NTRACK		;LOOKED AT ALL TRACKS?
+	AOJA 3,DSKA7		;NO, GO LOOK AT NEXT PAIR
+	JUMPE 5,DSKAA1		;DISK ENTIRELY FULL!!
+DSKA8:	POP P,1			;CLEAR STACK
+	MOVEI 1,0(4)		;BEST TRACK FOUND
+	JRST DSKA9		;GO ASSIGN FROM IT
+
+;LOCK AND WRITE-ENABLE BIT TABLE
+;INVOKED ON ENTRY TO ANY ASSIGNMENT OR DEASSIGNMENT ROUTINE
+
+DSKLBT:	NOSKED
+	AOSE DSKBLK		;TRY TO LOCK TABLE
+	BUG(CHK,<DISK BIT TABLE ALREADY LOCKED AT DSKLBT>)
+	PUSH P,1
+	PUSH P,2
+	PUSH P,7
+	MOVSI 1,WRITEB
+	MOVEI 7,DSKFCT
+DSKLB1:	MOVEI 2,0(7)
+	LSH 2,-^D9
+	IORM 1,MMAP(2)		;PUT ON WRITE BIT IN MON MAP
+	ADDI 7,1000
+	CAIGE 7,DSKBTB+NTRACK*NBWTK
+	JRST DSKLB1
+	POP P,7
+	POP P,2
+	POP P,1
+	RET
+
+;ASSIGN SPECIFIC DISK ADDRESS
+
+DSKASA:	PUSH P,1		;SAVE IT
+	CALL DSKGX		;GET INDICES, ETC.
+	JRST DSKAA1		;BAD ADDRESS
+	TDNN 3,DSKBTB(1)	;PAGE FREE?
+	JRST DSKAA1		;SORRY
+	SOS DSKFCT(2)
+	ANDCAM 3,DSKBTB(1)	;ASSIGN IT
+	POP P,1
+	JRST DSKLVD		;RETURN GOOD
+
+DSKAA1:	POP P,1
+	JRST DSKLEV		;RETURN NO-SKIP
+
+;DEASSIGN DISK ADDRESS
+
+DEDSK:	CALL DSKGX		;GET INDICES, ETC.
+	JRST DEDSK1		;BAD ADDRESS
+	TDNE 3,DSKBTB(1)	;PAGE ASSIGNED?
+	JRST DEDSK1		;NO
+	IORM 3,DSKBTB(1)	;UNASSIGN IT
+	AOS DSKFCT(2)
+	SETZM NXTDMP
+	JRST DSKLEV		;RETURN
+
+DEDSK1:	BUG(CHK,<ATTEMPT TO DEASSIGN BAD OR UNASSIGNED DISK ADDRESS>)
+	JRST DSKLEV
+
+;COMPUTE INDEX INTO BIT TABLE
+
+DSKGX:	CALL DSKLBT		;LOCK AND WRITE-ENABLE BIT TABLE
+	TLZ 1,DSKMSK		;FLUSH RANDOM BITS
+	IDIVI 1,NSECTK		;SEPARATE INTO TRACK AND SECTOR
+	CAIGE 1,HITRK		;LEGAL TRACK NUMBER?
+	CAIGE 1,LOTRK
+	RET			;NO, RETURN NO-SKIP
+	CAIL 2,NPGTK*NSECPG	;WITHIN ASSIGNABLE PORTION OF TRACK?
+	RET			;NO
+	PUSH P,1		;SAVE TRACK NUMBER
+	IMULI 1,NBWTK		;INDEX TO FIRST WORD OF BITS
+	IDIVI 2,NSECPG		;CONVERT TO PAGE NUMBER
+	IDIVI 2,^D36		;GET INDEX TO BIT WORD WITHIN TRACK
+	ADDI 1,0(2)
+	POP P,2			;RECOVER TRACK NUMBER
+	MOVE 3,BITS(3)		;GET BIT FOR THIS PAGE
+	AOS 0(P)
+	RET
+
+;DISK ASSIGNMENT CONTROL JSYS
+
+	INTERN .DSKAS
+
+; ADR = ASSIGN
+; ADR+1B0 = DEASSIGN
+; ADR+1B1 = ASSIGN FREE
+
+.DSKAS:	JSYS MENTR
+	MOVE 4,CAPENB		;REQUIRES WHEEL OR OPERATOR
+	TRNN 4,WHEEL+OPER
+	JRST WHEELX
+	TLZE 1,(1B0)		;DEASSIGN?
+	JRST [	CALL DEDSK	;YES
+		JRST MRETN]
+	MOVEI 2,DSKASA		;DO SPECIFIC ASSIGNMENT
+	TLZE 1,(1B1)		;UNLESS BIT 1,
+	MOVEI 2,DSKASN		;IN WHICH CASE TO FREE ASSMT
+	CALL 0(2)		;DO WHICHEVER
+	JRST MRETN		;BAD RETURN, NO INFORMATION
+	UMOVEM 1,1		;GOOD RETURN, AND VALUE OF AC1
+	AOS 0(P)
+	JRST MRETN
+
+;READ BADSPOTS FROM FILE
+
+DSKRBS:	MOVEI 1,101
+	HRROI 2,[ASCIZ /
+READ BADSPOTS FROM FILE: /]
+	SETZ 3,
+	SOUT
+	MOVSI 1,120003
+	MOVE 2,[XWD 100,101]
+	GTJFN
+	JRST DSKRBS
+	MOVE 2,[XWD 070000,200000]
+	OPENF
+	JRST DSKRBS
+	MOVE 16,1		;SAVE JFN
+DSKRB1:	MOVEI 1,0(16)		;RECOVER JFN
+	MOVEI 3,^D8
+	NIN			;READ OCTAL BADSPOT H'WARE FORMAT
+	JRST DSKRB3		;DIDNT GET A NUMBER
+	MOVE 7,2		;SAVE THE NUMBER
+DSKRB4:	BKJFN
+	JRST DSKRB2		;CAN'T SEE TERMINATOR, ASSUME VALID
+	BIN
+	CAIN 2,"Z"-100		;CONTROL-Z?
+	JRST DSKRB6		;FOR TTY MEANS MAKE LIKE EOF
+	CAIN 2,15
+	BIN
+	CAIE 2,EOL
+	CAIN 2,12
+	JRST DSKRB2		;OK IF TERM WITH CR OR EOL
+	MOVEI 1,EOL
+	PBOUT
+	JRST DSKRB1		;ANYTHING ELSE ABORTS
+
+DSKRB2:	JUMPE 7,DSKRB1		;IF NOT NUMBER
+	MOVE 1,7
+	CALL CDSKVA		;CONVERT TO INTERNAL ADDRESS
+	CAML 1,[DSKSWA]		;IN SWAPPING AREA?
+	JRST DSKRB7		;YES, ASSIGN IN OTHER BIT TABLE
+	CALL DSKASA		;ASSIGN IT
+	JRST DSKRB5		;ALREADY ASSIGNED
+	JRST DSKRB1
+
+DSKRB3:	GTSTS
+	SETZ 7,
+	TLNN 2,(1B8)		;EOF?
+	JRST DSKRB4		;NO
+DSKRB6:	CLOSF
+	JFCL
+	MOVEI 1,DSKFCT
+	MRPAC			;READ STATUS OF BIT TABLE PAGE
+	TLNE 2,(1B10)		;PRIVATE?
+	CALL SETBTF		;MAP BIT TABLE INTO FILE
+	RET
+
+DSKRB5:	MOVEI 1,101
+	MOVE 2,7		;ADDRESS
+	MOVEI 3,10		;IN OCTAL
+	NOUT			;IS PRINTED
+	BUG(CHK,<DSKRBS - BAD RETURN FROM NOUT>)
+	HRROI 2,[ASCIZ / ALREADY MARKED
+/]
+	SETZ 3,
+	SOUT
+	JRST DSKRB1
+
+DSKRB7:	SKIPE DRUMP		;SWAPPING ON DISK
+	JRST DSKRB1		;NO, IGNORE
+	SUB 1,[DSKSWA]		;REMOVE OFFSET
+	IDIVI 1,NSECPG		;CONVERT SECTORS TO PAGES
+	CAIL 1,NDST		;BEYOND SWAP AREA?
+	JRST DSKRB1		;YES, IGNORE
+	IDIVI 1,DRMSEC		;CONVERT TO BAND AND SECTOR
+	LSH 1,6
+	IORI 1,0(2)
+	CALL ASDRMS		;ASSIGN IN DRUM BIT TABLE
+	JRST DSKRB5		;ALREADY ASSIGNED
+	JRST DSKRB1
+
+;DISK USEAGE STATISTICS
+
+DSKSP:	MOVE 3,[XWD LOTRK-HITRK,LOTRK]
+	SETZB 1,2		;SETUP TO EXAMINE ALL TRACKS
+DSKSP1:	MOVE 4,DSKFCT(3)	;FREE COUNT THIS TRACK
+	ADD 2,4			;ACCUMULATE SUM OF FREE PAGES
+	SUBI 4,NPGTK		;NEGATIVE NUMBER USED THIS TRACK
+	SUB 1,4			;ACCUMULATE SUM OF USED PAGES
+	AOBJN 3,DSKSP1
+	RET
+
+.GDSKC:	JSYS MENTR		;JSYS ENTRY
+	CALL DSKSP
+	UMOVEM 1,1		;PAGES USED
+	UMOVEM 2,2		;PAGES FREE
+	JRST MRETN
+
+;DISK OPERATE JSYS - USER UTILITY DISK HANDLE
+
+.DSKOP:	JSYS MENTR
+	MOVE 1,CAPENB
+	TRNN 1,WHEEL+OPER
+	JRST WHEELX		;MUST BE WHEEL OR OPER
+	NOINT
+	ANDI 2,3777		;CHECK FOR CROSS OF PAGE BOUNDARY
+	ADDI 2,-1(3)			;CORE ADR + WORD COUNT
+	XOR 2,3
+	TRNE 2,777000		;SAME PAGE?
+	JRST [	MOVEI 1,4000	;NO, GIVE IPO ERROR
+		UMOVEM 1,1
+		JRST MRETN]
+	HRRZS 1,3		;ADDRESS
+	UMOVE 2,0(1)		;REF THE PAGE TO ASSIGN IT
+	JSP 2,.+1		;GET PC WORD
+	TLNN 2,(1B7)		;TEST CALL FROM MON BIT
+	HRLI 1,(1B0)		;CALLED FROM USER, INDICATE IN ADDRESS
+	CAIGE 3,PPRMA		;RESIDENT MONITOR ADDRESS?
+	JUMPGE 1,[PUSH P,[0]	;YES, FLAG NO PAGE TO UNLOCK
+		LSH 1,-^D9	;PAGE NUMBER
+		JRST DSKOP1]
+	CALL FPTA		;GET PTN.PN
+	PUSH P,1
+	CALL MLKPG		;LOCK THE PAGE
+DSKOP1:	PUSH P,1
+	UMOVE 1,1		;GET USERS ADDRESS
+	TLZE 1,(1B0)		;HARDWARE ADDRESS?
+	CALL CVDSK		;NO, CONVERT IT
+	POP P,3
+	LSH 3,^D9		;CONVERT PAGE NUMBER TO ADDRESS
+	UMOVE 4,3		;USERS ADDRESS
+	ANDI 4,777
+	IORI 3,0(4)		;FOR STARTING NOT AT BEGNG OF PAGE
+	UMOVE 2,2		;OTHER ARGS
+	CALL UDSKIO
+	UMOVEM 1,1		;RETURN ERROR BITS
+	POP P,1			;RECOVER PTN.PN OF LOCKED PAGE
+	JUMPE 1,MRETN		;RES MON IF 0
+	CALL MULKPG		;UNLOCK IT
+	JRST MRETN
+
+;CHECK CONSISTENCY OF BIT TABLE
+
+CHKBT:	CALL DSKLBT
+	MOVE 7,[XWD LOTRK-HITRK,LOTRK]
+CHKB5:	MOVEI 6,0(7)		;TRACK
+	IMULI 6,NBWTK		;COMPUTE OFFSET INTO TABLE
+	MOVEI 4,NPGTK		;NUMBER PAGES PER TRACK
+	SETZ 5,			;WILL COUNT FREE PAGES FOUND
+CHKB2:	MOVE 1,DSKBTB(6)	;GET WORD OF BITS
+	MOVNI 2,^D36		;36 OF THEM...
+CHKB1:	TDNE 1,BITS+^D36(2)	;THIS PAGE FREE?
+	AOJ 5,			;YES, COUNT IT
+	SOJLE 4,CHKB3		;STOP IF CHECKED ALL PAGES THIS TRACK
+	AOJL 2,CHKB1		;LOOP OVER BITS IN WORD
+	AOJA 6,CHKB2		;LOOP OVER WORDS
+
+CHKB3:	CAME 5,DSKFCT(7)	;COUNT CORRECT AS REMEMBERED?
+	JRST CHKB4		;NO
+CHKB6:	AOBJN 7,CHKB5		;YES, LOOP OVER TRACKS
+	JRST DSKLEV		;UNLOCK BIT TABLE AND RETURN
+
+;REPORT INCONSISTENCY
+
+CHKB4:	EXCH 5,DSKFCT(7)	;STORE NEW COUNT, GET OLD ONE
+	CALL DSKLEV		;UNLOCK BIT TABLE, ETC.
+	HRROI 1,[ASCIZ /
+BT INCONSISTENCY
+ TRK CNT BITS
+/]
+	PSOUT
+	MOVEI 1,101
+	MOVE 3,[1B2+4B17+10]	;OCTAL NUMBERS IF 4 CHAR FIELD
+	MOVEI 2,0(7)
+	NOUT			;TRACK
+	BUG(HLT,<CHKBT - BAD RETURN FROM NOUT>)
+	MOVE 2,5
+	ANDI 2,777		;IN CASE REALLY FOULED UP
+	NOUT			;OLD COUNT
+	BUG(HLT,<CHKBT - BAD RETURN FROM NOUT>)
+	MOVE 2,DSKFCT(7)
+	NOUT			;NEW COUNT
+	BUG(HLT,<CHKBT - BAD RETURN FROM NOUT>)
+	HRROI 1,[ASCIZ / - CORRECTED
+/]
+	PSOUT
+	CALL DSKLBT		;RE-LOCK BIT TABLE
+	JRST CHKB6		;CONTINUE SCAN
+
+;BIT TABLE FILE LOGIC
+
+;PUT BIT TABLE PAGES IN FILE
+
+SETBTF:	MOVSI 1,(1B17)	;SHORT FORM
+	CALL OPNBTF		;OPEN (CREATE) FILE
+	BUG(HLT,<SETBTF - FAILED TO OPEN BIT TABLE FILE>)
+	MOVEI 7,DSKFCT		;ADDRESS OF FIRST PAGE
+	SETZ 6,			;MAP INDEX
+SETBF1:	CAIL 7,DSKBTB+NTRACK*NBWTK	;END OF BIT TABLE?
+	JRST SETBF2		;YES, DONE
+	MOVS 1,DBTJFN
+	HRRI 1,0(6)
+	CALL JFNOFN		;CONVERT TO OFN
+	BUG(HLT,<SETBTF - JFNOFN ON BIT TABLE FILE FAILED>)
+	MOVE 2,1
+	MOVEI 1,0(7)
+	CALL FPTA		;CONVERT MON ADDRESS TO PTN.PN
+	MOVSI 3,RWX
+	CALL SETPT		;PUT PAGE IN FILE
+	ADDI 7,1000
+	AOJA 6,SETBF1
+
+SETBF2:	MOVE 1,DBTJFN
+	CLOSF			;CLOSE DER FILE
+	JFCL
+	RET
+
+;MAP BIT TABLE FILE INTO MON SPACE
+
+MAPBTF:	MOVSI 1,(1B2+1B17)	;OLD FILE, SHORT FORM
+	CALL OPNBTF		;OPEN THE FILE
+	RET			;FILE DIDN'T OPEN
+	MOVEI 7,DSKFCT
+	SETZ 6,
+MAPBF1:	CAIL 7,DSKBTB+NTRACK*NBWTK
+	JRST SETBF2
+	MOVEI 1,0(6)		;FILE PAGE NUMBER
+	HRL 1,DBTJFN
+	CALL JFNOFN
+	BUG(HLT,<MAPBTF - JFNOFN ON BIT TABLE FILE FAILED>)
+	MOVEI 2,0(7)
+	HRLI 2,READB
+	CALL SETMPG
+	ADDI 7,1000
+	AOJA 6,MAPBF1
+
+;OPEN BIT TABLE FILE
+
+OPNBTF:	HRRI 1,1		;VERSION 1 ALWAYS
+	HRROI 2,BTNAM
+	GTJFN
+	RET
+	MOVEM 1,DBTJFN
+	MOVE 2,[^D36B5+1B19+1B20]	;36BIT READ AND WRITE
+	OPENF
+	BUG(HLT,<FAILED TO OPEN DSK BIT TABLE FILE>)
+	AOS 0(P)
+	RET
+
+BTNAM:	ASCIZ /DSK:<SYSTEM>DSKBTTBL/
+
+;INITIALIZE BIT TABLE
+
+DSKBTI:	SKIPN DISKP		;DISK ON SYSTEM?
+	RET			;NO
+	MOVSI 2,-NTRACK
+	MOVEI 1,NPGTK
+	MOVEM 1,DSKFCT(2)	;STORE FULL COUNT FOR EACH TRACK
+	AOBJN 2,.-1
+	SETZ 2,
+DSKAI1:	SETOM DSKBTB(2)		;INIT ONE TRACK OF BITS
+	SUBI 1,^D36
+	CAILE 1,^D36		;LAST WORD?
+	AOJA 2,DSKAI1
+	MOVN 1,BITS-1(1)	;LAST WORD PARTIALLY FULL
+	MOVEM 1,DSKBTB+1(2)
+	MOVE 1,[XWD DSKBTB,DSKBTB+NBWTK]
+	BLT 1,DSKBTB+NTRACK*NBWTK-1	;REPLICATE FOR ALL TRACKS
+	RET
+************************************************************
+
+	BEGINP	DISC		R.S.TOMLINSON	22 SEPTEMBER 1971	0850:
+
+INTERN	OFNJFN,JFNOFN
+EXTERN	SPTH		; Contains disc addresses for ofn's
+EXTERN	NSKED
+EXTERN	RSKED
+EXTERN	NXTDMP		; Zero to cause dump of open files
+EXTERN	DIDSCA		; Disc address for di
+EXTERN	DIDSCI		; Initial disc address for di
+
+DEFINE	NOSKED<AOS NSKED>
+DEFINE	OKSKED<SOSG NSKED
+		XCT RSKED>
+
+LS(CLASS)		; Class field counter
+
+USE SWAPPC
+
+^DSKDTB:MDDDIR
+	MDDNAM
+	MDDEXT
+	MDDVER
+	INSPRT
+	INSACT
+	DSKINS		; Insert status
+	DSKOPN
+	DSKSQI
+	DSKSQO
+	DSKCLZ
+	DSKREN
+	DSKDEL
+	CPOPJ
+	CPOPJ
+	CPOPJ
+	CPOPJ
+	CPOPJ
+	CPOPJ
+	CPOPJ		; Device status read
+	CPOPJ		; Device status set
+
+DSKDEL:	PUSHJ P,GETFDB
+	JRST SKPRET
+	PUSH P,A
+	HRLI A,WRTF		;TO DELETE MUST HAVE WRITE ACCESS
+	PUSHJ P,ACCCHK
+	JRST [	POP P,A
+		UNLOCK DIRLCK
+		MOVEI A,DELFX1
+		POPJ P,]
+	POP P,A
+	MOVSI B,FDBDEL
+	IORB B,FDBCTL(A)
+	TLNE B,FDBPRM
+	SETZM FDBSIZ(A)		; Zero size when deleting permanent files
+	UNLOCK DIRLCK
+	JRST SKPRET
+
+DSKINS:	PUSHJ P,GETFDB
+	BUG(HLT,<DSKINS: GETFDB FAILURE.>)
+	MOVSI B,FDBTMP
+	IORM B,FDBCTL(A)
+	UNLOCK DIRLCK
+	POPJ P,
+
+; Disk open routine
+; Call:	LH(STS)	; Access desired
+;	JFN	; Job file number
+;	PUSHJ P,DSKOPN
+; Return
+;	+1	; Cannot open, reason in a
+;	+2	; Success
+
+DSKOPN:	PUSHJ P,GETFDB		; Get pointer to fdb
+	JRST [	MOVEI A,OPNX2
+		POPJ P,]	; File has been deleted
+	PUSH P,A
+	HLL A,STS
+	PUSHJ P,ACCCHK		; Check access
+	JRST [	UNLOCK DIRLCK	; Access not allowed
+		SUB P,[XWD 1,1]
+		POPJ P,]
+	POP P,A
+	TEST(CE,RNDF)		; Change flag from "append" to "random"
+	TEST(O,WRTF)		; And if append, allow writing
+	TRNE STS,17
+	JRST [MOVEI A,OPNX14
+		UNLOCK DIRLCK
+		POPJ P,]	; Illegal mode
+	TEST(NN,WRTF)
+	JRST OPENF1		; Not write
+	TRNE STS,1B27
+	JRST OPENF0
+	MOVE B,JOBNO
+	HRRZ B,JOBDIR(B)
+	HRLM B,FDBUSE(A)	; Save in fdb
+	PUSH P,A
+	GTAD			; Get today
+	MOVE B,A
+	POP P,A
+	SKIPL B
+	MOVEM B,FDBWRT(A)	; Save as date of last write
+	MOVSI B,1
+	ADDM B,FDBCNT(A)	; Count number of writes
+
+OPENF0:	SKIPE B,FDBADR(A)	; Get disc address
+	JRST OPENF1
+	PUSH P,A		; No disc address, must get one
+	MOVEI A,0
+	PUSHJ P,DSKASN		; Assign a disc address
+	JRST [	POP P,A
+	MOVEI A,OPNX10
+		UNLOCK DIRLCK
+		POPJ P,]
+	AOS B,CLASS
+	ANDI B,777
+	MOVEM B,CLASS
+	CAIG B,2
+	JRST .-4
+	ROT B,4
+	TLO A,(1B3)(B)
+	MOVE B,A
+	POP P,A
+	MOVEM B,FDBADR(A)
+OPENF1:	MOVE B,FDBCTL(A)
+	TLNE B,FDBNXF		; Does this file exist
+	TEST(NE,WRTF)		; Or are we writing?
+	JRST OPENF4		; Yes ok.
+OPENF8:	MOVEI A,OPNX2		; No, cannot be opend
+	UNLOCK DIRLCK
+	POPJ P,
+
+OPENF4:	SKIPN FDBADR(A)
+	 JRST OPENF8
+	MOVEI B,0
+	TEST(NE,RNDF)
+	TLNE STS,READF!XCTF!ASPF
+	MOVE B,FDBSIZ(A)	; Get size of file
+	MOVEM B,FILLEN(JFN)	; To open file length
+	MOVEM B,FILBYN(JFN)
+	TEST(NE,RNDF)
+	SETZM FILBYN(JFN)
+	PUSH P,A
+	LDB A,PFILBS		; Get byte size
+	SKIPN A
+	MOVEI A,=36
+	LDB B,PBYTSZ
+	CAILE B,=36
+	JRST [	POP P,A
+		MOVEI A,SFBSX2
+		JRST OPENF6]
+	PUSHJ P,NFBSZ
+	GTAD			; Get now
+	POP P,B
+	TRNE STS,1B27
+	JRST OPENF9
+	SKIPL A
+	MOVEM A,FDBREF(B)	; As last reference date
+	AOS FDBCNT(B)		; Count references
+
+OPENF9:	MOVE A,FDBADR(B)
+	MOVE C,FDBCTL(B)
+	TRNE STS,1B25		; Thawed access?
+	TLO A,(1B2)		; Yes
+	TEST(NE,WRTF)
+	TLO A,(1B1)
+	TLNE C,FDBLNG
+	JRST OPNLNG		; Long files are opened peculiarly
+	TLNN A,(1B3)
+	JRST OPENF2		; Yes
+OPENF7:	PUSH P,B
+	PUSHJ P,ASOFN		; Get an ofn for the file
+	JRST OPENF5
+	HRLM A,FILOFN(JFN)
+	PUSH P,A
+	PUSHJ P,ASGPAG		; Get a free page of memory
+	JRST [	HLRZ A,FILOFN(JFN)
+		PUSHJ P,RELOFN
+		SUB P,[XWD 2,2]
+		MOVEI A,OPNX18
+		JRST OPENF6]
+	MOVE B,A
+	EXCH A,(P)
+	HRLI B,140000
+	PUSHJ P,SETMPG		; Map the index block
+	POP P,A
+	HRLZI B,(A)
+	HRRI B,1(A)
+	SETZM (A)
+	BLT B,777(A)		; Zero the index block
+	POP P,B
+	MOVSI C,(1B3)
+	ANDCAM C,FDBADR(B)	; Clear new ib bit
+	MOVSI C,FDBNXF
+	TRNE STS,1B25
+	ANDCAM C,FDBCTL(B)	; Clear non-existent bit for thawed
+	HRRZ B,A
+	MOVEI A,0
+	PUSH P,B
+	PUSHJ P,SETMPG		; Unmap the page
+	POP P,A
+	PUSHJ P,RELPAG		; Return to free pool
+	SETZM NXTDMP
+	JRST OPENF3
+
+OPENF2:	PUSHJ P,ASOFN		; Get an of for this file
+	JRST OPENF6
+	HRLM A,FILOFN(JFN)
+OPENF3:	TEST(O,WNDF)		; No windows yet, and allow size change
+	UNLOCK DIRLCK
+	OKINT
+	JRST SKPRET
+
+OPENF5:	POP P,B
+OPENF6:	UNLOCK DIRLCK
+	OKINT
+	POPJ P,
+
+OPNLNG:	PUSHJ P,ASOFN		; Assign ofn for pt table
+	JRST OPENF6		; Busy
+	HRRM A,FILOFN(JFN)	; Save ofn
+	PUSHJ P,ASGPAG		; Assign a page to map the pt table
+	JRST OPNLN1		; None available
+	HRRM A,FILLFW(JFN)	; Save long file pt location
+	MOVE B,A
+	HRLI B,140000
+	HRRZ A,FILOFN(JFN)
+	PUSHJ P,SETMPG		; Map the pt table
+	MOVE C,A
+	SKIPN A,(B)
+	BUG(HLT,<OPNLNG: NO PAGE TABLE 0 IN LONG FILE.>)
+	HLLZ C,SPTH(C)
+	TLZ C,760017
+	TLZ A,40
+	IOR A,C
+	PUSHJ P,ASOFN		; Assign an ofn for it
+	JRST OPNLN2		; This should happen rarely (if at all)
+	HRLM A,FILOFN(JFN)	; Save as ofn of current pt
+	TEST(O,LONGF)
+	JRST OPENF3		; Set bits and exit
+
+OPNLN2:	PUSH P,A		; Save error code
+	HRRZ B,FILLFW(JFN)
+	MOVEI A,0
+	PUSHJ P,SETMPG
+	HRRZ A,B
+	PUSHJ P,RELPAG
+	JRST OPNLN3
+
+OPNLN1:	PUSH P,[OPNX17]
+OPNLN3:	HRRZ A,FILOFN(JFN)
+	PUSHJ P,RELOFN
+	POP P,A
+	JRST OPENF6
+
+; Disc sequential input
+; Call:	JFN	; Job file number
+;	STS	; File status
+;	FILBYT ETC. SETUP PROPERLY FOR NEXT BYTE
+;	PUSHJ P,DSKSQI
+; Returns +1 with a byte in a
+
+DSKSQI:	MOVE B,FILBYN(JFN)
+	CAML B,FILLEN(JFN)
+	JRST [	TEST(O,EOFF)
+		POPJ P,]
+	TEST(NE,WNDF)		; Has window been set up yet?
+	PUSHJ P,SETWND		; No, set it up
+	SOSGE FILCNT(JFN)
+	PUSHJ P,NEWWNI
+	ILDB A,FILBYT(JFN)	; Get next byte
+	AOS FILBYN(JFN)		; Count bytes
+	POPJ P,
+
+NEWWNI:	PUSHJ P,NEWWND
+	SOS FILCNT(JFN)
+	POPJ P,
+
+; Disc sequential output
+; Call:	JFN	; Job file number
+;	STS	; File status
+;	FIL BYT ETC SET UP
+;	A	; A byte
+;	PUSHJ P,DSKSQO
+
+DSKSQO:	TEST(NE,WNDF)		; Has a window been set up?
+	PUSHJ P,SETWND		; No, set it up
+	PUSH P,A
+	SOSGE FILCNT(JFN)
+	PUSHJ P,NEWWNI
+	POP P,A
+	IDPB A,FILBYT(JFN)	; Deposit the byte
+	AOS B,FILBYN(JFN)	; Count bytes
+	CAMGE B,FILLEN(JFN)	; Beyond the end?
+	POPJ P,			; No, done.
+	TEST(O,EOFF)		; Yes, set eoff
+	MOVEM B,FILLEN(JFN)	; Update new length
+	POPJ P,
+
+; Set up a window for a file
+; Call:	PUSHJ P,SETWND
+
+SETWND:	PUSH P,A
+	PUSHJ P,ASGPAG		; Assign a job page
+	JRST [	TEST(O,ERRF)
+		POP P,A
+		POP P,0(P)	; Pop return off stack
+		POPJ P,]	; And return one level back
+	HRRZM A,FILWND(JFN)
+	TEST(Z,WNDF)
+	PUSHJ P,NEWWND		; Set up window pointers
+	POP P,A
+	POPJ P,
+
+; Set up pointers to a file
+; Call:	FILBYN(JFN)	; File byte number
+;	FILBYT(JFN)	; Byte size bits
+;	LH(FILWND(JFN))	; Current page number
+;	RH(FILWND(JFN))	; File window location
+;	ETC.
+;	PUSHJ P,NEWWND
+
+^NEWWND:TEST(NE,WNDF)
+	POPJ P,			; Do nothing if no window yet
+	PUSH P,A
+	LDB A,PBYTSZ		; Get current byte size
+	MOVEI C,=36
+	IDIV C,A		; Get bytes per word
+	MOVE B,FILBYN(JFN)	; Get current byte number
+	CAMLE B,FILLEN(JFN)
+	MOVEM B,FILLEN(JFN)
+	IDIV B,C		; Current word in b, offset in b+1
+	IMUL B+1,A		; Offset times byte size
+	MOVN C,B+1
+	ADDI C,=36
+	DPB C,PBYTPO		; Yields byte pointer position
+	MOVE C,B
+	PUSH P,C		; Save for later
+	LSH C,-9		; Get page number
+	HLRZ B,FILWND(JFN)	; Get current page number
+	TRNE B,777
+	CAME B,C
+	JRST NEWWNA		; Need to set up a new window
+NEWWNZ:	POP P,C			; Restore word number
+	ANDI C,777		; Get relative to page origin
+	HRRZ B,FILWND(JFN)
+	IOR B,C			; Get absolute address
+	HRRM B,FILBYT(JFN)	; Put into byte pointer
+	LDB A,PBYTSZ		; Get current byte size
+	MOVEI C,=36
+	IDIV C,A		; Get bytes per word
+	IMULI C,1000		; Get bytes per page
+	MOVEM C,FILCNT(JFN)	; Save as count
+	MOVN B,FILBYN(JFN)	; Get byte number
+	IDIV B,C		; Remainder is negative
+	ADDM B+1,FILCNT(JFN)	; Adjust if not at beginning of page
+	POP P,A			; Restore a
+	POPJ P,
+
+NEWWNA:	HRRZ A,C
+	PUSHJ P,JFNOF1		; Get ofn.pn for this page
+	JRST [	TEST(O,ENDF)
+		POP P,C
+		POP P,A
+		POPJ P,]
+	TEST(NN,ASPF)		; If access is ass specified?
+	JRST NEWWN1
+	PUSH P,A
+	PUSHJ P,MRPACS		; Read access of the page
+	LSH A,1			; Shift bits into position for sts
+	TLZ STS,READF!WRTF!XCTF	; Change access to that of this page
+	AND A,[XWD READF!WRTF!XCTF,0]
+	OR STS,A		; Change file access to that of the page
+	POP P,A
+NEWWN1:	HRRZ B,FILWND(JFN)
+	HRLI B,160000
+	PUSHJ P,SETMPG		; Map the the page
+	MOVE C,(P)
+	LSH C,-9
+	HRLM C,FILWND(JFN)
+	JRST NEWWNZ		; And finish up
+
+; New page table for long file
+
+NEWLFP:	PUSH P,C		; Save pt number
+	TEST(NE,LONGF)		; Is this file already long?
+	JRST NEWLFT		; Yes, no sweat
+	PUSHJ P,GETFDB		; No, let's get the fdb
+	BUG(HLT,<NEWLFP: GETFDB FAILURE FOR OPEN FILE.>)
+	MOVE C,FDBCTL(A)	; And see if it's become long
+	TLNE C,FDBLNG		; Since we opened it
+	JRST NEWFLL		; Yes, it has
+	PUSH P,A		; No. save fdb location
+	MOVE A,FDBADR(A)	; Get disc address of pt 0
+	PUSHJ P,DSKASN		; Assign a page for the pt table
+	BUG(HLT,<NEWLFP: DSKASN FAILURE IN GETTING NEW PAGE TABLE.>)
+	HLRZ B,FILOFN(JFN)	; Get ofn of current pt
+	HLLZ C,SPTH(B)		; Get class field and write and thawed
+	TLZ C,460017
+	IOR A,C
+	MOVSI C,300000
+	ANDCAM C,SPTH(B)	; Clear write and thaw bits
+	PUSH P,A		; Save it for later
+	TLO A,(1B3)		; Mark as new
+	PUSHJ P,NEWLFS		; Assign ofn etc
+	HRLZ A,B
+	HRRI A,1(B)		; Prepare to clear the page
+	SETZM (B)
+	BLT A,777(B)
+	POP P,C			; Get new disc address
+	POP P,A			; And fdb location
+	TLZ C,300000
+	EXCH C,FDBADR(A)	; Store new disc address, get old
+	TLZ C,017760		; No class fields in pt table
+	TLO C,40
+	MOVEM C,(B)		; Store old disc address as pt 0
+	MOVSI D,FDBLNG
+	IORM D,FDBCTL(A)	; Mark fdb as long file
+	JRST NEWLF1		; Continue with rest
+
+NEWLFS:	PUSHJ P,ASOFN		; Assign ofn for new disc address
+	BUG(HLT,<NEWLFP: ASOFN FAILURE AT INOPPORTUNE TIME.>)
+	HRRM A,FILOFN(JFN)	; Save
+	PUSHJ P,ASGPAG		; Get a page to map the pt table
+	BUG(HLT,<NEWLFP: ASGPAG FAILURE AT INOPPORTUNE TIME.>)
+	HRRM A,FILLFW(JFN)	; Store location of pt table
+	MOVE B,A
+	HRLI B,140000
+	HRRZ A,FILOFN(JFN)
+	JRST SETMPG		; Map the pt table
+
+NEWFLL:	MOVE A,FDBADR(A)	; File became long since we opened
+	PUSHJ P,NEWLFS		; Map the pt table
+NEWLF1:	UNLOCK DIRLCK		; Finished with directory
+	OKINT
+	TEST(O,LONGF)
+
+NEWLFT:	HRRZ B,FILLFW(JFN)	; Get location of pt table
+	ADD B,(P)		; Offset by pt # to get disc addr
+	NOSKED			; To prevent others from tampering
+	SKIPE A,(B)		; Is a disc address assigned for this pt
+	JRST NEWLFA		; Yes, use it
+	PUSH P,B		; Save location in pt table
+	HLRZ A,FILOFN(JFN)	; Get ofn of pt table
+	MOVE A,SPTH(A)		; Get disc address of pt table
+	PUSHJ P,DSKASN		; Get a new disc address
+	BUG(HLT,<NEWLFT: INOPPORTUNE FAILURE OF DSKASN.>)
+	PUSH P,A
+	HLRZ A,FILOFN(JFN)
+	HLLZ A,SPTH(A)		; Get class bits
+	TLZ A,760017
+	IOR A,(P)
+	TLO A,(1B3)
+	PUSHJ P,ASOFN		; Assign ofn for new ib
+	BUG(HLT,<NEWLFT: INOPPORTUNE FAILURE OF ASOFN.>)
+	PUSH P,A
+	PUSHJ P,ASGPAG
+	BUG(HLT,<NEWLFT: INOPPORTUNE FAILURE OF ASGPAG.>)
+	MOVE B,A
+	HRLI B,140000
+	MOVE A,(P)
+	PUSHJ P,SETMPG		; Map the pt
+	HRLZ A,B
+	HRRI A,1(B)
+	SETZM (B)
+	BLT A,777(B)		; Clear pt
+	MOVEI A,0
+	PUSHJ P,SETMPG
+	HRRZ A,B
+	PUSHJ P,RELPAG
+	POP P,A
+	PUSHJ P,RELOFN
+	POP P,A
+	POP P,B
+	TLO A,40
+	MOVEM A,(B)
+NEWLFA:	OKSKED
+	HRRZ B,FILOFN(JFN)	; Get pt table ofn
+	HLLZ B,SPTH(B)		; Get class field
+	TLZ B,760017
+	TLZ A,40
+	IOR A,B			; Insert into disc address
+	PUSHJ P,ASOFN
+	BUG(HLT,<NEWLFT: INOPPORTUNE FAILURE OF ASOFN.>)
+	HLRZ B,FILOFN(JFN)
+	HRLM A,FILOFN(JFN)
+	MOVE A,B
+	PUSHJ P,RELOFN
+	POP P,C
+	POPJ P,
+
+; Convert jfn.pn to ofn.pn
+; Call:	LH(A)	; Jfn
+;	RH(A)	; Page number
+;	PUSHJ P,JFNOFN
+; Return
+;	+1	; Error, illegal jfn or page number too big
+;	+2	; Ok
+;	LH(A)	; Ofn
+;	RH(A)	; Page number
+
+^JFNOFN:HLRZ JFN,A
+	PUSH P,A
+	PUSHJ P,CHKJFN
+	JRST [	POP P,ERRSAV
+		POPJ P,]	; Garbage designator
+	JFCL
+	JRST [	POP P,ERRSAV
+		MOVEI A,DESX4
+		POPJ P,]
+	POP P,A
+	TEST(NN,OPENF)
+	JRST [	MOVEI A,DESX5
+		JRST UNLCKF]
+	MOVEI B,-DSKDTB(DEV)
+	SKIPN B
+	TEST(NN,RNDF)
+	JRST [	MOVEI A,PMAPX1
+		JRST UNLCKF]
+	HRRZS A
+	PUSHJ P,JFNOF1
+	JRST .+2
+	AOS (P)
+	JRST UNLCKF
+
+^JFNOF1:TLNE A,777777
+	POPJ P,
+	PUSH P,A
+	HLRZ B,FILWND(JFN)	; Get current page number
+	XOR B,A
+	TRNN B,777000		; If different page tables
+	JRST JFNOF2
+	LSH A,-9		; Need special action
+	MOVE C,A
+	PUSHJ P,NEWLFP		; Change current page
+	SETZM FILCNT(JFN)	; Force any sequential io to remap
+JFNOF2:	MOVE A,(P)
+	TRZ A,777
+	HRLM A,FILWND(JFN)
+	POP P,A
+	HLL A,FILOFN(JFN)
+	ANDCMI A,777000		; Mask out pt number
+	JRST SKPRET
+
+; Convert ofn.pn to jfn.pn
+; Call:	LH(A)	; Ofn
+;	RH(A)	; Pn
+;	PUSHJ P,OFNJFN
+; Return
+;	+1	; No jfn found
+;	+2	; Ok
+;	A	; Jfn.pn
+
+^OFNJFX:TLO A,400000
+^OFNJFN:PUSH P,A
+	HLRZS A
+	ANDI A,377777
+	PUSH P,A
+	NOINT
+	LOCK(JFNLCK,<JRST [
+		OKINT
+		MOVEI A,=500
+		DISMS
+		JRST .-2]>)
+	MOVEI JFN,NJFN-1
+OFNJF1:	MOVE STS,FILSTS(JFN)
+	HRRZ A,FILDEV(JFN)
+	CAIE A,DSKDTB
+	JRST OFNJF2
+	MOVE A,FILLFW(JFN)
+	TLNN A,777776
+	SKIPL -1(P)
+	TEST(NN,OPENF)
+	JRST OFNJF2
+	TEST(NE,LONGF)
+	JRST OFNJF3
+	HLRZ A,FILOFN(JFN)
+	CAME A,(P)
+	JRST OFNJF2
+OFNJF6:	POP P,A
+	POP P,A
+	HRL A,JFN
+	UNLOCK JFNLCK
+	OKINT
+	JRST SKPRET
+
+OFNJF3:	MOVE A,(P)		; Get ofn
+	MOVE A,SPTH(A)		; Get disc address
+	TLZ A,777767
+	TLO A,40
+	PUSH P,B
+	MOVSI B,-1000
+	HRR B,FILLFW(JFN)
+OFNJF4:	CAMN A,(B)
+	JRST OFNJF5
+	AOBJN B,OFNJF4
+	POP P,B
+	JRST OFNJF2
+
+OFNJF5:	POP P,B
+	JRST OFNJF6
+
+OFNJF2:	SOJGE JFN,OFNJF1
+	POP P,A
+	POP P,A
+	UNLOCK JFNLCK
+	OKINT
+	POPJ P,
+
+; Disk close
+; Call:	JFN	; Job file number
+;	PUSHJ P,DSKCLZ
+
+DSKCLZ:	TEST(NE,WRTF,ASPF)
+	PUSHJ P,GETFDB		; Get pointer to the fdb
+	JRST DSKCL1		; If it's been deleted, skip
+	PUSH P,A
+	MOVE A,FILLEN(JFN)
+	TEST(NN,WNDF)
+	CAME A,FILBYN(JFN)
+	JRST DSKCL9
+	MOVEI A,0
+	MOVE B,FILBYT(JFN)
+DSKCL7:	IBP B
+	TRNN B,777
+	JRST DSKCL9
+	DPB A,B
+	JRST DSKCL7
+
+DSKCL9:	PUSHJ P,ASGPAG
+	JRST [	POP P,A
+		JRST DSKCL0]
+	PUSH P,A
+	MOVE B,A
+	TEST(NE,LONGF)
+	JRST CNTLNG
+	HRLI B,100000
+	HLRZ A,FILOFN(JFN)
+	PUSHJ P,SETMPG
+	MOVE A,(P)
+	MOVEI B,0
+	HRLI A,-1000
+	SKIPE (A)
+	AOS B
+	AOBJN A,.-2
+	PUSH P,B
+DSKCL8:	MOVE B,-1(P)
+	MOVEI A,0
+	PUSHJ P,SETMPG
+	POP P,A
+	EXCH A,(P)
+	PUSHJ P,RELPAG
+	POP P,B
+	POP P,A
+	DPB B,PFILPC
+
+DSKCL0:	MOVSI B,FDBNXF
+	ANDCAM B,FDBCTL(A)	; Clear non-existent flag
+	TEST(NE,WNDF)
+	JRST DSKCL3
+	LDB B,PBYTSZ
+	TEST(NN,WNDF)		; Dont if no sequential io done
+	DPB B,PFILBS		; Update byte size
+	MOVE B,FILLEN(JFN)
+	MOVEM B,FDBSIZ(A)
+DSKCL3:	UNLOCK DIRLCK
+	OKINT
+DSKCL1:	NOINT
+	HRRZ B,FILWND(JFN)
+	JUMPE B,DSKCL2
+	MOVEI A,0
+	PUSHJ P,SETMPG		; Unmap window
+	HRRZ A,FILWND(JFN)
+	PUSHJ P,RELPAG		; Return page to free list
+
+DSKCL2:	HLRZ A,FILOFN(JFN)
+	PUSHJ P,RELOFN		; Release the ofn
+	SETZM NXTDMP
+	TEST(NN,LONGF)
+	JRST SKPRET
+	HRRZ B,FILLFW(JFN)
+	MOVEI 1,0
+	PUSHJ P,SETMPG
+	HRRZ A,B
+	PUSHJ P,RELPAG
+	HRRZ A,FILOFN(JFN)
+	PUSHJ P,RELOFN
+	JRST SKPRET
+
+CNTLNG:	MOVSI C,-1000
+	HRR C,FILLFW(JFN)
+	SETZ E,
+CNTLNL:	PUSH P,C
+	SKIPN A,(C)
+	JRST CNTLN1
+	HRRZ B,FILOFN(JFN)
+	HLLZ B,SPTH(B)
+	TLZ B,760017
+	TLZ A,40
+	IOR A,B
+	PUSHJ P,ASOFN
+	JRST CNTLN1
+	MOVE B,-1(P)
+	HRLI B,100000
+	PUSHJ P,SETMPG
+	HRLI B,-1000
+	SKIPE (B)
+	AOS E
+	AOBJN B,.-2
+	PUSHJ P,RELOFN
+CNTLN1:	POP P,C
+	AOBJN C,CNTLNL
+	PUSH P,E
+	JRST DSKCL8
+; Mutlitple directory rename
+; Call:	JFN	; Jfn of new name
+;	A	; Jfn of existing file
+;	PUSHJ P,DSKREN
+
+DSKREN:	PUSH P,A
+	PUSHJ P,GETFDB
+	JRST [	POP P,A
+		MOVEI A,RNAMX2
+		POPJ P,]
+	PUSH P,A
+	HRLI A,WRTF
+	PUSHJ P,ACCCHK
+	JRST [	UNLOCK DIRLCK
+		POP P,A
+		POP P,A
+		MOVEI A,RNAMX2
+		POPJ P,]
+	MOVE A,0(P)
+	SKIPN A,FDBADR(A)
+	JRST [	MOVEI A,0
+		PUSHJ P,DSKASN
+		BUG(HLT,<DSKREN: INOPPORTUNE FAILURE OF DSKASN.>)
+		MOVE B,(P)
+		TLO A,(1B3)
+		MOVEM A,FDBADR(B)
+		JRST .+1]
+	TLO A,1B1
+	PUSHJ P,ASOFN
+	JRST [	POP P,A
+		POP P,A
+		UNLOCK DIRLCK
+		MOVEI A,RNAMX2
+		POPJ P,]
+	MOVEM A,(P)
+	EXCH JFN,-1(P)
+	UNLOCK DIRLCK
+	PUSHJ P,GETFDB
+	JRST [	POP P,A
+		PUSHJ P,RELOFN
+		POP P,JFN
+		MOVEI A,RNAMX2
+		POPJ P,]
+	PUSH P,A		; Fdb loc
+	HRLI A,WRTF
+	PUSHJ P,ACCCHK
+	JRST DSKRE8
+	MOVE A,0(P)
+	SKIPN A,FDBADR(A)
+
+DSKRE8:	JRST [	UNLOCK DIRLCK
+		POP P,A		; Fdb loc
+		POP P,A		; Destination ofn
+		PUSHJ P,RELOFN
+		POP P,A		; Dest jfn
+		MOVEI A,RNAMX2
+		POPJ P,]
+	PUSHJ P,ASOFN
+	JRST DSKRE8		; Source file is open
+	CAMN A,-1(P)
+	JRST [	PUSHJ P,RELOFN	; Rename to self
+		JRST DSKRE8]
+	EXCH A,(P)		; Store ofn, get fdb loc
+	PUSH P,FDBADR(A)
+	LDB B,PFILBS
+	PUSH P,B
+	LDB B,PFILPC
+	PUSH P,B
+	PUSH P,FDBSIZ(A)
+	PUSH P,FDBUSW(A)
+	PUSH P,FDBCTL(A)
+	MOVSI B,FDBNXF!FDBDEL
+	HLLM B,FDBCTL(A)
+	SETZM FDBADR(A)
+	UNLOCK DIRLCK
+	MOVE JFN,-10(P)		; Destination
+
+	PUSHJ P,GETFDB		; Go to other fdb
+	BUG(HLT,<DSKREN: GETFDB FAILURE FOR OPEN FILE.>)
+	PUSH P,A
+	HRRZ A,-7(P)
+	PUSHJ P,RELOFN
+	MOVE A,(P)
+	MOVEI D,-DIRORG(A)
+	PUSH P,E
+	PUSH P,F
+	PUSHJ P,DELFIL
+	JFCL
+	SKIPLE A,FDBACT+DIRORG(D)
+	AOS DIRORG+1(A)
+	POP P,F
+	POP P,E
+	POP P,A
+	POP P,B
+
+DSKRE9:	XOR B,FDBCTL(A)
+	TLZ B,FDBPRM!FDBTMP
+	XOR B,FDBCTL(A)
+	HLLM B,FDBCTL(A)
+	POP P,FDBUSW(A)
+	POP P,FDBSIZ(A)
+	POP P,B
+	DPB B,PFILPC
+	POP P,B
+	DPB B,PFILBS
+	POP P,FDBADR(A)
+	PUSH P,A
+	GTAD
+	POP P,B
+	MOVEM A,FDBWRT(B)
+	POP P,A
+	SUB P,[XWD 2,2]
+	UNLOCK DIRLCK
+	SETZM NXTDMP
+	JRST SKPRET
+
+	BENDP	DISC
+
+	BEGINP	STRING
+
+^STRDEV:REPEAT BIND,<
+	CPOPJ>
+	STRIN
+	STROUT
+	REPEAT SDSTD-BOUTD,<
+	CPOPJ>
+
+STRIN:	XCTMU [ILDB A,JFN]
+	POPJ P,
+
+STROUT:	XCTMU [IDPB A,JFN]
+	POPJ P,
+
+^DBP:	LDB B,[POINT 6,A,5]
+	LDB C,[POINT 6,A,11]
+	ADD B,C
+	IDIVI B,=36
+	JUMPE B,DBP1
+	SUB A,B
+	LDB C,[POINT 6,A,11]
+	MOVEI B,=36
+	PUSH P,C
+	IDIV B,C
+	POP P,C
+	IMUL B,C
+	MOVNI C,-=36(B)
+DBP1:	DPB C,[POINT 6,A,5]
+	POPJ P,
+
+	BENDP	STRING
+
+	BEGINP	TTY
+
+EXTERN	CTRLTT		; Controlling tty
+EXTERN	TCI		; Character type in routine
+EXTERN	TCO		; Character type out routine
+EXTERN	TTFORK		; Lh ==> job to which tty is assigned
+EXTERN	JOBNO		; Current job number
+IFDEF NETN,<EXTERN PTYDET>
+
+; tty dispatch table
+
+^TTYDTB:REPEAT OPEND,<CPOPJ>
+	TTYOPN
+	TTYIN
+	TTYOUT
+	TTYCLZ
+	REPEAT SDSTD-CLOSD,<CPOPJ>
+
+TTYIN:	HLRZ 2,DEV
+	PUSHJ P,SAVAC
+	PUSHJ P,TCI
+	MOVEM 1,A-NSAC+1(P)
+	PUSHJ P,RESAC
+	POPJ P,
+
+TTYOUT:	HLRZ 2,DEV
+	PUSHJ P,SAVAC
+	PUSHJ P,TCO
+	PUSHJ P,RESAC
+	POPJ P,
+
+TTYOPN:	LDB B,PBYTSZ
+	MOVEI A,SFBSX2
+	SUBI B,7		; Must be 0 or 1
+	LDB C,[POINT 4,STS,35]
+	CAME B,C		; And must be right mode
+	POPJ P,
+	MOVEI A,OPNX14
+	CAILE C,1
+	POPJ P,
+	HLRZ B,DEV		; Get tty line number
+	HLRZ C,TTFORK(B)	; Get job to which tty is assigned
+	MOVE A,CAPENB
+	TRNN A,WHEEL!OPR
+	CAMN C,JOBNO		; Is assigned to this job?
+	JRST TTYOP1
+	MOVEI A,OPNX7
+	CAIE C,777777		; Or not assigned?
+	POPJ P,			; No. fail
+	MOVE C,JOBNO
+	HRLM C,TTFORK(B)
+TTYOP1:	HLRZ B,DEV
+	PUSHJ P,TTRMOD		; Get current tty mode
+	LDB C,[POINT 4,STS,35]
+	TRC C,1			; Reverse modes
+	LSH C,6
+	TRZ A,17B29
+	IOR A,C
+	PUSHJ P,TTSMOD
+	TEST(O,SIZF)
+	JRST SKPRET
+
+TTYCLZ:	HLRZ B,DEV
+	HLRZ A,TTFORK(B)
+	CAME B,CTRLTT
+	CAME A,JOBNO
+	JRST SKPRET
+	MOVEI A,400000(B)
+	PUSHJ P,CHKDEV
+	 POPJ P,
+	TLNE C,(1B6)
+	JRST SKPRET
+	HRROS TTFORK(A)
+IFDEF NETN,<
+	HRRZ B,A
+	CAIL B,NTTYS
+	PUSHJ P,PTYDET>
+	JRST SKPRET
+
+	BENDP	TTY
+
+	BEGINP	NIL
+
+; Null device
+
+^NILDTB:NILSET
+	SK2RET
+	SK2RET
+	SKPRET
+	CPOPJ
+	CPOPJ
+	CPOPJ
+	NILOPN
+	NILSQI
+	NILSQO
+	SKPRET
+	CPOPJ
+	CPOPJ
+	CPOPJ
+	CPOPJ
+	CPOPJ
+	CPOPJ
+	CPOPJ
+	CPOPJ
+	CPOPJ		; Device status read
+	CPOPJ		; Device status set
+
+NILOPN:	AOS (P)
+NILSQI:
+NILSQO:	SETZM FILBYT(JFN)
+	HRLOI A,377777
+	MOVEM A,FILCNT(JFN)
+	SETZB A,B
+	POPJ P,
+
+NILSET:	NOINT
+	TEST(O,NNAMF,NVERF)
+	JRST SK2RET
+
+	BENDP NIL
+
+	BEGINP	INIT
+
+EXTERN	DSKBTI,JOBDIR
+INTERN	FILINI,JBFINI
+
+; Initialize file stuff
+
+USE
+
+^JBFINI:MOVEI A,JSFREE		; Origin of free area in jsb
+	HRLZM A,JSBFRE		; To header
+	MOVEI A,200
+	HRRZM A,JSFREE		; One big block free
+	MOVEM A,JSBFRE+2
+	SETOM JSBFRE+1
+	MOVEI A,MAXLW+1
+	MOVEM A,JSBFRE+3
+	MOVE A,[XWD IJBCOR,JBCOR]
+	BLT A,JBCOR+3		; Initial job area assignment
+	SETOM PRIMRY		; Primary io to controlling tty
+	SETOM JFNLCK		; Unlock jfnlck
+	SETZM FILSTS
+	MOVE A,[XWD FILSTS,FILSTS+1]
+	BLT A,FILSTS+NJFN-1	; Clear all filsts words
+	MOVE A,[XWD FILLCK,FILLCK+1]
+	SETOM FILLCK
+	BLT A,FILLCK+NJFN-1
+	MOVEI A,1
+	MOVEM A,JOBDNO
+	MOVE B,JOBNO
+	HRLZM A,JOBDIR(B)	; Connect to directory 1, no log in
+IFDEF NDP,<	SETZM JOBDC>	; No display consoles assigned
+	MOVE A,[XWD 777000,-1]
+	MOVEM A,CAPMSK
+	MOVEM A,CAPENB
+	MOVE A,[XWD 500000,=220100]
+	MOVEM A,ACCTPT
+	POPJ P,
+
+; File system initialization
+
+FILINI:	SKIPE DIDSCA
+	JRST FILINW
+	HRROI A,[ASCIZ /
+DO YOU REALLY WANT TO CLOBBER THE DISC BY RE-INITIALIZING? /]
+FILINQ:	PSOUT
+	PBIN
+	PUSH P,A
+	MOVEI A,37
+	PBOUT
+	POP P,A
+	CAIN A,"Y"
+	JRST [	HRROI A,[ASCIZ /OK, YOU ASKED FOR IT./]
+		PSOUT
+		JRST FILINW]
+	CAIE A,"N"
+	JRST [	HRROI A,[ASCIZ /PLEASE TYPE Y OR N: /]
+		JRST FILINQ]
+	HRROI A,[ASCIZ /I THOUGHT NOT.
+PLEASE BE MORE CAREFUL IN THE FUTURE./]
+	PSOUT
+	MOVE A,DIDSCI
+	MOVEM A,DIDSCA
+
+FILINW:	SKIPN DIDSCA		; Dont init bit table if not fresh start
+	PUSHJ P,DSKBTI
+	PUSHJ P,DEVINI
+IFDEF MTAN,<	PUSHJ P,MTAINI>
+IFDEF LPTN,<	PUSHJ P,LPTINI>
+IFDEF PLTN,<	PUSHJ P,PLTINI>
+IFDEF PTPN,<	PUSHJ P,PTPINI>
+IFDEF PTRN,<	PUSHJ P,PTRINI>
+IFDEF DTAN,<	PUSHJ P,DTAINI>
+IFDEF NETN,<	PUSHJ P,NETINI>
+IFDEF NDP,<	PUSHJ P,DSPINI>
+	PUSHJ P,DMPINI
+	MOVE A,TODCLK
+	ANDI A,777
+	MOVEM A,CLASS
+	SKIPE 1,DIDSCA		; Do we have a disc address for di
+	JRST FILIN1		; Yes, use it
+	PUSHJ P,NEWIB		; No, get an ib ofn
+	MOVEM B,DIDSCA
+	MOVEM A,DIOFN
+	PUSHJ P,NEWIB
+	PUSH P,B
+	PUSH P,A
+	HRLOI A,600000
+	PUSHJ P,CHKDEV
+	BUG(HLT,<FILINI: CHKDEV FAILED TO FIND DEVICE DSK:.>)
+	POP P,A
+	MOVEM A,FDLOFN
+	HRLM A,DEVDSP(B)
+	PUSHJ P,ASGPAG
+	BUG(HLT,<FILINI: ASGPAG FAILURE.>)
+	MOVE B,A
+	HRLI B,140000
+	MOVE A,FDLOFN
+	PUSHJ P,SETMPG
+	HRLI B,C
+	MOVSI C,-NFDIB
+
+FILIN9:	PUSH P,B
+	PUSH P,C
+	PUSHJ P,NEWFD
+	TLO B,40
+	TLZ B,20
+	EXCH B,-1(P)
+	POP P,C
+	MOVEM A,FDOFN(C)
+	POP P,@B
+	AOBJN C,FILIN9
+	MOVEI A,0
+	PUSHJ P,SETMPG
+	HRRZ A,B
+	PUSHJ P,RELPAG
+	MOVEI A,0
+	PUSHJ P,MAPDIR
+	POP P,FDADR		; Store disc address of fd in di
+	PUSH P,FDADR
+	SETOM DIRLCK		; Unlock the block 0
+	MOVEI A,ESBIDT-DIRORG	; End of sbidtb is beginning of hash
+	MOVEM A,DIRHTO
+	SETZM ESBIDT
+	MOVE A,[XWD ESBIDT,ESBIDT+1]
+	BLT A,ESBIDT+177
+	MOVEI A,475
+	MOVEM A,DIRHTL		; Hash table length
+	SETZM DIRFRE		; No free area in block 0
+	SETZM DIRFRE+1
+	SETZM DIRFRE+2
+	SETZM SYMBOT		; No symbol table either
+	SETZM SYMTOP
+	SETZM DIRNUM		; This is block 0
+	MOVE A,[BYTE (7)1,1,1,1,1]
+	MOVEM A,SBIDTB		; All initial chars dispatch to block 1
+	MOVE A,[XWD SBIDTB,SBIDTB+1]
+	BLT A,ESBIDT-1
+	MOVNI A,1
+	PUSHJ P,MAPDIR
+	MOVEI A,DDBLEN
+	PUSHJ P,INIBLK		; Initialize the block
+	MOVNI A,1
+	MOVEM A,DIRNUM
+	UNLOCK DIRLCK
+
+INLP1:	MOVEI A,[ASCIZ /PDP-10/]
+	HRROM A,MKFDBK+1
+	HRROI 1,[ASCIZ /SYSTEM/]
+	MOVE 2,[XWD 260000,MKFDBK]
+	CRDIR
+	JFCL
+	MOVSI 1,200001
+	HRROI 2,[ASCIZ /<SYSTEM>DIRECTORY;1;P774040/]
+	GTJFN
+	BUG(HLT,<FILINI: GTJFN FAILURE FOR <SYSTEM>DIRECTORY.>)
+	MOVE JFN,A
+	MOVEI DEV,DSKDTB
+	PUSHJ P,GETFDB
+	BUG(HLT,<FILINI: GETFDB FAILURE FOR <SYSTEM>DIRECTORY.>)
+	POP P,FDBADR(A)		; Put fd disc address into fdb
+	MOVSI B,FDBNXF
+	ANDCAM B,FDBCTL(A)
+	MOVSI B,FDBLNG
+	IORM B,FDBCTL(A)
+	UNLOCK DIRLCK
+	OKINT
+	MOVSI 1,200001
+	HRROI 2,[ASCIZ /<SYSTEM>INDEX;1;P770000/]
+	GTJFN
+	BUG(HLT,<FILINI: GTJFN FAILURE FOR <SYSTEM>INDEX.>)
+	MOVE JFN,A
+	MOVEI DEV,DSKDTB
+	PUSHJ P,GETFDB
+	BUG(HLT,<FILINI: GETFDB FAILURE FOR <SYSTEM>INDEX.>)
+	MOVE B,DIDSCA
+	MOVEM B,FDBADR(A)
+	MOVSI B,FDBNXF
+	ANDCAM B,FDBCTL(A)
+	UNLOCK DIRLCK
+	OKINT
+	MOVNI 1,1
+	RLJFN
+	JFCL
+	POPJ P,
+
+MKFDBK:	0
+	0
+	0
+	700000
+	0
+
+
+FILIN1:	TLO A,(1B2)
+	PUSHJ P,ASOFN		; Get ofn for di
+	BUG(HLT,<FILINI: ASOFN FAILURE FOR DIRECTORY INDEX.>)
+	MOVEM 1,DIOFN
+	MOVEI A,0
+	PUSHJ P,MAPDIR
+	MOVE 1,FDADR
+	TLO A,(1B2)
+	PUSHJ P,ASOFN		; Get ofn for fd
+	BUG(HLT,<FILINI: ASOFN FAILURE FOR FD.>)
+	MOVEM A,FDLOFN
+	HRLOI A,600000
+	PUSHJ P,CHKDEV
+	BUG(HLT,<FILINI: CHKDEV FAILED TO FIND DEVICE DSK:.>)
+	MOVE A,FDLOFN
+	HRLM A,DEVDSP(B)
+	PUSHJ P,ASGPAG
+	BUG(HLT,<FILINI: ASGPAG FAILURE FOR PAGE TO INIT FD'S.>)
+	MOVE B,A
+	HRLI B,140000
+	MOVE A,FDLOFN
+	PUSHJ P,SETMPG
+	HRLI B,F
+	MOVSI F,-NFDIB
+FILIN2:	MOVE A,@B
+	TLO A,20
+	PUSH P,B
+	TLZE A,40
+	PUSHJ P,ASOFN
+	BUG(HLT,<FILINI: ASOFN FAILURE FOR FD.>)
+	POP P,B
+	MOVEM A,FDOFN(F)
+	AOBJN F,FILIN2
+	MOVEI A,0
+	PUSHJ P,SETMPG
+	HRRZ A,B
+	PUSHJ P,RELPAG
+	POPJ P,
+
+NEWFD:	TDZA A,A
+NEWIB:	MOVSI A,(1B2 )
+	TLO A,(1B3)
+	PUSH P,A
+	MOVE A,DIDSCI		; Parameter dependent on configuration
+	PUSHJ P,DSKASN		; Get a blank disc address
+	BUG(HLT,<NEWIB: DSKASN FAILURE FOR INITIAL SYSTEM PAGE TABLES.>)
+	TLO A,20
+	IORM A,(P)
+	EXCH A,(P)
+	PUSHJ P,ASOFN
+	BUG(HLT,<NEWIB: ASOFN FAILURE FOR INITIAL SYSTEM BLOCKS.>)
+	PUSH P,A		; Save the ofn
+	PUSHJ P,ASGPAG		; Get a page in job area
+	BUG(HLT,<NEWIB: ASGPAG FAILURE FOR INITIALIZING SYTEM PT'S.>)
+	PUSH P,A
+	MOVE B,A
+	TLO B,140000
+	MOVE A,-1(P)
+	PUSHJ P,SETMPG
+	MOVE A,(P)
+	HRLZ B,A
+	HRRI B,1(A)
+	SETZM (A)
+	BLT B,777(A)
+	MOVE B,(P)
+	MOVEI A,0
+	PUSHJ P,SETMPG
+	POP P,A
+	PUSHJ P,RELPAG
+	POP P,A
+	POP P,B			; Get disc address
+	POPJ P,
+
+IJBCOR:	0
+	0
+	7777
+	777777777777
+
+	BENDP	INIT
+
+;22 NOV 71, 1845:
+
+;DRUM DRIVER - DUMMY DRUM, USES DSK
+
+	INTERN DRMIO,DRMINI
+	EXTERN SWPDON,DRUMP
+
+;CST3 LH CONTROL BITS
+
+	INTERN DWRBIT,SWPERR
+DWRBIT==400000
+SWPERR==200000
+
+NDRMEW==4		;NUMBER OF DRUM ERROR WORDS FOR GETAB
+
+LS DRMCFE,1		;COUNT OF CFM ERRORS
+LS DRMLER,3		;LAST ERRONEOUS DRUM COMMAND AND ERROR BITS
+
+	RESCD
+
+;DRUM IO DRIVER
+
+; AC1/ 18-35 CORE PAGE NUMBER (CST INDEX) OF PAGE
+;      DWRBIT WRITE OPERATION IF 1, READ IF 0
+
+DRMIO:	SKIPG DRUMP		;DRUM ON SYSTEM?
+	JRST DSKIO		;NO, USE DISK
+	BUG(HLT,<DRMIO - DRUMP ON BUT NO DRUM CODE IN SYSTEM>)
+
+;THIS ALLOCATOR HANDLES A DEVICE OF SOME NUMBER (DRMSEC) OF SECTORS,
+;AND SOME NUMBER (DRMBND) OF BANDS. IT HAS A RESIDENT BIT TABLE,
+;AND IS USED TO ALLOCATE SWAPPING STORAGE, EVEN IF THE PHYSICAL
+;SWAPPING DEVICE IS THE SAME AS THE PHYSICAL FILE DEVICE
+
+;THE FOLLOWING ROUTINES ARE IN THIS PACKAGE & CALLED FROM OUTSIDE.
+
+INTERN ASDRMS		;ASSIGN SPECIFIC DRUM ADDRESSES
+INTERN DRMASF		;ASSIGN A DRUM PAGE, EMPTIEST SECTOR.
+INTERN ASDRM		;ASSIGN DRUM PAGE NEAR A SPECIFIC SECTOR
+INTERN DEDRM		;DEASSIGN A DRUM PAGE
+INTERN BNDLK,BNDULK	;ROUTINES TO PREVENT/ENABLE ASSIGNMENT OF
+			;DRUM ADDRESSES AT PARTICULAR BANDS.
+
+DRMSEC==NPGTK		;NO. OF DRUM SECTORS
+DRMBND==NDST/DRMSEC	;NO OF BANDS
+DRMBSZ==<DRMBND+^D35>/^D36	;SIZE OF BIT TABLE CHUNK FOR 1 SECTOR
+DRMNOS==DRMBND-<DRMBND/44>*44	;NUMBER OF BITS (SECTORS) IN PTL WD
+LS DRMBLK		;LOCKOUT WORD FOR DRUM BIT TABLE
+LS DRMSC,DRMSEC		;FREE PAGE COUNT TABLE (ONE WORD/SECTOR)
+LS DRMFRE		;TOTAL FREE PAGE COUNT FOR DRUM
+LS BNDLO,DRMBSZ		;BAND MASK OUT TABLE
+GS DRMBIT,DRMSEC*DRMBSZ	;DRUM BIT TABLE
+
+Z==0
+A==1
+B==2
+C==3
+D==4
+E==5
+F==6
+G==7
+AA==10
+BB==11
+CC==12
+DD==13
+EE==14
+FF==15
+GG==16
+
+;ASSIGN PAGE, EMPTIEST SECTOR
+
+;"DRMASF" RETURNS CALLER+1 IF THE DRUM IS FULL OR UNAVAILABLE, ELSE
+;CALLER+2 WITH THE DRUM ADDRESS ASSIGNED IN A.  THE SECTOR CHOSEN FOR
+;THE ASSIGNMENT HAS THE MOST FREE PAGES.  "ASDRM" TRIES TO ASSIGN
+;A PAGE AT SECTOR (A)+1 OR AS SOON AFTER AS POSSIBLE.  IT RETURNS CALLER+1
+;IF NO FREE PAGES ARE LEFT OR CALLER+2 WITH THE DRUM ADDRESS IN A.
+
+	INTERN DRMASN
+
+DRMASN:
+DRMASF:	SKIPG DRMFRE		;ROOM AVAILABLE?
+	JRST DRMSA3		;NO, RETURN BAD
+	HRLZI C,-DRMSEC		;CHOOSE EMPTIEST SECTOR FOR PAGE ASSIGNMENT
+	MOVE B,DRMSC(C)		;GET FREE PAGE COUNT FOR THIS SECTOR
+	HRRZ A,C		;BEST SECTOR SO FAR IN 1.
+	CAMG B,DRMSC+1(C)
+	AOBJN C,.-3
+	AOBJN C,.-2
+	JUMPG B,DRMASL
+	JRST DRMSA3		;RETURN CALLER+1 IF DRUM FULL
+
+;ASSIGN PAGE NEAR GIVEN SECTOR
+
+ASDRM:	ANDI A,77
+	CAIL A,DRMSEC		;CHECK FOR LEGAL ARGUMENT
+	JRST DRMASF
+DRMASS:	SKIPG DRMFRE
+	JRST DRMSA3		;GO MAKE NO FREE PAGES RETURN
+DRMAS1:	CAIGE A,DRMSEC-1
+	AOJA A,.+2
+	SETZ A,
+	SKIPG DRMSC(A)
+	JRST DRMAS1		;LOOP IF NO FREE PAGES HERE
+DRMASL:	SOS DRMSC(A)		;DECREMENT NO. FREE PAGES ON THIS SECTOR
+	MOVE B,A
+	IMULI B,DRMBSZ
+	HRLI B,-DRMBSZ
+	SKIPE C,DRMBIT(B)
+	JFFO C,SECFND
+	AOBJN B,.-2
+DBTFU:	BUG(HLT,<DRUM BIT TABLE FOULED, COUNT AND BITS DISAGREE>)
+
+;CONVERT DRUM ADDRESS INTO INDEX INTO DST
+
+	INTERN GDSTX
+
+GDSTX:	TLNN 2,15		;INSIST ON REGULAR DRUM ADDRESS
+	TLNN 2,2
+	BUG(HLT,<GDSTX - BAD ADDRESS>)
+	HRRZS 3,2		;SPLIT BAND AND SECTOR
+	ANDI 3,77		;SECTOR
+	LSH 2,-6		;BAND
+	IMULI 2,DRMSEC
+	ADDI 2,0(3)
+	CAIL 2,NDST
+	BUG(HLT,<GDSTX - BAD ADDRESS>)
+	RET
+
+	INTERN DASDRM
+
+DASDRM:	CALL DEDRM
+	JFCL
+	BUG(HLT,<ATTEMPT TO DEASSIGN BAD OR UNASSIGNED DRUM ADDRESS>)
+	RET
+
+SECFND:	HLRO C,B
+	MOVEI C,@BANDT(C)		;GET THE BAND NUMBER & 1 IN BIT 23
+	LSH C,6			;POSITIONS THE BAND FIELD & 1 IN BIT 17
+	IOR A,C			;DRUM ADDRESS NOW IN A
+	MOVE C,BITS(D)		;GET BIT FOR BAND WORD
+	ANDCAM C,DRMBIT(B)	;CLEAR THE BIT FROM THE BIT TABLE.
+DRMSA1:	SOS DRMFRE		;DECREMENT TOTAL FREE PAGES ON DRUM
+DRMSA2:	AOS (P)			;MAKE SKIP RETURN
+DRMSA3:
+DRMAS2:
+RETN:	RET
+
+	FOO==0
+	REPEAT DRMBSZ,<XWD D,FOO+1B22
+	FOO==FOO+44>
+BANDT:
+;ROUTINES TO ATTEMPT ASSIGNMENT OF A SPECIFIC DRUM ADDRESS
+
+ASDRMS:	JSP E,DRMBS
+	TDNN D,DRMBIT(B)	;SKIP IF PAGE IS AVAILABLE
+	JRST DRMSA3
+	ANDCAM D,DRMBIT(B)
+	SOS DRMSC(C)		;REDUCE FREE PAGE COUNT FOR THIS SECTOR
+	JRST DRMSA1
+
+;ROUTINE TO RELEASE A DRUM PAGE
+
+DEDRM:	JSP E,DRMBS
+	TDNE D,BNDLO(A)		;CHECK IF BAND LOCKED OUT
+	TDNE D,DRMBIT(B)	;CHECK IF NOT YET ASSIGNED
+	RET			;SKIP RETURN 
+	IORM D,DRMBIT(B)
+	AOS DRMSC(C)		;INCREMENT FREE PAGE COUNT FOR THIS SECTOR
+	AOS DRMFRE
+	AOS (P)
+	RET			;MAKE DOUBLE SKIP RETURN
+
+;CHECKS FOR LEGAL DRUM ADDRESS & GETS WORD & BIT INDICES TO BIT TABLE
+;RETURNS BIT CHUNK WORD INDEX IN A, BIT TABLE WORD INDEX IN B,
+;SECTOR NO. IN C, AND BIT POSITION MASK IN D
+
+DRMBS:	ANDI A,-1
+	MOVE C,A
+	ANDI C,77
+	CAIGE A,DRMBND*100	;LEGAL BAND?
+	CAIL C,DRMSEC		;LEGAL SECTOR?
+	RET 
+	AOS (P)
+DRMSA0:	LSH A,-6		;GET BAND NO.
+	IDIVI A,44		;WORD IN CHUNK & BIT IN WORD
+	MOVEI D,1
+	MOVN B,B
+	LSH D,43(B)		;BIT MASK
+	MOVE B,C
+	IMULI B,DRMBSZ		;1ST WORD OF BIT CHUNK
+	ADD B,A
+	JRST (E)
+
+;LOCK BAND
+;ACCEPTS IN A BAND TO LOCK.
+; RETURN 1 => ILLEGAL ADDRESS
+; RETURN 2 => BAND LOCKED, NOT ALL PAGES WERE FREE
+; RETURN 3 => BAND LOCKED, ALL PAGES WERE FREE
+
+BNDLK:	JSP E,BNDLUE
+	SETZ D,
+	TDNN C,BNDLO(A)
+	JRST DRMSA3
+	ANDCAM C,BNDLO(A)	;CLEAR BIT IN LOCKOUT TABLE
+BNDLP:	TDNN C,DRMBIT(A)
+	JRST BNDCON
+	SUBI D,1
+	ANDCAM C,DRMBIT(A)	;CLEAR BIT IN EACH OF SECTOR BIT TABLES
+	SOS DRMSC(B)		;& ADJUST FREE PAGE COUNT
+BNDCON:	ADDI A,DRMBSZ
+	AOBJN B,BNDLP
+	ADDM D,DRMFRE
+	CAIG D,-DRMSEC
+	JRST DRMSA3
+	JRST DRMSA2
+
+;UNLOCK BAND
+;ACCEPTS IN A BAND TO LOCK.
+; RETURN 1 => ILLEGAL ADDRESS
+; RETURN 2 => BAND NOT PREVIOUSLY LOCKED
+; RETURN 3 => UNLOCKED SUCCESSFULLY
+
+BNDULK:	JSP E,BNDLUE
+	TDNE C,BNDLO(A)
+	JRST DRMAS2		;NOT PREVIOUSLY LOCKED--MAKE ERROR RETURN
+	IORM C,BNDLO(A)
+BNDU1:	TDNE C,DRMBIT(A)
+	JRST DBTFU
+	IORM C,DRMBIT(A)
+	AOS DRMSC(B)
+	AOS DRMFRE
+	ADDI A,DRMBSZ
+	AOBJN B,BNDU1
+	JRST DRMSA2
+
+BNDLUE:	JUMPL A,RETN
+	CAIL A,DRMBND
+	RET	 		;ILLEGAL ARGUMENT RETURN
+	AOS (P)
+	IDIVI A,44
+	MOVN B,B
+	MOVEI C,1
+	LSH C,43(B)
+	HRLZI B,-DRMSEC
+	JRST (E)
+
+;INITIALIZE DRUM BIT TABLES
+
+DRMINI:	SETOM DRMBIT		;EACH "ONE" REPRESENTS A FREE PAGE
+	MOVE A,[XWD DRMBIT,DRMBIT+1]
+	BLT A,DRMBIT+DRMBND/44-1
+	MOVE A,[-1B<DRMNOS-1>]
+	MOVEM A,DRMBIT+DRMBND/44
+	MOVE A,[XWD DRMBIT,DRMBIT+DRMBSZ]
+	BLT A,DRMBIT+DRMSEC*DRMBSZ-1
+	MOVE A,[XWD DRMBIT,BNDLO]
+	BLT A,BNDLO+DRMBSZ-1	;INIT. BAND LOCKOUT TABLE TO ALL ONES
+	MOVEI A,DRMBND*DRMSEC	;NO. OF PAGES ON DRUM
+	MOVEM A,DRMFRE
+	MOVEI A,DRMBND		;NO. BANDS=NO. PAGES/SECTOR
+	HRLZI B,-DRMSEC
+	MOVEM A,DRMSC(B)		;INITIALIZE FREE PAGE COUNT FOR EACH SECTOR
+	AOBJN B,.-1
+
+;INITIALIZE BAND LOCK OUT TABLE
+
+	MOVEI F,0
+DRMIN1:	MOVE A,DRMBBT(F)
+	JUMPL A,DRMIN2		;DONE ON -1
+	CALL BNDLK
+	JFCL 0
+	JFCL 0
+	AOJA F, DRMIN1
+
+DRMIN2:	MOVEI F,0
+DRMIN4:	MOVE A,DRMBST(F)
+	JUMPL A,RETN		;DONE ON -1
+	CALL ASDRMS		;ASSIGN ALL THE BAD AREAS
+	JFCL 0
+	JFCL 0
+	AOJA F, DRMIN4
+
+DRMBBT:	-1
+	BLOCK 6			;FOR OTHER BAD BANDS
+
+DRMBST:	-1
+	BLOCK 10
+
+	BGHERE SWPBGP,SWPBGS
+	END
+
+;2 DEC 71, 1548:
+
+;DISK DRIVERS AND ALLOCATORS
+
+;DISK PACKAGE - BRYANT DISK.   D. MURPHY
+
+	INTERN DSKIO,DSKCHK,UDSKIO,CVDSK,CDSKVA,DIDSCI
+	EXTERN NOFN,BLOCK1,DSKTIM,DISKP,FPTA,JFNOFN,NXTDMP
+	EXTERN SETMPG,SETPT,DBUGSW,PSKED,CORWB,DIDSCA,SWPZPG,DEVMPE
+
+NDVMAX==2		;MAX NUMBER OF POSITIONERS
+DSK==170		;DEVICE NUMBER
+DSKCP==62		;COMMAND POINTER
+DSKES==63		;ERROR WORD
+DSKIRQ==1B30		;INTERRUPT REQUEST BIT (CONI)
+DSKCIC==1B29		;CHANGE INTERRUPT CHAN (CONO)
+DSKGNO==1		;GO-NO-CHAIN (CONO)
+DSKGO==2		;GO-CHAIN (CONO)
+DSKWR==1B19		;I/O BIT (WRITE IF 1) IN COMMAND WORD 2
+DCLASS==1B20		;COMPARE CLASS IF 1, IN COMMAND WORD 2
+DSKDIS==2B20		;DISCONNECT COMMAND
+DSKIOT==5B20		;TRANSFER COMMAND
+DSKBRU==6B20		;BRANCH COMMAND
+
+DWRBIT==1B18		;WRITE REQUEST FROM SWAPPER (LH OF AC1)
+DSKSIP==1B19		;SEEK IN PROGRESS, LH OF DSKSTS
+DSKCMR==1B20		;COMMAND READY, LH OF DSKSTS
+DSKUIO==1B21		;UDSKIO TYPE OPERATION, LH OF DSKSTS
+DSKCCB==1B22		;COMPARE CLASS BIT IN LH OF DSKSTS
+NEWFB==1B33		;NEW FILE BIT (IN LINEAR ADDRESS)
+CLASS0==0		;CLASS FOR FREE BLOCKS
+
+NDSKCM==10		;SIZE OF UDSKIO COMMAND BUFFER
+DSKSKF==1B29+1B30	;'SEEK FAILURE' I.E. RAM+HPF
+DSKCNE==1B27		;CLASS NOT EQUAL ERROR BIT
+DSKDNA==1B28		;DEVICE NOT AVAILABLE ERROR BIT
+DSKSWE==7030		;SOFTWARE ERROR BITS
+
+NDSKPD==10		;SIZE OF LOCAL PDL
+
+;FOR BRYANT DISK, DRIVE=POSITIONER
+;STATUS OF DRIVE IS RECORDED IN DSKSTS
+;RH CONTAINS NUMBER OF TRACK AT WHICH DRIVE IS CURRENTLY POSITIONED,
+; OR WHICH DRIVE IS SEEKING IN BITS 24-31
+; ERROR COUNT IN BITS 32-35
+;LH BITS 13-17 ARE AN INDEX INTO THE UDSKIO COMMAND BUFFER
+;DSKUIO BIT ON INDICATES UDSKIO TYPE OPERATION
+;STATE OF DRIVE IS INDICATED BY DSKSIP AND DSKCMR BITS IN LH
+; 00 - NOTHING HAPPENING
+; 10 - DRIVE SEEKING TRACK
+; 01 - DRIVE POSITIONED, TRANSFER READY TO BE STARTED
+; 11 - TRANSFER IN PROGRESS (ALSO USED WHEN REQUEST BEING UNQUEUED)
+
+;STORAGE
+
+LS DSKFCL,1		;FREE LIST FOR UDSKIO REQUEST PAIRS
+LS DSKCCT,1		;COUNT OF UDSKIO REQUESTS
+LS DSKCL,3*NDSKCM	;COMMAND BUFFER FOR UDSKIO REQUESTS
+LS DSKLUN,1		;LAST UNIT XFERRING, -1 IF NO UNIT XFERRING
+LS DSKCCM,4		;BUFFER FOR CONTROLLER COMMAND LIST
+
+LS DSKWI,NDVMAX		;WRITE QUEUE IN
+LS DSKWO,NDVMAX		;WRITE QUEUE OUT
+LS DSKRI,NDVMAX		;READ QUEUE IN
+LS DSKRO,NDVMAX		;READ QUEUE OUT
+LS DSKUI,NDVMAX		;UTILITY QUEUE IN
+LS DSKUO,NDVMAX		;UTILITY QUEUE OUT
+
+LS DSKDAW,NDVMAX	;DISK ADDRESS FOR CURRENT OPERATION
+LS DSKCAW,NDVMAX	;CORE ADDRESS AND COUNT FOR CURRENT OPERATION
+LS DSKSTS,NDVMAX	;STATUS OF DRIVE,,CURRENT TRACK
+
+LS DSKSVR,1		;INTERRUPT SERVICE RETURN
+LS DSKACP,1		;SAVED AC-P
+LS DSKPDL,NDSKPD	;LOCAL PDL
+LS DSKLSV,1		;TIME OF LAST DISK INTERRUPT SERVICE
+
+;DO NOT REORDER ERROR WORDS, USED BY GETAB
+
+NDSKEW==^D10		;NUMBER OF ERROR WORDS FOR GETAB
+
+LS DSKRCE,1		;COUNT OF RECOVERABLE ERRORS
+LS DSKRER,4		;COMMAND WORDS AND ERROR BITS OF LAST ERROR
+LS DSKNRE,1		;COUNT OF NON-RECOVERABLE ERRORS
+LS DSKLER,4		;COMMAND WORDS AND ERROR BITS LAST NON-REC ERR
+
+DSKNTR==^D5		;NUMBER OF TRIES ON RECOVERABLE ERRORS
+
+;DISK I/O DRIVER - CALLED FROM SWAPPER
+
+	RESCD
+
+DSKIO:	PUSH P,1
+	MOVE 4,CST1(1)		;GET DISK ADDRESS
+	TLNN 4,10		;REGULAR DISK ADDRESS?
+	JRST [	PUSH P,1	;NO, MUST BE SWAPPING ADDRESS
+		MOVE 1,4
+		CALL DSKIS	;CONVERT TO REGULAR DISK ADDRESS
+		MOVE 4,1
+		POP P,1
+		TLO 1,(1B3)	;DON'T COMPARE CLASS ON SWAP
+		JRST DSKI7]
+	TLZE 4,NEWFB		;NEWLY ASSIGNED PAGE?
+	JRST DSKI6		;YES
+DSKI7:	ADDI 1,CST3
+	HLLZM 1,0(1)		;IN LH OF QUEUE POINTER, 0 MARKS END
+	PUSH P,1
+	MOVE 1,4		;DISK ADDRESS
+	CALL CVDSK		;CONVERT TO HARDWARE FORMAT
+	POP P,4
+	TRNN 1,1B25		;GET POSITIONER NUMBER FOR INDEX
+	TDZA 1,1		;ZERO
+	MOVEI 1,1		;ONE
+	PIOFF			;MUST NOT INTERRUPT QUEUEING
+	JUMPL 4,[HRRM 4,@DSKWI(1) ;WRITE, APPEND TO WRITE QUEUE
+		HRRZM 4,DSKWI(1) ;OF APPROPRIATE DRIVE
+		JRST DSKI4]
+	HRRM 4,@DSKRI(1)	;READ, APPEND TO READ QUEUE
+	HRRZM 4,DSKRI(1)
+DSKI4:	PION
+	SKIPGE DSKLUN		;TRANSFER NOW IN PROGRESS?
+	CALL DSKRC		;NO, GO START THIS OPERATION
+DSKIR:	POP P,1
+	RET
+
+DSKI6:	TLNE 1,DWRBIT		;NEW PAGE AND WRITE?
+	JRST DSKI8		;YES
+	HLLZM 1,CST3(1)
+	CALL SWPZPG		;READ, ZERO THE NEW PAGE
+	JSP 4,SWPDON		;INDICATE IO COMPLETION
+	JRST DSKIR
+
+DSKI8:	MOVEM 4,CST1(1)		;UPDATE DISK ADDRESS (NEWFB CLEARED)
+	TLO 1,(1B3)		;CAUSE WRITE OF CLASS
+	JRST DSKI7
+
+;IF SWAPPING TO DISK, DISK ADDRESS DISGUISED AS DRUM ADDRESS
+
+DSKIS:	SKIPE DRUMP		;REALLY SWAPPING ON DISK?
+	BUG(HLT,<DSKIO - BAD SWAP ADDRESS>)
+	HRRZS 2,1		;LINEARIZE 'DRUM' ADDRESS
+	ANDI 2,37		;SECTOR
+	LSH 1,-6		;BAND
+	IMULI 1,DRMSEC
+	ADD 1,2
+	IMULI 1,NSECPG		;CONVERT TO UNITS IN SECTORS
+	ADD 1,[DSKSWA]		;BEGINNING OF SWAP AREA
+	RET
+
+;PERIODIC ROUTINE TO CHECK FOR QUEUED REQUESTS NOT IN COMMAND LIST
+
+DSKCHK:	MOVEI 1,^D100		;RESET CLOCK FOR 100 MSEC
+	MOVEM 1,DSKTIM
+	SKIPGE DSKLUN		;TRANSFER IN PROGRESS?
+	JRST DSKPC1		;NO
+	MOVE 1,DSKLSV		;YES, TIME OF LAST INTERRUPT SERVICE
+	ADDI 1,^D5000		;PLUS FIVE SECONDS
+	CAML 1,TODCLK		;WAITED 5 SECS OR MORE?
+	JRST DSKPC1		;NO
+	MOVEM 1,DSKLSV		;YES, UPDATE CLOCK
+	BUG(CHK,<DSKCHK - DSK FAILED TO GIVE EXPECTED INTERRUPT>)
+	CONO DSK,DSKGNO		;RESTART DISK
+DSKPC1:	RET
+
+DSKRC:	MOVSI 3,DSKSIP+DSKCMR
+	CHNOFF DSKCHN
+	SKIPGE DSKLUN
+	TDNE 3,DSKSTS(1)	;THIS DRIVE NOW DOING SOMETHING?
+	JRST [	CHNON DSKCHN	;YES, LEAVE IT
+		RET]
+	CALL DSKRCK
+	CHNON DSKCHN
+	RET
+
+;UTILITY DISK I/O
+; AC1/ HARDWARE DISK ADDRESS
+; AC2/ BIT 13 - WRITE HEADER, BIT 14 - WRITE, BIT 15 - COMPARE CLASS
+;      BITS 16-24 - CLASS, BITS 25-35 WORD COUNT
+; AC3/ REAL CORE ADDRESS
+;RETURNS +1 WITH ERROR BITS IN AC1 24-35 (0 IF NO ERRORS)
+
+	EXTERN DISGET,SCHEDP,EDISMS
+
+UDSKIO:
+UDSK3:	SOSGE DSKCCT		;COMMAND BUFFER FULL?
+	JRST UDSK1		;YES, GO WAIT FOR ROOM
+	NOSKED
+	MOVE 4,@DSKFCL		;GET A COMMAND PAIR
+	EXCH 4,DSKFCL
+	HRLZM 3,0(4)		;CORE ADDRESS TO LH OF FIRST WORD
+	TLO 1,400000		;BIT FOR SCHEDULER TO TEST
+	MOVEM 1,1(4)		;DISK ADDRESS TO SECOND WORD
+	MOVEM 2,2(4)		;BITS, CLASS, AND COUNT TO THIRD WORD
+	TRNN 1,1B25		;GET POSITIONER NUMBER FOR INDEX
+	TDZA 1,1		;ZERO
+	MOVEI 1,1		;ONE
+	PIOFF
+	HRRM 4,@DSKUI(1)	;APPEND TO UTILITY QUEUE
+	HRRZM 4,DSKUI(1)
+	PION
+	PUSH P,4
+	SKIPGE DSKLUN		;STARTUP POSSIBLE?
+	CALL DSKRC		;YES
+	POP P,4
+	OKSKED
+	MOVEI 1,DISGET		;SCHEDULER .GE. TEST
+	HRLI 1,1(4)		;WILL TEST SECOND WORD OF PAIR
+	JSYS SCHEDP
+	NOSKED
+	MOVE 1,1(4)		;ERROR BITS RETURNED HEREIN
+	EXCH 4,DSKFCL		;RETURN PAIR TO FREE LIST
+	MOVEM 4,@DSKFCL
+	AOS DSKCCT
+	OKSKED
+	RET
+
+UDSK1:	PUSH P,1
+	AOS DSKCCT		;CORRECT COUNT
+	MOVEI 1,UDSK2
+	JSYS EDISMS		;DISMISS TILL ROOM IN COMMAND LIST
+	POP P,1
+	JRST UDSK3
+
+UDSK2:	SKIPG DSKCCT		;ROOM NOW?
+	JRST 0(4)		;KEEP WAITING
+	JRST 1(4)		;RUN
+
+;ROUTINE TO REMOVE REQUESTS FOR READ AND WRITE QUEUES AND
+;INITIATE SEEK OPERATIONS
+;CALLED AT MAIN AND INTERRUPT LEVEL WITH DRIVE NUMBER IN 1
+
+DSKRCK:	IORM 3,DSKSTS(1)	;SET BITS TO INDICATE UNQUEUEING IN PROG
+	SKIPE 2,DSKRO(1)	;READ WAITING?
+	JRST DSKRC1		;YES, UNQUEUE IT
+	SKIPE 2,DSKUO(1)	;UTILITY QUEUE WAITING?
+	JRST DSKRC3		;YES, IS SECOND PRIORITY
+	SKIPN 2,DSKWO(1)	;WRITE WAITING?
+	JRST [	ANDCAM 3,DSKSTS(1) ;NO, NOTHING TO DO. CLEAR BITS
+		RET]
+	HRRZ 2,0(2)		;UNQUEUE REQUEST FROM WRITE QUEUE
+	JUMPN 2,.+3
+	MOVEI 3,DSKWO(1)	;0 MARKS END OF LIST,
+	MOVEM 3,DSKWI(1)	;FIXUP INPUT POINTER
+	EXCH 2,DSKWO(1)		;UPDATE OUTPUT POINTER
+DSKRC2:	SUBI 2,CST3		;CONVERT BACK TO CORE PAGE NUMBER
+	HLL 2,CST3(2)		;GET WRITE AND CLASS INFO
+	MOVE 3,[XWD DWRBIT+DSKUIO+DSKCCB,17] ;CLEAR ERROR COUNT AND
+	ANDCAM 3,DSKSTS(1)	;CLEAR BITS
+	MOVSI 3,DWRBIT
+	TLNE 2,DWRBIT		;WRITE BIT ON?
+	IORM 3,DSKSTS(1)	;YES, PUT IT ON IN STATUS WORD
+	MOVEI 3,0(2)		;PAGE NUMBER
+	LSH 3,^D9		;SHIFT TO ADDRESS
+	MOVEM 3,DSKCAW(1)
+	MOVE 3,CST1(2)
+	TLNN 3,10		;DISK ADDRESS?
+	JRST DSKRC5		;NO CLASS FOR SWAPPING
+	MOVE 3,CST2(2)		;SET ABOUT FINDING CLASS
+	TLNE 3,-1
+	JRST DSKI1
+	CAIGE 3,NOFN
+	JRST DSKI2
+	MOVE 3,SPTH(3)
+DSKI1:	HLRZ 3,3
+DSKI2:	HLRZ 3,SPTH(3)
+	LSH 3,-4
+	DPB 3,[POINT 9,DSKCAW(1),8] ;LEAVE CLASS FOR STARTUP ROUTINE
+	MOVSI 3,DSKCCB		;CLASS COMPARE BIT
+	TLNN 2,(1B3)		;ON MEANS DON'T COMPARE
+	IORM 3,DSKSTS(1)	;MOVE IT TO DSKSTS
+DSKRC5:	PUSH P,1
+	MOVE 1,CST1(2)		;DISK ADDRESS
+	TLNN 1,10		;REGULAR?
+	CALL DSKIS		;NO, SWAPPING. CONVERT
+	CALL CVDSK		;CONVERT TO HARDWARE FORMAT
+	MOVE 2,1
+	POP P,1
+DSKRC4:	LSH 2,^D12		;SHIFT FOR DATAO
+	MOVEM 2,DSKDAW(1)	;LEAVE FOR OTHER ROUTINES
+	HRLZ 3,DSKSTS(1)	;CURRENT TRACK FOR THIS DRIVE
+	XOR 2,3			;COMPARE WITH TRACK OF THIS REQUEST
+;	TLNN 2,(377B13)		;EQUAL?
+	JRST [	CONSO PI,1B<DSKCHN+^D20> ;YES, ON PI LEVEL?
+		JRST DSKSVX	;NO, GO START TRANSFER
+		MOVSI 2,DSKSIP	;YES, SET STATE TO READY
+		ANDCAM 2,DSKSTS(1) ;TRANSFER WILL BE STARTED BEFORE DBRK
+		RET]
+	MOVSI 2,DSKCMR		;CLEAR READY BIT
+	ANDCAM 2,DSKSTS(1)
+	MOVE 2,DSKDAW(1)	;NOT EQUAL
+	TLZ 2,17		;CLEAR ERROR COUNT
+	HLRM 2,DSKSTS(1)	;SET NEW (DESIRED) TRACK IN STATUS
+	JRST 4,.		;SHOULD INITIATE SEEK HERE
+	RET
+
+DSKRC1:	HRRZ 2,0(2)		;UNQUEUE REQUEST FROM READ QUEUE
+	JUMPN 2,.+3
+	MOVEI 3,DSKRO(1)	;END OF LIST,
+	MOVEM 3,DSKRI(1)	;FIXUP INPUT POINTER
+	EXCH 2,DSKRO(1)		;UPDATE OUTPUT POINTER
+	JRST DSKRC2
+
+DSKRC3:	HRRZ 2,0(2)		;UNQUEUE
+	JUMPN 2,.+3
+	MOVEI 3,DSKUO(1)	;FIXUP ON END
+	MOVEM 3,DSKUI(1)
+	EXCH 2,DSKUO(1)
+	MOVE 3,[XWD DWRBIT+DSKUIO+DSKCCB,17] ;CLEAR ERROR COUNT
+	ANDCAM 3,DSKSTS(1)	;BITS
+	MOVEI 3,0(2)
+	SUBI 3,DSKCL		;PUT DSKCL INDEX
+	DPB 3,[POINT 5,DSKSTS(1),17] ;WHERE INTERRUPT ROUTINE CAN GET
+	HLRZ 3,0(2)		;CORE ADDRESS
+	LDB 4,[POINT 9,2(2),35]	;WORD COUNT (MOD 512)
+	HRLI 3,0(4)
+	LDB 4,[POINT 9,2(2),24]	;CLASS
+	DPB 4,[POINT 9,3,8]
+	MOVEM 3,DSKCAW(1)
+	MOVE 4,2(2)		;WRITE AND CLASS BITS
+	MOVSI 3,DSKUIO		;ALWAYS SET UTILITY BIT
+	TLNE 4,(1B14)		;WRITE?
+	TLO 3,DWRBIT		;YES
+	TLNE 4,(1B15)		;COMPARE CLASS?
+	TLO 3,DSKCCB		;YS
+	IORM 3,DSKSTS(1)
+	MOVE 2,1(2)		;DISK ADDRESS
+	JRST DSKRC4
+
+;DISK INTERRUPT SERVICE
+
+	INTERN DSKSV
+
+DSKSV:	XWD DSKSVR,.+1
+	CONSO DSK,DSKIRQ	;DISK REQUESTING?
+	JRST @DSKSVR		;NO
+	MOVEM P,DSKACP		;SAVE AC
+	MOVE P,[IOWD NDSKPD,DSKPDL] ;SET UP LOCAL STACK POINTER
+	SKIPE PWRDWN		;PWR FAIL?
+	JRST [	CONO DSK,DSKCIC+0 ;YES, CLEAR PI ASSMT
+		JRST DSKSV1]
+	SKIPE 2,DSKES		;ERROR?
+	JRST DSKERR		;YES
+	SKIPGE 1,DSKLUN		;WAS A DRIVE TRANSFERRING?
+	JRST DSKSV2		;NO
+DSKSV7:	MOVSI 2,DSKSIP+DSKCMR	;YES, IT MUST HAVE FINISHED
+	ANDCAB 2,DSKSTS(1)	;SO CLEAR ALL BITS FOR THAT DRIVE
+	TLNE 2,DSKUIO		;UTILITY OP?
+	JRST DSKSVU		;YES
+	HRRZ 1,DSKCAW(1)	;GET CORE ADDRESS JUST FINISHED
+	LSH 1,-^D9		;PAGE NUMBER
+	JSP 4,SWPDON		;NOTE XFER COMPLETED
+DSKSV2:	SETZ 0,			; **** NEEDS TO GET BITS FOR SEEK COMPL
+	MOVSI 1,-NDVMAX
+DSKSV6:	MOVSI 3,DSKSIP+DSKCMR
+	TDNE 0,BITS+^D27(1)	;SEEK COMPLETE ON THIS DRIVE?
+	JRST DSKSV4		;YES
+	TDNN 3,DSKSTS(1)	;THIS DRIVE FREE?
+	CALL DSKRCK		;YES, SEE IF ANY WAITING REQUESTS
+DSKSV5:	AOBJN 1,DSKSV6		;CHECK ALL DRIVES
+	AOS 1,DSKLUN		;START WITH NEXT UNIT, OR 0 IF NONE
+	HRLI 1,-NDVMAX
+DSKSV3:	MOVEI 2,0(1)
+	CAIL 2,NDVMAX
+	HRRI 1,0		;WRAPAROUND DRIVE NUMBER
+	MOVE 3,DSKSTS(1)
+	TLNE 3,DSKCMR		;COMMAND READY AND NO SEEK IN PROGRESS?
+	TLNE 3,DSKSIP
+	JRST [	AOBJN 1,DSKSV3	;NO, CHECK NEXT DRIVE
+		SETOM DSKLUN	;ALL DRIVES CHECKED, NONE XFERRING
+		JRST DSKSV1]	;GO DEBREAK
+	CALL DSKSVX		;START TRANSFER
+DSKSV1:	MOVE P,DSKACP		;RESTORE AC-P
+	UNBRK DSK		;DEBREAK
+
+DSKSVX:	MOVSI 3,DSKSIP+DSKCMR	;ROUTINE TO START XFER ON READY DRIVE
+	IORB 3,DSKSTS(1)	;SET STATE TO XFER IN PROGRESS
+	MOVE 2,TODCLK
+	MOVEM 2,DSKLSV		;SAVE CURRENT TIME
+	MOVE 2,DSKCAW(1)	;CORE ADDRESS AND COUNT
+	HRRZM 2,DSKCCM+2	;CORE ADDRESS TO THIRD WORD
+	TLNN 3,DWRBIT		;WRITE?
+	TDZA 4,4		;NO, START WITH 0
+	MOVSI 4,DSKWR		;YES, START WITH WRITE BIT
+	ROT 2,^D9
+	DPB 2,[POINT 9,4,11]	;CLASS
+	ROT 2,^D9
+	ANDI 2,777		;WORD COUNT
+	CAIN 2,0		;ZERO?
+	MOVEI 2,1000		;YES, MEANS 1000
+	DPB 2,[POINT 11,4,22]
+	TLNE 3,DSKCCB		;COMPARE CLASS?
+	TLO 4,DCLASS		;YES
+	MOVEM 4,DSKCCM+1	;SECOND WORD
+	MOVE 2,DSKDAW(1)	;DISK ADDRESS
+	TLO 2,DSKIOT		;TRANSFER AND INTERRUPT
+	MOVEM 2,DSKCCM		;FIRST WORD
+	PIOFF
+	CONO DSK,DSKGNO		;START DISK, NO CHAIN
+	HRRZM 1,DSKLUN		;REMEMBER NUMBER OF POSITIONER NOW XFER
+	PION
+	RET
+
+DSKSV4:		;HERE WHEN SEEK COMPLETE ******
+	MOVSI 3,DSKSIP+DSKCMR
+	XORM 3,DSKSTS(1)	;CHANGE STATE TO COMMAND READY
+	JRST DSKSV5
+
+DSKUER:	MOVSI 3,DSKSIP+DSKCMR
+	ANDCAM 3,DSKSTS(1)	;CLEAR STATE BITS
+	TLZA 2,400000		;RETURN ERROR BITS (B0 SHOULD BE OFF)
+DSKSVU:	SETZ 2,			;0 MEANS NO ERRORS
+	HLRZ 3,DSKSTS(1)	;FROM INTERRUPT ROUTINE
+	ANDI 3,37		;GET COMMAND INDEX
+	MOVEM 2,DSKCL+1(3)	;WORD GOING POSITIVE INDICATES DONE
+	AOS PSKED		;SIG SCHED
+	JRST DSKSV2
+
+;DISK ERROR
+
+	INTERN DSKERR
+
+DSKERR:	SETZM DSKES		;CLEAR ERROR WORD
+	SKIPGE 1,DSKLUN		;WAS ON XFER COMMAND?
+	JRST DSKER1		;NO
+	MOVE 3,[XWD DSKCCM,DSKRER]
+	BLT 3,DSKRER+2		;SAVE COMMAND WORDS
+	MOVEM 2,DSKRER+3	;AND ERROR BITS
+	AOS DSKRCE		;COUNT REC ERRORS
+	TRNE 2,DSKDNA		;DNA?
+	JRST DSKER2		;YES, ALWAYS TRY AGAIN
+	AOS 3,DSKSTS(1)		;COUNT ERRORS ON THIS REQUEST
+	ANDI 3,17
+	CAIL 3,DSKNTR		;UNRECOVERABLE?
+	JRST DSKERP		;YES
+DSKER2:	CONO DSK,DSKGNO		;START XFER OVER
+	JRST DSKSV1		;DEBREAK
+
+;IRRECOVERABLE ERROR
+
+DSKERP:	TRNE 2,1B33		;PCI?
+	JRST [	AOS DEVMPE	;YES, REQUEST CORE SCAN
+		ISB APRCHN
+		JRST DSKER2]	;TRY AGAIN, ERROR MAY HAVE BEEN REMOVED
+	MOVNI 3,DSKNTR
+	ADDM 3,DSKRCE		;REMOVE FROM RECOVERABLE COUNT
+	AOS DSKNRE		;COUNT IRRECOVERABLE
+	MOVE 3,[XWD DSKRER,DSKLER]
+	BLT 3,DSKLER+3		;SAVE COMMAND WORDS
+	MOVSI 3,DSKUIO
+	TDNE 3,DSKSTS(1)	;UTILITY OP?
+	JRST DSKUER		;YES
+	MOVE 3,DSKCCM+1
+	TRNE 2,DSKCNE		;CLASS?
+	JRST DSKERC		;YES, GO TRY WITHOUT COMPARE
+	TRNE 2,DSKSWE		;SO-CALLED SOFTWARE  ERRORS?
+	JFCL
+	TRNE 2,DSKSKF		;DISK DYING TYPE ERRORS?
+	TLNE 3,(1B1)		;AND READ?
+	JRST DSKER8		;NO
+	JRST DSKER8		;YES (CURRENTLY NO DIFFERENCE)
+DSKEP1:	MOVEI 3,17
+	ANDCAM 3,DSKSTS(1)	;CLEAR ERROR COUNT
+	JRST DSKER2		;AND TRY SOME MORE
+
+DSKERC:	TLNE 3,(1B1)		;READ?
+	JRST DSKER8		;NO, GIVE UP
+	HRRZ 4,DSKCAW(1)	;CORE ADDRESS
+	LSH 4,-^D9
+	MOVSI 3,SWPERR
+	IORM 3,CST3(4)		;INDICATE ERROR
+	MOVSI 3,DCLASS
+	ANDCAM 3,DSKCCM+1	;BUT CLEAR CLASS COMPARE BIT
+	JRST DSKEP1		;AND TRY AGAIN
+
+DSKER8:	HRRZ 2,DSKCAW(1)	;'NORMAL' IRREC TYPE ERROR
+	LSH 2,-^D9		;GET PAGE NUMBER
+	MOVSI 3,SWPERR
+	IORM 3,CST3(2)		;NOTIFY SWAPPER OF ERROR
+	JRST DSKSV7		;TREAT REQUEST AS COMPLETED
+
+DSKER1:	BUG(HLT,<DISK ERROR WHILE NO TRANSFER IN PROGRESS>)
+
+;DISK DRIVER INITIALIZATION
+
+	INTERN DSKINI,DSKRST
+
+DSKINI:	IFNDEF DRMCHN,<CALL DRMINI> ;INIT SWAP BIT TABLE
+DSKRST:	SETOM DSKLUN
+	SKIPN DISKP
+	RET
+	SETOM DSKBLK
+	MOVEI 1,DSKCL+3*NDSKCM-3
+	SETZM 0(1)		;END OF LIST
+	MOVEM 1,-3(1)		;INIT UTILITY FREE LIST
+	SUBI 1,3
+	CAILE 1,DSKCL
+	JRST .-3
+	MOVEM 1,DSKFCL
+	MOVEI 1,NDSKCM
+	MOVEM 1,DSKCCT		;INIT UTILITY COMMAND FREE COUNT
+	MOVEI 1,DSKCCM
+	MOVEM 1,DSKCP		;INITIAL COMMAND WORD FOR CHANNEL
+	TLO 1,DSKBRU		;BRANCH COMMAND TO BEG OF LIST
+	MOVEM 1,DSKCCM+3	;PUT AT END
+	SETZM DSKES
+	MOVSI 1,-NDVMAX		;FOR EACH UNIT, DO:
+DSKII1:	MOVEI 2,DSKWO(1)	;INIT WRITE QUEUE
+	MOVEM 2,DSKWI(1)
+	MOVEI 2,DSKRO(1)	;INIT READ QUEUE
+	MOVEM 2,DSKRI(1)
+	MOVEI 2,DSKUO(1)	;INIT UTILITY QUEUE
+	MOVEM 2,DSKUI(1)
+	SETZM DSKSTS(1)		;CLEAR STATUS AND SET TRACK TO 0
+DSKII3:	AOBJN 1,DSKII1
+	CONO DSK,DSKCIC+<DSKCHN>B32	;GIVE IT IT'S PI ASSMT
+	RET
+
+;RELOAD RES MON, CALLED FROM SYSGO
+
+RLRMA==3000		;RUN LOCATION OF RELOAD ROUTINE
+RLRCA==36		;FIRST CORE LOCATION RESTORED
+
+RLRMON:	MOVE 1,[XWD RLMX0,RLRMA]
+	BLT 1,RLRMA+777		;MOVE RELOAD ROUTINE TO RUN LOCATION
+	JRST RLMGO		;IT RELOADS AND STARTS MON
+
+;RELOAD ROUTINE, RUN IN LOWER CORE. CAN BE EXTRACTED FOR PAPER TAPE, ETC.
+
+RLMX0:	PHASE RLRMA
+
+RLMC5:	REPEAT PPRMPG,<0>	;TABLE OF DISK ADDRESSES, SETUP AT POSTLD
+
+;ENTER HERE FOR CLEAN BOOT FROM DSK
+
+MNBOOT:	SETZM 20		;CLEAR CORE NOT CLEARED BY TENDMP
+	MOVSI 1,20
+	HRRI 1,21
+	BLT 1,777
+	MOVEI 7,100		;START AT DDT WHEN FINISHED
+RLMGO:	MOVSI 10,-PPRMPG+1
+	MOVEI 11,RLRCA		;FIRST CORE LOC TO LOAD INTO
+RLMN1:	CAIGE 11,RLRMA+1000	;SKIP OVER THIS CODE SO AS NOT TO
+	CAIGE 11,RLRMA		;CLOBBER IT
+	CAIA
+	ADDI 11,1000
+	MOVE 1,RLMC5(10)	;DISK ADDRESS
+	LSH 1,^D12
+	TLO 1,400000		;IOT COMMAND
+	MOVE 2,RLMC1		;READ 1000 WORDS
+	MOVE 3,11
+	MOVE 4,RLMC2
+	HRRZM 4,DSKCP		;SETUP COMMAND POINTER
+	BLT 4,RLMNB+3-1		;SETUP COMMAND
+	CONO DSK,1		;OPERATE DISK
+	CONSZ DSK,1
+	JRST .-1		;WAIT FOR DONE
+	ANDCMI 11,777		;BUMP TO NEXT PAGE BOUNDARY
+	ADDI 11,1000
+	AOBJN 10,RLMN1
+	AOS GETSMF
+	JRST 0(7)		;RETURN
+
+;CONSTANTS FOR ABOVE KEPT LOCALLY SO THIS ROUTINE CAN BE EXTRACTED
+
+RLMC1:	1000B22
+RLMC2:	XWD 1,RLMNB
+
+RLMNB:	REPEAT 3,<0>
+
+	DEPHASE
+RLRMX1:
+
+;DISK ALLOCATOR
+
+NPOS==2			;NUMBER OF POSITIONERS TO USE (1 OR 2)
+POSBIT==1		;POSITIONER TO USE (0 OR 1) FOR TRACKS 0-377
+
+NTRACK=400*NPOS		;SECOND POSITIONER TREATED LIKE ADDITIONAL TRACKS
+
+;THERE ARE 5+11+15=31 SECTORS/SURFACE/HEAD, OR
+;62 SECTORS/SURFACE, BOTH HEADS
+
+NWSEC==200		;NUMBER OF WORDS PER SECTOR
+NSECPG==1000/NWSEC		;NUMBER OF SECTORS PER PAGE
+NSURFS==^D13
+
+;THERE ARE NSURFS*62=806 SECTORS/TRACK
+;THERE ARE 806*(200/1000)=201 PAGES + 2 SECTORS PER TRACK
+
+NSECTK==NSURFS*^D62		;NUMBER OF SECTORS PER TRACK
+NPGTK==NSECTK*200/1000		;NUMBER OF PAGES PER TRACK
+NBWTK==<NPGTK+^D35>/^D36	;NUMBER OF WORDS OF BITS PER TRACK
+NMINFP==NPGTK/3			;MIN PAGES FOR FREE CHOICE ASSMT
+
+HITRK==400+360		;UPPER LIMIT OF TRACKS TO USE
+LOTRK==0		;LOWER LIMIT OF TRACKS TO USE
+
+;FIXED AREAS OF DISK FOR SPECIAL PURPOSES
+
+DSKSWA==<400+360>*NSECTK	;SWAPPING AREA, TRACK 360 OF OTHER HALF
+
+DSKRMA==<400+377>*NSECTK	;RESIDENT MON IMAGE FOR RELOADING
+DSKSMA==DSKRMA+PPRMPG*4		;SWAP MON IMAGE
+
+DSKABT==10		;BITS IOR'D TO LH OF DISK ADDRESS
+DSKMSK==777774		;BITS NOT USED IN LH OF DISK ADDRESS
+
+NGS DSKFCT,NTRACK	;COUNT OF FREE PAGES EACH TRACK
+NGS DSKBTB,NTRACK*NBWTK	;BIT TABLE
+XX==NTRACK+NTRACK*NBWTK		;SIZE OF ACTUAL STORAGE FOR CNT AND BITS
+NGS DSKDMY,<<<XX+777>/1000>*1000>-XX ;FILL TO NEXT PAGE BOUNDARY
+
+LS DSKBLK,1		;BIT TABLE LOCK
+LS DBTJFN,1		;JFN OF BIT TABLE FILE
+
+;DISC ADDRESS OF INDEX FILE
+
+DIDSC0==<HITRK+LOTRK>/2*NSECTK	;;MIDDLE OF FILE AREA
+
+DIDSCI:	XWD 30,DIDSC0
+GS DIDSCA,1
+
+;CONVERT LINEAR ADDRESS TO HARDWARE DISK ADDRESS
+
+CVDSK:	TLZ 1,DSKMSK		;FLUSH BITS
+	IDIVI 1,NSECTK		;GET TRACK AND SECTOR
+	LSH 1,^D13		;SHIFT TO TRACK FIELD
+	TLZE 1,(1B14)		;TRACK .GE. 400?
+	IORI 1,1B25		;YES, USE OTHER POSITIONER
+	TRC 1,<POSBIT>B25	;MAYBE USE OPPOSITE POSITIONERS
+	PUSH P,1
+	MOVEI 1,0(2)
+	MOVSI 3,-NZONES
+CVDSK1:	CAMGE 1,ZNTBL(3)	;FIND ZONE RANGE
+	JRST CVDSK2		;FIRST ENTRY GREATER THAN ADDRESS
+	AOBJN 3,CVDSK1
+	BUG(HLT,<CVDSK GIVEN BAD LINEAR ADDRESS>)
+
+CVDSK2:	HLRZ 4,ZNTB1(3)		;GET HARDWARE ZONE NUMBER
+	SUB 1,ZNTBL-1(3)	;MAKE RELATIVE TO START OF ZONE
+	HRRZ 3,ZNTB1(3)
+	IDIVI 1,0(3)		;DIVIDE BY SECTORS/SURFACE TO GET SURFACE
+	LSH 1,4			;SHIFT TO HEAD FIELD
+	IORI 1,0(2)		;MERGE HEAD AND SECTOR
+	IORI 1,0(4)		;MERGE ZONE
+	POP P,2
+	IOR 1,2			;MERGE TRACK
+	RET
+
+;ZONE DATA TABLES
+
+	0			;FIRST SECTOR OF ZONE 1
+ZNTBL:	^D11*NSURFS*2		;FIRST SECTOR OF ZONE 2
+	<^D11+^D15>*NSURFS*2	;FIRST SECTOR OF ZONE 0
+	<^D11+^D15+^D5>*NSURFS*2 ;LAST SECTOR OF TRACK +1
+NZONES==.-ZNTBL
+
+ZNTB1:	XWD 1B24,^D11		;ZONE NUMBER,,SECTORS/ZONE
+	XWD 2B24,^D15
+	XWD 0,^D5
+
+;CONVERT HARDWARE FORMAT TO LINEAR ADDRESS
+
+CDSKVA:	SETZB 2,3
+	TRC 1,<POSBIT>B25	;POSSIBLE INTERCHANGE POSITIONERS
+	LSHC 1,-^D13		;GET TRACK
+	ANDI 1,377
+	TLNE 2,(1B2)
+	IORI 1,400
+	IMULI 1,NSECTK
+	PUSH P,1
+	SETZ 1,
+	LSHC 1,2		;ZONE NUMBER TO 1
+	ROTC 2,7		;SURFACE AND HEAD TO 3
+	ROT 2,4			;SECTOR RIGHT JUSTIFIED IN 2
+	ANDI 3,77		;ISLOATE SURFACE AND HEAD
+	HRRZ 4,ZNTB2(1)		;NUMBER SECTORS THIS ZONE
+	IMULI 3,0(4)
+	HLRZ 1,ZNTB2(1)		;FIRST LOGICAL SECTOR THIS ZONE
+	ADDI 1,0(3)		;ADD SURFACE AND HEAD
+	ADDI 1,0(2)		;ADD SECTOR
+	POP P,2
+	ADD 1,2			;ADD TRACK BASE
+	RET
+
+	DEFINE ZZ (N,M)
+<	XWD <M>*NSURFS*2,N>
+
+ZNTB2:	ZZ ^D5,^D11+^D15	;FIRST SECTOR IN ZONE,,SECTORS/ZONE
+	ZZ ^D11,0
+	ZZ ^D15,^D11
+
+	SWAPCD
+
+;2 DEC 71, 1655:
+;DRUM AND DISK DRIVERS AND ALLOCATORS
+
+;DISK PACKAGE- RPO2 DISK PACKS.   D. MURPHY
+
+	INTERN DSKIO,DSKCHK,UDSKIO,CVDSK,CDSKVA,DIDSCI
+	EXTERN NOFN,BLOCK1,DSKTIM,DISKP,FPTA,JFNOFN,NXTDMP
+	EXTERN SETMPG,SETPT,DBUGSW,PSKED,CORWB,DIDSCA,SWPZPG,DEVMPE
+
+NDVMAX==10		;MAX NUMBER OF DRIVES
+DSK=250			;DEVICE NUMBER
+DSKCP=62		;COMMAND POINTER
+
+DWRBIT==1B18		;WRITE REQUEST FROM SWAPPER (LH OF AC1)
+DSKSIP=1B19		;SEEK IN PROGRESS, LH OF DSKSTS
+DSKCMR=1B20		;COMMAND READY, LH OF DSKSTS
+DSKUIO=1B21		;UDSKIO TYPE OPERATION, LH OF DSKSTS
+DSKIRQ==1B32		;PI REQUEST BIT IN CONI WORD
+NEWFB==1B33		;NEW FILE BIT (IN LINEAR ADDRESS)
+CLASS0==0		;CLASS FOR FREE BLOCKS
+DSKRDA==0B20		;OP CODE FOR READ COMMAND
+DSKWDA==1B20		; .. WRITE
+DSKPOS==4B20		; .. POSITION (SEEK)
+DSKCAT==5B20		; .. CLEAR ATTENTIONS
+DSKNOP==6B20		; .. NOP
+DSKCAL==7B20		; .. RECALIBRATE
+
+NDSKCM==10		;SIZE OF UDSKIO COMMAND BUFFER
+NDSKPD==10		;SIZE OF INTERRUPT PDL
+NPD1==20		;SIZE OF LOCAL (MAIN) PDL
+
+;STATUS OF DRIVE IS RECORDED IN DSKSTS
+;RH CONTAINS NUMBER OF TRACK AT WHICH DRIVE IS CURRENTLY POSITIONED,
+; OR WHICH DRIVE IS SEEKING IN BITS 24-31
+; ERROR COUNT IN BITS 32-35
+;LH BITS 13-17 ARE AN INDEX INTO THE UDSKIO COMMAND BUFFER
+;DSKUIO BIT ON INDICATES UDSKIO TYPE OPERATION
+;STATE OF DRIVE IS INDICATED BY DSKSIP AND DSKCMR BITS IN LH
+; 00 - NOTHING HAPPENING
+; 10 - DRIVE SEEKING TRACK
+; 01 - DRIVE POSITIONED, TRANSFER READY TO BE STARTED
+; 11 - TRANSFER IN PROGRESS (ALSO USED WHEN REQUEST BEING UNQUEUED)
+
+;STORAGE
+
+LS DSKFCL,1		;FREE LIST FOR UDSKIO REQUEST PAIRS
+LS DSKCCT,1		;COUNT OF UDSKIO REQUESTS
+LS DSKCL,2*NDSKCM	;COMMAND BUFFER FOR UDSKIO REQUESTS
+LS DSKLUN,1		;LAST UNIT XFERRING, -1 IF NO UNIT XFERRING
+LS DSKCCM,2		;BUFFER FOR DF10 CHANNEL COMMAND
+
+LS DSKWI,NDVMAX		;WRITE QUEUE IN
+LS DSKWO,NDVMAX		;WRITE QUEUE OUT
+LS DSKRI,NDVMAX		;READ QUEUE IN
+LS DSKRO,NDVMAX		;READ QUEUE OUT
+LS DSKUI,NDVMAX		;UTILITY QUEUE IN
+LS DSKUO,NDVMAX		;UTILITY QUEUE OUT
+
+LS DSKDAW,NDVMAX	;DISK ADDRESS FOR CURRENT OPERATION
+LS DSKCAW,NDVMAX	;CORE ADDRESS AND COUNT FOR CURRENT OPERATION
+LS DSKSTS,NDVMAX	;STATUS OF DRIVE,,CURRENT TRACK
+
+LS DSKPD1,NPD1+1	;LOCAL MAIN PDL
+
+LS DSKSVR,1		;INTERRUPT SERVICE RETURN
+LS DSKACP,1		;SAVED AC-P
+LS DSKPDL,NDSKPD	;INTERRUPT PDL
+LS DSKLSV,1		;TIME OF LAST DISK INTERRUPT SERVICE
+
+;DO NOT REORDER ERROR WORDS, USED BY GETAB
+
+NDSKEW==^D10		;NUMBER OF ERROR WORDS FOR GETAB
+
+LS DSKRCE,1		;COUNT OF RECOVERABLE ERRORS
+LS DSKRER,4		;COMMAND WORDS AND ERROR BITS OF LAST ERROR
+LS DSKNRE,1		;COUNT OF NON-RECOVERABLE ERRORS
+LS DSKLER,4		;COMMAND WORDS AND ERROR BITS LAST NON-REC ERR
+
+DSKNTR==^D5		;NUMBER OF TRIES ON RECOVERABLE ERRORS
+
+;DISK I/O DRIVER - CALLED FROM SWAPPER
+
+	RESCD
+
+DSKIO:	MOVEM P,DSKPD1		;SETUP LOCAL STACK
+	MOVE P,[XWD -NPD1,DSKPD1]
+	PUSH P,1
+	MOVE 3,CST2(1)		;SET ABOUT FINDING CLASS
+	TLNE 3,-1
+	JRST DSKI1
+	CAIGE 3,NOFN
+	JRST DSKI2
+	MOVE 3,SPTH(3)
+DSKI1:	HLRZ 3,3
+DSKI2:	HLRZ 3,SPTH(3)
+	LSH 3,-4
+	ANDI 3,777
+	MOVE 4,CST1(1)		;GET DISK ADDRESS
+	TLNN 4,10		;REGULAR DISK ADDRESS?
+	JRST [	PUSH P,1	;NO, MUST BE SWAPPING ADDRESS
+		MOVE 1,4
+		CALL DSKIS	;CONVERT TO REGULAR DISK ADDRESS
+		MOVE 4,1
+		POP P,1
+		MOVEI 3,1777	;CLASS FOR SWAPPING
+		JRST DSKI7]
+	TLZE 4,NEWFB		;NEWLY ASSIGNED PAGE?
+	JRST DSKI6		;YES
+DSKI7:	DPB 3,[POINT 10,1,17]	;SAVE CLASS AND CLASS CONTROL BIT
+	ADDI 1,CST3
+	HLLZM 1,0(1)		;IN LH OF QUEUE POINTER, 0 MARKS END
+	PUSH P,1
+	MOVE 1,4		;DISK ADDRESS
+	CALL CVDSK		;CONVERT TO HARDWARE FORMAT
+	POP P,4
+	HLRZ 1,1		;GET DRIVE NUMBER FOR INDEX
+	PIOFF			;MUST NOT INTERRUPT QUEUEING
+	JUMPL 4,[HRRM 4,@DSKWI(1) ;WRITE, APPEND TO WRITE QUEUE
+		HRRZM 4,DSKWI(1) ;OF APPROPRIATE DRIVE
+		JRST DSKI4]
+	HRRM 4,@DSKRI(1)	;READ, APPEND TO READ QUEUE
+	HRRZM 4,DSKRI(1)
+DSKI4:	PION
+	SKIPGE DSKLUN		;TRANSFER NOW IN PROGRESS?
+	CALL DSKRC		;NO, GO START THIS OPERATION
+DSKIR:	POP P,1
+	MOVE P,DSKPD1		;RESTORE CALLERS STACK
+	RET
+
+DSKI6:	TLNE 1,DWRBIT		;NEW PAGE AND WRITE?
+	JRST DSKI8		;YES
+	CALL SWPZPG		;READ, ZERO THE NEW PAGE
+	JSP 4,SWPDON		;INDICATE IO COMPLETION
+	JRST DSKIR
+
+DSKI8:	MOVEM 4,CST1(1)		;UPDATE DISK ADDRESS (NEWFB CLEARED)
+	TRO 3,1000		;CAUSE WRITE OF CLASS
+	JRST DSKI7
+
+;IF SWAPPING TO DISK, DISK ADDRESS DISGUISED AS DRUM ADDRESS
+
+DSKIS:	SKIPE DRUMP		;REALLY SWAPPING ON DISK?
+	BUG(HLT,<DSKIO - BAD SWAP ADDRESS>)
+	HRRZS 2,1		;LINEARIZE 'DRUM' ADDRESS
+	ANDI 2,77		;SECTOR
+	LSH 1,-6		;BAND
+	IMULI 1,DRMSEC
+	ADD 1,2
+	IMULI 1,NSECPG		;TIMES SECTORS PER PAGE
+	ADD 1,[DSKSWA]		;BEGINNING OF SWAP AREA
+	RET
+
+;PERIODIC ROUTINE TO CHECK FOR QUEUED REQUESTS NOT IN COMMAND LIST
+
+DSKCHK:	MOVEI 1,^D100		;RESET CLOCK FOR 100 MSEC
+	MOVEM 1,DSKTIM
+	SKIPGE DSKLUN		;TRANSFER IN PROGRESS?
+	JRST DSKPC1		;NO
+	MOVE 1,DSKLSV		;YES, TIME OF LAST INTERRUPT SERVICE
+	ADDI 1,^D5000		;PLUS FIVE SECONDS
+	CAML 1,TODCLK		;WAITED 5 SECS OR MORE?
+	JRST DSKPC1		;NO
+	MOVEM 1,DSKLSV		;YES, UPDATE CLOCK
+	BUG(HLT,<DSKCHK - DSK FAILED TO GIVE EXPECTED INTERRUPT>)
+DSKPC1:	RET
+
+DSKRC:	MOVSI 3,DSKSIP+DSKCMR
+	CHNOFF DSKCHN
+	SKIPGE DSKLUN		;CONTROL BUSY, OR
+	TDNE 3,DSKSTS(1)	;THIS DRIVE NOW DOING SOMETHING?
+	JRST [	CHNON DSKCHN	;YES, LEAVE IT
+		RET]
+	CALL DSKRCK		;NO, GO GET IT GOING
+	CHNON DSKCHN
+	RET
+
+;UTILITY DISK I/O
+; AC1/ HARDWARE DISK ADDRESS
+; AC2/ BIT 13 - WRITE HEADER, BIT 14 - WRITE, BIT 15 - COMPARE CLASS
+;      BITS 16-24 - CLASS, BITS 25-35 WORD COUNT
+; AC3/ REAL CORE ADDRESS
+;RETURNS +1 WITH ERROR BITS IN AC1 24-35 (0 IF NO ERRORS)
+
+	EXTERN DISGET,SCHEDP,EDISMS
+
+UDSKIO:
+UDSK3:	SOSGE DSKCCT		;COMMAND BUFFER FULL?
+	JRST UDSK1		;YES, GO WAIT FOR ROOM
+	NOSKED
+	MOVE 4,@DSKFCL		;GET A COMMAND PAIR
+	EXCH 4,DSKFCL
+	HRLZM 1,0(4)		;STORE DISK ADDRESS LH OF FIRST WORD
+	HRRZM 3,1(4)		;CORE ADDRESS RH OF SECOND WORD
+	HRLM 2,1(4)		;WORD COUNT IN BITS 7-17
+	MOVEI 3,0(4)
+	SUBI 3,DSKCL		;INDEX FOR THIS PAIR
+	TLNE 2,(1B14)		;READ OR WRITE?
+	TROA 3,600000B46	;WRITE
+	TRO 3,400000B46		;READ, B0 ALWAYS SET
+	DPB 3,[POINT 7,1(4),6]	;TO BITS 0-6
+	HLRZ 1,1		;DRIVE NUMBER
+	ANDI 1,NDVMAX-1
+	PIOFF
+	HRRM 4,@DSKUI(1)	;APPEND TO UTILITY QUEUE
+	HRRZM 4,DSKUI(1)
+	PION
+	PUSH P,4
+	SKIPGE DSKLUN		;STARTUP POSSIBLE?
+	CALL DSKRC		;YES
+	POP P,4
+	OKSKED
+	MOVEI 1,DISGET		;SCHEDULER .GE. TEST
+	HRLI 1,1(4)		;WILL TEST SECOND WORD OF PAIR
+	JSYS SCHEDP
+	NOSKED
+	MOVE 1,1(4)		;ERROR BITS RETURNED HEREIN
+	EXCH 4,DSKFCL		;RETURN PAIR TO FREE LIST
+	MOVEM 4,@DSKFCL
+	AOS DSKCCT
+	OKSKED
+	RET
+
+UDSK1:	PUSH P,1
+	AOS DSKCCT		;CORRECT COUNT
+	MOVEI 1,UDSK2
+	JSYS EDISMS		;DISMISS TILL ROOM IN COMMAND LIST
+	POP P,1
+	JRST UDSK3
+
+UDSK2:	SKIPG DSKCCT		;ROOM NOW?
+	JRST 0(4)		;KEEP WAITING
+	JRST 1(4)		;RUN
+
+;ROUTINE TO REMOVE REQUESTS FOR READ AND WRITE QUEUES AND
+;INITIATE SEEK OPERATIONS
+;CALLED AT MAIN AND INTERRUPT LEVEL WITH DRIVE NUMBER IN 1
+
+DSKRCK:	IORM 3,DSKSTS(1)	;SET BITS TO INDICATE UNQUEUEING IN PROG
+	SKIPE 2,DSKUO(1)	;UTILITY QUEUE WAITING?
+	JRST DSKRC3		;YES, IS FIRST PRIORITY
+	SKIPE 2,DSKRO(1)	;READ WAITING?
+	JRST DSKRC1		;YES, UNQUEUE IT
+	SKIPN 2,DSKWO(1)	;WRITE WAITING?
+	JRST [	ANDCAM 3,DSKSTS(1) ;NO, NOTHING TO DO. CLEAR BITS
+		RET]
+	HRRZ 2,0(2)		;UNQUEUE REQUEST FROM WRITE QUEUE
+	JUMPN 2,.+3
+	MOVEI 3,DSKWO(1)	;0 MARKS END OF LIST,
+	MOVEM 3,DSKWI(1)	;FIXUP INPUT POINTER
+	EXCH 2,DSKWO(1)		;UPDATE OUTPUT POINTER
+DSKRC2:	SUBI 2,CST3		;CONVERT BACK TO CORE PAGE NUMBER
+	HLL 2,CST3(2)		;GET WRITE AND CLASS INFO
+	MOVE 3,[XWD DWRBIT+DSKUIO,17] ;CLEAR ERROR COUNT AND
+	ANDCAM 3,DSKSTS(1)	;CLEAR BITS
+	MOVSI 3,DWRBIT
+	TLNE 2,DWRBIT		;WRITE BIT ON?
+	IORM 3,DSKSTS(1)	;YES, PUT IT ON IN STATUS WORD
+	MOVEI 3,0(2)
+	LSH 3,^D9		;MAKE PAGE NUMBER INTO CORE ADDRESS
+	HRLI 3,-1000		;WITH ONE PAGE WORD COUNT
+	MOVEM 3,DSKCAW(1)	;LEAVE IT FOR TRANSFER STARTUP
+	PUSH P,1
+	MOVE 1,CST1(2)		;DISK ADDRESS
+	TLNN 1,10		;REGULAR?
+	CALL DSKIS		;NO, SWAPPING. CONVERT
+	CALL CVDSK		;CONVERT TO HARDWARE FORMAT
+	MOVE 2,1
+	POP P,1
+DSKRC4:	LSH 2,^D12		;SHIFT FOR DATAO
+	MOVEM 2,DSKDAW(1)	;LEAVE FOR OTHER ROUTINES
+	HRLZ 3,DSKSTS(1)	;CURRENT TRACK FOR THIS DRIVE
+	XOR 2,3			;COMPARE WITH TRACK OF THIS REQUEST
+	TLNN 2,(377B13)		;EQUAL?
+	JRST [	CONSO PI,1B<DSKCHN+^D20> ;YES, ON PI LEVEL?
+		JRST DSKSVX	;NO, GO START TRANSFER
+		MOVSI 2,DSKSIP	;YES, SET STATE TO READY
+		ANDCAM 2,DSKSTS(1) ;TRANSFER WILL BE STARTED BEFORE DBRK
+		RET]
+	MOVSI 2,DSKCMR		;CLEAR READY BIT
+	ANDCAM 2,DSKSTS(1)
+	MOVE 2,DSKDAW(1)	;NOT EQUAL
+	TLZ 2,17		;CLEAR ERROR COUNT
+	HLRM 2,DSKSTS(1)	;SET NEW (DESIRED) TRACK IN STATUS
+	TLO 2,DSKPOS		;CONSTRUCT SEEK COMMAND
+	DATAO DSK,2		;START SEEK
+	RET
+
+DSKRC1:	HRRZ 2,0(2)		;UNQUEUE REQUEST FROM READ QUEUE
+	JUMPN 2,.+3
+	MOVEI 3,DSKRO(1)	;END OF LIST,
+	MOVEM 3,DSKRI(1)	;FIXUP INPUT POINTER
+	EXCH 2,DSKRO(1)		;UPDATE OUTPUT POINTER
+	JRST DSKRC2
+
+DSKRC3:	HRRZ 2,0(2)		;UNQUEUE
+	JUMPN 2,.+3
+	MOVEI 3,DSKUO(1)	;FIXUP ON END
+	MOVEM 3,DSKUI(1)
+	EXCH 2,DSKUO(1)
+	MOVE 3,[XWD DWRBIT+DSKUIO,17] ;CLEAR ERROR COUNT
+	ANDCAM 3,DSKSTS(1)	;BITS
+	LDB 3,[POINT 5,1(2),6]	;DSKCL INDEX
+	DPB 3,[POINT 5,DSKSTS(1),17] ;WHERE INTERRUPT ROUTINE CAN GET
+	HLLZ 3,1(2)		;WORD COUNT
+	TLZ 3,774000
+	MOVNM 3,DSKCAW(1)	;TO LH OF CHANNEL WORD
+	MOVE 4,1(2)		;CORE ADDRESS AND BITS
+	HRRM 4,DSKCAW(1)	;STORE CORE ADDRESS
+	MOVSI 3,DSKUIO		;SET UTILITY BIT IN ANY CASE
+	TLNE 4,200000		;AND IF WRITE,
+	MOVSI 3,DSKUIO+DWRBIT	;SET WRITE BIT TOO
+	IORM 3,DSKSTS(1)	;YES
+	HLRZ 2,0(2)		;DISK ADDRESS
+	HRLI 2,0(1)		;INCLUDE UNIT
+	JRST DSKRC4
+
+;DISK INTERRUPT SERVICE
+
+	INTERN DSKSV
+
+DSKSV:	XWD DSKSVR,.+1
+	CONSO DSK,DSKIRQ	;DISK REQUESTING?
+	JRST @DSKSVR		;NO
+	MOVEM P,DSKACP		;SAVE AC
+	MOVE P,[IOWD NDSKPD,DSKPDL] ;SET UP LOCAL STACK POINTER
+	SKIPE PWRDWN		;PWR FAIL?
+	JRST [	CONO DSK,175700+1B32 ;CLEAR PI ASSMT AND MISC BITS
+		JRST DSKSV1]
+	CONSZ DSK,777760-202000 ;ERROR? (IGNORING END-OF-CYLAND NOT READY)
+	JRST DSKERR		;YES
+	SKIPGE 1,DSKLUN		;WAS A DRIVE TRANSFERRING?
+	JRST DSKSV2		;NO
+DSKSV7:	MOVSI 2,DSKSIP+DSKCMR	;YES, IT MUST HAVE FINISHED
+	ANDCAB 2,DSKSTS(1)	;SO CLEAR ALL BITS FOR THAT DRIVE
+	CONO DSK,1B32+DSKCHN	;CLEAR DONE FLAG
+	TLNE 2,DSKUIO		;UTILITY OP?
+	JRST DSKSVU		;YES
+	HRRZ 1,DSKCAW(1)	;GET CORE ADDRESS JUST FINISHED
+	LSH 1,-^D9		;PAGE NUMBER
+	JSP 4,SWPDON		;NOTE XFER COMPLETED
+DSKSV2:	DATAI DSK,0		;GET ATTENTION (SEEK COMPLETE) BITS
+	MOVSI 1,-NDVMAX
+DSKSV6:	MOVSI 3,DSKSIP+DSKCMR
+	TDNE 0,BITS+^D27(1)	;SEEK COMPLETE ON THIS DRIVE?
+	JRST DSKSV4		;YES
+	TDNN 3,DSKSTS(1)	;THIS DRIVE FREE?
+	CALL DSKRCK		;YES, SEE IF ANY WAITING REQUESTS
+DSKSV5:	AOBJN 1,DSKSV6		;CHECK ALL DRIVES
+	AOS 1,DSKLUN		;START WITH NEXT UNIT, OR 0 IF NONE
+	HRLI 1,-NDVMAX
+DSKSV3:	MOVEI 2,0(1)
+	CAIL 2,NDVMAX
+	HRRI 1,0		;WRAPAROUND DRIVE NUMBER
+	MOVE 3,DSKSTS(1)
+	TLNE 3,DSKCMR		;COMMAND READY AND NO SEEK IN PROGRESS?
+	TLNE 3,DSKSIP
+	JRST [	AOBJN 1,DSKSV3	;NO, CHECK NEXT DRIVE
+		SETOM DSKLUN	;ALL DRIVES CHECKED, NONE XFERRING
+		JRST DSKSV1]	;GO DEBREAK
+	CALL DSKSVX		;START TRANSFER
+DSKSV1:	MOVE P,DSKACP		;RESTORE AC-P
+	UNBRK DSK		;DEBREAK
+
+DSKSVX:	MOVSI 3,DSKSIP+DSKCMR	;ROUTINE TO START XFER ON READY DRIVE
+	IORB 3,DSKSTS(1)	;SET STATE TO XFER IN PROGRESS
+	MOVE 2,TODCLK
+	MOVEM 2,DSKLSV		;SAVE CURRENT TIME
+	MOVE 2,DSKCAW(1)	;CORE ADDRESS AND COUNT
+	HRRI 2,-1(2)		;LIKE IOWD, ADDRESS IN 1 LESS
+	MOVEM 2,DSKCCM		;FIXED LOCATION FOR CHANNEL COMMAND
+	MOVE 2,DSKDAW(1)	;DISK ADDRESS
+	IORI 2,DSKCP		;INCLUDE INITIAL COM WD ADDRESS
+	TLNE 3,DWRBIT		;READ OR WRITE?
+	TLOA 2,DSKWDA		;WRITE, CONSTRUCT COMMAND
+	TLO 2,DSKRDA		;CONSTRUCT READ COMMAND
+	PIOFF
+	DATAO DSK,2		;START XFER
+	HRRZM 1,DSKLUN		;REMEMBER NUMBER OF DRIVE XFERRING
+	PION
+	RET
+
+DSKSV4:	MOVE 2,DSKDAW(1)
+	IOR 2,BITS+^D27(1)	;BIT TO CLEAR ATTENTION
+	TLO 2,DSKCAT		;CLEAR ATTENTION COMMAND
+	DATAO DSK,2
+	MOVSI 3,DSKSIP
+	XOR 3,DSKSTS(1)
+	TLNE 3,DSKSIP+DSKCMR	;WAS SEEK IN PROGRESS?
+	JRST DSKSV5		;NO, IGNORE (POSSIBLY POWER ON, ETC.)
+	DATAI DSK,2		;GET BITS FOR THIS DRIVE
+	TLNE 2,(1B11)		;SEEK INCOMPLETE?
+	JRST DSKSKE		;YES
+	TLNN 2,(1B12)		;ON CYLINDER?
+	BUG(HLT,<DSK - ATTENTION UP BUT NOT ON CYLINDER>)
+	ROT 2,-3+^D18		;ALIGN WITH TRACK IN STS
+	XOR 2,DSKSTS(1)		;COMPARE
+	TRNE 2,377B31		;SAME?
+	JRST [	MOVE 2,DSKDAW(1) ;NO, PROBABLY RESULT OF RECAL COMMAND
+		TLO 2,DSKPOS	;CONSTRUCT NEW POSITION COMMAND
+		DATAO DSK,2	;ISSUE IT
+		JRST DSKSV5]
+	MOVSI 3,DSKSIP+DSKCMR
+	XORM 3,DSKSTS(1)	;CHANGE STATE TO COMMAND READY
+	JRST DSKSV5
+
+DSKSKE:	MOVE 2,DSKDAW(1)	;SEEK FAILED, GET DRIVE NUMBER
+	TLO 2,DSKCAL		;CONSTRUCT CALIBRATE COMMAND
+	DATAO DSK,2		;SHOULD GIVE SEEK COMPL WHEN DONE
+	JRST DSKSV5
+
+DSKUER:	TLZA 2,400000		;RETURN ERROR BITS (B0 SHOULD BE OFF)
+DSKSVU:	SETZ 2,			;0 MEANS NO ERRORS
+	HLRZ 3,DSKSTS(1)	;FROM INTERRUPT ROUTINE
+	ANDI 3,37		;GET COMMAND INDEX
+	MOVEM 2,DSKCL+1(3)	;WORD GOING POSITIVE INDICATES DONE
+	AOS PSKED		;SIG SCHED
+	JRST DSKSV2
+
+;DISK ERROR
+
+	INTERN DSKERR
+
+DSKERR:	CONI DSK,2		;GET ALL ERROR BITS
+	CONO DSK,175700+1B32+DSKCHN ;CLEAR ALL ERR BITS, CLR DONE
+	SKIPGE 1,DSKLUN		;WAS ON XFER COMMAND?
+	JRST DSKER1		;NO
+	MOVE 3,DSKDAW(1)	;SAVE ERROR WORDS
+	MOVEM 3,DSKRER
+	MOVE 3,DSKCAW(1)
+	MOVEM 3,DSKRER+1
+	MOVE 3,DSKSTS(1)
+	MOVEM 3,DSKRER+2
+	MOVEM 2,DSKRER+3	;AND ERROR BITS
+	AOS DSKRCE		;COUNT REC ERRORS
+	AOS 3,DSKSTS(1)		;COUNT ERRORS ON THIS REQUEST
+	ANDI 3,17
+	CAILE 3,DSKNTR		;UNRECOVERABLE?
+	JRST DSKERP		;YES
+DSKER2:	TRNE 2,1B21		;SEARCH FAILED?
+	JRST DSKER3		;YES, GO REPOSITION
+	CALL DSKSVX		;START XFER OVER AGAIN
+	JRST DSKSV1		;DEBREAK
+
+DSKER3:	MOVSI 3,DSKCMR
+	ANDCAM 3,DSKSTS(1)	;CLEAR COMMAND READY
+	MOVE 3,DSKDAW(1)	;GET DRIVE NUMBER
+	TLO 3,DSKCAL		;CONSTRUCT RECALIBRATE COMMAND
+	DATAO DSK,3		;ISSUE IT
+	JRST DSKSV2		;CONTINUE PROCESSING INTERRUPTS
+
+DSKERP:	TLNE 2,(1B14+1B16)	;PCI?
+	JRST [	AOS DEVMPE	;YES, REQUEST CORE SCAN
+		ISB APRCHN
+		JRST DSKER2]	;TRY AGAIN
+	BUG(CHK,<UNRECOVERABLE DSK ERROR - CAUSES NOT WELL UNDERSTOOD>)
+	MOVNI 3,DSKNTR
+	ADDM 3,DSKRCE		;REMOVE FROM RECOVERABLE COUNT
+	AOS DSKNRE		;COUNT IRRECOVERABLE
+	MOVE 3,[XWD DSKRER,DSKLER]
+	BLT 3,DSKLER+3		;SAVE COMMAND WORDS
+	MOVSI 3,DSKUIO
+	TDNE 3,DSKSTS(1)	;UTILITY OP?
+	JRST DSKUER		;YES
+	TRNE 2,113700		;BAD ERRORS?
+	BUG(HLT,<BAD DSK ERRORS, DONT KNOW WHAT TO DO>)
+	HRRZ 2,DSKCAW(1)	;'NORMAL' IRREC TYPE ERROR
+	LSH 2,-^D9		;GET PAGE NUMBER
+	MOVSI 3,SWPERR
+	IORM 3,CST3(2)		;NOTIFY SWAPPER OF ERROR
+	JRST DSKSV7		;TREAT REQUEST AS COMPLETED
+
+DSKER1:	BUG(HLT,<DSK ERROR WHILE NOT TRANSFER IN PROGRESS>)
+
+;DISK DRIVER INITIALIZATION
+
+	INTERN DSKINI,DSKRST
+
+DSKINI:	SKIPN DISKP
+	RET
+	SETOM DSKBLK
+	MOVEI 1,DSKCL+2*NDSKCM-2
+	SETZM 0(1)		;END OF LIST
+	MOVEM 1,-2(1)		;INIT UTILITY FREE LIST
+	SUBI 1,2
+	CAILE 1,DSKCL
+	JRST .-3
+	MOVEM 1,DSKFCL
+	MOVEI 1,NDSKCM
+	MOVEM 1,DSKCCT		;INIT UTILITY COMMAND FREE COUNT
+	MOVEI 1,DSKCCM
+	MOVEM 1,DSKCP		;INITIAL COMMAND WORD FOR CHANNEL
+	SETOM DSKLUN
+	MOVSI 1,-NDVMAX		;FOR EACH UNIT, DO:
+DSKII1:	MOVEI 2,DSKWO(1)	;INIT WRITE QUEUE
+	MOVEM 2,DSKWI(1)
+	MOVEI 2,DSKRO(1)	;INIT READ QUEUE
+	MOVEM 2,DSKRI(1)
+	MOVEI 2,DSKUO(1)	;INIT UTILITY QUEUE
+	MOVEM 2,DSKUI(1)
+	MOVEI 3,0(1)		;UNIT NUMBER
+	ROT 3,-6		;CONSTRUCT NOP COMMAND
+	TLO 3,DSKNOP
+	DATAO DSK,3		;ISSUE IT, SELECTING UNIT
+	DATAI DSK,3		;GET BITS FOR THAT UNIT
+	LDB 2,[POINT 3,3,2]	;GET UNIT NUMBER AS REPORTED
+	CAIE 2,0(1)		;AGREES?
+	BUG(HLT,<DSK - FAILED TO SELECT UNIT>)
+	TLNN 3,(1B15)		;NO SUCH UNIT? OR
+	TLNN 3,(1B13)		;NOT ON LINE?
+	JRST [	SETOM DSKSTS(1)	;YES, PREVENT USE OF DRIVE
+		JRST DSKII3]
+	MOVEI 3,0(1)
+	ROT 3,-6		;CONSTRUCT RECALIBRATE COMMAND
+	TLO 3,DSKCAL
+	DATAO DSK,3		;ISSUE IT
+DSKII2:	DATAI DSK,3		;CHECK STATUS OF DRIVE
+	LDB 2,[POINT 8,3,10]	;TRACK
+	JUMPN 2,DSKII2		;WAIT FOR TRACK 0
+	TLNN 3,(1B12)		;AND 'ON CYLINDER'
+	JRST DSKII2
+	MOVEI 3,0(1)
+	ROT 3,-6
+	TLO 3,DSKCAT		;CONSTRUCT CLEAR ATTENTIONS COMMAND
+	IOR 3,BITS+^D27(1)
+	DATAO DSK,3		;ISSUE IT
+	SETZM DSKSTS(1)		;CLEAR STATUS AND SET TRACK TO 0
+DSKII3:	AOBJN 1,DSKII1
+	CONO DSK,DSKCHN		;GIVE IT IT'S PI ASSMT
+	IFNDEF DRMCHN,<CALL DRMINI> ;INIT SWAP BIT TABLE
+	RET
+
+DSKRST:	SKIPN DISKP
+	RET
+	CONO DSK,DSKCHN		;GIVE PI ASSMT
+	SKIPL 1,DSKLUN		;XFER IN PROGRESS?
+	CALL DSKSVX		;YES, RESTART IT
+	RET
+
+;RELOAD RES MON, CALLED FROM SYSGO
+
+RLRMA==3000		;RUN LOCATION OF RELOAD ROUTINE
+RLRCA==36		;FIRST CORE LOCATION RESTORED
+
+RLRMON:	MOVE 1,[XWD RLMX0,RLRMA]
+	BLT 1,RLRMA+777		;MOVE RELOAD ROUTINE TO RUN LOCATION
+	JRST RLMGO		;IT RELOADS AND STARTS MON
+
+;RELOAD ROUTINE, RUN IN LOWER CORE. CAN BE EXTRACTED FOR PAPER TAPE, ETC.
+
+RLMX0:	PHASE RLRMA
+
+RLMC5:	REPEAT PPRMPG,<0>	;TABLE OF DISK ADDRESSES, SETUP AT POSTLD
+
+MNBOOT:	SETZM 20		;CLEAR CORE NOT CLEARED BY TENDMP
+	MOVSI 1,20
+	HRRI 1,21
+	BLT 1,777
+	MOVEI 7,100		;SETUP RETURN TO DDT WHEN LOADED
+RLMGO:	MOVSI 10,-PPRMPG+1
+	MOVEI 11,RLRCA		;FIRST CORE LOC TO LOAD INTO
+RLMG2:	CAIGE 11,RLRMA+1000
+	CAIGE 11,RLRMA
+	CAIA
+	ADDI 11,1000		;SKIP OVER THIS CODE WHEN READING
+	MOVE 1,RLMC5(10)	;DISK ADDRESS
+	LSH 1,^D12
+	TLO 1,DSKPOS
+	DATAO DSK,1		;POSITION HEADS
+RLMG1:	DATAI DSK,2
+	TLNN 2,(1B11)		;ERROR?
+	TLNN 2,(1B13)		;OR NOT ON LINE?
+	JRST 4,RLMGO		;YES
+	TLNN 2,(1B12)		;ON CYL?
+	JRST RLMG1		;NO, WAIT
+	CONO DSK,1B32		;CLEAR DONE
+	MOVEI 2,-1(11)		;CONSTRUCT CHANNEL COMMAND
+	HRLI 2,-1000		;TRANSFER ONE PAGE
+	MOVEM 2,RLMNB
+	SETZM RLMNB+1		;ONE WORD CHAN PGM
+	MOVEI 2,RLMNB
+	MOVEM 2,DSKCP		;INITIAL CHANNEL LOC
+	TLZ 1,DSKPOS
+	TLO 1,DSKRDA		;CONSTRUCT READ COMMAND
+	IORI 1,DSKCP		;INCLUDES CHAN ADDRESS
+	DATAO DSK,1		;ISSUE READ
+	CONSO DSK,1B31		;WAIT TILL BUSY OFF AND DONE ON
+	CONSO DSK,1B32
+	JRST .-2
+	ANDCMI 11,777		;BUMP TO NEXT PAGE
+	ADDI 11,1000
+	AOBJN 10,RLMG2
+	AOS GETSMF
+	JRST 0(7)		;RETURN
+
+RLMNB:	REPEAT 2,<0>
+
+	DEPHASE
+RLRMX1:
+
+;DISK ALLOCATOR
+
+NPACKS==1		;NUMBER OF RPO2 DRIVES
+NTKUN=^D200		;NUMBER OF TRACKS PER DRIVE (UNIT)
+
+NTRACK=NTKUN*NPACKS	;EACH DRIVE CONSIDERED A GROUP OF TRACKS
+
+NWSEC==200		;RPO2'S HAVE 128 WORDS/SECTOR,
+NSECS==^D10		; 10 SECTORS PER ROTATION,
+NSURFS==^D20		; AND 20 SURFACES PER UNIT
+NSECPG==1000/NWSEC	; 4 SECTORS PER PAGE
+
+;THERE ARE NSURFS*NSECS=200 SECTORS/TRACK
+;THERE ARE 200*(NWSEC/1000)=50 PAGES + 0 SECTORS PER TRACK
+
+NSECTK==NSURFS*NSECS		;NUMBER OF SECTORS PER TRACK
+NPGTK==NSECTK*NWSEC/1000	;NUMBER OF PAGES PER TRACK
+NBWTK==<NPGTK+^D35>/^D36	;NUMBER OF WORDS OF BITS PER TRACK
+NMINFP==NPGTK/3			;MIN PAGES FOR FREE CHOICE ASSMT
+
+HITRK=^D150		;UPPER LIMIT OF TRACKS TO USE
+LOTRK==0		;LOWER LIMIT OF TRACKS TO USE
+
+;FIXED AREAS OF DISK FOR SPECIAL PURPOSES
+
+DSKNST==NDST/NPGTK		;NUMBER OF TRACKS FOR SWAPPING
+DSKSWA==<^D150>*NSECTK		;SWAPPING AREA
+
+DSKRMA==<^D200>*NSECTK		;RESIDENT MON IMAGE FOR RELOADING
+DSKSMA==DSKRMA+PPRMPG*4		;SWAP MON IMAGE (NOT USED)
+
+DSKABT==10		;BITS IOR'D TO LH OF DISK ADDRESS
+DSKMSK==777774		;BITS NOT USED IN LH OF DISK ADDRESS
+
+NGS DSKFCT,NTRACK	;COUNT OF FREE PAGES EACH TRACK
+NGS DSKBTB,NTRACK*NBWTK	;BIT TABLE
+XX==NTRACK+NTRACK*NBWTK		;SIZE OF ACTUAL STORAGE FOR CNT AND BITS
+NGS DSKDMY,<<<XX+777>/1000>*1000>-XX ;FILL TO NEXT PAGE BOUNDARY
+
+LS DSKBLK,1		;BIT TABLE LOCK
+LS DBTJFN,1		;JFN OF BIT TABLE FILE
+
+;DISC ADDRESS OF INDEX FILE
+
+DIDSC0==<HITRK+LOTRK>/2*NSECTK	;PUT IN MIDDLE OF FILE AREA
+
+DIDSCI:	XWD 30,DIDSC0
+GS DIDSCA,1
+
+;CONVERT LINEAR ADDRESS TO HARDWARE DISK ADDRESS
+
+CVDSK:	TLZ 1,DSKMSK		;FLUSH EXTRA BITS
+	IDIVI 1,NSECTK		;GET TRACK, SECTORS
+	PUSH P,2
+	IDIVI 1,NTKUN		;GIVES DRIVE NO IN 1, TRACK IN 2
+	LSH 2,^D10		;TRACK TO BITS 18-25
+	HRL 2,DRIVTB(1)		;PHYS. DRIV NO FOR TRK GROUP TO B15-17
+	POP P,1
+	PUSH P,2
+	IDIVI 1,NSECS		;GET SURFACE, SECTOR
+	LSH 1,5			;SURFACE TO B26-30
+	IORI 1,0(2)		;WITH SECTOR IN B31-35
+	POP P,2			;RECOVER DRIVE AND TRACK
+	IOR 1,2			;MERGE ALL FIELDS
+	RET
+
+;CONVERT HARDWARE FORMAT TO LINEAR ADDRESS
+
+CDSKVA:	HLRZ 2,1		;15-17 IS DRIVE
+	ANDI 2,7
+	HLRZ 3,DRIVTB(2)	;GET CORRESPONDING TRACK GROUP NO
+	IMULI 3,NTKUN		;FIRST OF THIS GROUP OF TRACKS
+	LDB 2,[POINT 8,1,25]	;18-25 IS TRACK ON SPECIFIED DRIVE
+	ADDI 3,0(2)		;NOW HAVE ACTUAL TRACK NUMBER
+	IMULI 3,NSECTK		;COMPUTE SECTOR NUMBER
+	LDB 2,[POINT 5,1,30]	;26-30 IS SURFACE
+	IMULI 2,NSECS		;FIRST SECTOR THIS SURFACE
+	ANDI 1,37		;31-35 IS SECTOR
+	ADDI 1,0(2)		;TOTAL SECTORS
+	ADD 1,3
+	RET
+
+;TABLE FOR CONVERSION BETWEEN PHYSICAL DRIVE NUMBERS AND INTERNAL
+;TRACK GROUPS NUMBERS.  INDEXED BY INTERNAL, RH GIVES PHYSICAL.
+;INDEXED BY PHYSICAL, LH GIVES INTERNAL
+
+DRIVTB:	XWD 0,0
+	XWD 1,1
+	XWD 2,2
+	XWD 3,3
+	XWD 4,4
+	XWD 5,5
+	XWD 6,6
+	XWD 7,7
+
+	SWAPCD
+
