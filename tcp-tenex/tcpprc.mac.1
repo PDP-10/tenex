@@ -1,0 +1,350 @@
+;Remove previous patch: no longer needed.
+;HWM, 14-Jul-82
+;
+;In TCPCHK, increment a global variable TCPCK1 to test
+;how many times this code gets executed.
+;HWM, 2-Jun-82
+;
+;Reinit TVTPTR in TCPINI; SYSLOD zaps it.
+;HWM, 24-May-82
+;
+;Conditionialize DMOVEM's if KA, KI or F3.
+;HWM, 18-May-82
+;
+;ISIMON:<ISI.TCP>TCPPRC.MAC.3370 15-Sep-81 10:31:37, Edit by CHASE
+;#337 BBN update:
+; Fix: Error returns from initialization routines
+;<3A.TCP>TCPPRC.MAC.16    11-Mar-80 20:21:20    EDIT BY DALE
+;#1 Bug fix SIGNL2+6; properly order process blocks by wake up time,
+;#1  this corrects a problem known as Data Stream Capture [Dale M Chase]
+
+	SEARCH	INPAR,TCPPAR,PROLOG
+	TTITLE	TCPPRC
+	SUBTTL	TCP Process, William W. Plummer, 1Mar79
+
+COMMENT	!
+
+This is the top level of the TCP protocol module.  Herein are the
+TCP initialization, "interprocess communication" between parts of
+the TCP, etc.
+
+
+* SIGNAL ...  3 ...... Signal a TCP process to run
+  SIGNL0 ...  4 ...... Guts of SIGNAL
+
+* TCPPRC ...  5 ...... Top level of TCP processing
+* TCPCHK ...  6 ...... Set next TCP wakeup time
+  TCPRUN ...  7 ...... Run any TCP processes that are due
+  DQTASK ...  8 ...... Remove a TCB from process input queue
+  TCPTSK ...  9 ...... Run a TCP task on a particular TCB
+
+* TCPINI ... 11 ...... Initialize entire TCP
+	!
+
+IFKA <EXTERN ACDLAY,BG,BGINI,DG,DGINI,DOHIST,DQ,GETBLK>	;|
+IFKA <EXTERN INITQ,INTFLG,INTSVR,IP,IPINI,LCKCAL,NQ> ;|
+IFKA <EXTERN PPINI,PROC,PZ,PZINI,RA,RAINI,RX,RXINI> ;|
+IFKA <EXTERN STATF,STSINI,TASKCT,TBFINI,TCPFLG,TCPIFG,TCPIPQ,TCPON,TCPSID> ;|
+IFKA <EXTERN TCPTIM,TCBINI,TIMCAL,TODCLK,TVTOPR,USRINI> ;|
+
+; SIGNAL		Cause a process to run.
+
+;T1/	(Extended) Target process ID
+;T2/	0 or delta in milliseconds
+;TCB/	(Extended) Locked Connection Block
+;
+;	CALL SIGNAL
+;Ret+1:	Always
+
+SIGNAL::
+	TEMP <LK,FN,PRC,DL>
+	ife	kaflg!kiflg!f3flg,<	;[hwm]
+	DMOVEM T1,PRC
+>					;[hwm]
+	ifn	kaflg!kiflg!f3flg,<	;[hwm]
+	MOVEM	T1,PRC		;[HWM]
+	MOVEM	T2,DL		;[HWM]
+>				;[HWM]
+	ADD DL,TODCLK		; Compute deadline
+	XMOVEI LK,PRCLCK(PRC)	; Pointer to lock cell of process
+	XMOVEI FN,SIGNL0	; Function
+	; PRC and DL have args to SIGNL0
+	CALL LCKCAL		; Lock the lock and call the function
+	RESTORE
+	RET
+
+; SIGNL0	Guts of the Signal
+
+;T1/	(Extended) Process block (locked)
+;T2/	Wakeup TODCLK
+;TCB/	(Extended) Connection block (locked)
+;
+;	CALL SIGNL0
+;Ret+1:	Always
+
+SIGNL0:
+	LOCAL <PRC,DL,SAVTCB>
+	ife	kaflg!kiflg!f3flg,<	;[hwm]
+	DMOVEM T1,PRC		; Save Process and Deadline
+>
+	ifn	kaflg!kiflg!f3flg,<	;[hwm]
+	MOVEM	T1,PRC		;[HWM]
+	MOVEM	T2,DL		;[HWM]
+>				;[HWM]
+	MOVEM TCB,SAVTCB	; Save the signalee
+	MOVE T3,TODCLK		; Now in milliseconds
+	MOVEM T3,PRCSGT(PRC)	; Set time of most recent signal
+	SKIPN @PRCQOF(PRC)	; Is this TCB already Q'd for this task?
+	 JRST SIGNL1		; No. Just insert in queue.
+	XMOVEI T1,@PRCQOF(PRC)	; Get pointer to queue in the TCB
+	CAML DL,@PRCWOF(PRC)	; Compare with deadline already set
+	 JRST SIGNL5		; Leave in current position.
+	CALL DQ			; Sooner.  Dequeue so it can be inserted
+SIGNL1:	MOVEM DL,@PRCWOF(PRC)	; Note double index, here and elsewhere.
+	MOVE T2,PRCQ(PRC)	; Pointer to input queue head
+	MOVE T3,PRCQOF(PRC)	; Get offset to queue in TCB
+SIGNL2:	LOAD T2,QNEXT,(T2)	; Get next TCB on input queue
+	SETSEC T2,INTSEC	; Make extended address
+	CAMN T2,PRCQ(PRC)	; Back to head?
+	 JRST SIGNL4		; Yes.  Append to end of queue.
+	MOVE TCB,T2		; Make right for indirect index
+	SUBI TCB,0(T3)		; Make TCB point to base of block
+	CAML DL,@PRCWOF(PRC)	;#1 Found place to insert?
+	 JRST SIGNL2		; No. Scan more of queue
+
+SIGNL4:	MOVE TCB,SAVTCB		; Point TCB at the signalee
+	XMOVEI T1,@PRCQOF(PRC)	; Get pointer to queue in that TCB
+	CALL NQ			; And queue it up
+
+SIGNL5:	MOVE TCB,PRCQ(PRC)	; Pointer to input queue head
+	LOAD TCB,QNEXT,(TCB)	; Get first TCB on the queue
+	SUB TCB,PRCQOF(PRC)	; Make into standard TCB pointer
+	SETSEC TCB,INTSEC	; Make extended address
+	MOVE T1,@PRCWOF(PRC)	; Get wakeup time of 1st TCB on the Q
+	MOVEM T1,PRCWAK(PRC)	; That is new wakeup for process
+	MOVE TCB,SAVTCB		; Restore TCB pointer for caller
+	CAMG T1,TODCLK		; Wakeup already gone by?
+	 AOS TCPFLG		; Yes. Ensure that we keep running.
+	AOS INTFLG		; Cause Internet fork run TCPCHK
+	RESTORE
+	RET
+
+; TCPPRC		TCP processing
+
+;	(No args)
+;
+;	CALL TCPPRC		(From Internet fork)
+;Ret+1:	Always.
+
+TCPPRC::SETZM TCPFLG		; Clear run request
+	SKIPE INTSVR		; Internet level needs space badly?
+	 SETZM BG+PRCWAK	; Yes.  Make BG scavenge what it can
+	MOVEI T1,IP		; Select Input Processor
+	MOVE T2,TCPIPQ		; Pointer to TCP input queue head
+	LOAD T3,QNEXT,(T2)	; Get first thing on the queue
+	CAIE T3,0(T2)		; Empty if that is the head.
+	 CALL TCPTSK		; Process any available input packets
+	CALL TCPRUN		; Run all the other "processes"
+	MOVEI T1,BG		; Pointer to Background Process
+	MOVE T2,PRCWAK(T1)	; Wakeup time for BG
+	CAMG T2,TODCLK		; Due for a run?
+	 CALL TCPTSK		; Yes.  Run BG.
+	CALL TVTOPR		; Operate TCP Virtual Terminals
+	SKIPE TCPFLG		; Further work to do?
+	 JRST TCPPRC		; Yes.
+	RET
+
+; TCPCHK		Periodic check on TCP
+
+;T1/	A TODCLK to be min'd against
+;
+;	CALL TCPCHK		; From Internet fork
+;Ret+1:	Always.  T1 as min of arg and next TCP check time
+;		 TCPTIM set to next run time
+
+TCPCHK::
+;[hwm]	aos	tcpck1		;[Hwm]	increment counter
+	LOCAL <TOD>
+	MOVEM T1,TOD
+	MOVE T1,TODCLK		; Now.
+	ADDI T1,^D10000		; Check again in 10 seconds
+	SKIPN TCPON		; Is the TCP on right now?
+	 JRST TCPCH9		; No.
+
+	MOVSI T2,-NPROCS	; Set to scan process table
+TCPCH1:	MOVE T3,PRCTAB(T2)	; Get pointer to process block
+	SKIPL T4,PRCWAK(T3)	; Avoid ones which aren't scheduled
+	CAML T4,T1		; Less than current best min?
+	CAIA			; No.
+	 MOVE T1,T4		; Yes.  Take the new value
+	AOBJN T2,TCPCH1		; Loop over all processes in the table
+
+	SKIPL T4,BG+PRCWAK	; Special case background
+	CAML T4,T1
+	CAIA
+	 MOVE T1,T4
+TCPCH9:	MOVEM T1,TCPTIM		; Save for scheduler test
+	CAMLE T1,TOD		; Min against arg
+	 MOVE T1,TOD
+	RESTORE
+	RET
+
+; TCPRUN		Run all the TCP tasks
+
+; Each process has an input queue of TCBs.  TCPRUN scans all "processes"
+; and for each with a non-empty queue, calls the approriate routine for
+; each TCB on the queue.  The new wake up time is set into the process
+; block.
+
+;	CALL TCPRUN
+;Ret+1:	Always.
+
+TCPRUN:	LOCAL <I,PRC>
+	PUSH P,TCB
+	MOVSI I,-NPROCS		; Set to scan all processes
+TCPRU1:	MOVE PRC,PRCTAB(I)	; Get pointer to process block
+TCPRU2:	SKIPGE T1,PRCWAK(PRC)	; Get the wakeup time for this one
+	 JRST TCPRU9		; No run needed
+	MOVE T4,PRCQ(PRC)	; Get pointer to queue head
+	LOAD T3,QNEXT,(T4)	; Get first thing on the input queue
+	SETSEC T3,INTSEC	; Make extended address
+	CAMN T3,T4		; Empty queue?
+	 JRST TCPRU8		; Yes.  Cancel this process.
+	CAMLE T1,TODCLK		; Time to run?
+	 JRST TCPRU9		; No.  Try next process
+	XMOVEI T1,PRCLCK(PRC)	; The lock to lock
+	XMOVEI T2,DQTASK	; The function to call
+	MOVE T3,PRC		; Process to work on
+	CALL LCKCAL		; Lock the lock and call the function
+	MOVE TCB,T1		; Put in standard place
+	XMOVEI T1,TCBLCK(TCB)	; The lock on the TCB
+	XMOVEI T2,TCPTSK	; Subfunction to call
+	MOVE T3,PRC		; The task to run
+	CALL LCKCAL		; Lock the TCB and run the function
+	JRST TCPRU2		; See if next TCB is due
+
+TCPRU8:	SETO T1,		; Empty queue means no wakeup
+	MOVEM T1,PRCWAK(PRC)	; Set into process block
+TCPRU9:	AOBJN I,TCPRU1		; Loop over all processes in table
+	POP P,TCB
+	RESTORE
+	RET
+
+
+; Table of process block pointers:
+
+PRCTAB:	IFIW!RA		; Reassembler
+	IFIW!PZ		; Packetizer
+	IFIW!RX		; Retransmitter
+	IFIW!DG		; Delayed Actions
+NPROCS==.-PRCTAB
+; Note that BG is special in that it does not have an input queue
+; and that it must lock TCBH while it is running.  IP is also special
+; because it is driven by packets arriving from the network.
+
+; DQTASK removes a TCB from a task input queue and resets the wakeup
+;	 time for that task
+;
+;T1/	Process block pointer
+;
+;	CALL DQTASK
+;Ret+1:	Always.  T1 has pointer to TCB.
+
+DQTASK:	LOCAL <PRC,PROCQ>
+	PUSH P,TCB
+	MOVEM T1,PRC
+	MOVE PROCQ,PRCQ(PRC)	; Pointer to input queue
+	LOAD TCB,QNEXT,(PROCQ)	; Get 1st item on the queue
+	SETSEC TCB,INTSEC	; Make extended address
+	MOVE T1,TCB		; This the one to return
+	CALL DQ			; Remove it from the queue
+	MOVE T2,PRCQOF(PRC)	; Get offset to queue word in TCB
+	SUBI T1,0(T2)		; Get standard TCB pointer
+
+	LOAD TCB,QNEXT,(PROCQ)	; Get 1st item on remaining queue
+	SETSEC TCB,INTSEC	; Make extended address
+	CAMN TCB,PROCQ		; Is the queue now empty?
+	 JRST DQTAS8		; Yes.
+	SUBI TCB,0(T2)		; Get pointer to base of TCB
+	SKIPA T2,@PRCWOF(PRC)	; Note double index by PRC and TCB
+DQTAS8:	 SETO T2,		; No need to run
+	MOVEM T2,PRCWAK(PRC)	; Set new wakeup
+	POP P,TCB
+	RESTORE
+	RET
+
+; TCPTSK(Process)	Call the process routine and do accounting
+
+;T1/	(Extended) Process block pointer
+;TCB/	(Extended) Locked Connection Block, unless IP or BG being run
+;
+;	CALL TCPTSK
+;Ret+1:	Always
+
+TCPTSK:	LOCAL <PRC>
+	MOVEM T1,PRC
+	MOVEM PRC,PROC		; Indicate who is running now.
+	SKIPN STATF		; Taking statistics right now?
+	 JRST TCPTS9		; No.  Just call the function
+	CAIE PRC,BG		; Running Background?
+	CAIN PRC,IP		; Running Input Processor?
+	 JRST TCPTS8		; Yes.  Activate delay not defined
+	MOVEI T1,ACDLAY		; Select activation delay histogram
+	MOVE T2,TODCLK		; Now
+	SUB T2,PRCSGT(PRC)	; Time of most recent signal
+	CALL DOHIST		; Histogram that delta
+TCPTS8:	MOVE T1,PRCTMR(PRC)	; Pointer to appropriate timer
+	MOVE T2,PRCROU(PRC)	; The routine to call
+	CALL TIMCAL		; Time the call
+	JRST TCPTSX
+
+TCPTS9:	CALL @PRCROU(PRC)	; Call the routine
+TCPTSX:	AOS TASKCT		; Count tasks run
+	AOS @PRCRNC(PRC)	; Count runs of this particular process
+	SETZM PROC		; Indicate nobody running now.
+	RESTORE
+	RET
+
+; TCPINI		Initialize TCP module
+
+;	(no args)
+;
+;	CALL TCPINI		(From INTINI, NOSKED)
+;Ret+1:	Always.  TCP ready to run.
+
+TCPINI::
+	move	t1,[-ntvtln,,tvtlo]	;[hwm]	get AOBJN pointer for TVT's
+	movem	t1,tvtptr	;[hwm]	stash it
+	MOVEI T1,QSZ		; Size of a queue head
+	CALL GETBLK		; Get that amount of free storage
+	JUMPE T1,TCPINX		;#337 Lose
+	MOVEM T1,TCPIPQ		; That is the TCP input queue
+	CALL INITQ		; Initialize it
+
+	CALL TBFINI		; Initialize Buffer Windows
+	CALL PZINI		; Initialize Packetizer
+	JUMPE T1,TCPINX		;#337 Lose
+	CALL IPINI		; Initialize Input Processor
+	CALL RAINI		; Initialize Reassembler
+	JUMPE T1,TCPINX		;#337 Lose
+	CALL RXINI		; Initialize Retransmitter
+	JUMPE T1,TCPINX		;#337 Lose
+	CALL DGINI		; Initialize Delayed Action Generator
+	JUMPE T1,TCPINX		;#337 Lose
+	CALL BGINI		; Initialize Background Routine
+	CALL USRINI		; Initialize User Interface
+	JUMPE T1,TCPINX		;#337 Lose
+	CALL STSINI		; Initialize Statistics
+	CALL PPINI		; Initialize Packet Printer
+	CALL TCBINI		; Initialize TCB Hash table
+	JUMPE T1,TCPINX		;#337 Lose
+				;#337 All ok
+	SETOM TCPSID		; Clear TCP segment idents.
+	SETOM TCPIFG		; TCP has now been initialized
+	SETOM TCPON		; The TCP is now on
+TCPINX:	RET			;#337
+
+
+	TNXEND
+	END
+

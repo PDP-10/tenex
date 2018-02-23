@@ -1,0 +1,210 @@
+;Update monitor entry to MCENT
+;HWM, 16-MAy-82
+;
+;[USC-ISI]<TENEX-SOURCES>PTY.MAC;13430, 24-Sep-79 10:25:42, Ed: LEMONS
+;<KL-TENEX-SOURCES>PTY.MAC;13430    16-Sep-78 17:09:37    EDIT BY DALE
+;#1 General KL support
+;<XTENEX>PTY.MAC;1   3-JUL-75 22:05:34  EDIT BY DALE
+;[ISI] code obtained (modified) from Rainer Schulz's I4.MAC
+
+
+
+	SEARCH	PROLOG
+	TITLE	PTY
+
+INTERN	.ASPTY,.RLPTY,.PSTI,.PSTO,PTYINI
+
+EXTERN	CHKTTY,EDISMS,JOBPT,MENTR,MINUS1,MRETN,SKMRTN
+EXTERN	TTCIBF,TTCOBF,TTECT,TTFORK,TTICT,TTOCT,TTRLOB
+EXTERN	TTSIBF,TTSND,TTSTI1,UNLCKF
+
+GS PTYJOB,NPTY		;Table of owning forks for PTYs
+ TTPTYW==PTYJOB-PTYLO
+
+PTYINI:
+IFG NPTY,<
+	MOVSI 1,-NPTY		;Set PTYJOB(i) to -1 to indicate available..
+	SETOM PTYJOB(1)
+	 AOBJN 1,.-1 >
+	RET
+
+
+ASNPTY:	MOVEI 2,PTYLO		;Set up to scan PTYJOB..
+       NOSKED
+ASNPT1:	SKIPGE TTPTYW(2)	; PTYJOB < 0?
+	 JRST ASNPT2
+ASNPT3:	CAIGE 2,PTYHI		; No, continue scan.
+	 AOJA 2,ASNPT1
+       OKSKED			;Sorry, none available
+	RET
+
+ASNPT2:	SKIPL TTFORK(2)		;TTFORK must also think its available!
+	 JRST ASNPT3
+	MOVE 1,JOBNO		;Assign PTY..
+	MOVEM 1,TTPTYW(2)	; remember owning job # in PTYJOB(i)
+       OKSKED
+	CALL TTCOBF		; clear buffers
+	CALL TTCIBF
+	AOS 0(P)		; report success, line # in 2
+	RET
+
+
+RELPTY:	PUSH P,2
+	HLRZ 1,TTFORK(2)	;TTFORK show legal job #?
+	CAIL 1,NJOBS
+	 JRST RELPT1		; No, just make PTY free.
+	HLRZ 1,JOBPT(1)		;Is the controlling terminal for this job
+	CAIE 1,0(2)		; the same as the line we are testing?
+	 JRST RELPT1		; No, just make PTY free.
+	CALL TTCOBF		;Clear output buffer,
+	HLRZ 1,TTFORK(2)	; then logout this job..
+	PUSH P,CAPENB		; (must make temp wheel to do so)
+	MOVEI 3,WHEEL
+	IORM 3,CAPENB
+	LGOUT
+	 JFCL
+	POP P,CAPENB
+RELPT2:	MOVEI 1,^D1000		;Wait for job to disappear..
+	DISMS
+	CALL TTCOBF
+	SKIPL TTFORK(2)
+	 JRST RELPT2
+RELPT1:	POP P,2			;Release this PTY..
+       NOSKED
+	SETOM TTPTYW(2)
+       OKSKED
+	RET
+
+
+PTSTI:	CALL TTSIBF		;See if input buffer is full..
+	 SKIPA 1,4		; No, proceed to put char in input stream.
+	  RET			; Yes, give buffer full error return.
+	PUSH P,6
+	CALL TTSTI1
+	POP P,6
+	AOS 0(P)
+	RET
+
+
+PTSTO:	CALL PTSTO2		;Get a char from output stream..
+	 JRST PTSTO1
+	SKIPL 5			;There weren't any, do we block?
+	 RET			; don't block - error return.
+	MOVSI 1,0(2)		;Block, set up for sched test..
+	HRRI 1,STOTST
+	JSYS EDISMS
+	CALL PTSTO2		;Get a char from output stream..
+PTSTO1:	 AOSA 0(P)		; Have char in 3, skip return
+	  XCTU [SETOM 2]	;#1  Wakeup caused by input block, show error
+	RET
+
+PTSTO2:	PIOFF
+	SKIPN TTECT(2)		;Anything in echo
+	SKIPE TTOCT(2)		; or output buffers?
+	 JRST [	JSP 4,TTSND	; Yes, go get a char.
+		PION
+		RET ]
+	CALL TTRLOB		; No, release output buffers
+	PION
+	AOS 0(P)		;  and skip return.
+	RET
+
+
+STOTST:	SKIPE TTOCT(1)		;Anything in output buffer?
+	 JRST 1(4)		; Yes, wake up.
+	HRLZ 2,TTFORK(1)
+	SKIPGE 2		;Process blocked for input?
+	 JRST 0(4)		; No
+	  JRST 1(4)		; Yes, wake up
+
+	SWAPCD
+
+;Assign PTY
+;Call:	ASPTY
+;Returns
+;	+1	; None available
+;	+2	; Success, terminal desig in 2
+
+.ASPTY:
+	MCENT			;enter JSYS context
+	CALL ASNPTY		;Go try and assign one..
+	 JRST MRETN		; no go
+	ADDI 2,400000		;Make terminal desig out of line #
+	UMOVEM 2,1		; and return to user in 1
+	JRST SKMRTN
+
+
+;Release PTY
+;Call:	1	; Terminal desig, or
+;		; -1 to release all assigned to this job
+;	RLPTY
+;Returns
+;	+1	; Bad desig/unowned PTY
+;	+2	; OK
+
+.RLPTY:
+	MCENT			;enter JSYS context
+	CAMN 1,MINUS1		;Does he want to release all?
+	 JRST RLPTY1		; yes
+	CALL CHKTTY
+	 JRST UNLK
+	CAIL 2,PTYLO		;Is this a PTY terminal desig?
+	CAILE 2,PTYHI
+	 JRST UNLK		; no, leave
+	SKIPL 1,TTPTYW(2)	;PTY owned?
+	CAIL 1,NJOBS		; by legal job #?
+	 JRST UNLK		; no, leave
+	CALL RELPTY		;Go release it.
+SUNLK:	AOS 0(P)
+UNLK:	CALL UNLCKF
+	JRST MRETN
+
+RLPTY1:	MOVEI 2,PTYLO		;Scan thru whole table for this job..
+RLPTY2:	MOVE 1,TTPTYW(2)	;Does this PTY belong to the job in
+	CAMN 1,JOBNO		; question?
+	 CALL RELPTY		; Yes, release PTY
+	CAIGE 2,PTYHI
+	 AOJA 2,RLPTY2
+	JRST SKMRTN
+
+
+;PTY STI function (a little different from BBN logic)
+;Call:	1	; Terminal desig
+;	2	; Character
+;	PSTI
+;Returns
+;	+1	; Bad desig/unowned PTY, buffer full
+;	+2	; OK
+
+.PSTI:
+	MCENT			;enter JSYS context
+	CALL CHKTTY
+	 JRST UNLK		;invalid TTY/unowned PTY
+	UMOVE 4,2		;Bring char into 4
+	CALL PTSTI		;Try to feed it into input stream..
+	 JRST UNLK		; input buffer full
+	JRST SUNLK		; OK
+
+
+;PTY STO function (a little different from BBN logic)
+;Call:	1	; Terminal desig
+;	2	; Blocking option; if -1, block until output buffer
+;		; not empty and return with char, or until PTY process
+;		; blocks for input and error ret with -1 in 2
+;	PSTO
+;Returns
+;	+1	; Error, bad desig/unowned PTY, output buffer empty
+;	+2	; Success, character in 2
+
+.PSTO:
+	MCENT			;enter JSYS context
+	CALL CHKTTY
+	 JRST UNLK		;bad TTY #/unowned PTY
+	UMOVE 5,2		;Get blocking option
+	CALL PTSTO		;Do STO
+	 JRST UNLK		; output buffer empty
+	UMOVEM 3,2		;Return char to user in 2
+	JRST SUNLK
+
+	END
+

@@ -1,0 +1,255 @@
+;ISIMON:<ISI.TCP>TCPRX.MAC.3370 15-Sep-81 10:35:14, Edit by CHASE
+;#337 BBN update:  Fix: No room in RXINI
+
+
+	SEARCH	INPAR,TCPPAR,PROLOG
+	TTITLE	TCPRX
+	SUBTTL	TCP Retransmitter, William W. Plummer, 15FEB77
+	SWAPCD
+
+
+COMMENT	!
+	The Retransmitter task is call from the top level of the TCP
+	when a connection deadline has elapsed.  The single packet at
+	the head of the restransmission queue is sent again
+	and its retranmission interval adjusted.
+	Should the maximum persistence of some message be exceeded,
+	the user is notified and the connection aborted.
+
+* REXMIT ...  3 ...... Retransmitter
+* SETRXP ...  6 ...... Set up Retransmission parameters in a PKT
+* RXPARS ...  7 ...... Change retransmission parameters
+* RXINI ....  8 ...... Initialize RX process block
+
+	!
+
+
+MINRXI==^D500		; Minimum retransmission interval
+MAXRXI==^D15000		; Maximum
+
+DEFRXI==3		; Default initial retranmission interval
+DEFRXN==1		; Default backoff ratio numerator
+DEFRXD==1		; Default backoff ratio denominator
+
+IFKA <EXTERN ABTCON,EMTPKT>	;|
+IFKA <EXTERN CHKWND,CLRLCK,GETBLK,INITQ,LCKTTY,OPUSE,PRNPKT,RX> ;|
+IFKA <EXTERN RXDLAY,RXPKCT,RXRNCT,RXUSE,SIGNAL,STATF,TCPON> ;|
+IFKA <EXTERN TIMCAL,TODCLK,TRACEP,TSTAMP,ULKTTY,USRERR>	;|
+
+; REXMIT	Retransmit for a connection
+
+;TCB/	(Extended) Locked connection block. (Dequeued from RX queue)
+;
+;	CALL REXMIT
+;Ret+1:	Always
+
+REXMIT::LOCAL <LINBLK>
+	PUSH P,PKT
+	PUSH P,TPKT
+REXMI0:	XMOVEI T1,TCBRXQ(TCB)	; Pointer to the retranmit queue
+	LOAD PKT,QNEXT,(T1)	; Set pointer to first thing on queue
+	SETSEC PKT,INTSEC	; Make extended address
+	SETO LINBLK,		; Assume not a TVT
+
+	CAMN PKT,T1		; If that is the head of the queue,
+	 JRST REXMIX		; we are done.
+	JE TTVT,(TCB),REXM1B	; Jump if not a TVT
+	JUMPGE LINBLK,REXM1B	; Jump if already have line locked
+	LOAD T2,TVTL,(TCB)	; Get the line number
+	CALL LCKTTY		; Lock and get ptr to dynamic block
+	 JUMPLE T2,REXM1A	; Not init'd yet
+	MOVEM T2,LINBLK
+	JRST REXM1B
+REXM1A:	CALL ULKTTY
+REXM1B:	LOAD T1,PIDO,(PKT)	; Internet data offset in words
+	XMOVEI TPKT,PKTELI(PKT)	; Pointer to Internet portion
+	ADD TPKT,T1		; Pointer to TCP portion
+	SKIPN TCPON		; Force error if TCP is turned off
+	 JRST REXMI2
+
+
+; If this is the first retransmission of this packet,
+; reset the retransmission parameters (Initial interval and discard
+; time).   Since this is done as each packet appears at Send.Left,
+; timeouts are avoided in the case where the receiver is very slow.
+
+	JN PRXD,(PKT),REXM11	; Pkt has been RX'd at least once
+	LOAD T1,PSEQ,(TPKT)	; Packet sequence number
+	LOAD T2,TSLFT,(TCB)	; Send Left
+	LOAD T3,PESEQ,(PKT)	; End sequence of the Packet
+	CALL CHKWND		; Is Left within this Pkt?
+	JUMPE T1,REXMI3		; No.  Retransmit if needed.
+	CALL SETRXP		; Initialize the RX parameters
+
+; Check for Retransmission timeout
+
+REXM11:	LOAD T1,PDCT,(PKT)	; Get discard time for this pkt
+	JUMPE T1,REXMI3		; Jump if no discard time specified
+	CAML T1,TODCLK		; Packet undeliverable?
+	 JRST REXMI3		; No.
+
+; A pkt has not been ACKd within the persistence spec'd by the user
+
+REXMI2:	MOVEI T1,ELP+^D9	; "Retransmission timeout"
+	CALL USRERR		; Tell the user
+	MOVEI T1,ELP+^D14	; "Connection reset"
+	CALL ABTCON		; Abort the connection
+	JRST REXMIX		; Return to caller
+
+; See if it is time to retransmit this packet.
+
+REXMI3:	LOAD T1,PRXI,(PKT)	; Get the current retransmit interval
+	LOAD T2,PXT,(PKT)	; and time of most recent transmission
+	ADD T2,T1		; Compute time of next transmission
+	CAMLE T2,TODCLK		; Should it be retransmitted?
+	 JRST REXMI6
+
+; Transmit the packet.
+
+	JE TSWND,(TCB),REXM31	; Use max if window is shut
+	LOAD T1,PRXI,(PKT)	; Get the current retransmit interval
+	JE TRXP,(TCB),REXM32	; No backoff.
+	LOAD T2,TRXPN,(TCB)	; Numerator of backoff ratio
+	LOAD T3,TRXPD,(TCB)	; Denominator
+	IMULI T1,0(T2)
+	IDIVI T1,0(T3)
+REXM32:	CAILE T1,MAXRXI		; Limit to maximum
+REXM31:	MOVEI T1,MAXRXI
+	STOR T1,PRXI,(PKT)	; Store back in the header
+
+	MOVEI T1,8		; Code for "Being Retransmitted"
+	CALL PRNPKT		; Tell the packet printer
+	SKIPN STATF		; Taking statistics right now?
+	 JRST REXMI4		; No.
+	MOVEI T1,RXDLAY		; Select a histogram
+	CALL TSTAMP		; Process the timestamp
+	MOVEI T1,OPUSE		; Select a time accumulator
+	XMOVEI T2,EMTPKT	; Function to call
+	MOVE T3,LINBLK		; TVT block if any
+	CALL TIMCAL		; Time the call
+	JRST REXMI5		; Go handle the next packet
+REXMI4:	MOVE T1,LINBLK		; TVT block if any
+	CALL EMTPKT		; Send off the packet
+
+; Having queued the packet for an interface, do the common functions
+; to get it retransmitted again, etc
+
+REXMI5:	AOS RXPKCT		; Count retransmitted packets
+	SETONE PRXD,(PKT)	; Indicate that packet has been RXd
+
+REXMI6:	MOVEI T1,RX		; What to signal
+	LOAD T2,PRXI,(PKT)	; The desired interval
+	CALL SIGNAL		; Cause ourself to run later
+
+REXMIX:	SKIPL T2,LINBLK		; Running for a TVT?
+	 CALL ULKTTY		; Yes.  Unlock it
+	POP P,TPKT
+	POP P,PKT
+	RESTORE
+	RET
+
+; SETRXP (PKT, TCB)	 Set up retransmission parameters in a pkt
+
+;PKT/	(Extended) Packet pointer
+;TPKT/	(Extended) pointer to TCP part of packet
+;TCB/	(Extended) Locked connection block
+;
+;	CALL SETRXP
+;Ret+1:	Always
+
+
+SETRXP::LOAD T1,TRXI,(TCB)	; Get estimated Retrans. Interval.
+	SKIPG T1		; Guard against bad extimate of rnd trip
+	 MOVEI T1,DEFRXI	; Choose default interval in that case
+	LOAD T2,TRXPI,(TCB)	; Get possible user setting
+	IMULI T2,^D1000		; Convert to milliseconds
+	SKIPE T2		; Did user set retrans parameters?
+	 MOVE T1,T2		; Yes.  Use his initial interval
+	CAILE T1,MAXRXI		; Keep within bounds
+	 MOVEI T1,MAXRXI
+	CAIGE T1,MINRXI		; both ends.
+	 MOVEI T1,MINRXI
+	SKIPE TRACEP		; Actively tracing packets?
+	 IMULI T1,^D10		; Slow down retransmissions
+	STOR T1,PRXI,(PKT)	; Set packet retrans interval
+
+	LOAD T1,TSTO,(TCB)	; Send time out set by user
+	SKIPE T1		; Use 0 if none specified
+	 ADD T1,TODCLK		; Else compute the deadline
+	STOR T1,PDCT,(PKT)	; Set the discard time in the packet
+	RET
+
+; RXPARS(TCB)		Change retransmission parameters
+
+; Called by SEND and OPEN which allow the caller to change the
+; retransmission characteristics -- Backoff rate and initial
+; retransmission interval.
+
+;TCB/	(Extended) Locked Connection Block
+;T1/	Retrans. parameter word.  Format is that of TRXP.
+;
+;	CALL RXPARS
+;Ret+1:	Always.
+
+;Note .  Newly created TCBs have 0 in the TRXP word which
+;means that the user has not chosen to override the use of
+;measured round trip time as the way of selecting  the retrans
+;interval.   If the user sets TRXP, then his desires are used.
+
+RXPARS::JUMPE T1,RXPARX		; No change wanted
+	LOAD T2,TRXP,(TCB)	; Current settings
+	CAMN T1,T2		; Different?
+	 JRST RXPARX		; No.
+;;;	LOAD T2,TRXPN,T1	; Get numerator
+;;;	LOAD T3,TRXPD,T1	; and denominator of backoff fraction
+;;;	LOAD T4,TRXPI,T1	; Initial interval in seconds
+;CAN'T QUITE SPELL THE ABOVE WITH LOAD MACROS
+	LDB T2,[POINT 9,T1,8]
+	LDB T3,[POINT 9,T1,17]
+	HRRZ T4,T1
+	SKIPN T2		; Get defaults
+	 MOVEI T1,DEFRXN
+	SKIPN T3
+	 MOVEI T2,DEFRXD
+	SKIPN T4
+	 MOVEI T4,DEFRXI
+	CAMLE T3,T2		; Prevent interval from decreasing
+	 MOVE T3,T2
+	STOR T2,TRXPN,(TCB)	; Set it all into the TCB
+	STOR T3,TRXPD,(TCB)
+	STOR T4,TRXPI,(TCB)
+RXPARX:	RET
+
+; RXINI			Initialize RX process block
+
+;	CALL RXINI
+;Ret+1:	ALways, T1 zero if error
+
+RXINI::	LOCAL <PRC>
+	MOVEI PRC,RX		; Pointer to the Process block for RX
+	MOVEI T1,QSZ		; Size of a queue head
+	CALL GETBLK		; Head must be in same section as items
+	JUMPE T1,RXINIX		;#337 No room
+	MOVEM T1,PRCQ(PRC)	; Input queue
+	CALL INITQ		; Initialize it
+	XMOVEI T1,PRCLCK(PRC)	; Lock
+	CALL CLRLCK		; Initilize it
+	XMOVEI T1,REXMIT	; Retransmitter function
+	MOVEM T1,PRCROU(PRC)	; Routine address
+	SETOM PRCWAK(PRC)	; No run time yet
+	MOVE T1,[<GIW TCBQRX,TCB>]; Offset of RX queue in TCB
+	MOVEM T1,PRCQOF(PRC)	; Store process block
+	MOVE T1,[<GIW TCBTRX,TCB>]; Offset of RX run time in TCB
+	MOVEM T1,PRCWOF(PRC)	; Store in process block
+	HRLOI T1,377777		; Infinity
+	MOVEM T1,PRCSGT(PRC)	; Set time of most recent signal
+	MOVEI T1,RXRNCT		; Pointer to run counter
+	MOVEM T1,PRCRNC(PRC)	; Put in standard place
+	MOVEI T1,RXUSE		; Pointer to CPU use meter
+	MOVEM T1,PRCTMR(PRC)	; Put in standard place
+RXINIX:	RESTORE
+	RET
+
+	TNXEND
+	END
+

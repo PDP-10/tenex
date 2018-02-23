@@ -1,0 +1,856 @@
+;ISIMON:<ISI.TCP>TCPPZ.MAC.3370 15-Sep-81 10:32:33, Edit by CHASE
+;#337 BBN update:
+; Fix: Call to LCKTTY with TVTL=0 after PKTIZ1, Call to TVTOSP with
+; LINBLK=-1 after PKZ23A
+; Fix: Use T3 at PKTZ18, use TPKT for TCP checksum in ABTNTC, no room in PZINI
+;ISISRC:<4.TCP>TCPPZ.MAC.2510  1-May-81 19:11:11, Edit by CHASE
+;ISISRC:<4.BBNC-TCP>TCPPZ.MAC.41153 22-Apr-81 16:22:59, Edit by CHASE
+;#251 At PKTZ9A+2, check for fail return from GETBBK [CLynn@bbn]
+
+	SEARCH	INPAR,TCPPAR,PROLOG
+	TTITLE	TCPPZ
+	SUBTTL	TCP PACKETIZER, WILLIAM W. PLUMMER, 7JAN77
+	SWAPCD
+
+
+COMMENT ! The PACKETIZER is called with TCB setup to point at a
+	(locked) connection block.  It attempts to form packets
+	from data in any buffers which are queued from the
+	user SENDs.  If the "force packet" bit is on, the
+	PACKETIZER will always generate a packet containing
+	an ACK, even if there is no data to be sent. Packetizing
+	continues until no more is available from user buffers or
+	until the send window has been filled.
+
+	In the case of virtual terminals (TVTs) output is
+	stored in TTY buffers and TVTNOF is set to cause a
+	scan by OPSCAN which forces a packet on TCBs which
+	are TVTs.  PZ runs with BFR set to 0 and BFRCNT
+	set to infinity in this case since it is not known
+	how much output is waiting to go and since the buffers
+	are non-standard format.
+
+
+
+* PKTIZE ...  3 ...... Construct packets for a connection
+  SETISN ... 12 ...... Set initial window and send sequence
+  SNDSYN ... 12 ...... Send a SYN
+  SNDDAT ... 13 ...... Send data
+  SNDFIN ... 14 ...... Send a FIN
+
+* EMTPKT ... 15 ...... Emit a packet into the network
+  ABTNTC ... 16 ...... Say this end of connection was abandonned
+* SCRCLS ... 17 ...... Send a Secure Close to BCR
+
+* FRCPKT ... 18 ...... Cause packetizer to emit a packet 
+* ENCPKT ... 19 ...... Wait a while then force a packet
+* DLAYPZ ... 19 ...... Ask background to run packetizer later
+
+* FLSSBF ... 20 ...... Flush SEND buffers
+* PZINI .... 21 ...... Initialize the PZ process block
+	!
+; Until fragmentation is implemented, packet size must be limited to
+; to what the PR net can handle since it has the smallest local
+; packet size.  The following cell holds the maximum number of
+; data bytes which can be carried by a TCP packet such that it is
+; guaranteed to get into the PR Net.
+
+MAXPBC::^D<254-28-20-20>-MINIOS	; Maximum packet byte count
+	; PR Packet is 254 bytes (max.).  28 for PR header, 20 for
+	; Internet header, 20 for TCP.
+
+IFKA <EXTERN ABTCON,BYTSCT,CHKWND,CLRBLK,CLRLCK,DG> ;|
+IFKA <EXTERN DQ,FILHDR,FINSCT,FLSRBF,GETBBK,GETBLK> ;|
+IFKA <EXTERN GETISN,INITQ,INTSCR,LCKTTY,NQ,NULPKT,OPDLAY,OPPKCT> ;|
+IFKA <EXTERN OPRNCT,OPUSE,PKTEND,PRNPKT,PZ,PZDLAY,PZPKCT,PZRNCT> ;|
+IFKA <EXTERN PZUSE,RSTSCT,RSVTSO,RX,SETRXP,SETTSO,SETTUM> ;|
+IFKA <EXTERN SIGNAL,SNDGAT,SNDSCL,SNDSOP,SNDTVT,STATF,SYNSCT,TCPCKS,TIMCAL> ;|
+IFKA <EXTERN TODCLK,TSTAMP,TTSOBE,TVTISP,TVTOSP,ULKTTY>	;|
+IFKA <EXTERN USRABD,USRBFE,USREVT,USTTUM,XFRDAT> ;|
+
+;Packetizer
+
+;TCB/	(Extended) Pointer to connction block
+;
+;	CALL PKTIZE
+;Ret+1:	Always
+
+
+PKTIZE::LOCAL <BUFCNT,XFRCNT,WNDSPC,LINBLK>
+	PUSH P,PKT
+	PUSH P,TPKT
+	PUSH P,BFR
+	SETO LINBLK,		; Assume not TVT (abort case)
+	JE TSABT,(TCB),PKTIZ0	; User requested ABORT?
+
+
+; User did an ABORT for this connection or a RESET, CLZFF etc.
+;  If a foreign address is known an "non-existant" TCB error is sent to
+;  it so it can know that the connection is gone on this end right now.
+
+	LOAD T1,TRSYN,(TCB)	; Get state of Recv synchronization
+	CAIE T1,SYNABL		; If we know the foreign address,
+	 CALL ABTNTC		; Send a courtesy error pkt to other end
+	MOVEI T1,ELP+7		; "No such connection"
+	CALL ABTCON		; Set to NOTSYN, flush buffers, queues
+	SETZRO TSUOP,(TCB)	; Fake a CLOSE from the user
+	SETZRO TSFP,(TCB)	; Clear Force Packet request
+	CALL USRABD		; Tell user that ABORT is done.
+	JRST PKTIZX
+
+; If packet is being encouraged, set Force packet bit to get it done.
+
+PKTIZ0:	JE TSEP,(TCB),PKTIZ1
+	SETONE TSFP,(TCB)
+
+;Top of main loop
+
+; If a SYN is sent when the connection is first used,
+;  it should have a sequence number gotten from the "Initial
+;  Sequence Number" curve (a function of the clock).
+
+PKTIZ1:	LOAD T1,TSSYN,(TCB)	; Get send state
+	CAIN T1,SYNABL		; SYNCABLE?
+	 CALL SETISN		; Yes. Set initial sequence number
+
+; If this is a TVT, TSFP will be on but there will be no buffer.
+; Do the special things for this case.
+
+	JE TTVT,(TCB),PKTZ1D	; Jump if not a TVT
+	MOVEI BFRCNT,377777	; Maybe lots of output to handle
+	LOAD T2,TVTL,(TCB)	; Get the line number
+	JUMPE T2,PKTZ1D		;#337 Forget it if no TVT assigned
+	CALL LCKTTY		; Lock and get trm blk address to T2
+	 JUMPLE T2,PKTZ1C	; Can't.
+	MOVEM T2,LINBLK		; Save the address
+	CALL TTSOBE		; CFOBF might have happened since OPSCAN
+	 JRST PKTZ1E		; Chrs available.
+	MOVE T2,LINBLK		; Restore line blk address
+PKTZ1C:	CALL ULKTTY		; Decrease the reference count
+PKTZ1D:	SETO LINBLK,		; No terminal block to unlock later
+
+;Try to find a user buffer to send data from.  This could the the
+; "send current buffer" which is left from a previous call or a
+;  buffer queued from user SEND.  If there is no buffer, BFR is set
+;  to 0 as is the byte count.
+
+	LOAD BFR,TSCB,(TCB)	; Get current send buffer if any
+	JUMPN BFR,PKTIZ3	; Got one. Go set count.
+	LOAD T1,QNEXT,<+TCBSBQ(TCB)> ; Get next thing on send buf Q
+	CAIN T1,TCBSBQ(TCB)	; Next points at header ...
+	 JRST PKTZ1E		; means empty.  No buffer.
+	SETSEC T1,INTSEC	; Make extended address
+	CALL DQ			; Dequeue the buffer
+	SKIPA BFR,T1		; And setup the standard pointer.
+PKTZ1E:	MOVEI BFR,0		; 0 means no buffer
+	STOR BFR,TSCB,(TCB)	; Remember as current buffer
+
+; If there is no buffer, continue generating a packet only if the
+;  Force Packet bit is on the TCB.  In that case, set BUFCNT to 0
+;  so that no data will be sent.  Otherwise, set the BUFCNT from
+;  the current buffer.
+
+
+PKTIZ2:	JUMPN BFR,PKTIZ3	; Jump if we have a buffer
+	MOVEI BUFCNT,0		; Count if not a TVT
+	JUMPL LINBLK,PKTIZ4	; Jump if not a virtual terminal
+	MOVE T2,LINBLK		; Arg for TVTOSP
+	CALL TVTOSP		; Find out how many chrs to be sent
+	MOVE BUFCNT,T1
+	JRST PKTIZ4
+
+PKTZ2A:	MOVEI BUFCNT,0		; Assume no bytes in buffer.
+	JN TSFP,(TCB),PKTIZ4	; If not, keep going only if Force Pkt
+	JRST PKTIZX		; False signal. Return
+PKTIZ3:	SETSEC BFR,INTSEC	; Make extended address
+	LOAD BUFCNT,BCNT,(BFR)	; Get byte count from buffer
+
+; Compute the amount of window space available to send into as
+;  provided by the remote end.
+
+PKTIZ4:	LOAD T1,TSLFT,(TCB)	; Send Left
+	LOAD T2,TSWND,(TCB)	; Send Window
+	SKIPN T2		;#251 Allow sending if window is shut
+	 MOVEI T2,1		;#251 Need probe to sense remote window open
+	LOAD T3,TSSEQ,(TCB)	; Send Sequence
+	ADD T1,T2		; Compute Send Right
+	SUB T1,T3		; Minus Sequence
+	MODSEQ T1		; Keep within right number of bits
+	MOVEM T1,WNDSPC		; Is amount of window space available
+
+; Force our idea of the space availble to 0 if we cannot send
+;  data but have to generate only an ACK.
+
+	LOAD T1,TSSYN,(TCB)	; Send state
+	LOAD T2,TRSYN,(TCB)	; Receive state
+	JUMPE WNDSPC,PKTIZ5	; Jump if no window to send in
+	CAIE T1,SYNABL		; Suppress data send until recv side not
+	CAIE T2,SYNABL		; SYNCHABLE is send side (partially)
+	CAML WNDSPC,[MAXSEQ/2]	; open or window space is LT 0
+	TDZA WNDSPC,WNDSPC	; Make window 0, see if Pkt being forced
+	 JRST PKTIZ6		; OK to send data
+PKTIZ5:	JE TSFP,(TCB),PKTIZX	; Give up unless Force Pkt on.
+
+; Now the number of bytes available from the current user buffer is
+;  known and the apparent amount of window space is known.  Set
+;  XFRCNT to the amount which will actually be sent in this Pkt.
+; In the case of a TVT, it is not known how much is available
+; and we will assume a full packet (or window, etc) is to be sent.
+
+PKTIZ6:	CAML BUFCNT,WNDSPC	; Take min of what is available to be
+	 SKIPA XFRCNT,WNDSPC	; sent and space allowed to send in
+	 MOVE XFRCNT,BUFCNT
+	CAILE XFRCNT,MINDSZ	; Limit to what a Pkt can hold.
+	 MOVEI XFRCNT,MINDSZ
+	CAMLE XFRCNT,MAXPBC	; Min again to prevent fragmentation
+	 MOVE XFRCNT,MAXPBC
+
+; Check to see if sequence numbers are being consumed at so high
+;  of a rate that the current packet may cross into the forbidden zone.
+
+	CALL GETISN		; Get initial sequence number
+	ADD T1,[SNSTEP]		; Plus a clock tick's worth of Seq nums.
+	MODSEQ T1
+	MOVEM T1,T2		; Lower bound of forbidden region
+	LOAD T1,TSSEQ,(TCB)	; Current Send Sequence (to be Pkt Seq)
+	MOVE T3,T1
+	ADDI T3,5(XFRCNT)	; Allow for possible controls in Pkt
+	MODSEQ T3
+	CALL CHKWND		; Will Pkt cross into forbidden zone?
+	JUMPE T1,PKTIZ9		; Jump if not.
+
+	JN TSFP,(TCB),PKTIZ8	; Jump if we HAVE to emit a packet
+	MOVEI T1,^D1000		; Wait for a second for more
+	CALL DLAYPZ		; sequence numbers to become available.
+	JRST PKTIZX		; Background will cause PZ to run then.
+PKTIZ8:	MOVEI XFRCNT,0		; Don't send any data in Pkt.
+
+; Clear the Force Packet bit and the Encourage Packet filter bit.
+; No more delayed signals should be pending.
+
+PKTIZ9:	SETZRO TSFP,(TCB)	; Clear Force Packet request
+	SETZRO TSEP,(TCB)	; and Encourage Packet request
+
+; Try to assign a block of free storage for the packet to be sent.
+
+	MOVEI T1,MINPSZ		; Minimum packet size
+	JUMPN XFRCNT,PKTZ9A	; Not right if data is to be sent
+	CALL GETBLK		; Get block of specific size
+	MOVEI T2,MINPSZ		; Say how big it is for following code
+	JRST PKTZ9B
+
+PKTZ9A:	MOVEI T2,<4*MINPSZ>+3(XFRCNT) ; Number of bytes, set to round up
+	ASH T2,-2		; In words
+	CALL GETBBK		; Get biggest block of free storage
+	HLRZ T2,T1		; Size of block gotten, if any
+	HRRZS T1		; Clear garbage from addr pointer
+	JUMPE T1,PKTZ9B		;#337 Jump if we got nothing
+	SETSEC T1,INTSEC	; Make extended address
+	MOVEI T3,-MINPSZ(T2)	; Num. words available for data
+	ASH T3,2		; Num. bytes which could be sent
+	CAMGE T3,XFRCNT		; Min against what is required
+	 MOVEM T3,XFRCNT
+
+PKTZ9B:	SKIPE PKT,T1		; Put in standard place
+	 JRST PKTZ10		; Storage was available. Continue.
+	MOVEI T1,^D2000		; Two seconds later,
+	CALL ENCPKT		; Try again.
+	JRST PKTIZX
+
+
+; Clear those internal and Internet fields which are not
+; explicitly set in the following code.
+
+PKTZ10:	SETZM PKTQ(PKT)		; Indicate not queued
+	SETZRO PFLGS,(PKT)	; Clear internal flags
+	SETZRO PIFLG,(PKT)	; Clear internet flags
+
+	MOVEI T1,<MINIHS+3>/4	; # words in smallest IN hdr
+	STOR T1,PIDO,(PKT)	; Set as initial data offset
+
+; Stuff in all pertinent Internet options so we can know where
+; the TCP portion will begin
+
+; If the TCP is running in secure mode, include a Secure Open
+; (i.e., connection change request) if the security level has changed.
+; Do this for a SYN packet too even though the level will most likely
+; be 0.  This means "security level not yet known" to the KDC.
+
+	LOAD T1,TSSYN,(TCB)	; Get send state
+	LOAD T2,TSLVN,(TCB)	; "Next" Security Level
+	LOAD T3,TSLVC,(TCB)	; "Current" level
+	CAIE T1,SYNABL		; About to send a SYN?
+	CAME T2,T3		; Or difference in levels?
+	SKIPN INTSCR		; And running in secure mode?
+	CAIA			; No.
+	 CALL SNDSOP		; Yes.  Send the option
+
+; Set pointer to TCP portion of packet now that all internet
+; options have been set or reserved.
+
+	LOAD T1,PIDO,(PKT)	; Internet data offset
+	XMOVEI TPKT,PKTELI(PKT)	; Pointer to Internet portion
+	ADD TPKT,T1		; TPKT now points at TCP area of pkt
+	SETZRO PTCTL,(TPKT)	; Clear all controls.  Rest will be set.
+
+; Fill in the common header information, the local and foreign
+;  addresses and the initial retransmission interval computed for
+;  this connection.
+
+	LOAD T1,TFH,(TCB)	; Foreign host
+	LOAD T2,TFP,(TCB)	; Foreign port
+	LOAD T3,TLP,(TCB)	; Local port
+	LOAD T4,TLH,(TCB)	;#337 Local address
+	CALL FILHDR		; Insert addressing info, etc.
+
+; Now the Internet header is initialized and we can add (or at least
+; reserve space for) TCP options.
+
+	SKIPE STATF		; Taking statistics right now?
+	 CALL RSVTSO		; Yes, reserve timestamp option space
+
+; Enter the send sequence for the connection as the sequence number
+;  of the packet.
+
+	LOAD T1,TSSEQ,(TCB)	; Current send sequence
+	STOR T1,PSEQ,(TPKT)	; Packet sequence number
+
+;  Send a SYN if connection is opening
+
+	LOAD T1,TSSYN,(TCB)	; Get send state
+	CAIN T1,SYNABL		; SYNCHABLE means we must tell other
+	 CALL SNDSYN		; end our seq. num. by sending a SYN
+
+; Transfer data from the user buffer (if any) to the packet.
+;  XFRCNT has the previously computed number of bytes which may be 0.
+
+	JUMPE BFR,PKTZ14	; Jump if no buffer from user SEND
+	MOVE T1,XFRCNT		; Number of bytes of data to put in Pkt
+	CALL SNDDAT		; Transfer it from user buffer to Pkt
+	JRST PKTZ15		; Note that SNDDAT set timestamp
+
+PKTZ14:	SKIPGE T2,LINBLK	; Do we have a terminal block?
+	 JRST PKZ14A		; No.
+	MOVE T1,XFRCNT		; Arg is space available
+	CALL SNDTVT		; Send data from a virtual terminal
+	MOVEM T1,XFRCNT		; Save number actually sent
+	SETONE PEOL,(TPKT)	; Hussle up receiver
+PKZ14A:	MOVE T1,TODCLK		; Current millisecond
+	STOR T1,PTS,(PKT)	; Set the Packet timestamp
+
+
+; Send a FIN if it is time.  User must have said CLOSE (TCB UOpen
+;  bit is off), connection must be synchronized, and there must be
+;  nothing waiting to be sent (no current send buffer and nothing Q'd)
+
+PKTZ15:	LOAD T1,TSSYN,(TCB)	; Get send state
+	CAIE T1,SYNCED		; Connection synchronized?
+	 JRST PKTZ16		; No.  No FIN can be sent.
+	JN TSUOP,(TCB),PKTZ16	; Jump if connection still OPEN by user
+	JN TSCB,(TCB),PKTZ16	; Still something to send. No FIN yet.
+	LOAD T1,QNEXT,<+TCBSBQ(TCB)>	; Get first thing on send bfr q
+	CAIN T1,TCBSBQ(TCB)	; Is the queue empty?
+	 CALL SNDFIN		; Include a FIN in this packet
+PKTZ16:	LOAD T1,PIPL,(PKT)	; Get packet length witout data
+	ADD T1,XFRCNT		; Add amount just inserted
+	STOR T1,PIPL,(PKT)	; Set into Internet Packet Length
+
+; If we are ACKing a remote FIN, the receive side becomes
+;  NOTSYNCHED.  If that makes both sides NOTSYNCHED, the user is
+;  notified that the connection is fully closed.  If just the
+;  receive side closed, the user is told that the connection is closing.
+;  If all that remains to happen on the connection is that this end
+;  should receive an ACK of our FIN, Background is notified to generate
+;  a fake ACK after a reasonable time; this guards against the network
+;  losing the final ACK, which is a "courtesy" anyway.
+
+	LOAD T1,TRSYN,(TCB)	; Get receive state
+	CAIE T1,FINRCV		; FINRECEIVED?
+	 JRST PKTZ20		; No.  Skip the checks.
+	MOVEI T1,NOTSYN
+	STOR T1,TRSYN,(TCB)	; Change to NOTSYNCHED
+	MOVEI T1,XLP+^D12	; "Closing" code
+	CALL FLSRBF		; Flush receive buffers with this code
+
+	LOAD T2,TSSYN,(TCB)	; Get send state
+	CAIE T2,FINSNT		; Send side closing?
+	CAIN T2,NOTSYN		; or already closed?
+	 JRST PKTZ17		; Yes.  Nothing to tell user
+	MOVEI T1,XFP+^D12	; "Closing"
+	CALL USREVT
+
+PKTZ17:	LOAD T3,TSSYN,(TCB)	; Get send state
+	CAIE T3,FINSNT		; Sending a FIN now?
+	 JRST PKTZ18
+	$SIGNL(DG,^D30000)	; Signal ourselves in 30 seconds
+	MOVEI T3,FINSNT		; Set T3 back again for following
+
+PKTZ18:	LOAD T3,TSSYN,(TCB)	;#337 Get send state
+	CAIE T3,NOTSYN		; Send side not synchronized?
+	 JRST PKTZ20
+	MOVEI T1,XLP+3		; "Closed" event
+	CALL USREVT		; Tell user both sides closed.
+
+; Now all control and data have been stored in the packet. Advance
+;  the send sequence in the TCB to include all of this packet.
+
+PKTZ20:	CALL PKTEND		; Returns next seq num after this Pkt
+	STOR T1,TSSEQ,(TCB)	; Advance Send sequence
+	STOR T1,PESEQ,(PKT)	; Save recomputed end of packet
+	JE PSYN,(TPKT),PKZ201	; Jump if not first packet on this conn
+	LOAD T2,TSLFT,(TCB)	; Get send left
+	SUB T1,T2		; Compute amount of window taken by this
+	MODSEQ T1		; first Pkt.
+	STOR T1,TSWND,(TCB)	; And prevent further sends until window
+				; info arrives from other end.
+
+PKZ201:	CALL NULPKT		; See if anything retransmittable here
+	SETCA T1,		; Get senxe right
+	STOR T1,PPROG,(PKT)	; Say program must retain the packet
+	CALL SETRXP		; Setup packet rexmit parameters
+
+; Set the timegenerated word in the local header.  Used to compute
+;  roundtrip time for determining what the retransmit interval will be.
+
+	MOVE T1,TODCLK		; Current millisecond
+	STOR T1,PTG,(PKT)	; Packet Time Generated
+
+; Done filling the packet.  If running in  secure mode and this
+; packet has something which will be acknowledged, make the
+; current level be the next level so as to shut off subsequent
+; connection change request options to the KDC.
+
+	SKIPN INTSCR		; In secure mode?
+	 JRST PKTZ21		; No.  Avoid the overhead.
+	JE PPROG,(PKT),PKTZ21	; See if pkt will be ACK'd
+	LOAD T2,TSLVN,(TCB)	; Guaranteed that KDC will here the word
+	STOR T3,TSLVC,(TCB)	; So update the current level
+
+; Do statistics functions
+
+PKTZ21:	AOS PZPKCT		; Count Packetizer packets
+	MOVEI T1,1		; "Being output"
+	CALL PRNPKT
+	SKIPN STATF		; Taking statistics right now?
+	 JRST PKTZ22		; No
+	MOVEI T1,OPDLAY		; Histogram time to (null) Output Proc.
+	CALL TSTAMP		; Process the time stamp
+	MOVEI T1,OPUSE		; Charge time to Output Processor
+	XMOVEI T2,EMTPKT	; for call to EmitPacket
+	MOVE T3,LINBLK		; TVT block if any
+	CALL TIMCAL		; Do a timed call.
+	JRST PKTZ23		; Skip non-statistics code
+PKTZ22:	MOVE T1,LINBLK		; TVT block if any
+	CALL EMTPKT		; EmitPacket
+PKTZ23:	JE PPROG,(PKT),PKZ23A	; Don't save for retrans if null pkt
+	MOVE T1,PKT		; What to Enqueue
+	XMOVEI T2,TCBRXQ(TCB)	; Pointer to the retransmit queue
+	CALL NQ			; Enqueue it there
+	MOVEI T1,RX		; Select the Retransmitter
+	LOAD T2,PRXI,(PKT)	; Retransmission interval
+	MOVE T4,T2
+	ADD T4,TODCLK		; Time of next run
+	SKIPE TCBQRX(TCB)	; Not queued, or ...
+	CAMG T4,TCBTRX(TCB)	; Need it sooner than scheduled?
+	 CALL SIGNAL		; Cause RX to run after that time
+
+; See if Packetizer should run again for this connection.  This is true
+;  if there is something waiting to be sent and there is window space
+;  in which to send it.
+
+PKZ23A:	JE TTVT,(TCB),PKTZ24	; Jump if not a virtual terminal
+	SETZ T1,		;#337 Assume LINBLK is -1
+	SKIPLE T2,LINBLK	;#337 Pointer to dynamic area
+	 CALL TVTOSP		;#337 Get amount of output waiting
+	JUMPE T1,PKTIZX		; None right now.
+	CAMLE WNDSPC,XFRCNT	; If there is still unused window space
+	 JRST PKTIZ2		; Go stuff it
+	MOVEI T1,^D2000		; After this number of milliseconds
+	CALL DLAYPZ		; Try again
+	JRST PKTIZX
+
+PKTZ24:	JN TSCB,(TCB),PKTZ25	; Jump if there is a current buffer
+	LOAD T1,QNEXT,<+TCBSBQ(TCB)>	; Send buffer queue
+	CAIN T1,TCBSBQ(TCB)	; Empty?
+	 JRST PKTIZX		; Yes.  Nothing to send.  Return.
+PKTZ25:	CAMLE WNDSPC,XFRCNT	; Is there some unused window space?
+	 JRST PKTIZ1		; Yes. Use it.
+
+; Return from the Packetizer
+
+PKTIZX:	SKIPL T2,LINBLK		; Have a TVT line locked?
+	 CALL ULKTTY		; Yes.  Unlock it.
+	POP P,BFR
+	POP P,TPKT
+	POP P,PKT
+	RESTORE			; POP all locals
+	RET
+
+; Set Initial Sequence Number for a connection.
+;  Sets default initial window.
+
+;TCB/	(Extended) Locked connection block
+;
+;	CALL SETISN
+;Ret+1:	always
+
+SETISN:	JN TSSV,(TCB),SETIS1	; Jump if the current sequence is valid
+	CALL GETISN		; Get current value of ISN curve
+	STOR T1,TSSEQ,(TCB)	; Store as current send sequence
+	SETONE TSSV,(TCB)	; Indicate sequence is now valid
+SETIS1:	LOAD T1,TSSEQ,(TCB)
+	STOR T1,TSLFT,(TCB)	; Move Send Left up to Sequence
+	MOVEI T1,MAXDSZ		; Maximum data in one packet
+	STOR T1,TSWND,(TCB)	; is the default initial window
+	RET			; (May be reduced when SYN sent)
+
+
+
+;Include a SYN bit in the packet
+
+;TCB/	(Extended) Current locked connection block
+;PKT/	(Extended) Packet
+;TPKT/	(Extended) pointer to TCP part of packet
+;
+;	CALL SNDSYN
+;Ret+1:	always
+
+SNDSYN:	SETONE PSYN,(TPKT)	; Set the SYN bit in the packet
+	LOAD T1,TSSYN,(TCB)	; Get send state
+	CAIE T1,SYNABLE		; SYNCABLE (ie, opening)
+	 JRST SNDSY1		; No.
+	MOVEI T2,SYNSNT
+	STOR T2,TSSYN,(TCB)	; Yes. Change to SYNSENT state.
+SNDSY1:	AOS SYNSCT		; Count SYNs sent
+	RET
+
+; Move data from a user buffer to a packet
+
+;TCB/	(Extended) Locked connection block
+;PKT/	(Extended) Packet
+;TPKT/	(Extended) pointer to TCP part of packet
+;BFR/	(Extended) Buffer
+;T1/	Number of bytes to move (maybe 0).
+;
+;	CALL SNDDAT
+;Ret+1:	always
+
+; All OPTIONS must be in the Packet at the time this is called.
+;All bytes specified by T1 MUST be handled.  Caller guarantees this.
+
+SNDDAT:	LOCAL <NEWCNT,XFRCNT,PKTPTR>
+	MOVEM T1,XFRCNT		; Set up the transfer count
+	LOAD PKTPTR,PTDO,(TPKT)	; TCP Data offset in words
+	HRLI PKTPTR,(<POINT 8,.-.(TPKT)>)	; Pointer to data
+
+SNDDA1:	CALL SETTUM		; Set user map
+	LOAD T1,BPTR,(BFR)	; Source is buffer ptr (mapped into mon)
+	MOVE T2,PKTPTR		; Destination is packet pointer
+	MOVE T3,XFRCNT		; Number to transfer
+	SETO T4,		; Indicate User-to-monitor
+	CALL XFRDAT		; Do the data transfer
+	MOVEM T2,PKTPTR		; Store updated infomation
+	STOR T1,BPTR,(BFR)
+	CALL USTTUM		; Unmap user space
+
+SNDDA3:	LOAD NEWCNT,BCNT,(BFR)	; Get number which used to be in buffer
+	SUB NEWCNT,XFRCNT	; Reduce by number just used
+;;;;	MOVE T1,NEWCNT
+;;;;	SKIPE XFRCNT		; If there was a change,
+;;;;	 CALL USRBUD		; Update the user's buffer header
+	STOR NEWCNT,BCNT,(BFR)	; Update TCP buffer header
+
+	ADDM XFRCNT,BYTSCT	; Count Bytes Sent
+	SKIPN STATF		; Taking statistics now?
+	 JRST SNDDA4		; No
+	LOAD T1,BTS,(BFR)	; Get the buffer time stamp
+	STOR T1,PTS,(PKT)	; and make that the Packet time stamp
+SNDDA4:	JUMPN NEWCNT,SNDDAX	; Pkt or window filled but more in BFR
+	MOVEI T1,0
+	STOR T1,TSCB,(TCB)	; Done with this buffer
+	JE BEOL,(BFR),SNDDA5	; Jump if no EOL on the buffer
+	SETONE PEOL,(TPKT)	; Set packet End of Letter
+
+SNDDA5:	MOVEI T1,PZDLAY		; Select the packetizer delay histogram
+	SKIPE STATF		; Taking statistics now?
+	 CALL TSTAMP		; Yes. Process the timestamp
+	MOVSI T1,(<OK>B7)	; The general success event code
+	CALL USRBFE		; Tell user his send buffer is empty
+SNDDAX:	RESTORE			; POP all of caller's locals
+	RET
+
+; Send a FIN in this packet
+
+;TCB/	(Extended) Locked connection block
+;PKT/	(Extended) Packet
+;TPKT/	(Extended) pointer to TCP part of packet
+;
+;	CALL SNDFIN
+;Ret+1:	always
+
+SNDFIN:	SETONE PFIN,(TPKT)	; Set FIN bit in the packet
+	MOVEI T1,FINSNT		; New send state
+	STOR T1,TSSYN,(TCB)	; Set it.
+	LOAD T1,TRSYN,(TCB)	; Get receive state
+	CAIE T1,NOTSYN		; NOTSYNCHED?
+	 JRST SNDFI1		; No.
+	$SIGNL(DG,^D30000)	; Run again in 30 seconds
+SNDFI1:	AOS FINSCT		; Count FINs sent
+	RET
+
+; Emit a packet into a network
+
+;TCB/	(Extended) Locked connection block
+;PKT/	(Extended) Packet
+;TPKT/	(Extended) pointer to TCP part of packet
+;T1/	Pointer to dynamic data if TVT
+
+EMTPKT::LOCAL <LINBLK>
+	MOVEM T1,LINBLK		; Save TTYSRV line block if any
+	JN PINTL,(PKT),EMTPKX	; Already in use by interrupt level
+				; (ReXmit while IMP is off or slow)
+	LOAD T1,TRSYN,(TCB)	; Get receive state
+	CAIN T1,SYNABLE		; SYNCABLE
+	 JRST EMTPK1		; Yes.  Cannot ACK anything.
+	SETONE PACK,(TPKT)	; Set the packet ACK bit
+	LOAD T1,TRLFT,(TCB)	; Receive Left is what we want to hear
+	STOR T1,PACKS,(TPKT)	; next.  ACK that.
+	LOAD T1,TRWND,(TCB)	; Receive window
+	SKIPL T2,LINBLK		; Virtual terminal connection?
+	 CALL TVTISP		; Yes.  Window is in bfr space
+	STOR T1,PWNDO,(TPKT)	; Is how much buffer space user has
+	JE TSURG,(TCB),EMTPK1	; Skip following if not in urgent mode
+	LOAD T1,TSURP,(TCB)	; End of urgent data
+	LOAD T2,PSEQ,(TPKT)	; Sequence number of this packet
+	SUB T1,T2		; Offset to urgent pointer
+	CAIG T1,<PURGP/<PURGP&<-PURGP>>>	; Limit to max
+	 MOVEI T1,<PURGP/<PURGP&<-PURGP>>>
+	STOR T1,PURGP,(TPKT)	; Set into packet
+	SETONE PURG,(TPKT)	; Set the control bit
+
+EMTPK1:	SKIPN STATF		; Taking statistics right now?
+	 JRST EMTPK2		; No.
+	LOAD T1,PTS,(PKT)	; Get the current timestamp
+	CALL SETTSO		; and move into the timestamp option
+EMTPK2:	SETZRO PTCKS,(TPKT)	; Clear the check sum field
+	CALL TCPCKS		; Compute the packet checksum
+	STOR T1,PTCKS,(TPKT)	; and enter it in the packet
+	MOVEI T1,2		; "passing Output processor" code
+	CALL PRNPKT		; Tell Pkt printer
+	MOVE T1,TODCLK		; Current millisecond number
+	STOR T1,PXT,(PKT)	; Store as time of most recent transmit
+	CALL SNDGAT		; Send it to a gateway
+	AOS OPPKCT		; Count packets output
+	AOS OPRNCT		; and Output runs
+EMTPKX:	RESTORE
+	RET
+
+; Send abort notice to remote TCP when this end is abandonned.
+;  This is a courtesy which serves to speed things up but is not
+;  required by the protocol.
+
+;TCB/	(Extended) Locked connection block
+;
+;	CALL ABTNTC
+;Ret+1:	always
+
+
+ABTNTC:	PUSH P,PKT
+	PUSH P,TPKT
+	MOVEI T1,MINPSZ		; Size of a small packet
+	CALL GETBLK		; Assign from free storage
+	SKIPG PKT,T1		; Did that work?
+	 JRST ABTNTX		; No.  Not required anyway.
+	MOVEI T2,MINPSZ		; Size of the packet
+	CALL CLRBLK		; Clear it
+
+	MOVEI T1,<MINIHS+3>/4	; Size of minimum Internet header
+	STOR T1,PIDO,(PKT)	; Set as data offset
+	; Stick in any internet options here, before FILHDR
+	LOAD T1,PIDO,(PKT)	; Get Internet data offset
+	XMOVEI TPKT,PKTELI(PKT)	; Pointer to Internet portion
+	ADD TPKT,T1		; Compute pointer to TCP portion
+	MOVE T1,TODCLK		; The current millisecond
+	STOR T1,PTS,(PKT)	; Store in packet
+	LOAD T1,TFH,(TCB)	; Foreign Host
+	LOAD T2,TFP,(TCB)	; Foreign Port
+	LOAD T3,TLP,(TCB)	; Local Socket
+	LOAD T4,TLH,(TCB)	;#337 Local address
+	CALL FILHDR		; Fill in addressing information, etc.
+	SETONE PRST,(TPKT)	; Set the reset bit
+	LOAD T1,TSSEQ,(TCB)	; Current send sequence
+	STOR T1,PSEQ,(TPKT)	; Is the Packet sequence
+	LOAD T2,TRLFT,(TCB)	; What we want to hear next
+	STOR T2,PACKS,(TPKT)	; Is the acknowledge
+	SETONE PACK,(TPKT)	; Make the ACK Sequence meaningful
+	SETZRO PWNDO,(TPKT)	; 0 window to other end (TCB is dead)
+	CALL TCPCKS		; Compute TCP packet checksum
+	STOR T1,PTCKS,(TPKT)	;#337 and insert into packet
+	MOVEI T1,2		; Say Pkt is being sent
+	CALL PRNPKT		; Print the packet
+	AOS PZPKCT		; Count Packetized packets
+	AOS OPPKCT		; Count Output packets
+	AOS RSTSCT		; Count ERRs sent
+	CALL SNDGAT		; Sent Pkt to the net. (NB: PPROG is 0)
+ABTNTX:	POP P,TPKT
+	POP P,PKT
+	RET
+
+; Send a "Secure Close"
+
+; After all has been said, one more packet containing a SCLOPT must
+;  be sent.  This will cause the BCR to contact the KDC in order
+;  to remove the keys, etc for the connection.
+
+;TCB/	(Extended) Locked connection block
+;
+;	CALL SCRCLS
+;Ret+1:	always
+
+SCRCLS::PUSH P,PKT
+	PUSH P,TPKT
+	MOVEI T1,MINPSZ		; Size of a small packet
+	CALL GETBLK		; Assign from free storage
+	SKIPG PKT,T1		; Did that work?
+	 JRST SCRCLX		; No.  Don't worry about it however
+	MOVEI T2,MINPSZ		; Size of this packet
+	CALL CLRBLK		; Clear it
+	MOVEI T1,<MINIHS+3>/4	; Number of words in minimum IN hdr
+	STOR T1,PIDO,(PKT)	; Set as initial data offset
+	CALL SNDSCL		; Add in the secure close option
+	; Insert other pertinent Internet options here
+	LOAD T1,PIDO,(PKT)	; Get Internet data offset
+	XMOVEI TPKT,PKTELI(PKT)	; Pointer to Internet portion
+	ADD TPKT,T1		; Compute pointer to TCP portion
+	LOAD T1,TFH,(TCB)	; Foreign Host
+	LOAD T2,TFP,(TCB)	; Foreign Port
+	LOAD T3,TLP,(TCB)	; Local Socket
+	LOAD T4,TLH,(TCB)	;#337 Local Host
+	CALL FILHDR		; Fill in addressing information, etc.
+	CALL TCPCKS		; Compute TCP packet checksum
+	STOR T1,PTCKS,(PKT)	; and insert into packet
+	MOVEI T1,2		; Say Pkt is being sent
+	CALL PRNPKT		; Print the packet
+	AOS PZPKCT		; Count Packetized packets
+	AOS OPPKCT		; Count Output packets
+	CALL SNDGAT		; Sent Pkt to the net. (NB: PPROG is 0)
+SCRCLX:	POP P,TPKT
+	POP P,PKT
+	RET
+
+; Force a packet
+
+; Causes a packet to be emitted even if there is no data to send.
+;  Done to cause something to be ACKd for instance.
+
+;TCB/	(Extended) Locked connection block
+;
+;	CALL FRCPKT
+;Ret+1:	always
+
+FRCPKT::JN TSFP,(TCB),FRCPKX	; Filter extra calls
+	SETONE TSFP,(TCB)	; Set the Force packet request bit
+	$SIGNL(PZ,0)		; Make Packetizer run now
+FRCPKX:	RET
+
+; Encourage generation of a packet
+
+; A packet is needed to ACK something, but allow time for some data
+;  to appear so that the ACK can piggyback on it.  Also, more calls
+;  may be made and we wish to minimize network traffic by not
+;  generating an ACK-only packet each time.
+
+;TCB/	(Extended) Locked connection block
+;
+;	CALL ENCPKT
+;Ret+1:	always
+
+ENCPKT::JN TSEP,(TCB),ENCPKX	; Already encouraged.  No more needed.
+	SETONE TSEP,(TCB)	; Remember a packet is being encouraged
+	MOVEI T1,^D100		; The wait time in milliseconds
+	CALL DLAYPZ		; Get background to signal PZ(TCB)
+ENCPKX:	RET
+
+
+
+; Schedule a delayed signal for the packetizer
+
+;TCB/	(Extended) Locked TCB
+;T1/	Delay time in milliseconds
+;
+;	CALL DLAYPZ
+;Ret+1:	always
+
+DLAYPZ::SKIPE TCBQPZ(TCB)	; Already queued?
+	 EXIT DLAYPX		; Filter extras.
+	JN TSFP,(TCB),DLAYPX	; Already forced.  No need.
+	MOVE T2,T1
+	MOVEI T1,PZ		; Select Packetizer
+	CALL SIGNAL
+DLAYPX:	RET
+
+; Flush all SEND buffers with a given Event Code
+
+;TCB/	(Extended) Locked connection block
+;T1/	Event Code
+;
+;	CALL FLSSBF
+;Ret+1:	always
+
+FLSSBF::LOCAL <CODE>
+	PUSH P,BFR
+	MOVEM T1,CODE
+	LOAD BFR,TSCB,(TCB)	; Get the current send buffer
+	SETZRO TSCB,(TCB)	; Forget the current send buffer
+	JUMPE BFR,FLSSB2	; Do we have a buffer here?
+	SETSEC BFR,INTSEC	; Make extended address
+FLSSB1:	MOVE T1,CODE		; Yes.
+	LSH T1,^D<36-8>		; Position in error byte
+	CALL USRBFE		; Tell user it is done
+
+FLSSB2:	LOAD BFR,QNEXT,<+TCBSBQ(TCB)>	; Get next thing on buffer queue
+	CAIN BFR,TCBSBQ(TCB)	; Points at head of queue
+	 JRST FLSSBX		; means empty queue.  Done.
+	SETSEC BFR,INTSEC	; Make extended address
+	MOVE T1,BFR
+	CALL DQ			; Dequeue the buffer
+	JRST FLSSB1
+
+FLSSBX:	POP P,BFR
+	RESTORE
+	RET
+
+; PZINI			Initialize PZ process block
+
+;	CALL PZINI
+;Ret+1:	ALways
+
+PZINI::	LOCAL <PRC>
+	MOVEI PRC,PZ		; Pointer to the Process block for PZ
+	MOVEI T1,QSZ		; Size of a queue head
+	CALL GETBLK		; Head must be in same section as items
+	JUMPE T1,PZINIX		;#337 No room
+	MOVEM T1,PRCQ(PRC)	; Input queue
+	CALL INITQ		; Initialize it
+	XMOVEI T1,PRCLCK(PRC)	; Lock
+	CALL CLRLCK		; Initilize it
+	XMOVEI T1,PKTIZE	; Packetizer function
+	MOVEM T1,PRCROU(PRC)	; Routine address
+	SETOM PRCWAK(PRC)	; No run time yet
+	MOVE T1,[<GIW TCBQPZ,TCB>]; Offset of PZ queue in TCB
+	MOVEM T1,PRCQOF(PRC)	; Store process block
+	MOVE T1,[<GIW TCBTPZ,TCB>]; Offset of PZ run time in TCB
+	MOVEM T1,PRCWOF(PRC)	; Store in process block
+	HRLOI T1,377777		; Infinity
+	MOVEM T1,PRCSGT(PRC)	; Set time of most recent signal
+	MOVEI T1,PZRNCT		; Pointer to run counter
+	MOVEM T1,PRCRNC(PRC)	; Put in standard place
+	MOVEI T1,PZUSE		; Pointer to CPU use meter
+	MOVEM T1,PRCTMR(PRC)	; Put in standard place
+	HRROI T1,-1		;#337 All ok
+PZINIX:	RESTORE			;#337
+	RET
+
+	TNXEND
+	END
+

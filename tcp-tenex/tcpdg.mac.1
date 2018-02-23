@@ -1,0 +1,78 @@
+;ISIMON:<ISI.TCP>TCPDG.MAC.3370 15-Sep-81 10:11:57, Edit by CHASE
+;#337 BBN update: Added error return if DGINI fails
+
+	SEARCH	INPAR,TCPPAR,PROLOG
+	TTITLE	TCPDG
+	SUBTTL	TCP Delayed Actions, William W. Plummer, 16FEB77
+	SWAPCD
+
+COMMENT	!
+	Delayed actions are those things which must happen after
+	some time delay.  No event in the TCP can be counted on
+	to kick off these functions.
+
+* FAKEAK ...  3 ...... Fake an ACK to complete connection closing
+* DGINI ....  4 ...... Initialize DG process block
+	!
+
+IFKA <EXTERN CLRLCK,DG,DGRNCT,DGUSE,GETBLK,INITQ,REMSEQ> ;|
+
+; FAKEAK	Fake input of an ACK for final outstanding FIN
+
+; This occurs if the final ACK gets lost in the network for more
+; than the prescribed number of seconds.  It is necessary because
+; the final ACK cannot itself be ACKd and therefore cannot have
+; guaranteed delivery.
+
+
+;TCB/	(Extended) Connection block (locked)
+;
+;	CALL FAKEAK
+;Ret+1:	Always.
+
+FAKEAK::LOAD T1,TSSYN,(TCB)	; Get send state
+	LOAD T2,TRSYN,(TCB)	; Get recv state
+	CAIN T1,FINSNT		; Do we have an outstanding FIN?
+	CAIE T2,NOTSYN		; and recv side closed?
+	 JRST FAKEAX		; A bug? FAKEAK should not be called?
+	XMOVEI T1,TCBRXQ(TCB)	; Pointer to the Retransmit queue
+	LOAD T2,TSLFT,(TCB)	; Send Left
+	LOAD T3,TSSEQ,(TCB)	; Send Sequence (1 after FIN)
+	SETZ T4,		; Say it is not a Recv queue
+	CALL REMSEQ		; Clear all that is outstanding
+FAKEAX:	RET
+
+; DGINI			Initialize DG process block
+
+;	CALL DGINI
+;Ret+1:	ALways, T1 zero if error
+
+DGINI::	LOCAL <PRC>
+	MOVEI PRC,DG		; Pointer to the Process block for DG
+	MOVEI T1,QSZ		; Size of a queue head
+	CALL GETBLK		; Head must be in same section as items
+	 JUMPE T1,DGINIX	;#337 Error return if no memory
+	MOVEM T1,PRCQ(PRC)	; Input queue
+	CALL INITQ		; Initialize it
+	XMOVEI T1,PRCLCK(PRC)	; Lock
+	CALL CLRLCK		; Initilize it
+	XMOVEI T1,FAKEAK	; The only DG function!
+	MOVEM T1,PRCROU(PRC)	; Routine address
+	SETOM PRCWAK(PRC)	; No run time yet
+	MOVE T1,[<GIW TCBQDG,TCB>]; Offset of DG queue in TCB
+	MOVEM T1,PRCQOF(PRC)	; Store process block
+	MOVE T1,[<GIW TCBTDG,TCB>]; Offset of DG run time in TCB
+	MOVEM T1,PRCWOF(PRC)	; Store in process block
+	HRLOI T1,377777		; Infinity
+	MOVEM T1,PRCSGT(PRC)	; Set time of most recent signal
+	MOVEI T1,DGRNCT		; Pointer to run counter via section 0
+	MOVEM T1,PRCRNC(PRC)	; Put in standard place
+	MOVEI T1,DGUSE		; Pointer to CPU use meter
+	MOVEM T1,PRCTMR(PRC)	; Put in standard place
+;	HRROI T1,-1		;#337 Success
+DGINIX:	RESTORE			;#337
+	RET
+
+	TNXEND
+	END
+

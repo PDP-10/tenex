@@ -1,0 +1,314 @@
+;Moved the dummy entries for RPICHK and RPIQOB here from
+;STORAG in case RPIN is 0
+;Conditionialize the entire module.
+;HWM, 26-May-82
+;
+	SEARCH	INPAR,TCPPAR,IMPPAR,PROLOG
+	TTITLE	RPIDV
+	SUBTTL	Raw Packet Interface Driver, William W. Plummer, 2JAN78
+
+COMMENT !
+	This module provides service for a BBN IMP10 interface.
+	The packets sent and received via this
+	interface are Internet packets without any local header.  The
+	local header will be supplied by the gateway in the device
+	to which the interface is connected.
+
+	To cause the gateway to use the RPI device, the switch INTSCR should
+	be set non-zero.  This will also turn off ARPANET traffic, and
+	the gateway will stop forwarding packets not destined for this host.
+
+	Empty input buffers are supplied by the gateway on the list pointed
+	to by INTFRI.  This is the same list that IMPPHY uses to obtain
+	input buffers from.  Filled input buffers are queued on the
+	main Internet input queue (INTIBI, INTIBO).
+
+	Emptied output buffers are put on the INTNFB list for
+	disposal by INTNRB.
+
+		*************** NOTE WELL ****************
+		RPICHN must be the same as IMPCHN so
+		that input and output queues and free
+		lists are properly interlocked.
+		******************************************
+
+
+* RPIINI ...  3 ...... Initialization routine
+* RPISV  ...  3 ...... Main Interrupt dispatch
+  RPICHK ...  3 ...... Periodic check of interface status
+
+* RPISRT ...  4 ...... Start input
+  RPII32 ...  5 ...... Input interrupt service
+  RPIEIN ...  6 ...... End of input message interrupt
+
+  RPIXOU ...  7 ...... Start output
+  RPIO32 ...  8 ...... Output interrupt service
+* RPIQOB ...  9 ...... Queue message from gateway for output
+	!
+
+	ifn	RPIN,<		;[hwm]	begin conditionial assembly
+; Device code:
+
+RPI=554
+
+; Interface CONO/I bits -- BBN standard IMP10 interface:
+
+RPIPWR==1B19		; Interface power is on
+RPIERR==1B22		; Interface error (incl. not ready)
+RPIINB==1B32		; Word waiting for input
+RPIOUB==1B28		; Word needed for output
+RPIEIB==1B24		; End input
+RPIGEB==1B23		; Program has seen the input end
+RPIEOB==1B22		; Send an end
+RPISTO==1B21		; Stop output
+RPIIOF==10B27+10	; Turn input off (PI assignments)
+RPIION==<10+RPICHN>B27+<10+RPICHN>	; Turn input on
+RPIOOF==10B31		; Turn output off
+RPIOON==<10+RPICHN>B31	; Turn output on
+
+; Initialization for Raw Packet Interface
+; All queues and lists are initialized by the time this is called.
+
+RPIINI::CONO RPI,RPIIOF!RPIOOF	; Turn it all off
+	SETZM RPIOB		; Inidicate no output in progress
+	SETZM RPIIB		; No input either
+	SETOM INTSCR		; Default to secure mode if this loaded
+	SKIPE INTNFI		; Any Internet free input buffers around?
+	 JSP T4,RPISRT		; Start initial input
+	RET
+
+
+; PI Dispatch (T1, T2, T3, T4, CX and P have been saved.)
+
+RPISV::	CONSO RPI,7		; Input turned off?
+	 JRST RPISV1		; Yes
+	CONSZ RPI,RPIINB
+	 JRST RPII32		; Word in
+	CONSZ RPI,RPIEIB
+	 JRST [	CONSO RPI,RPIINB; It can happen that last input came in
+		 JRST RPIEIN	; Within the last few instructions
+		JRST RPII32]	; If so, handle it first
+RPISV1:	CONSZ RPI,7B31		; Do nothing if no channel assigned
+	CONSO RPI,RPIOUB
+	 RET
+	SKIPE RPIOB
+	 JRST RPIO32		; Word out
+	CONO RPI,RPISTO
+	RET
+
+
+
+; Check to see if RPI input side can be given a new input buffer
+
+RPICHK::SKIPE INTNFI		; Are there input buffers around?
+	SKIPE RPIIB		; And does RPI need a buffer?
+	 CAIA			; No.
+	 JSP T4,RPISRT		; Yes. Start input on it
+	RET
+
+; Start input
+; called from process level when buffers made available and input is off
+; and from endin processor if more buffers are available
+
+RPISRT::CONSZ RPI,RPIPWR	; Interface power on?
+	CONSZ RPI,RPIERR	; Remote device ready? (ie, no error)
+	 JRST 0(T4)		; No or no.  Cannot receive a message.
+	PIOFF
+	SOSL INTNFI		; Count one less free input buffer
+	SKIPN T1,INTFRI		; Get pointer to the first one
+	 INBUG(HLT,<RPISRT: TCP free in buf list fouled>,RPITIF)
+	LOAD T2,NBQUE,(T1)	; Get next free
+	SETSEC T2,INTSEC	; Make extended address
+	MOVEM T2,INTFRI		; That is the head of new free list
+	PION
+	SETZRO NBQUE,(T1)	; Unlist from others for cleanliness
+	MOVEM T1,RPIIB		; Here is the in bfr for the interface
+	LOAD T2,NBBSZ,(T1)	; Get buffer size from fake IMPDV header
+	SUBI T2,PKTELI-IMP96L	; Number of words in packet
+	MOVEM T2,RPIICT		; Set number of 32-bit inputs to do
+	ADDI T1,PKTELI-IMP96L-1	; Bump addr part up to Internet part -1
+	MOVEM T1,RPIINP		; Here is the input pointer
+	MOVSI T1,-^D8		; Init 36-32 bit state word
+	MOVEM T1,RPIS32
+	CONO RPI,RPIION+1B19	; Clear error and start input
+	JRST 0(T4)
+
+; Pi service for input
+
+RPII32:	CONI RPI,T4		; Get state of END-IN bit for later
+	DATAI RPI,T1		; Get the data word
+	EXCH T4,RPIINP		; Get ptr to input buffer
+	SKIPG RPIICT		; More space to be filled in packet?
+	 JRST RPIEI0		; Message too big.  Just look for end.
+	MOVE T3,RPIS32		; Get unpacking state word
+	TRNE T3,777777		; Previous word already full?
+	 JRST RPI32A		; No
+	SOS RPIICT		; Yes, skip to the next one
+	AOS T4			; Advance storage address also
+RPI32A:	LSHC T1,@RPISHT(T3)	; Align input bytes with destination
+	DPB T1,RPIPT1(T3)	; High order byte for n-th word
+	MOVEM T2,1(T4)		; Low order byte for n+1st word
+	AOBJN T3,RPI32B		; Step state
+	MOVSI T3,-^D8		; Reinit state word
+RPI32B:	MOVEM T3,RPIS32		; Save state
+	AOS T4			; Bump storage address
+	SOSG RPIICT		; Count down space left
+	 JRST RPIEI0		; Handle full buffer
+	MOVEM T4,RPIINP		; Save bfr ptr
+	UNBRK RPI
+
+; Tables for 36-32 bit conversion, indexed by state word
+
+RPISHT:	XX==4
+	REPEAT ^D8,<Z -XX
+		XX=XX+4
+	>
+
+RPIPT1:	XX==^D32
+	REPEAT ^D8,<POINT XX,0(T4),31
+		XX=XX-4
+	>
+
+; Here when end msg recd from interface
+
+RPIEI0:	EXCH T4,RPIINP		; Save pointer.  Get CONI.
+	TRNN T4,RPIEIB		; Also end input?
+	 JRST RPIEIX		; End not received on big msg
+RPIEIN:	CONO RPI,RPIGEB		; Got end bit.
+	MOVE T1,RPIIB		; Buffer address
+	XMOVEI T2,-IMP96L(T1)	; Form TCP-style packet pointer
+	SETONE PSCR,(T2)	; Set the interface class (secure)
+	LOAD T3,PIVER,(T2)	; Internet Version
+	CAIN T3,.INTVR		; Right?
+	 JRST RPIEI1		; Yes.  Take it
+	MOVE T2,T1		; Copy address for indexing
+	EXCH T1,INTFRI		; Make it be head of free list
+	STOR T1,NBQUE,(T2)	; Tack old list onto this bfr
+	AOS INTNFI		; Count it up
+	JRST RPIEI2		; Restart input
+
+RPIEI1:	LOAD T2,NBBSZ,(T1)	; Number of words in buffer
+	ADDI T1,-1(T2)		; Last word in buffer
+	CALL MULKMP		; Unlock tail.  RCVGAT does the head.
+	MOVE T1,RPIIB		; Bfr address
+	MOVE T3,RPIINP		; Last word with data
+	SUBI T3,-1(T1)		; End-(Start-1)=Amount present
+	STOR T3,NBBSZ,(T1)	; Record actual count in buffer header
+	MOVE T3,INTIBI		; Add to gateway input queue
+	JUMPN T3,RPIEI3		; Queue was not empty
+	MOVEM T1,INTIBO		; Only thing on the queue is new thing
+	SKIPA			; Dont try to link it
+RPIEI3:	STOR T1,NBQUE,(T3)	; Link to others on queue
+	MOVEM T1,INTIBI		; New buf is last thing on queue
+	AOS INTFLG		; Cause the TCP to see this new input
+RPIEI2:	SETZM RPIIB		; Now no input buffer
+	CONO RPI,RPIIOF		; Turn off input PIs
+	SKIPE INTFRI		; More buffers available?
+	 JSP T4,RPISRT		; Yes, start new input
+RPIEIX:	UNBRK RPI
+
+; Routine to start msg going out. Called at PI level, and at
+; main level (PIOFF) if no output in progress
+
+RPIXOU:	SKIPN T1,RPIOBO		; Msg waiting to go out?
+	 JRST 0(T4)		; Return if not
+	LOAD T2,NBQUE,(T1)	; Get bfr's successor
+	SKIPN T2		; If last,
+	 SETZM RPIOBI		; Clear the queue
+	SETSEC T2,INTSEC	; Make extended address
+	MOVEM T2,RPIOBO		; Update output pointer
+	SETZRO NBQUE,(T1)	; Unlist from others for cleanliness
+	MOVEM T1,RPIOB		; Buffer in 1 is now to go out
+	LOAD T2,NBBSZ,(T1)	; Count of data words
+	SUBI T2,PKTELI-IMP96L-1	; Skip local ldr.  DATAO does 1st word
+	MOVEM T2,RPIOCT		; Number of 32-bit outputs in RPIO32
+	ADDI T1,PKTELI-IMP96L	; Bump address upto internet part
+	MOVEM T1,RPIOUP		; Pointer for interrupts
+	MOVE T2,1(T1)		; Get second word
+	MOVE T1,0(T1)		; Get first word
+	LSH T1,-4		; Abut with 1-st word
+	LSHC T1,4		; Put it together to get 1st 36 bits
+	MOVE T2,[-7,,1]		; Initial state word
+	MOVEM T2,RPOS32
+	DATAO RPI,T1		; Send the data to get things going
+	CONO RPI,RPIOON		; Be sure output PI is enabled
+	JRST 0(T4)
+
+; PI service for output
+
+; 32-bit output (rest of msg)
+
+RPIO32:	SKIPG RPIOCT		; Data left?
+	 JRST RPODN1		; No
+	MOVE T3,RPOS32		; Get state word
+	AOS T4,RPIOUP		; Inc bfr ptr
+	SOSLE RPIOCT		; Count down number left
+	MOVE T2,1(T4)		; Get n+1th word
+	MOVE T1,0(T4)		; Get nth word
+	LSH T1,-4		; Align high-order byte
+	LSHC T1,@RPOSHT(T3)	; Shift bytes into output word
+	DATAO RPI,1
+	AOBJN T3,RPO32B		; Step state
+	AOS T4			; Extra inc of bfr each cycle
+	SOS RPIOCT
+	MOVSI T3,-^D8		; Reinit state word
+RPO32B:	MOVEM T3,RPOS32		; Save state word
+	MOVEM T4,RPIOUP		; Save bfr ptr
+	UNBRK RPI
+
+RPODN1:	SKIPGE T1,RPIOB		; Get buffer location
+	 JRST RPODN2		; Sent done bit.  Now start next xfer.
+	MOVE T2,T1		; Copy pointer for index use
+	EXCH T1,INTNFB		; Put bfr back on free list
+	STOR T1,NBQUE,(T2)
+	HRROS T1,RPIOB		; Set flag for next interrupt
+	CALL IMULKB		; Unlock both ends of the buffer
+	CONO RPI,RPIEOB		; Sent last word, now send end bit
+	UNBRK RPI
+
+RPODN2:	SETZM RPIOB
+	JSP T4,RPIXOU		; Start next msg if any
+	UNBRK RPI
+
+; Table for 32-36 bit conversion, indexed by state word
+
+RPOSHT:	XX==4
+	REPEAT ^D8,<Z XX
+		XX=XX+4
+	>
+
+; Queue a TCP packet for output on the Raw Packet Interface.
+; Called from the gateway.
+
+;T2/	"IMPDV" style packet pointer (already locked)
+;
+;	CALL RPIQOB
+;Ret+1:	Packet not queued.  Interface is not up etc.
+;Ret+2:	RPI will take packet and return storage via INTNRB
+
+RPIQOB::PIOFF			; Grab the queue pointers
+	SETZRO NBQUE,(T2)	; Clean up list pointer from others
+	SKIPE T1,RPIOBI		; Is queue currently empty?
+	 JRST RPIQO3		; No.  Dont set output pointer
+	MOVEM T2,RPIOBO		; This is the only item
+	SKIPA
+RPIQO3:	 STOR T2,NBQUE,(T1)	; Add to tail
+	MOVEM T2,RPIOBI
+	SKIPN RPIOB		; Is there output in progress?
+	 JSP T4,RPIXOU		; No. Start it up.
+	PION
+	AOS (P)
+	RET
+>				;[hwm]	end conditional assembly RPIN
+	Subttl	 Dummy routines for Raw Packet Interface.
+	;  Needed only if Internet is included but no RPI is present.
+
+    IFE RPIN,<
+	EXTERN BUGCHK
+RPIQOB::TCPBUG(CHK,<RPI not present>,RPINX)
+RPICHK::RPIINI::RET
+    > ; end IFE RPIN
+
+	TNXEND
+	END
+
