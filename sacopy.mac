@@ -1,0 +1,2910 @@
+;<SOURCES>SACOPY.MAC;25	 12/7/77  07:40		EDIT BY RINDFLEISCH
+; Fixed disk opn time out calculation
+; Fixed sense data analysis for ENVIR DATA (uncorr errors)
+;<SOURCES>SACOPY.MAC	 11/11/77 08:05		EDIT BY RINDFLEISCH
+; Added switch for suppressed printout on correctable errors
+;<SOURCES>SACOPY.MAC	  9/26/77 17:00		EDIT BY RINDFLEISCH
+; SA10 disk pack copy program.  Does cylinder transfers with overlapped
+; I/O and compares.  Derived from SA10E diagnostic and the SA10D CPY
+; code by CLEMENTS/ISI
+
+	TITLE 	SACOPY
+	SUBTTL	SA10 - DISK PACK COPIER
+
+;          ****************************************************
+;          ****                                            ****
+;          ****           SUMEX Computer Project           ****
+;          ****     Stanford University Medical Center     ****
+;          **** Sponsored by National Institutes of Health ****
+;          ****      Biotechnology Resources Program       ****
+;          ****           T. Rindfleisch, 10/3/77          ****
+;          ****                                            ****
+;          ****************************************************
+
+
+
+; This program is for copying or verifying entire (formatted) disk packs
+; attached to an SA10 DEC memory port/IBM channel interface.  It includes
+; error correction, as available in 3330 type disk systems, and overlaps
+; cylinder-at-a-time disk I/O with buffer comparisons.  Three modes are
+; available depending on the setting of the CPYMOD parameter:
+;
+;    COPY	A source pack is read and a destination pack is written
+; 		and read back to verify the data copy.
+;
+;    FAST COPY	A source pack is read and a destination pack is written.
+; 		No read-back verification is done.
+;
+;    VERIFY	Source and destination packs are read and the data compared.
+;
+; For all read operations except verification read-back in COPY mode,
+; correctable errors are corrected and accepted.  NRETRY attempts are
+; made to correct other more serious errors, including uncorrectable data
+; checks. In COPY mode, a perfect copy to the destination is attempted
+; NRETRY times, i.e., without correctable, uncorrectable, or more serious
+; errors.
+;
+; At start-up, the program asks for the mode setting and for the source
+; and destination logical drive numbers.  It also checks to be sure that
+; only the required access to each drive is enabled and requests the
+; operator to remove write enable for a drive if it is not required.
+;
+; For light watchers:
+;
+;   Location LITES contains counters showing progress made -
+; 	LH - number of cylinders yet to be copied
+; 	RH - number of cylinders copied so far
+
+; There are also entry points to read (RDCYL) and write (WRCYL) single
+; cylinders of data for manual surgery or whatever.
+	EXTERN	.JBSYM,.JBUSY,DDT
+
+; Assembly for various processor types is controlled by defining one
+; and only one of the symbols KA, KI, or KL.  These symbols must not be
+; defined for other purposes!  THE KL OPTIONS ARE INCOMPLETELY SET UP
+; AT THIS POINT.
+
+KI=1		; Program will run on a KI-10
+
+IFDEF KL,<
+		; Additional symbols for KL10 stuff
+DTEFLG=444	;DONE FLG
+DTEF11=450	;ARG FROM 11
+DTECMD=451	;COMMAND LOC
+DTEMTD=455	;TYO DONE
+DTEMTI=456	;TYI READY
+DTE==200	;DEVICE CODE
+.DTMTO==10B27	;TYO CMD
+.DTMMC==11B27	;MON MODE ON
+.DTMNM==12B27	;MON MODE OFF
+TO11DB==1B22	;DOORBELL TO 11
+CL11PT==1B26	;CLEAR DOORBELL FOR 10
+PILDEN==1B31	;ENABLE LOAD PIA
+DTE11=142	;INT ADR
+DTEEPW=144	;EXAMINE PROT WORD
+	>	; End IFDEF KL
+
+
+; Basic hardware definitions for SA10 stuff
+
+SA0==274	; I/O bus address of SA-10
+BASE==160	; Base address for SA-10 channel control blocks
+IFNDEF CV,<
+CV==1>		; 0 for B, 1 for C (SA10 hardware pointer layouts)
+DCHAN==0	; SA10 channel assigned to disk controller
+IDEV==300	; Device address of disk controller (C0)
+CTYTMO=^D10000	; CTY time out count
+CTYFIL=4	; Number of CTY fill characters after LF
+; AC definitions
+
+Z=0		; Z-F are general purpose registers
+A=1
+B=2
+C=3
+D=4
+E=5
+F=6
+G=7		; G holds the buffer group index
+H=10		; H is used as a counter
+DD=15		; Used by SA10 indirect I/O bus macros
+P=17		; PDL pointer
+
+
+; Parameters for copy process
+
+PSTART==4000		; Program starting address
+APRCH==1		; PI channel for APR clock and errors
+SA0CH==2		; PI channel for SA10
+SFTCH==SA0CH		; PI channel for software requests
+NPACKS==4		; Number of drives on disk controller
+NCYL==^D815		; Total number of cylinders per pack
+NUCYL==^D808		; Number of cylinders available to users
+NSCYL==^D808+1		; Number of system cylinders (808 plus
+			; 1 cylinder worth of spare tracks)
+NSURF==^D19		; Number of surfaces (tracks/heads) per cylinder
+NRPT==^D5		; Number of records (pages) per track
+RECL==1000		; Number of data words per record
+TRKWDS==NRPT*RECL	; Number of words per track
+CYLREC==NSURF*NRPT	; Number of records per cylinder
+CYLWDS==NSURF*TRKWDS	; Number of words per cylinder
+CHKCYL==NCYL-1		; Cylinder to use to check drive accessibility
+NRETRY==^D5		; Number of times to retry errors
+MXDIFP==^D5		; Number of compare errors to print
+TIMOUT==^D5*^D60	; Delay for disk operation time out (2 sec)
+NBUFRS==2		; Number of buffers in operation
+STCHAR=="S"-100		; Status request character (^S)
+RSTCHR=="C"-100		; Restart request character (^C)
+DDTCHR=="D"-100		; DDT request character (^D)
+QOTCHR=="V"-100		; Output quote character (^V)
+LITES=100		; Data for light watchers -
+			;    LH = cylinders to go
+			;    RH = cylinders done
+
+
+; Some 3330 commands
+
+OPDEF	TIC [1B1]	; Transfer in Channel
+
+NOOP==3		; No Op
+SENSIO==4	; Sense I/O
+SEEK==7		; Seek
+SEEKHD==33	; Seek Head
+SCHIDE==61	; Search ID Equal
+RDDATA==6	; Read Data
+WRDATA==5	; Write Data
+RDHA==32	; Read Home Address
+MULTRK==200	; Multi-track option for Search and Read commands
+
+; Some SENSE byte bit definitions
+
+CMDREJ=1B0			; Command reject (sense byte 0)
+INTVEN=1B1			; Intervention required (sense byte 0)
+DATCHK=1B4			; Data check (sense byte 0)
+WPROT=1B14			; Write protection (sense byte 1)
+ENVRN=BYTE (8) 0,0,020,0	; Sense bytes 0-3 for environmental data
+CRCTBL=BYTE (8) 010,0,100,0	; Sense bytes 0-3 for correctable error
+UNCRTL=BYTE (8) 010,0,0,0	; Sense bytes 0-3 for uncorrectable error
+
+
+; SA10 Device command word bits
+
+NOXFER==400000	; No data transfer
+EXECUT==100000	; Execute this command
+CHAIN== 040000	; Chain to next command
+BYTMOD==020000	; Transfer data in byte mode
+INTRPT==010000	; Interrupt after completing this command
+IGNLEN==004000	; Ignore incorrect length
+BYTOFS==002000	; Skip over the first 2 data bytes
+
+; SA10 Status word 1, byte 0 bits
+STTYPE==600000	; Mask for status type field
+ASYNST==400000	; Asynchronous status
+ENDST== 200000	; Ending status
+SELERR==100000	; Select error
+BUSPAR==040000	; Bus in parity error
+CTLERR==020000	; Control error
+LENERR==004000	; Incorrect length error
+PGMINT==002000	; Program interrupt flag
+
+; SA10 Status word 1, byte 1 (DEVICE STATUS) bits
+ATTN==  001000	; Device attention
+STMOD== 000400	; Device status modifier
+CUEND== 000200	; Device control unit end
+BUSY==  000100	; Device busy
+CHEND== 000040	; Device channel end
+DEVEND==000020	; Device end
+UNTCHK==000010	; Device unit check
+UNTEXC==000004	; Device unit exception
+
+SAERR==SELERR!BUSPAR!CTLERR!PGMINT!ATTN!UNTCHK!UNTEXC
+BADERR==SELERR!BUSPAR!CTLERR!PGMINT!ATTN!UNTEXC
+; Bit definitions for SA10 CONI, CONSZ, CONSO
+
+PIRQ==400000	;THIS SA-10 IS REQUESTING AN INTERRUPT
+PARERR==200000	;PARITY ERROR IN SOME WORD (COMMAND OR
+		;DATA) READ FROM MEMORY
+NXM==100000	;SA-10 TRIED TO REFERENCE NON-EX MEMORY
+
+
+; Bit definitions for SA10 CONO commands
+
+RSTSA==400000	;RESET WHOLE SCHMEER, START CLOCK
+CLMERR==200000	;CLEAR MEMORY ERROR FLAGS
+SASTEP==1000	;STOP CLOCK IF RUNNING; STEP IT IF STOPPED
+SACGO==1040	;START CLOCK
+RSTCH==300	;RESET CHANNEL SPECIFIED BY 10 AND 20 BITS
+CLBSY==400	;CLEAR BUSY FLAG OF CHANNEL . . .
+STBSY==440	;SET BUSY FLAG OF CHANNEL . . .
+CLSRQ==500	;CLEAR STATUS REQUEST FLAG OF CHANNEL . . .
+STSRQ==540	;SET STATUS REQUEST FLAG OF CHANNEL . . .
+CLSTF==600	;CLEAR STATUS FLAG OF CHANNEL . . .
+STSTF==640	;SET STATUS FLAG OF CHANNEL . . .
+CLPIE==700	;CLEAR PI ENABLE OF CHANNEL . . .
+STPIE==740	;SET PI ENABLE OF CHANNEL . . .
+
+
+; Bit definitions for I/O buffer status words
+
+IXFER==400000		; Input transfer started
+IDONE==200000		; Input transfer complete
+OXFER==100000		; Output transfer started
+ODONE==040000		; Output transfer complete
+VERFY==020000		; Verify results
+CDONE==010000		; All cylinders copied for this buffer
+
+ICRCT==000040		; Correctable input error encountered
+IUNCR==000020		; Uncorrectable input error encountered
+IHARD==000010		; Non-data-check input error encountered
+OCRCT==000004		; Correctable output error encountered
+OUNCR==000002		; Uncorrectable output error encountered
+OHARD==000001		; Non-data-check output error encountered
+
+IERRS==ICRCT!IUNCR!IHARD
+OERRS==OCRCT!OUNCR!OHARD
+BFERR==IUNCR!IHARD!OUNCR!OHARD
+BFREST==IXFER!IDONE!OXFER!ODONE!VERFY!IERRS!OERRS   ; All bits except CDONE
+; Following are MACRO definitions for some SA10 control word formats
+; and for hardware control.
+
+
+; MACROS for word pointers depending on which kind of SA10 (B OR C)
+IFE CV,<
+	DEFINE IOW(CT,ADR)	; Old SA10
+	<-CT*4,,ADR>
+	DEFINE IOWC(CT,ADR)
+	<400000-CT*4,,ADR>
+	>
+
+IFN CV,<
+	DEFINE IOW(CT,ADR)	; New SA10
+	<-CT*100,,ADR>
+	DEFINE IOWC(CT,ADR)
+	<400000-CT*100,,ADR>
+	>
+
+DEFINE	CW(BYTS)<
+	BYTE (8) BYTS
+	>
+
+
+; Hardware control function MACROS
+DEFINE	APRCLR<
+   IFDEF KA,<
+	CONO APR,675550		; Clear KA CPU
+	PUSHJ P,RSTWT		; Wait a while
+	>
+   IFDEF KI,<
+	CONO APR,725300		; Clear KI CPU
+	PUSHJ P,RSTWT		; Wait a while
+	CONO APR,20000		; Be sure KI Auto Restart is off
+	>
+   IFDEF KL,<
+	CONO APR,267760		; Clear KL CPU
+	PUSHJ P,RSTWT		; Wait a while
+	>
+	>	; End DEFINE
+
+DEFINE	PICLR<
+   IFDEF KA,<
+	CONO PI,711577		; Clear KA PI's
+	>
+   IFDEF KI,<
+	CONO PI,731577		; Clear KI PI's
+	>
+   IFDEF KL,<
+	CONO PI,031577		; Clear KL PI's
+	>
+	>	; End DEFINE
+
+; More hardware MACRO definitions
+
+DEFINE	RSTCLK<
+   IFDEF KA,<
+	CONO APR,1000+APRCH		; Reset KA clock
+	>
+   IFDEF KI,<
+	CONO APR,1000+<APRCH_3>+APRCH	; Reset KI clock
+	>
+   IFDEF KL,<
+	***			; Not set up yet
+	>
+	>	; End DEFINE
+
+DEFINE	PIRST<
+   IFNDEF KL,<
+	CONO PI,652400!<1_<7-SA0CH>>!<1_<7-APRCH>>   ; Reset KA/KI PI's
+						     ; Leaves them deactivated
+	>
+   IFDEF KL,<
+	CONO PI,012400!<1_<7-SA0CH>>!<1_<7-APRCH>>    ; Reset KL PI's
+						     ; Leaves them deactivated
+	>
+	>	; End DEFINE
+
+DEFINE	CLKENB<
+   IFDEF KA,<
+	CONO APR,2000+APRCH		; Enable KA clock
+	>
+   IFDEF KI,<
+	CONO APR,2000+<APRCH_3>+APRCH	; Enable KI clock
+	>
+   IFDEF KL,<
+	***			; Not set up yet
+	>
+	>	; End DEFINE
+
+DEFINE	PION<
+	CONO PI,200			; Turn on PI's
+	>	; End DEFINE
+
+DEFINE	PIOFF<
+	CONO PI,400			; Turn off PI's
+	>	; End DEFINE
+
+DEFINE	SFTINT<
+	CONO PI,4000+1_<7-SFTCH>	; Initiate sftwre interrupt
+	>	; End DEFINE
+
+DEFINE	DRPSFT<
+   IFDEF KA,<
+	JFCL				; KA doesn't have drop interrupt
+	>	; End IFDEF KA
+   IFNDEF KA,<
+	CONO PI,20000+1_<7-SFTCH>	; Drop sftwre interrupt
+	>	; End IFNDEF KA
+	>	; End DEFINE
+; SA10 control MACROS
+
+DEFINE MCONO(DEV,DAT)<
+	MOVEI DD,DAT
+	XCT DCONO
+>
+
+DEFINE MCONSZ(DEV,DAT)<
+	XCT DCONI
+	TRNE DD,DAT
+>
+
+DEFINE MCONSO(DEV,DAT)<
+	XCT DCONI
+	TRNN DD,DAT
+>
+
+DEFINE MDATAO(DEV,DAT)<
+	MOVE DD,DAT
+	XCT DDATAO
+>
+
+DEFINE MDATAI(DEV,DAT)<
+	XCT DDATAI
+	MOVEM DD,DAT
+>
+
+DEFINE MCONI(DEV,DAT)<
+	XCT DCONI
+	MOVEM DD,DAT
+>
+
+
+; MACROS for input/output to TTY
+
+DEFINE	CRLF<
+	PUSHJ P,CR			; Do TTY carriage return/line feed
+	>
+
+DEFINE	TYPE(STR)<
+	MOVEI C,[ASCIZ |STR|]		; Output a string to TTY
+	PUSHJ P,STYO
+	>
+
+
+; MACRO for handling BUG's
+
+DEFINE	BUG(STR,RETADR<DSKXX>)<
+	JSR   [0
+	       JSR BUGENT		; Bug handler
+	       [ASCIZ |STR|]		; Error string
+	       RETADR]			; Return address
+	>
+; Start of program code.  This is the onetime initialization stuff
+
+RELOC PSTART-140
+
+GOGO:	JRST DDT		; PSTART starts at DDT
+DDTG:	JRST @ENTLOC		; Take off from the entry dispatch
+DDTE:	MOVE A,.JBSYM		; Get symbol table pointer
+	MOVEM A,36		; Save it
+	AOBJN A,.		; Compute adr of end of symbols
+	HRRZM A,ADRLO		; Save as bottom of free space
+	MOVE A,.JBUSY		; Get undefined symbol pointer
+	MOVEM A,32		; Save it
+	MOVEI A,CPY		; After this start up at CPY
+	MOVEM A,ENTLOC
+	JRST DDT		; First time, use DDT
+; Entry point to start copy process.  Calls the various routines to do the
+; actual copy.
+
+CPY:	MOVEI	P,PDL-1		; Set up a stack
+	PUSHJ P,INIHDW		; Initialize hardware
+	PUSHJ P,INICTL		; Initialize control variables
+	SETZM INIFLG		; Clear initialization flag
+	SETOM SNGCYL		; Clear any single cylinder spec
+	SETOM SNGFNT		; Clear sng cyl first time entry flag
+	SETZM TIMET		; Start timing
+	SETZM TIMEC
+	PION			; Activate PI's
+	TYPE <
+SA-10 Disk Pack Copier
+>
+	PUSHJ P,INICOP		; Fetch mode and src/des drive numbers
+	PUSHJ P,ICHPGM		; Set up channel program
+	SETZM TIMET		; OK, init done, restart timing
+	SETZM TIMEC
+	JSR STCOP		; Do copy/verify operation
+	PUSHJ P,WRPMSG		; All done, print a wrap up message
+	PUSHJ P,ERRSUM		; And an error summary
+	JRST @ENTLOC		; Restart the program
+; Routine to fetch COPY parameters from the operator and to verify drive
+; status for the operation.
+
+INICOP:	MOVEI C,[ASCIZ "
+Copy, Fast copy, or Verify (C, F, V, or ?): "]
+INICP0:	PUSHJ P,NUMGM		; Get his input
+	SKIPA			; OK, just a break char
+	 JRST INICOP		; Oops, no number allowed here
+	CAIN B,"?"		; Help request?
+	 JRST   [MOVEI C,CPYHLP	; Yes, print it
+		 PUSHJ P,STYO
+		 JRST INICOP]	; And try again
+	TRZ B,40		; Upper case only
+	CAIN B,"C"		; Copy?
+	 JRST INICP1		; Yes
+	CAIN B,"F"		; Fast copy? (no read-back)
+	 JRST INICP2
+	CAIN B,"V"		; Verify?
+	 JRST INICP3		; Yes
+	TYPE <   ???
+>
+	JRST INICOP
+
+INICP1:	SETZM CPYMOD		; Copy function, set flag
+	MOVEI C,[ASCIZ "opy"]
+	JRST INICP4		; Go print it and move on
+
+INICP2:	MOVEI A,1		; Fast copy function
+	MOVEM A,CPYMOD		; Set flag
+	MOVEI C,[ASCIZ "ast copy"]
+	JRST INICP4		; Go print it and move on
+
+INICP3:	SETOM CPYMOD		; Verify function
+	MOVEI C,[ASCIZ "erify"]
+INICP4:	PUSHJ P,STYO		; Finish line for mode setting
+	PUSHJ P,ENDIT		; See about line terminator
+	 JRST   [CRLF		; Illegal char
+		 JRST INICOP]	; Go try again
+	 JRST INICP0		; Deleted it, try again
+	PUSHJ P,GTSRC		; Fetch source drive number
+	PUSHJ P,GTDES		; Fetch destination drive number
+	PUSHJ P,CORDET		; See about reporting correctable errors
+	SETOM INIFLG		; Initialization done, set the flag
+	SETZM SNGCTL		; Clear single cylinder mode
+	POPJ P,
+
+; This is the initial entry point (STCOP) to start a copy process and also
+; an entry point (RSTCOP) to restart copying after a serious error.
+
+STCOP:	0			; Main entry point
+	SETZM ACTCYL		; Clear current active cylinder number
+	SETZM ERRTAB		; Clear drive error summary table
+	MOVE A,[ERRTAB,,ERRTAB+1]
+	BLT A,ERRTAB+NETYPE-1
+	JRST RSTCP0
+RSTCOP:	MOVEI P,PDL-1		; Restart entry point
+	PUSHJ P,INIPIS		; Reinitialize PI's
+	PUSHJ P,DRSTSA		; Reset the SA-10 channel
+	PUSHJ P,INICTL		; And control variables
+	PION			; Activate PI's
+RSTCP0:	MOVSI G,-NBUFRS		; Set up to init buffers
+	SETZ A,			; Count of idle buffers
+STCOP0:	MOVE B,BFSTAT(G)	; Get the status for this buffer
+	TLNN B,CDONE		; Copying all done already?
+	TLNE B,VERFY		; Or IO done for some cyl already?
+	 JRST STCOP1		; Yes, leave it be
+	SETZM BFSTAT(G)		; No, reset to restart transfers
+	SETZM BFTMO(G)		; And time-out word
+	AOJ A,
+STCOP1:	AOBJN G,STCOP0		; Look at all buffers
+	SKIPE SNGCTL		; Single mode?
+	 JRST STCOP2		; Yes
+	JUMPE A,DOCPY		; If no free buffers, just carry on
+	SFTINT			; Otherwise sftwre int to start disk
+	JRST DOCPY		; Now go pick up copy process
+
+STCOP2:	JUMPE A,@DOCYL		; If nothing to do, just return
+	JRST DOCYLR		; Otherwise restart it
+; This is the main idle loop for the copy process.  All disk I/O is
+; interrupt driven.  This loop looks for buffers with I/O complete
+; and does necessary data comparisons, increments the cylinder address
+; for the buffer, and sets things up to start the next I/O on it.
+
+DOCPY:	PUSHJ P,TTYIC		; Any TTY input?
+	 JRST DOCPY0		; No, carry on
+	CAIE B,STCHAR		; Equal to status request?
+	 JRST DOCPY0		; No
+	CRLF			; Yes, fresh line
+	PUSHJ P,PTIME		; Time stamp it
+	LDB D,[POINT 16,ACTCYL,31]  ; Yes, get cylinder number
+	MOVEI E,NSCYL-1		; and total
+	TYPE < - Working on cylinder %4D of %5D
+>
+DOCPY0:	SKIPE SNGCTL		; Single cylinder mode?
+	 BUG (<DOCPY: Illegal single cylinder mode>,CPY)
+	MOVSI G,-NBUFRS		; OK, scan all the buffers
+	SETZ H,			; Counter for finished and idle buffers
+				; LH = bfrs with all cyls done
+				; RH = bfrs that are free
+DOCPY1:	SKIPN A,BFSTAT(G)	; Anything going on here?
+	 AOJA H,DOCPY4		; No, count it and move on
+	TLNE A,CDONE		; Yes, is it finished?
+	 AOBJP H,DOCPY4		; All done, count it and move on
+	TLNE A,VERFY		; IO transfers done for this cyl?
+	 JRST DOCPY2		; Yes, go do compare if necessary
+	TLNN A,IXFER!OXFER	; How about something in progress?
+	 BUG (<DOCPY: Error - non-zero idle buffer status>,DOCPY3)
+	PUSHJ P,TSTMO		; In progress, has it timed out?
+	JRST DOCPY4		; Nope, look at the next one
+
+DOCPY2:	PUSHJ P,DOCMP		; Buffer I/O done.  Do a compare if needed
+	 JRST   [MOVE A,BFSTAT(G)   ; Got an error
+		 TLNN A,BFERR	; Were there hard I/O errors?
+		  BUG (<DOCPY: Compare error with no uncorrectable I/O error>,DOCPY3)
+		 JRST .+1]	; Had some, must not be able to do better
+	PUSHJ P,DOINC		; Now increment the buffer cylinder
+DOCPY3:	SETZM BFTMO(G)		; Clear the time out
+	MOVSI A,BFREST		; Clear all activity bits for it
+	ANDCAM A,BFSTAT(G)
+DOCPY4:	AOBJN G,DOCPY1		; And look at the next buffer
+	HLRZ A,H		; That's all of them.  Get the # done
+	CAIL A,NBUFRS		; Are they all done?
+	 JRST @STCOP		; Yes, wrap it up
+	MOVNS A			; Negative of number of buffers done
+	ADDI A,0(H)		; Number of buffers idle and not done
+	SKIPGE ACTBFR		; I/O currently going on?
+	CAIG A,0		; Or no buffers free?
+	 JRST DOCPY		; Yes, nothing to do here
+	SFTINT			; Tickle the disk handler
+	JRST DOCPY		; And do it all again
+; Routine to set up three SA-10 command lists for each input/output buffer
+; including the related seek/search data.  The channel programs are defined
+; by macros at assembly time.  This routine just installs the right drive
+; numbers.
+;
+;    IRPG -- read one cylinder from SRCDRV into IBUFR'n
+;    OWPG -- write one cylinder from IBUFR'n onto DESDRV
+;    ORPG -- read one cylinder from DESDRV into OBUFR'n
+;
+; Entry:  SRCDRV = Disk channel,,Drive number
+;	  DESDRV = Disk channel,,Drive number
+
+ICHPGM:	MOVSI G,-NBUFRS		; Loop through all buffer sets
+ICHPG0:	SETZM BFSTAT(G)		; Initialize buffer status
+	SETZM BFTMO(G)		; Initialize buffer I/O time out
+	HRRZ F,G		; F _ starting cyl for this buffer
+	LSH F,4			; Format 00CC
+	MOVEM F,BFCYL(G)	; Initialize starting cylinder
+	MOVE A,[CW <070, RDHA, IDEV>]  ; Reinit output write ch pgm
+	HRRZ B,BFPGM(G)		; Adr of write ch pgm
+	MOVEM A,2(B)		; Install the RDHA
+	HRRZ E,BFDAT(G)		; Get adr of ptr block for this bfr set
+	HRRZ C,SRCDRV		; Install src and des drive nos
+	HRRZ D,DESDRV		; in headers of channel pgms:
+	DPB C,INSEEK(E)		; In src read SEEK
+	DPB C,INRDHA(E)		; In src read RDHA
+	DPB D,OWSEEK(E)		; In des write SEEK
+	DPB D,OWRDHA(E)		; In des read RDHA
+	DPB D,ORSEEK(E)		; In des read SEEK HEAD
+	DPB D,ORRDHA(E)		; In des read RDHA
+	MOVSI A,-CYLREC		; AOBJN ptr for all records/cyl
+	HLRZ B,BFDAT(G)		; Adr of 00CCHHR data table
+ICHPG1:	MOVEM F,0(B)		; Initial cyl in seek/search table
+	DPB C,INSRCH(E)		; Src read SEARCH ID EQ
+	DPB C,INREAD(E)		; Src read READ
+	DPB D,OWSRCH(E)		; Des write SEARCH ID EQ
+	DPB D,OWRITE(E)		; Des write WRITE
+	DPB D,ORSRCH(E)		; Des read SEARCH ID EQ
+	DPB D,OREAD(E)		; Des read READ
+	ADDI B,2		; Bump CLSSD ptr
+	ADDI A,5-1		; and big jump in ch pgm index
+	AOBJN A,ICHPG1		; Do all rec segments/cyl
+	MOVSI D,CHAIN		; Unchain final commands
+	ANDCAM D,@LSTIRD(E)	; Input read list
+	SETZM @IREOL(E)		; and end of list
+	ANDCAM D,@LSTORD(E)	; Output read list
+	SETZM @OREOL(E)		; and end of list
+	SKIPLE CPYMOD		; Fast copy?
+	 JRST   [ANDCAM D,@LSTOWR(E)   ; Yes, unchain output write
+		 SETZM @OWEOL(E)       ; And end of list
+		 JRST ICHPG2]
+	SKIPL CPYMOD		; Regular copy?
+	 JRST   [IORM D,@LSTOWR(E)     ; Make sure chain bit is on
+		 MOVE F,TICSK(E)       ; And install TIC from write to read
+		 MOVEM F,@OWEOL(E)
+		 JRST ICHPG2]	 
+	MOVE F,TICRDH(E)	; Verify only, TIC around output write
+	HRRZ B,BFPGM(G)		; Get adr of output write pgm
+	MOVEM F,2(B)		; Install TIC to read pgm (after SEEK)
+ICHPG2:	AOBJN G,ICHPG0		; Now do another buffer group
+	POPJ P,
+; Routine to increment the cylinder number in the seek/search data
+; table for a buffer group (in G).  If there are no more cylinders
+; to be copied for this buffer, the CDONE flag is set in BFSTAT(G).
+
+DOINC:	MOVEI A,NBUFRS_4	; Get the buffer increment
+	ADDB A,BFCYL(G)		; Increment the counter
+	CAIL A,NSCYL_4		; All done?
+	 JRST   [MOVSI A,CDONE	; Yes, flag it
+		 MOVEM A,BFSTAT(G)
+		 POPJ P,]	; And return
+	MOVSI B,-CYLREC		; No, update CLSSD table
+	HLR B,BFDAT(G)		; Adr of data table itself
+DOINC0:	MOVEM A,0(B)		; Update one
+	ADDI B,1
+	AOBJN B,DOINC0		; All records/cyl
+	POPJ P,			; OK, return
+
+
+
+; Routine to set up a time-out time for a drive operation in BFTMO(G)
+; Entry:   Buffer number in G
+; Call:	   PUSHJ P,SETMO
+
+SETMO:	PUSH P,A		; Save AC A
+	MOVE A,TIMET		; Current time
+	ADDI A,TIMOUT		; Plus time-out period
+	MOVEM A,BFTMO(G)	; Equals time-out trigger
+	POP P,A
+	POPJ P,
+
+
+
+; Routine to test for a hung drive, i.e., a disk operation hasn't
+; completed in the required time.
+; Entry:   Buffer number in G
+; Call:    PUSHJ P,TSTMO
+
+TSTMO:	MOVE A,TIMET		; Get time now (in case interrupt hits)
+	SKIPE B,BFTMO(G)	; Time-out limit posted?
+	CAMG A,B		; and not exhausted?
+	 POPJ P,		; OK, keep on going
+	BUG <DOCPY: Disk operation overdue>
+
+; Routine to compare input and output buffers if necessary.  If we
+; are doing a Fast Copy, no comparison is done.  The buffer index
+; is in G.
+; Return:   +1 - Compare errors found
+;	    +2 - Successful compare
+
+DOCMP:	SKIPLE CPYMOD		; Fast copy?
+	 JRST CPOPJ1		; Yes, return +2
+	SETZM CMPERR		; No, clear compare error count
+	MOVSI E,-CYLWDS		; Set up to do all words/cyl
+	HLR E,BFADR(G)		; Adr of input buffer
+	HRRZ F,BFADR(G)		; Adr of output buffer
+DOCMP0:	MOVE Z,0(E)		; Get an input word
+	CAME Z,0(F)		; Equal to output?
+	 JRST DOCMP2		; No.
+DOCMP1:	AOJ F,			; OK, bump the output index
+	AOBJN E,DOCMP0		; And the input
+	SKIPN D,CMPERR		; All done, any errors?
+	 JRST CPOPJ1		; No, skip return
+	TYPE <!!! %4D compare errors in this cylinder
+>
+	POPJ P,
+
+; Here we have a compare error.  If this is the first one, print a
+; header, then print a maximum of MXDIFP errors.
+
+DOCMP2:	AOS A,CMPERR		; Increment error counter
+	CAILE A,MXDIFP		; Already printed the limit?
+	 JRST DOCMP1		; Yes, don't do more
+	PUSH P,E		; OK, save the buffer ptrs
+	PUSH P,F
+	CAIE A,1		; Is this the first one?
+	 JRST DOCMP3		; No, forget the header
+	LDB D,[POINT 16,BFCYL(G),31]   ; Get the cylinder
+	TYPE <
+!!! COMPARE ERROR in cylinder %4D at >
+	PUSHJ P,PTIME		; Time stamp it
+	TYPE <   [Src, Des, XOR]
+>
+	MOVE E,-1(P)		; Recover E and F
+	MOVE F,0(P)
+DOCMP3:	HLRE D,E		; Get residual count from AOBJN ptr
+	ADDI D,CYLWDS		; Compute word index of err into buffer
+	IDIVI D,TRKWDS		; D _ Head number
+	IDIVI E,RECL		; E _ record number, F _ word number
+	ADDI E,1		; Track starts with record 1
+	TYPE <Hd %4D, rec %5D, wd %6D:  >
+	MOVE D,Z		; Fetch input word
+	MOVE E,@0(P)		; And the output word
+	MOVE F,E		; Do XOR
+	XOR F,D
+	TYPE <%4F  %5F  %6F
+>
+	POP P,F			; OK, look at the next one
+	POP P,E
+	JRST DOCMP1
+; Routine to check disk drive status - does a read and write on a
+; maintenance cylinder record to test the status.
+; A = subchannel,,drive number
+; Call:  PUSHJ P,CHKDRV
+; Sense data returned in SENSED
+; Returns:  +1  - Drive off-line
+;	    +2  - Drive write protected
+;	    +3  - Drive OK for read and write
+
+CHKDRV:	SETZ C,			; Install drive number in cmd lists
+	HRRZM A,ACTDRV		; and save it for later
+	MOVEI B,CHKCYL_4	; Initialize the active check cylinder
+	MOVEM B,ACTCYL
+CHKDR0:	SKIPN B,CKPTR(C)	; Get a command ptr, is it 0?
+	 JRST CHKDR1		; Yes, all done
+	DPB A,B			; No, deposit the drive number
+	AOJA C,CHKDR0		; Do them all
+
+CHKDR1:	MOVE A,[CKPGR,,[CHKDR2,,CHKDR2+1]]  ; Try the read
+	JSR CHKEXC		; Go execute the channel program
+CHKDR2:	PUSHJ P,CHKDRE		; Error return from read attempt
+	 JRST CHKDR1		; +1 - retry opn
+	 POPJ P,		; +2 - read failed.  Return +1
+	 AOS 0(P)		; +3 - read OK.  At least return +2
+CHKDR3:	MOVE A,[CKPGW,,[CHKDR4,,CHKDR4+1]]  ; Try the write now
+	JSR CHKEXC		; Go execute the channel program
+CHKDR4:	PUSHJ P,CHKDRE		; Error return from write attempt
+	 JRST CHKDR3		; +1 - retry opn
+	 POPJ P,		; +2 - write failed.  Return +2
+	 JRST CPOPJ1		; +3 - write OK.  Return +3
+
+
+; Routine for error checking on drive access checkout
+; Call:  PUSHJ P,CHKDRE
+; Return:  +1 - operation retry requested
+;	   +2 - operation failed
+;	   +3 - operation OK
+
+CHKDRE:	MOVE B,STBUF+1		; Get status information
+	TLNE B,BADERR		; Sel err, Bus par, Ctl err, Pgm int, Attn,
+				; or Unit exc?
+CHKDE0:	 JRST   [PUSHJ P,CPHRD	; Yes, complain
+		 BUG (<CHKDRV: Can't test drive access>,CPY)]
+	MOVE A,SENSED		; No, look at first 4 sense bytes
+	TLNE A,(BYTE(8) 064, 355)  ; Serious drive error?
+	 JRST CHKDE0		; Yes, bomb out
+	CAMN A,[ENVRN]		; Environmental data?
+	 JRST   [LDB A,[POINT 8,SENSED+1,31]  ; Yes, get fmt/msg
+		 CAIN A,6_4	; Is it 60(hex)?
+		  POPJ P,	; Yes, return +1 (retry)
+		 JRST CPOPJ2]	; No, return +3 (recovered OK)
+	TLNE A,(CMDREJ!INTVEN!WPROT)	; Cmd rej, Int req, or Write prot?
+	 JRST CPOPJ1		; Yes, return +2 (failure)
+	JRST CPOPJ2		; No, return +3 (success)
+
+
+; Routine to execute a drive check channel program
+; Entry:  A = EXCP control word
+;		LH = adr of chan pgm
+;		RH = adr of dispatch word  (error adr,,success adr)
+
+CHKEXC:	0
+	MOVEM A,EXCPGM		; Save the pointer
+	SETOM DOEXCP		; Set flag to run the program
+	MOVE A,TIMET		; Current time
+	ADDI A,TIMOUT		; Plus time-out period = time-out trigger
+	SFTINT			; Interrupt to run the pgm
+	CAML A,TIMET		; Time-out elapsed?
+	 JRST .-1		; No, loop
+	BUG <CHKDRV: Time out running channel program>
+
+; Routine to print a wrap up message after copying is over
+; Entry:   Assumes copy initialization done (CPMOD, SRCDRV, and DESDRV)
+; Call:    PUSHJ P,WRPMSG
+
+WRPMSG:	PUSHJ P,BELL		; Ring his bell
+	SKIPN CPYMOD		; Regular copy?
+	MOVEI	C,[ASCIZ "
+DONE - copied and verified drive %4D to drive %5D
+"]
+	SKIPLE CPYMOD		; Fast copy?
+	MOVEI	C,[ASCIZ "
+DONE - copied drive %4D to drive %5D
+"]
+	SKIPGE CPYMOD		; Verify only?
+	MOVEI	C,[ASCIZ "
+DONE - verified drive %4D with drive %5D
+"]
+	HRRZ	D,SRCDRV
+	HRRZ	E,DESDRV
+	PUSHJ P,STYO
+	TYPE <Elapsed time >
+	PUSHJ P,PTIME
+	CRLF			; And a clean line
+	PUSHJ P,BELL		; Ring him again
+	POPJ P,
+
+
+; Routine to print out error summary statistics.  Error summary
+; accumulated in ERRTAB.
+; Entry:   Error data in ERRTAB
+; Call:    PUSHJ P,ERRSUM
+
+ERRSUM:	SETZ A,			; Count total errors seen
+	MOVSI B,-NETYPE
+	ADD A,ERRTAB(B)
+	AOBJN B,.-1
+	JUMPG A,ERRSM0		; If any found, go tabulate them
+	TYPE <
+No errors encountered!
+>
+	JRST ERRSM1		; Go finish the message
+
+ERRSM0:	TYPE <
+ERROR SUMMARY:
+   Drive    Corctbl  Uncorctbl   Other
+>
+	HRRZ D,SRCDRV		; Set up for source drive statistics
+	SETZ G,			; First part of ERRTAB
+	PUSHJ P,ERRPRT		; Print the numbers
+	HRRZ D,DESDRV		; Set up for destination drive statistics
+	HRRZI G,NETYPE/2	; Second part of ERRTAB
+	PUSHJ P,ERRPRT		; Print the numbers
+ERRSM1:	PUSHJ P,CR2		; Space down
+	POPJ P,
+
+
+; Routine to print a group of error numbers (NETYPE/2 table entries printed)
+; Entry:   D = drive number
+;	   RH(G) = starting index into ERRTAB for error group
+; Call:    PUSHJ P,ERRPRT
+
+ERRPRT:	TYPE <     %4D>		; Print drive number first
+	HRLI G,-NETYPE/2	; Number of errors to print
+ERRPR0:	MOVE D,ERRTAB(G)	; Get an error count
+	TYPE <        >		; Do 8 spaces
+	MOVEI B," "
+	CAIGE D,^D10		; 1 or more digits?
+	 PUSHJ P,TYO		; 1, add another space
+	TYPE <%4D>		; Type the count
+	AOBJN G,ERRPR0		; Do the rest
+	CRLF			; Done with the line
+	POPJ P,
+; Routine to read a single cylinder into RDBUF
+; Call (from DDT):  RDCYL$G
+
+RDCYL:	MOVEI P,PDL-1		; Set up a stack
+	SETZM CPYMOD		; Only COPY/VERIFY mode here
+	SKIPGE SRCDRV		; Source drive initialized?
+	 JRST   [TYPE <
+Single cylinder read mode
+>
+		 SETZM INIFLG	; Clear initialization flag
+		 PUSHJ P,GTSRC	; No, get it
+		 PUSHJ P,CORDET	; See if correctable details wanted
+		 JRST .+1]
+	PUSHJ P,SETSNG		; Set up hrdwre, vars, and chan pgms
+	MOVEI C,[ASCIZ /Read cylinder number: /]
+	PUSHJ P,SETCYL		; Set up cylinder number
+	MOVEI A,IXFER		; Flag input I/O only
+	HRLM A,SNGCTL
+	JSR DOCYL		; Go do this cylinder
+	HRRZ D,SRCDRV		; Let him know
+	HRRZ E,SNGCYL
+	TYPE <
+Drive %4D, cylinder %5D read into RDBUF
+>
+	PIOFF			; Turn off PI's
+	JRST DDT		; Go back to DDT
+
+
+; Routine to write a single cylinder from RDBUF and to read back the results
+; into RBBUF
+; Call (from DDT):  WRCYL$G
+
+WRCYL:	MOVEI P,PDL-1		; Set up a stack
+	SETZM CPYMOD		; Only COPY/VERIFY mode here
+	SKIPGE DESDRV		; Destination drive initialized?
+	 JRST   [TYPE <
+Single cylinder write mode
+>
+		 SETZM INIFLG	; Clear initialization flag
+		 PUSHJ P,GTDES	; No, get it
+		 PUSHJ P,CORDET	; See if correctable details wanted
+		 JRST .+1]
+	PUSHJ P,SETSNG		; Set up hrdwre, vars, and chan pgms
+	MOVEI C,[ASCIZ /Write cylinder number: /]
+	PUSHJ P,SETCYL		; Set up cylinder number
+	MOVEI A,OXFER		; Flag input I/O only
+	HRLM A,SNGCTL
+	JSR DOCYL		; Go do this cylinder
+	HRRZ D,DESDRV		; Let him know
+	HRRZ E,SNGCYL
+	TYPE <
+Drive %4D, cylinder %5D written - readback in RBBUF
+>
+	PIOFF			; Turn off PI's
+	JRST DDT		; Go back to DDT
+
+
+; Routine to set up for single cylinder mode.
+
+SETSNG:	AOSN SNGFNT		; Require general initialization?
+	 JRST   [PUSHJ P,INIHDW	; Yes
+		 SETZM ERRTAB	; Clear drive error summary table
+		 MOVE A,[ERRTAB,,ERRTAB+1]
+		 BLT A,ERRTAB+NETYPE-1
+		 JRST .+1]
+	PUSHJ P,INIPIS		; Be sure to initialize PI's
+	PUSHJ P,INICTL		; And control variables
+	SETOM INIFLG		; Set initialization flag
+	PUSHJ P,ICHPGM		; Set up channel programs
+	SETZM TIMET		; Start timing
+	SETZM TIMEC
+	PION			; Activate PI's
+	POPJ P,
+
+
+; Routine to fetch and install cylinder number for single cylinder mode
+
+SETCYL:	PUSHJ P,GTCYL		; Fetch cylinder number
+	MOVEM A,SNGCYL		; Save it
+	HRRZM A,SNGCTL		; Initialize control word
+	MOVSI G,-NBUFRS		; Now initialize buffer tables
+	MOVSI B,CDONE		; Show them all done for now
+	MOVEM B,BFSTAT(G)
+	AOBJN G,.-1
+	SETZM BFSTAT		; Clear out buffer 0 - we'll use that
+	LSH A,4			; Form 00CC cylinder adr in A
+	MOVEM A,BFCYL		; Set up cylinder for bfr 0
+	MOVSI B,-CYLREC		; And set up seek/search adrs
+	HLR B,BFDAT
+	MOVEM A,0(B)
+	ADDI B,1		; Address increments by 2
+	AOBJN B,.-2
+	POPJ P,			; OK, return
+
+
+; Routine to execute read or write channel program
+; Entry:   A = bits showing input or output done
+; Call:    JSR DOCYL
+
+DOCYL:	0
+DOCYLR:	SFTINT			; Start things moving
+	PUSHJ P,TSTMO		; Time out yet?
+	MOVSI A,VERFY		; Flag indicating opn done
+	TDNN A,BFSTAT		; Done bit on yet?
+	 JRST .-3		; No - try it again
+	JRST @DOCYL		; Yes
+; Routine to handle any UUO's that come - there should be none
+; executed in normal operation
+; Entered by JSR UUOTRP
+
+UUOTRP:	0
+	BUG (<UUOTRP: Invalid UUO>,CPY)
+
+
+
+; Routine to handle APR interrupts, errors and clock
+; Entered by JSR APRI
+
+APRI:	0
+	CONSO APR,1000		; CLOCK?
+	 JRST APRI0		; No, check further
+	AOS TIMET		; Yes, increment times
+	AOS TIMEC
+	RSTCLK			; Reset the clock
+	JEN @APRI
+
+APRI0:
+IFDEF KA,<
+	CONSO APR,230110	; KA - PDL, MEM PROT, NXM, OVERFLOWS?
+	>
+IFDEF KI,<
+	CONSO APR,220300	; KI - PAR, POW FAIL, IN/OUT, NXM?
+	>
+IFDEF KL,<
+	***			; Not set up yet
+	>
+	CONSZ PI,600000		; POWER FAIL or PARITY?
+	 JRST APRBAD		; Some serious error
+	JEN @APRI		; Who knows, just forget it.
+
+APRBAD:	CONI APR,APCONI		; Here for serious APR error, save APR CONI
+	CONI PI,PICONI		; And the PI CONI
+	BUG (<APRI: Serious hardware error>,CPY)
+
+; Disk Interrupt Handler - Channel SA0CH
+; Entered by JSR DSKI
+
+DSKI:	0
+	MOVEM P,ACS+P		; Save the AC's
+	MOVEI P,ACS
+	BLT P,ACS+P-1
+	MOVEI P,IPDL-1		; Set up interrupt stack
+	MCONI SA0,D		; Get the SA10 CONI data in D (need it later)
+	TRNE D,PIRQ
+	 JRST DSAI		; Yes, go handle it
+IFDEF KL,<
+	***			; Not set up yet
+	>
+IFDEF KI,<
+	CONSZ PI,1_<7-SA0CH>	; Not SA10, how about software?
+	>	; KA can't check software interrupt source
+	 JRST DSFI		; Yes, go scan for work to do
+	JRST DSKIE		; No, unknown interrupt
+
+; Following are entry points to exit from the interrupt level.
+DSKEX2:	SKIPL G,ACTBFR		; Exit - if active buffer,
+	 PUSHJ P,SETMO		; set time out limit
+	MCONO SA0,@STBSYC	; Then set busy and clear status flag
+DSKEX1:	MCONO SA0,@CLSTFC	; Exit - just clear status flag
+DSKEX:	MOVSI P,ACS		; Exit - just clear the interrupt
+	BLT P,P			; Restore the AC's
+	SETZM SFTREQ		; Clear any software request flag
+	JEN @DSKI		; Clear interrupt
+
+
+; Following are routines for weird interrupt situations
+DSKIE:	MOVEI C,[ASCIZ /!!! Unknown int. on chan %0O, SA CONI = %4O, PI CONI = %5O
+/]
+	MCONI SA0,D		; SA-10 CONI in D
+	CONI PI,E		; And PI's in E
+	JRST DSKER
+
+DSKIE1:	MOVEI C,[ASCIZ /!!! Strange int. on chan %0O, SA stat 1 = %4O, stat 2 = %5O
+/]
+	MOVE D,@CBASE+1		; Get the status information
+	MOVE E,@CBASE+2
+	JRST DSKER
+
+DSKER:	MOVEI Z,SA0CH
+	PUSHJ P,STYO
+DSKXX:	SKIPN INIFLG		; Initialization done?
+	 JRST CPY		; No, start all over again
+	JRST RSTCOP		; Go continue the copy process from here
+
+
+; Here on SA10 hardware interrupt for disk channel
+; On entry the CONI word is in D
+
+DSAI:	SKIPGE GETSNS		; Were we collecting sense info?
+	 JRST DSAI0		; Yes, then don't save the status stuff again
+	MOVEM D,SACONI		; Save SA10 CONI data
+	HRL A,CBASE		; Save the SA10 status data
+	HRRI A,STBUF
+	BLT A,STBUF+3
+DSAI0:	TRNE D,PARERR+NXM	; Parity error or NXM?
+	 JRST   [PUSHJ P,DSPE	; Yes, inform the world
+		 BUG (<DSAI0: SA10 PAR/NXM error>)]	; And bomb
+	TRNN D,1_<6-DCHAN>	; OK, status int for disk channel?
+	 JRST DSKIE		; No, unknown interrupt
+	LDB D,[POINT 4,@CBASE+1,23]  ; Set up D as interrupting drive
+	CAILE D,NPACKS-1
+	 JRST DSKIE1		; Oops, drive number out of range
+	MOVE A,@CBASE+1		; Fetch the SA10 status for this opn
+	TLC A,ASYNST		; Asynchronous status?
+	TLNN A,STTYPE
+	 JRST   [CAMN D,ACTDRV	; Yes, on drive with I/O active?
+		 SKIPGE ACTBFR
+		  JRST DSKEX1	; No, just ignore it
+		 JRST .+1]	; Yes, better look at it
+	TLNE A,SAERR		; Sel err, Bus par, Ctl err, Pgm int,
+				; Attn, Unit chk, or Unit exc?
+	 JRST DSAER		; Yes, bad news
+	TLNE A,BUSY		; Device busy?
+	 JRST   [TLNE A,STMOD	; Yes, status modifier too?
+		  JRST DSKEX1	; Yes, dismiss and wait for CU end
+		 TLNN A,CUEND	; No stat mod, do we have CU end?
+		  JRST DSAER	; No, bad news
+		 JRST DSKEX2]	; Yes, restart the channel
+	TLNE A,CUEND		; Control unit end?
+	 JRST DSKEX2		; Yes, restart the channel
+	TLNN A,DEVEND		; How about device end?
+	 JRST   [TLNN A,CHEND	; No, better be channel end
+		  JRST DSKIE1	; Oops, strange one
+		 JRST DSKEX1]	; OK, just wait for dev end
+	CAME D,ACTDRV		; Dev end on right drive?
+	 JRST DSKIE1		; No, this is a weird one
+	TLNE A,LENERR		; Better not have a length error at this point
+	 JRST DSAER		; Oops...
+	AOSG GETSNS		; Is this sense information?
+	 JRST DSASNS		; Yes, go process it
+	SETZM GETSNS
+	SKIPN DOEXCP		; Are we executing a special chan pgm?
+	 JRST DSAI1		; No
+	PUSHJ P,EXCPRT		; Yes, set up to return
+	HRRZ A,0(A)		; Get success return address
+	MOVEM A,DSKI
+	JRST DSKEX1		; Go dismiss the interrupt
+
+DSAI1:	MOVE G,ACTBFR		; Valid end of opn.  Get the status word
+	MOVE B,BFSTAT(G)
+	TLNE B,OXFER		; Was output going yet?
+	 JRST DNXFER		; Yes, so all IO done now
+	TLNE B,IXFER		; No, was input transfer going?
+	 JRST STOXFR		; Yes, now start the output
+	BUG <DSAI: Device end but no I/O in progress>
+; Enter here is we had a software disk interrupt request.  This occurs
+; when:
+;     -	Buffers are idle and nothing is going on on the disk.
+;     -	Request to run a special channel program
+
+DSFI:	DRPSFT			; Clear the software interrupt request
+	SETOM SFTREQ		; Note that this was a software request
+	SKIPL ACTBFR		; Is some buffer doing I/O now?
+	 JRST DSKEX		; Yes, just exit
+	SKIPN DOEXCP		; Run special program?
+	 JRST DSCN		; No
+	HLRZ A,EXCPGM		; Get adr of chan pgm
+	HRLI A,(<TIC 0>)	; Make it a TIC
+	MOVEM A,@CBASE
+	JRST DSKEX2		; Go run it
+
+DSCN:	MOVSI G,-NBUFRS		; Set up to scan buffers for next opn
+	MOVEI B,NSCYL_4		; Initialize minimum cylinder set up
+	SETO C,			; Buffer number for minimum cylinder
+	SETZ D,			; Count of free buffers
+DSCN0:	SKIPE A,BFSTAT(G)	; This buffer free?
+	 JRST   [TLNN A,CDONE	; No, but is it done?
+		  JRST DSCN1	; No, try the next
+		 AOJA D,DSCN1]	; Done, count it and look at the next one
+	AOJ D,			; Free, note it
+	CAMG B,BFCYL(G)		; Cylinder less than curr min?
+DSCN1:	AOBJN G,DSCN0		; No, try the next one
+	JUMPG G,DSCN2		; If done scanning buffers, take off
+	MOVE B,BFCYL(G)		; Otherwise update data for new min cyl
+	HRRZ C,G		; And store the buffer pointer
+	AOBJN G,DSCN0		; Try the next one
+DSCN2:	JUMPGE C,DSCN3		; Any buffers free?
+	SKIPE SFTREQ		; If this was a software req, we shouldn't be here
+	BUG <DSCN: Invalid software disk PI request>
+	JRST DSKEX1		; No, check after I/O done - dismiss it
+
+DSCN3:	MOVE G,C		; Set target buffer number in G
+	CAIL D,NBUFRS		; All buffers free?
+	 JRST STIXFR		; Yes, go start input transfer
+	MOVE A,ACTCYL		; No, only do catch-up or next in sequence
+	ADDI A,1_4		; to avoid cylinder thrashing
+	CAMLE B,A
+	 JRST DSKEX1		; Cylinder too big, dismiss for now
+	JRST STIXFR		; OK, go start input transfer
+
+; Start input transfer
+; Entry:  B = Cylinder number for this opn (00CC)
+;	  G = Buffer number for this opn
+STIXFR:	MOVEM B,ACTCYL		; OK, update active cylinder
+	MOVEM G,ACTBFR		; And the active buffer
+	LSH B,-4		; Right justify cylinder number
+	HRRM B,LITES		; Update LITES(RH)
+	MOVNS B			; Negative of current cylinder
+	MOVEI B,NSCYL-1(B)	; Compute cylinders to go
+	HRLM B,LITES		; Update LITES(LH)
+	SKIPE A,SNGCTL		; Single cylinder mode?
+	TLNE A,IXFER		; Yes, are we doing input?
+	 JRST STIXF0		; Go process input
+	MOVSI B,IXFER!IDONE	; Single output mode - fake input done
+	JRST STOXFR		; And start the output
+
+STIXF0:	HRRZ Z,SRCDRV		; Record currently active drive
+	HLRZ A,BFPGM(G)		; Get starting channel pgm
+	MOVE B,[IXFER,,DIERR]	; Strting bfr stat - input xfer ,, error routine
+	JRST INIXFR		; Initiate the transfer
+
+; Start the output transfer
+; Entry:  B = buffer status word (RH = error handler address)
+;	  G = Buffer number for this opn
+STOXFR:	TLO B,OXFER		; Update bfr status - output xfer starting
+	IORM B,BFSTAT(G)
+	TLNN B,IDONE		; If input done previously, don't check again
+	 JSR 0(B)		; Go clean up any input errors that happened
+	SKIPE A,SNGCTL		; Single cylinder mode?
+	TLNE A,OXFER		; Yes, are we doing output?
+	 JRST STOXF0		; Go process input
+	TLO B,ODONE		; Single input mode - fake output done
+	JRST DNXFER		; And wrap it up
+
+STOXF0:	HRRZ Z,DESDRV		; Update currently active drive
+	HRRZ A,BFPGM(G)   	; Get output channel pgm
+	HRRI B,DOERR		; Install new error routine
+	JRST INIXFR		; Go finish setup and start the opn
+
+; Input and output IO done here.  Set up for the next buffer transfer
+; Entry:  B = buffer status word (RH = error handler address)
+;	  G = buffer number
+DNXFER:	TLO B,VERFY		; Update bfr status - verification starting
+	IORM B,BFSTAT(G)
+	TLNN B,ODONE		; If output done previously, don't check again
+	 JSR 0(B)		; Go clean up any output errors that happened
+	HLLZS B			; Clear out right half of status
+	MOVEM B,BFSTAT(G)
+	SETZM BFTMO(G)		; Clear the time-out trigger
+	SETOM ACTBFR		; All over now, set up for next one
+	SKIPN SNGCTL		; Single cylinder mode?
+	 JRST DSCN		; No, try for another operation
+	JRST DSKEX1		; Yes, quit
+
+; Initiate IO transfer
+; Entry:  Z = drive number
+;	  A = address of channel pgm
+;	  B = new status word
+;	  G = buffer for this opn
+INIXFR:	MOVEM Z,ACTDRV
+	HRLI A,(<TIC 0>)	; Form transfer command
+	MOVEM A,@CBASE		; Set up SA10
+	MOVEM B,BFSTAT(G)	; Save the new status
+	JRST DSKEX2		; No go start the channel running
+; Here for SA10/disk errors:
+;     -	Busy but no Status modifier or CU end
+;     -	Invalid device number
+;     -	Bad bits in CONI or status word (channel errors)
+;	  Sel err, Bus par, Ctl err, Inc len, Pgm int, Attn, Unit chk,
+;	  or Unit exception
+
+DSAER:	SKIPGE GETSNS		; Did we have an error collecting sense info?
+	 JRST DSASNS		; Oops!
+	SETOM SENSED		; No, some other error.  Clear SENSED
+	MOVE A,[SENSED,,SENSED+1]
+	BLT A,SENSED+5
+	MOVE A,STBUF+1		; Get 1st status word
+	TLNE A,UNTCHK		; Unit check?
+	 JSR DSENSE		; Yes, get drive sense information first
+				; (We come back here after the sense interrupt)
+DSASNS:	SKIPN DOEXCP		; Were we executing a special one?
+	 JRST DSASN0		; No
+	SKIPGE GETSNS		; Was this following a SENSE IO error?
+	 PUSHJ P,SNSERR		; Yes, inform them
+	PUSHJ P,EXCPRT		; If we come back, set up return
+	HLRZ A,0(A)		; Pick the error return
+	MOVEM A,DSKI
+	JRST DSKEX1		; Go dismiss the interrupt
+
+DSASN0:	MOVE G,ACTBFR		; Set up to process error - buffer number
+	MOVE B,BFSTAT(G)	; Buffer status
+	 JSR 0(B)		; Dispatch to error routine
+	SKIPGE GETSNS		; Was this following a SENSE IO error?
+	 PUSHJ P,SNSERR		; Yes, inform them
+	HRLI A,(<TIC 0>)	; If we come back, run the chan pgm in A
+	MOVEM A,@CBASE
+	JRST DSKEX2		; Start executing it
+
+
+; Routine to print information about SA10 NXM or Parity Error
+
+DSPE:	TYPE <
+!!! SA-10 ERROR at >
+	PUSHJ P,PTIME		; Time stamp it
+	MCONI SA0,D		; CONI data into D
+	TYPE <     CONI = %4O
+>
+	CRLF
+	MCONO SA0,10		; Fetch memory address
+	MDATAI SA0,D
+	MCONO SA0,20		; And channel number
+	MDATAI SA0,A
+	HLRZM A,E
+	MCONO SA0,30		; Word contents SA10 has
+	MDATAI SA0,F
+	HRLM A,F
+	MOVE G,(D)		; And value in memory
+	MCONSO SA0,NXM		; Was it a NXM?
+	 JRST DSPE0
+	TYPE <NXM on chnl %5O, addr = %4O, mem has %7O chnl got %6O
+>
+DSPE0:	MCONSO SA0,PARERR	; or PARITY ERR?
+	 JRST DSPE1
+	TYPE <PAR ERR on chnl %5O, addr = %4O mem has %7O chnl got %6O
+>
+DSPE1:	PUSHJ P,CRSTSA		; Reset the whole thing
+	POPJ P,
+
+; Routine to handle source drive I/O errors
+; Entry:  B = current buffer status word
+;	  G = buffer set index
+; Call:  JSR DIERR
+
+DIERR:	0
+	TLNE B,OXFER		; Did we enter to clean up (output started)?
+	 JRST DICLN		; Yes
+	MOVEI C,[ASCIZ \
+!!! INPUT I/O ERROR at \]	; Header for printing status information
+	PUSHJ P,DICKER		; Check error type and correct if possible
+	 JRST   [MOVSI B,IHARD	; +1  Hard error
+		 AOS IEHARD	; Log it in the summary
+	 	 JRST DIERR1]
+	 JRST   [MOVSI B,IUNCR	; +2  Uncorrectable data check
+		 AOS IEUNCR	; Log it in the summary
+		 JRST DIERR0]
+	MOVSI B,ICRCT		; +3  Correctable data check
+	AOS IECRCT		; Log it in the summary
+DIERR0:	PUSHJ P,ANYMOR		; See if more I/O for this cyl
+DIERR1:	 PUSHJ P,STNOOP		; None, do NOOP to do clean up
+	IORM B,BFSTAT(G)
+	JRST @DIERR		; OK, reenter chan pgm in A, go run it
+
+
+; Here to clean up after an error.  We enter here after an input I/O operatin
+; is supposedly done.  If only a correctable data check happened, move on.
+; If a more serious error happened, attempt a retry with the NRETRY limit.
+DICLN:	TLNN B,IUNCR!IHARD	; Did we have an uncorrectable or hard error?
+	 JRST DICLN1		; No, wrap it up
+	SOSGE ERETRY		; Yes, any retries left?
+	 JRST DICLN0		; No
+	MOVE B,BFCYL(G)		; OK, restart the input operation
+	JRST STIXFR
+
+
+; Here with no more retries but persistent hard error
+DICLN0:	MOVEI D,NRETRY		; Count of retries
+	MOVEI C,[ASCIZ "
+!!! Hard input error after %4D retries
+"]
+	TLNN B,IHARD		; If not hard, change msg
+	 MOVEI C,[ASCIZ "
+!!! Uncorrectable input error after %4D retries
+"]
+	PUSHJ P,STYO
+	JRST DICLN2		; And make believe finish normal
+
+
+; Here with at most a correctable error
+DICLN1:	MOVN D,ERETRY		; See if any retries happened
+	ADDI D,NRETRY
+	JUMPE D,DICLN2		; If none, quit
+	TYPE <
+!!! Input read recovered after %4D retries
+>
+DICLN2:	MOVE B,BFSTAT(G)	; Recover current status
+	TLO B,IDONE		; Show input I/O completed
+	SETZM NOPRNT		; Allow printing of at least first error
+	MOVEI A,NRETRY		; Reinit retry counter
+	MOVEM A,ERETRY
+	JRST @DIERR		; And return
+; Routine to handle destination drive I/O errors
+; Entry:  B = current buffer status word
+;	  G = buffer set index
+; Call:  JSR DOERR
+
+DOERR:	0
+	TLNE B,VERFY		; Did we enter to clean up (verify started)?
+	 JRST DOCLN		; Yes
+	MOVEI C,[ASCIZ \
+!!! OUTPUT I/O ERROR at \]	; Header for printing status information
+	PUSHJ P,DICKER		; Check error type and correct if possible
+	 JRST   [MOVSI B,OHARD	; +1  Hard error
+		 AOS OEHARD	; Log it in the summary
+		 JRST DOERR1]
+	 JRST   [MOVSI B,OUNCR	; +2  Uncorrectable data check
+		 AOS OEUNCR	; Log it in the summary
+		 JRST DOERR0]
+	MOVSI B,OCRCT		; +3  Correctable data check
+	AOS OECRCT		; Log it in the summary
+DOERR0:	PUSHJ P,ANYMOR		; See if more I/O for this cyl
+DOERR1:	 PUSHJ P,STNOOP		; None, do NOOP to do clean up
+	IORM B,BFSTAT(G)
+	JRST @DOERR		; OK, reenter chan pgm in A, go run it
+
+
+; Here to clean up after an error.  We enter here after an input I/O operation
+; is supposedly done.  If only a correctable data check happened, move on.
+; If a more serious error happened, attempt a retry with the NRETRY limit.
+DOCLN:	TLNN B,OERRS		; Did we have any kind of error?
+	 JRST DOCLN1		; No, wrap it up
+	TLNN B,OUNCR!OHARD	; Any uncorrectable or hard?
+	 JRST   [SKIPL CPYMOD	; All correctable - just verifying packs?
+		  JRST .+1	; No, full copy.  Try for perfection
+		 JRST DOCLN1]	; Go wrap it up
+	SOSGE ERETRY		; Yes, any retries left?
+	 JRST DOCLN0		; No
+	TLZ B,VERFY!OERRS	; OK, restart the input operation
+	JRST STOXFR
+
+
+; Here with no more retries but persistent hard error
+DOCLN0:	MOVEI D,NRETRY		; Count of retries
+	MOVEI C,[ASCIZ "
+!!! Hard output error after %4D retries
+"]
+	TLNN B,OHARD		; If not hard, change msg
+	 MOVEI C,[ASCIZ "
+!!! Uncorrectable output read after %4D retries
+"]
+	TLNN B,OUNCR!OHARD	; If not hard or uncorrectable, change msg
+	 MOVEI C,[ASCIZ "
+!!! WARNING - only correctable copy possible after %4D retries
+"]
+	PUSHJ P,STYO
+	JRST DOCLN2		; And make believe finish normal
+
+
+; Here with at most a correctable error (verify mode) or none in
+; (fast or copy mode)
+DOCLN1:	MOVN D,ERETRY		; See if any retries happened
+	ADDI D,NRETRY
+	JUMPE D,DOCLN2		; If none, quit
+	MOVEI C,[ASCIZ \
+!!! Copy recovered after %4D retries
+\]
+	SKIPGE CPYMOD		; If verify mode, change message
+	MOVEI C,[ASCIZ \
+!!! Output read recovered after %4D retries
+\]
+	PUSHJ P,STYO
+DOCLN2:	MOVE B,BFSTAT(G)	; Recover current status
+	TLO B,ODONE		; Show output I/O completed
+	SETZM NOPRNT		; Allow printing of at least first error
+	MOVEI A,NRETRY		; Reinit retry counter
+	MOVEM A,ERETRY
+	JRST @DOERR		; And return
+
+; Routine to check type of disk I/O error
+; Entry: SENSED contains drive sense data
+;	 B = current buffer status
+;	 C = address of status message header
+;	 G = buffer index
+; Call:  PUSHJ P,DICKER
+; Return:  +1  if hard error
+;	   +2  if uncorrectable error
+;	   +3  if correctable error
+
+DICKER:	PUSHJ P,STMSG		; Print status information
+	SETOM NOPRNT		; Don't print status for more correctable errors
+	MOVE C,SENSED		; Get first 4 sense bytes
+	CAMN C,[-1]		; If no status stored
+DICKR0:	 BUG (<DICKER: Serious or unexpected disk problem>, CPOPJ)
+	TLNN C,(DATCHK)		; OK, is it a data check error?
+	 JRST DICKR1		; No go see about environmental stuff
+	CAME C,[CRCTBL]		; Data chk - correctable error?
+	 JRST CPOPJ1		; No, return +2
+	HRRZ A,STBUF+2		; Yes, fetch SA10 stat wrd 2:  -cnt,,adr+1
+	HRRZ A,-1(A)		; Get buffer adr from data wd of prev inst
+	PUSHJ P,CRCTOR		; Go correct it
+	JRST CPOPJ2		; And return +3
+
+DICKR1:	CAME C,[ENVRN]		; Environmental data?
+	 JRST DICKR0		; No, we have serious problems
+	LDB A,[POINT 8,SENSED+1,31]  ; Yes, get fmt/msg
+	CAIN A,6_4		; Is it statistics 60(hex)?
+	 POPJ P,		; Yes, just retry the opn (hard error)
+	JRST CPOPJ2		; No, return +3 (ctl recovered OK)
+
+
+; Routine to correct correctable data errors
+; Entry:  Sense data in SENSED
+;	  A = address of record in error
+; Call:  PUSHJ P,CRCTOR
+
+CRCTOR:	LDB C,[POINT 8,SENSED+1,31]	; Get correction message type
+	CAIE C,<5_4>+3		; Fmt 5 with data check (53 hex)?
+	 POPJ P,		; No, controller should have taken care of it
+	MOVEM A,BUFLOC		; Yes, save buffer address (for debugging)
+	LDB A,[POINT 16,SENSED+4,31]  ; Get offset to error in bytes
+	MOVE C,SENSED+5		; and the correction mask
+	TRZ C,7777		; Leave only the 3-byte mask
+	CAIGE A,3		; Right byte of mask in ECC field?
+	 TDZ C,[377B23]		; Yes, clear it
+	CAIGE A,2		; Middle byte of mask in ECC field?
+	 TLZ C,(377B15)		; Yes, clear it
+	CAIGE A,1		; Left byte of mask in ECC field?
+	 POPJ P,		; Yes, just return - correction not needed
+	SUBI A,<RECL*^D9>/2	; Compute neg byte cnt to msk from start of bfr
+	LSH A,3			; convert bytes to bits
+	IDIVI A,^D36		; Compute word and remaining bit offset
+	SETZ D,			; Clear right end of corr mask
+	LSHC C,0(B)		; Position it for correction
+	MOVNS A			; Dist to corr wds from rec start
+; The following aligns the correction mask with the data as it is
+; recorded ON THE DISK.  The SA-10 packs 2 36-bit words into 9 bytes
+; on the disk:  wrd 0, bytes 0-3 into bytes 0-3; wrd 1, bytes 0-3
+; into bytes 5-8; and wrd 0, bits 32-35 + wrd 1, bits 32-35 into 
+; byte 4 (last 4 bits of wrd 0 + last 4 bits of wrd 1).  Thus on the
+; disk the odd numbered words of a record appear rotated 4 bits
+; relative to their PDP-10 representation and the correction mask
+; must be rotated correspondingly to fix the odd words.
+	TRNE A,1		; Shift 1st word of mask?
+	 ROT C,4		; Yes,
+	TRNN A,1		; Shift 2nd word of mask?
+	 ROT D,4		; Yes
+	ADD A,BUFLOC		; Absolute adr of error words
+	XORM C,0(A)		; Do corrections
+	XORM D,1(A)
+	POPJ P,			; Return
+; Routine to print out status information
+; Entry:  STBUF  contains SA10 status data
+;	  SENSED contains drive sense information (or -1 if none)
+;	  C = address of header text
+; Call:  PUSHJ P,STMSG	puts blank line and time stamp on output data
+;	 PUSHJ P,PRSTAT just prints status information
+
+STMSG:	MOVE A,STBUF+1			; Get the SA10 status word
+	TLNE A,SELERR!BUSPAR!CTLERR!PGMINT!ATTN!UNTEXC  ; Bad error?
+	 JRST STMSG0			; Yes, then print it
+	MOVE A,SENSED			; Get the first sense bytes
+	CAME A,[CRCTBL]			; Simple correctable error?
+	  JRST STMSG0			; No, print details
+	SKIPN CQUIET			; Yes, details suppressed?
+	SKIPE NOPRNT			; or no printing this time?
+	 POPJ P,			; Just return
+STMSG0:	PUSHJ P,STYO			; Print his header
+	PUSHJ P,PTIME			; Time stamp the error
+	CRLF
+PRSTAT:	LDB A,[POINT 2,STBUF+1,1]	; GET 0=END,1=INIT,2=ASYNC,3=DUMMY
+	MOVE C,STTT(A)			; String for status stored
+	PUSHJ P,STYO
+	LDB D,[POINT 8,STBUF+1,23]	; Device number
+	TYPE < status for device %4O:
+   >
+	HLLZ E,STBUF+1			; Get 14 status bits from 1st word
+	TLZ E,3
+	LSH E,2				; Left justified
+	MOVEI D,STAMSG			; Bit dictionary
+	PUSHJ P,PBITS			; Interpret bits
+	CRLF				; New line
+	PUSHJ P,DPHADR			; Print physical drive number
+	LDB D,[POINT 4,STBUF+1,23]	; Get logical drive number
+	MOVE A,SENSED			; Any sense data available?
+	CAMN A,[-1]
+	 JRST   [MOVE D,ACTDRV		; Get our version of drive/cyl
+		 LDB E,[POINT 16,ACTCYL,31]
+		 TYPE <, logical drive %4D, cylinder %5D, head ?, record ?
+SENSE DATA:
+    - Not Available -
+>
+		 POPJ P,]		; And bomb out
+	PUSH P,G			; Save G for now
+	LDB C,[POINT 4,SENSED+1,27]	; Get the error format code
+	CAIE C,4			; If format 4 or 5
+	CAIN C,5
+	 JRST   [PUSHJ P,GETCHR		; Get CC, HH, R
+		 JRST .+3]
+	PUSHJ P,GETCH			; Some other format, get CC, HH
+	SETZ G,				; Fake record 0
+	TYPE <, logical drive %4D, cylinder %5D, head %6D, record %7D
+SENSE DATA:
+>
+	POP P,G				; Recover G
+	PUSHJ P,PSB			; Print out hex format of bits
+	MOVEI D,SNSMSG			; Now interpret the bits in English
+	MOVE E,SENSED			; Get first 20 bits of sense data
+	TRZ E,177777			; Left justified
+	TYPE <   >			; Space over
+	PUSHJ P,PBITS
+	MOVE E,SENSED			; Get sense bytes 0-3 again
+	CAME E,[ENVRN]			; Environmental data?
+	 JRST PRSTA0			; No, wrap it up
+	LDB E,[POINT 8,SENSED+1,31]	; Yes, get fmt/msg
+	MOVEI C,[ASCIZ |(STATISTICS)|]	; Select message
+	CAIE E,6_4
+	 MOVEI C,[ASCIZ |(CTLR RECOV ERROR)|]
+	PUSHJ P,STYO			; And print it
+PRSTA0:	CRLF
+	POPJ P,
+
+; Routine to interpret and print SA10 and disk status information
+; Entry:  E = left-justified bit pattern to be converted to English
+;	  D = address of string table for bit field
+; Call:   PUSHJ P,PBITS
+
+PBITS:	JUMPE E,CPOPJ		; If no bits left, exit
+	TLNN E,(1B0)		; Left-most bit on?
+	 JRST PBIT1		; No, try the next one
+	TLON D,400000		; Yes, do we need punctuation?
+	JRST PBIT2		; No
+	TYPE < + >		; Yes, add +
+PBIT2:	MOVE C,0(D)		; Type the appropriate string for this bit
+	PUSHJ P,STYO
+PBIT1:	LSH E,1			; Shift bits over
+	AOJA D,PBITS		; And test next bit
+
+
+
+; Routine to print the physical address of a disk drive
+; Entry:  SENSED contains the sense data for a drive
+; Call:   PUSHJ P,DPHADR
+
+DPHADR:	TYPE <Physical drive >
+	MOVSI C,-10
+	LDB A,[POINT 6,SENSED+1,7]	; Get the drive number
+	CAMN A,PHADRT(C)		; Look through funny names
+	JRST DPHAD2			; Found it
+	AOBJN C,.-2
+	MOVEI B,"?"			; Not on the list
+	JRST DPHAD3
+DPHAD2:	MOVEI B,"A"(C)
+DPHAD3:	PUSHJ P,TYO
+	POPJ P,0
+
+
+
+; Routine to output time of day (PTIME) or to output a user-supplied
+; time (PTIMEC)
+
+PTIMEC:	SKIPA D,TIMEC			; Get user time (1/60 sec per tick)
+PTIME:	MOVE D,TIMET			; Get current time (1/60 sec per tick)
+	ADDI D,3			; Round to compute 1/10's of sec
+	IDIVI D,^D60			; D _ SEC, E _ 1/60's
+	IDIVI E,^D6			; D _ sec, E _ 1/10's
+	MOVE F,E			; F _ 1/10's sec
+	IDIVI D,^D60			; D _ min, E _ sec
+	TYPE <%4D:%5D.%6D min.>
+	POPJ P,
+
+
+; Routine to list SENSE I/O data in hexadecimal
+; Entry:  SENSED contains the sense information
+; Call:   PUSHJ P,PSB
+
+PSB:	MOVE	F,SENSED		; Get first sense word
+	AOJE	F,[TYPE < - Sense Bytes Missing -
+>
+	 	   POPJ P,]
+	MOVE F,[POINT 4,SENSED]		; 4-bit byte ptr into data
+	MOVEI D,6			; 6 words of data
+PS0:	MOVEI E,^D8			; 8 hex chars/word
+	TRNE D,1			; Starting line?
+	 JRST PS1			; No
+	TYPE <   >			; Yes, space over
+PS1:	ILDB B,F			; Get a half-byte
+	CAILE B,^D9			; Form hex char
+	ADDI B,"A"-"0"-^D10
+	ADDI B,"0"
+	PUSHJ P,TYO			; Print the char
+	MOVEI B,40
+	TLNE F,40000
+	PUSHJ P,TYO			; Add blank between bytes
+	SOJG E,PS1
+	PUSHJ P,TYO			; Extra blank between words
+	IBP F
+	TRNE D,1			; Only do 2 words worth per line
+	PUSHJ P,CR
+	SOJG D,PS0
+	POPJ P,
+
+; Routine to issue a SENSE I/O command for the currently active disk drive
+; Call:   JSR DSENSE
+
+DSENSE:	0
+	MOVE D,ACTDRV			; Get currently active drive
+	DPB D,[POINT 4,PSENSE,23]	; Install the drive number in chan pgm
+	MOVE A,[TIC PSENSE]		; Transfer to channel program
+	MOVEM A,@CBASE
+	SETOM GETSNS			; Flag that we expect sense data
+	JRST DSKEX2			; Go run the program
+
+
+; Routine to set up for a NOOP
+
+STNOOP:	MOVE A,ACTDRV		; Put active drive in the device command
+	DPB A,[POINT 4,PNOOP,23]
+	MOVEI A,PNOOP		; Channel program address
+	POPJ P,
+
+
+; Routine to complain about SENSE IO error
+
+SNSERR:	PUSH P,A		; Save A - may be a channel pgm adr
+	SKIPE INIFLG		; System initialized yet?
+	 JRST SNSER0		; Yes
+	MOVEI C,[ASCIZ \
+!!! DRIVE I/O ERROR AND SENSE I/O ERROR at \]  ; No, print out as much data as poss.
+	PUSHJ P,STMSG		; Print out the drive data
+SNSER0:	TYPE <!!! SENSE I/O ERROR STATUS:
+>
+	HRLZ A,CBASE		; Transfer the status info to the usual place
+	HRRI A,STBUF
+	BLT A,STBUF+3
+	PUSHJ P,PRSTAT		; Print what we know
+	POP P,A			; Recover A
+	SETZM GETSNS		; Clear the flag
+	BUG <SNSERR: SENSE IO ERROR>
+
+
+; Routine to set up an EXCP return
+; Call:   PUSHJ P,EXCPRT
+; Return:  A = address of EXCP return dispatch word
+
+EXCPRT:	SETZM DOEXCP		; Clear the flag
+	MOVE A,DSKI		; Get current interrupt PC
+	MOVEM A,INTPC		; Save it for him
+	HRRZ A,EXCPGM		; Get adr of dispatch word in A
+	POPJ P,
+
+; Routine to reset the CPU after fatal errors
+; Call:  PUSHJ P,RSTALL
+
+RSTALL:	PUSHJ P,TTYODN		; Wait until CTY output is done
+	APRCLR			; Clear the CPU
+	PICLR			; Clear the PI's
+	PUSHJ P,CRSTSA		; Reset the whole SA10
+	POPJ P,			; Return
+
+
+; Routine to reset the SA10
+; Entry:  @CRSTSA  to reset the whole thing
+;	  @DRSTSA  to reset the disk channel only
+
+CRSTSA:	MCONO SA0,RSTSA		; Reset the whole thing
+	JRST RSTWT		; Wait to be sure
+
+DRSTSA:	MCONO SA0,@RSTCHC	; Reset the channel
+RSTWT:	MOVSI A,1		; Wait for things to settle
+	SOJG A,.
+	POPJ P,
+
+
+; BUG entry point.  Called with BUG macro which sets up a transfer table:
+;	Loc 0	Address of bug
+;	    1   JSR BUGENT
+;	    2   Address of string   (BUGENT points here)
+;	    3   Return address
+
+BUGENT:	0
+	AOSE BUGLCK		; Only allow one at a time
+	 JRST .-1
+	PIOFF			; Turn off PI's
+	MOVEM P,CACS+P		; Save AC's
+	MOVEI P,CACS
+	BLT P,CACS+16
+	MOVE C,BUGENT		; Get bug block address
+	SUBI C,2		; Point to start of block
+	MOVEM C,BUGBLK		; Save it
+	MOVE B,0(C)		; Get bug location
+	MOVEM B,BUGCHK		; Save it
+	MOVE B,3(C)		; Get the return address
+	MOVEM B,BUGRET		; Save it
+	MOVEI P,BPDL-1		; Temp BUG PDL
+	CRLF
+	PUSHJ P,PTIME		; Time stamp it
+	TYPE <    >
+	MOVE C,BUGBLK		; Address of bug message
+	MOVE C,2(C)
+	PUSHJ P,STYO		; Type it
+	CRLF
+	PUSHJ P,TTYODN		; Wait until output done
+	MOVSI P,CACS		; Recover AC's we used
+	BLT P,P
+BUGADR:	PION			; Turn PI's back on
+	SETOM BUGLCK		; Clear the bug lock
+	JRST @BUGRET
+
+; Routine to fetch source drive number from TTY
+; Call:   PUSHJ P,GTSRC
+; Return: +1 always with SRCDRV set up
+
+GTSRC:	PUSH P,NOPRNT		; Save current print switch
+	SETOM NOPRNT		; For drive checking, no error msgs
+GTSRC0:	MOVEI D,NPACKS-1	; Get source drive number
+	MOVEI C,[ASCIZ "Input drive (0-%4D): "]
+	PUSHJ P,GTDRV
+	 JRST GTSRC0		; Invalid input, try again
+	MOVEM A,SRCDRV		; Save source channel,,drive
+GTSRC1:	PUSHJ P,CHKDRV		; Now see if it is there and in good shape
+	 JRST   [HRRZ D,SRCDRV	; +1 - Drive off-line, inform them
+		 PUSHJ P,CPOFL
+		 JRST GTSRC0]	; And try for another drive
+	 JRST   [POP P,NOPRNT	; +2 - Source write protected - return
+		 POPJ P,]
+	 MOVEI C,[ASCIZ "!!! Drive %4D not read only"]  ; +3 - write enab
+	 HRRZ D,SRCDRV
+	 PUSHJ P,CPWPT		; Don't allow it
+	 MOVE A,SRCDRV		; OK, recheck him for safety
+	 JRST GTSRC1
+
+
+; Routine to fetch destination drive number from TTY
+; Call:   PUSHJ P,GTDES
+; Return: +1 always with DESDRV set up
+
+GTDES:	PUSH P,NOPRNT		; Save current print switch
+	SETOM NOPRNT		; For drive checking, no error msgs
+GTDES0:	MOVEI D,NPACKS-1	; Now get the destination drive
+	MOVEI C,[ASCIZ "Output drive (0-%4D): "]
+	PUSHJ P,GTDRV
+	 JRST GTDES0		; Invalid input, try again
+	MOVEM A,DESDRV		; Save destination channel,,drive
+GTDES1:	PUSHJ P,CHKDRV		; Now see if it is there and in good shape
+	 JRST   [HRRZ D,DESDRV	; +1 - Drive off-line, inform them
+		 PUSHJ P,CPOFL
+		 JRST GTDES0]	; And try for another drive
+	 JRST   [SKIPGE CPYMOD	; +2 - Write protected, just verify mode?
+		  JRST .+2	; Yes, proceed
+		 MOVEI C,[ASCIZ "!!! Drive %4D not write enabled"]
+		 HRRZ D,DESDRV
+		 PUSHJ P,CPWPT	; No, let him change it
+		 MOVE A,DESDRV	; Go check it again
+		 JRST GTDES1]
+	 JRST   [SKIPL CPYMOD	; +3 - read/write, copy or fast copy?
+		  JRST .+1	; Yes, proceed
+		 MOVEI C,[ASCIZ "!!! Drive %4D not read only"]
+		 HRRZ D,DESDRV
+		 PUSHJ P,CPWPT	; No, give him a chance to fix it
+		 MOVE A,DESDRV	; Go check it again
+		 JRST GTDES1]
+	POP P,NOPRNT		; Restore printing mode
+	POPJ P,
+; Routine to decide on printing correctable error details
+; Call:   PUSHJ P,CORDET
+; Return: +1 always with CQUIET set up
+;		0 - print all details
+;	       -1 - stifle correctable errors
+
+CORDET:	SETZM CQUIET		; Assume we want correctable details
+	MOVEI C,[ASCIZ \Correctable error details (Y or N)? \]
+	PUSHJ P,YORN
+	CAIE B,"Y"
+	 SETOM CQUIET		; Yes, set the flag
+	POPJ P,			; All done
+
+
+; Routine to get a drive number from TTY
+; Prompt message in C
+; Call:  PUSHJ P,GTDRV
+; Returns +1 if error
+;	  +2 if success  (A contains disk channel,,drive number)
+
+GTDRV:	PUSHJ P,CPNUM		; Get an input number
+	 POPJ P,		; Error, just return +1
+	CAIL A,0		; Drive number in range?
+	CAIL A,NPACKS
+	 JRST   [TYPE <
+?? Drive number out of range
+>				; No
+		 POPJ P,]
+	HRLI A,DCHAN		; Tack in disk channel
+	JRST CPOPJ1		; And return +2
+; Routine to get a cylinder number from TTY
+; Prompt message in C
+; Entry: C contains address of header message
+; Call:  PUSHJ P,GTCYL
+; Returns +1 always
+;   (A contains cylinder number)
+; ESC will recognize the previous cylinder number if valid
+
+GTCYL:	PUSH P,C		; Save header for later
+GTCYL0:	MOVE C,0(P)		; Set up header address
+GTCYL1:	PUSHJ P,CPNUM		; Get an input number
+	 JRST   [SKIPL NONUM	; Number entered?
+		 CAIE B,33	; No, did he hit esc?
+		  SKIPA		; Invalid input
+		 JRST GTCYL3	; Just ESC, try to recognize cylinder
+		 TYPE <?? Invalid number entered
+>				; Error, just return
+		 JRST GTCYL0]	; Go try again
+GTCYL2:	CAIL A,0		; Cylinder number in range?
+	CAIL A,NSCYL
+	 JRST   [TYPE <?? Cylinder number out of range
+>				; No
+		 JRST GTCYL0]	; Go try again
+	POP P,C			; Recover header
+	PUSHJ P,CONDCR		; CRLF if necessary
+	POPJ P,
+
+; Here to try to recognize a cylinder number
+GTCYL3:	SKIPGE A,SNGCYL		; Any specification there?
+	 JRST   [PUSHJ P,BELL	; No, beep him
+		 SETZ C,	; No more header for now
+		 JRST GTCYL1]	; Try again
+	MOVE D,A		; Got one, print it for him
+	TYPE <%4D>
+	CAIL A,NSCYL		; In range?
+	 JRST GTCYL2		; No, try again
+	PUSHJ P,ENDIT		; OK, let him confirm it
+	 JRST   [TYPE < ??
+>				; Invalid terminator
+		 JRST GTCYL0]	; Try whole thing over
+	 JRST   [SETZ C,	; Delete, no header
+		 JRST GTCYL1]	; And try again
+	JRST GTCYL2		; OK, wrap it up
+
+
+; Routine for hard error in selecting disk controller
+; SA-10 status is printed after message in octal
+; Call:  PUSHJ P,CPHRD
+
+CPHRD:	MOVEI C,[ASCIZ "
+!!! ERROR CHECKING DRIVE ACCESS at "]
+	PUSHJ P,STMSG			; Print a message
+	POPJ P,
+
+
+; Routine to announce disk drive off line
+; Call:  PUSHJ P,CPOFL
+
+CPOFL:	TYPE <!!! Drive %4D off-line
+>
+	POPJ P,
+
+
+; Routine to wait for user response (any character typed in)
+; Input:  C - Pointer to prompt string
+; Call:  PUSHJ P,CPWPT
+
+CPWPT:	PUSHJ P,STYO		; Print his header
+	MOVEI C,[ASCIZ " - <CR> to proceed"]
+	PUSHJ P,NUMGM		; Print it and get his response
+	 JFCL			; Accept any input
+	CAIE B,15		; Did he CRLF?
+	 PUSHJ P,CR		; No, do it for him
+	POPJ P,
+
+
+; Routine to get a decimal number from TTY
+; Prompt message in C
+; Call:  PUSHJ P,CPNUM
+; Returns +1 if error (non-number entered)
+;	  +2 if success
+
+CPNUM:	SETZ A,			; Set up for decimal input
+	PUSHJ P,NUMGM		; Print his preamble and get number
+	 POPJ P,		; Must enter a number
+	CAIN B,177		; Delete input?
+	 JRST   [TYPE < XXX >	; Yes
+		 SETZ C,	; No more prompt
+		 JRST CPNUM]	; Try again
+	CAILE B,40		; End with ctl char or CRLF?
+	 POPJ P,		; No, return +1
+	PUSHJ P,CONDCR		; Be sure we have a new line
+	JRST CPOPJ1		; Return +2
+
+TYIM:	PUSHJ P,STYO
+TYI:	PUSHJ P,TTYIW		; Get an input TTY char
+	CAIE B,15		; CR typed?
+	JRST TYO		; No, just echo it
+	PUSH P,C		; Yes, make it CRLF
+	PUSHJ P,CR
+	POP P,C			; And restore the CR
+	MOVEI B,15
+	POPJ P,			; Return
+
+
+; Routine to print a prompt string and fetch a number from the console TTY.
+; Breaks on non-numeric input.
+; Entry:  A = 0  Collect a decimal input
+;	     -1  Collect an octal input
+;	  C =    Address of string prompt
+; Entry:  NUMGM  Print prompt and collect an input
+;	  NUMG   Just collect the input
+; Return:  +1  No number entered
+;	   +2  Number returned in A
+; Last character typed is saved in LSTCHR
+
+NUMGM:	MOVEM A,NUMTYP		; Save the type conversion code
+	PUSHJ P,STYO		; Print the prompt
+	SKIPA
+NUMG:	MOVEM A,NUMTYP		; Non-prompt entry, save the conv code
+	SETZB A,NONUM		; Clear number accumulator, and collection flag
+NUMG0:	PUSHJ P,TYI		; Get a character
+	SKIPE NUMTYP		; Decimal?
+	 JRST NUMG1		; No, octal
+	CAIG B,"9"		; Decimal, digit out of range?
+	CAIGE B,"0"
+	 JRST NUMG2		; Yes, quit
+	SETOM NONUM		; OK, set collection flag
+	IMULI A,^D10		; Do decimal conversion
+	ADDI A,-"0"(B)
+	JRST NUMG0		; Get next digit
+
+NUMG1:	CAIG B,"7"		; Octal, digit out of range?
+	CAIGE B,"0"
+	 JRST NUMG2		; Yes, quit
+	SETOM NONUM		; OK, set collection flag
+	LSH A,3			; Do octal conversion
+	ADDI A,-"0"(B)
+	JRST NUMG0
+
+NUMG2:	MOVEM B,LSTCHR		; Save last character typed
+	SKIPE NONUM		; Break char, any number entered?
+	 AOS 0(P)		; Yes, return +2
+	POPJ P,			; No, return +1
+
+; Routine to fetch cyl, head, and rec number into E, F, G
+; Sense data in SENSED (assumed to be format 5)
+; Call:  PUSHJ P,GETCHR
+
+GETCHR:	LDB E,[POINT 16,SENSED+2,15]  ; Fetch cylinder address
+	LDB F,[POINT 16,SENSED+2,31]  ; And head address
+	LDB G,[POINT 8,SENSED+3,7]    ; And record number
+	POPJ P,
+
+
+; Routine to fetch cyl, head, and rec addresses in E, F, and G
+; Sense data in SENSED (any format)
+; Call:  PUSHJ P,GETCH
+
+GETCH:	LDB E,[POINT 2,SENSED+1,18]  ; Get high order 2 bits of cyl
+	LSH E,^D8		; Position them
+	LDB F,[POINT 8,SENSED+1,15]  ; Get the low order cyl bits
+	ADD E,F			; Combine them
+	LDB F,[POINT 5,SENSED+1,23]  ; Finally get the head address
+	PUSH P,A		; Save A for now
+	MOVE A,SENSED		; Get first 4 sense bytes
+	SETZ G,			; Assume record 0
+	TLNE A,(1B8!1B17)	; Unless perm or corr error
+	 LDB G,[POINT 8,SENSED+3,7]  ; Get valid record number
+	POP P,A
+	POPJ P,
+
+
+; Routine to set up for completing a channel program after an error.  It
+; checks to see if the last record has been transferred in the current 
+; cylinder and if not, sets up a channel pgm stub to reenter the executing
+; program to finish the cylinder.
+; Entry:  Error just happened.  STBUF contains the SA10 status
+;	    words number 1 and 2
+; Call:   PUSHJ P,ANYMOR
+; Return: +1  No more to do
+;	  +2  More records to process.  Adr of reenter program in B.
+
+ANYMOR:	SKIPN @STBUF+2		; If channel program has a 0 next,
+	 POPJ P,		; No more to do
+	LDB A,[POINT 8,STBUF+1,23]  ; More, get the drive address
+	DPB A,[POINT 8,CPRTRY,23] ; Install it in the resume READ HA
+	MOVE A,STBUF+2		; Get the address of the next ch pgm instr
+	HRRM A,CPRTRY+2		; Set up TIC to reenter ch pgm
+	MOVEI A,CPRTRY		; Address of reenter stub
+	JRST CPOPJ1		; Return +2
+
+
+; Routine to output BELL to TTY
+; Call:  PUSHJ P,BELL
+
+BELL:	MOVEI B,7		; Set to print bell
+	PUSHJ P,TYO
+	MOVEI B,-1		; Now wait for it to hit
+	SOJG B,.
+	POPJ P,
+
+
+; Routine to return YES or NO choice.
+; Entry:   C = adr of prompt string
+; Call:    PUSHJ P,YORN
+; Return:  B = Upper case Y or N
+
+YORN:	PUSH P,C		; Save prompt
+YORN0:	MOVE C,0(P)		; Recover header string
+YORN1:	PUSHJ P,NUMGM		; Get some input
+	 SKIPA			; OK, none numeric
+YORN2:	JRST   [TYPE <  ??? Invalid response
+>
+		JRST YORN0]	; Try again
+	TRZ B,40		; Upper case only
+	CAIE B,"Y"		; YES response?
+	CAIN B,"N"		; Or NO response
+	 SKIPA			; OK, see if he really means it
+	JRST YORN2		; Neither, don't screw around
+	MOVEM B,D		; Save the response
+	PUSHJ P,ENDIT		; Get a terminator
+	 JRST YORN2		; Invalid
+	 JRST YORN1		; He changed his mind
+	MOVE B,D		; Restore the response
+	POP P,C			; Clear the header adr
+	POPJ P,			; And return
+; Routine to terminate an input from TTY.  A valid ending is any
+; control character or blank.  A delete means kill the input to here.
+; Anything else is illegal.
+; Call:   PUSHJ P,ENDIT
+; Return: +1  - non-terminating character typed
+;	  +2  - delete (177) typed
+;	  +3  - valid terminator
+
+ENDIT:	PUSHJ P,TYI		; Get another TTY char
+	MOVEM B,LSTCHR		; Save it
+	CAIG B,40		; Valid terminator?
+	 JRST   [PUSHJ P,CONDCR	; Yes, be sure we have a new line
+		 AOS 0(P)	; Step return by 1
+		 JRST ENDIT0]	; And again to return +3
+	CAIE B,177		; Was it a delete?
+	 POPJ P,		; No, return +1
+	TYPE < XXX >		; Delete, do indicator
+ENDIT0:	MOVE B,LSTCHR		; Reinstall last char
+	SETZ C,			; Clear message AC
+	JRST CPOPJ1		; And return +2 or +3
+
+
+; Conditional carriage return
+CONDCR:	PUSH P,A
+	MOVE A,LSTCHR		; Get last char typed
+	CAIE A,15		; If it was not cr
+	 PUSHJ P,CR		; Do one
+	POP P,A
+	POPJ P,
+
+
+; Routines to put out 1, 2, 3, and 4 carriage return/line feed's
+
+CR4:	PUSHJ P,CR		; Entry to print 4 CRLF's
+CR3:	PUSHJ P,CR		; Entry to print 3 CRLF's
+CR2:	PUSHJ P,CR		; Entry to print 2 CRLF's
+CR:	TYPE <
+>				; Entry to print 1 CRLF
+	POPJ P,
+
+
+; Skip returns
+
+CPOPJ2:	AOS (P)		;SKIP2 RETURN
+CPOPJ1:	AOS (P)		;SKIP RETURN
+CPOPJ:	POPJ P,
+; Routine to print a string on TTY.  Numeric conversion formats are
+; provided for Octal, Decimal, and Hexadecimal data.  Each numeric
+; conversion is specified by a format descriptor encoded in the string. 
+; The descriptor has the form:  %<adr><fmt> where <adr> is the octal
+; address of the number to be printed (3 may not be used since this AC
+; is used to pass the string pointer).  <fmt> is one character
+; specifying the conversion.  Available formats include:
+;
+; <fmt> = O   Compact octal
+;         F   Formatted octal (fixed field width)
+;         D   Decimal
+;         H   Hexadecimal
+;
+; For example %4D would convert the contents of AC 4 to decimal and %100H
+; would convert the contents of location 100 to hexadecimal.  QOTCHR
+; (currently ^V, octal 26) is used as a quote character and prints any
+; character following it.
+;
+; Entry:  C = address of ASCIZ string.  IF C is 0, nothing is typed.
+; Call:   PUSHJ P,STYO
+
+STYO:	JUMPE C,CPOPJ		; If 0, just return
+	PUSH P,A		; Save working AC's
+	PUSH P,B
+	HRLI C,440700		; Complete C as a string pointer
+STYO1:	ILDB B,C		; Get the next character
+	JUMPE B,STYRET		; If the character is null, quit
+	CAIN B,"%"		; Escape character
+	 JRST STYCV		; Yes, go compute formatting
+	CAIN B,QOTCHR		; Is it a quote character?
+	 ILDB B,C		; Yes, get the next one whatever it is
+	PUSHJ P,TYO		; OK, just print it
+	JRST STYO1		; And do the next one
+
+STYRET:	POP P,B			; Recover AC's
+	POP P,A
+	POPJ P,
+
+; Compute requested numeric format conversion
+STYCV:	SETZ A,			; Accumulate address here
+STYCV0:	ILDB B,C		; Get next char
+	CAIL B,"0"		; Octal char?
+	CAILE B,"7"
+	 JRST STYCV1		; No
+	LSH A,3			; Yes, include it in the address
+	ADDI A,-"0"(B)
+	JRST STYCV0		; See if there are more
+
+; At this point A = number adr, B = format char
+STYCV1:	CAIN A,3		; Is the address 3?
+	 JRST STYER		; Yes, print error
+	CAIL A,1		; Is it 1 or 2?
+	CAILE A,2
+	 SKIPA			; No
+	ADDI A,-2(P)		; Yes, have to get it off the stack
+	MOVE A,0(A)		; OK, number now in A
+	TRZ B,40		; Make sure format is upper case
+	PUSHJ P,STYSK		; Go do the right format
+	JRST STYO1		; Done, finish the string
+
+STYSK:	CAIN B,"O"		; Octal conversion requested?
+	 JRST OPT
+	CAIN B,"F"		; Formatted octal conversion requested?
+	 JRST FOPT
+	CAIN B,"D"		; Decimal conversion requested?
+	 JRST DPT
+	CAIN B,"H"		; Hexadecimal conversion requested?
+	 JRST HPT
+	SUB P,[1,,1]		; Oops, not legal spec.  Reset stack
+STYER:	PUSH P,B		; Save the char for now
+	MOVEI B,"*"		; Print an error filler
+	PUSHJ P,TYO
+	PUSHJ P,TYO
+	PUSHJ P,TYO
+	POP P,B			; Recover the char
+	JUMPE B,STYRET		; If null, return
+	JRST STYO1		; Otherwise finish the string
+
+; Compact octal conversion routine - prints an octal number as L,,R
+; where no leading 0's or blanks are inserted and L is not printed if
+; 0
+OPT:	TLNN A,-1		; Anything in the left half?
+	 JRST OPT1		; No
+	PUSH P,A		; Yes, save the value
+	HLRZS A			; Isolate the left half
+	PUSHJ P,OPT2		; and print it
+	POP P,A			; Restore the full value
+	MOVEI B,","		; Separate the halves by ,,
+	PUSHJ P,TYO
+	PUSHJ P,TYO
+OPT1:	HRRZS A			; Isolate the right half
+OPT2:	IDIVI A,10		; Get a low order digit
+	JUMPE A,OPT3		; If nothing left, move on
+	HRLM B,0(P)		; Save this digit in LH of return PC
+	PUSHJ P,OPT2		; Get the next digit recursively
+	HLRZ B,0(P)		; Restore the previous digit
+OPT3:	ADDI B,60		; Convert digit to char
+	CAILE B,"9"
+	ADDI B,"A"-"9"-1	; If high hex, form letter
+	JRST TYO		; Now, go print it
+
+
+; Formatted octal conversion routine - prints an octal number as L,,R
+; where L is 6 characters (with leading blanks if needed) and R is
+; 6 characters (with trailing blanks if needed)
+FOPT:	PUSH P,A		; Save the number
+	HLRZS A			; Isolate the left half
+	MOVEI B,6		; Set up to count blanks needed (print
+	MOVEM B,FOPTCT		; them first)
+	PUSHJ P,FOPT0		; Print the left half with leading blanks
+	MOVEI B,","		; Separate the halves by ,,
+	PUSHJ P,TYO
+	PUSHJ P,TYO
+	POP P,A			; Restore the full value
+	HRRZS A			; Isolate the right half
+	SETZM FOPTCT		; Set up to count blanks needed (don't print them)
+	PUSHJ P,FOPT0		; Print the right half
+	MOVE A,FOPTCT		; Now add the blanks if needed
+	ADDI A,6
+	JRST FPBLK
+
+FOPT0:	IDIVI A,10		; Get a low order digit
+	SOS FOPTCT		; Decrement number of blanks
+	JUMPE A,[PUSH P,B	; Nothing left, save the last digit
+		 SKIPLE A,FOPTCT  ; If pos cnt, print blanks first...
+		 PUSHJ P,FPBLK
+		 POP P,B	; Recover the last digit
+		 JRST OPT3]	; Go start the printing
+	HRLM B,0(P)		; Save this digit in LH of return PC
+	PUSHJ P,FOPT0		; Get the next digit recursively
+	HLRZ B,0(P)		; Restore the previous digit
+	JRST OPT3		; And form a char to print it
+
+; Decimal conversion routine
+DPT:	MOVEI B,"-"		; Is the number negative?
+	SKIPGE A
+	PUSHJ P,TYO		; Yes, print a minus sign
+	MOVMS A			; Then form the magnitude of the number
+DPT1:	IDIVI A,^D10		; Strip a low order decimal digit
+	JUMPE A,OPT3		; If last one, start printing
+	HRLM B,(P)		; More to go, save in LH of return PC
+	PUSHJ P,DPT1		; Get more digits recursively
+	HLRZ B,(P)		; Recover previous digit
+	JRST OPT3		; Form char and print it
+
+
+; Hexadecimal conversion routine
+HPT:	MOVEI B,0		; Clear buffer AC
+	ROTC A,-4		; Strip one hex digit
+	ROT B,4
+	JUMPE A,OPT3		; If none left, start printing
+	HRLM B,(P)		; More, save this one in LH of return PC
+	PUSHJ P,HPT		; Get the others recursively
+	HLRZ B,(P)		; Now recover the previous digit
+	JRST OPT3		; Form char and print it
+
+
+; Routine to print out a number of blanks
+; Entry:   A = number of blanks
+; Call:    PUSHJ P,FPBLK
+
+FPBLK:	MOVEI B," "		; Set up to print blanks
+	SOJL A,CPOPJ		; If counted out, quit
+	PUSHJ P,TYO		; No, print one
+	JRST .-2		; And try for another
+; Routine to wait for TTY output done and then to output one character.
+; Line feeds are handled specially to allow enought fill characters for
+; the carriage to reposition.
+
+TYO:
+IFNDEF KL,<
+	PUSHJ P,TTYODN		; Wait for CTY output done
+	DATAO TTY,B		; Output another character
+	CAIE B,12		; Was it LF?
+	POPJ P,			; No, return
+	MOVNI B,CTYTMO		; Yes, set time out
+TYOF0:	CONSO TTY,20		; Output busy?
+	AOJL B,TYOF0		; No, wait some more
+	JUMPGE B,TYOF9		; Output busy now, if we timed out, just quit
+	MOVNI B,CTYFIL		; Otherwise, send some fill characters
+	MOVEM B,TYOFCT
+	MOVEI B,0		; Make them NULL's
+TYOF1:	AOSL TYOFCT
+	JRST TYOF9
+	PUSHJ P,TYO		; Send a NULL
+	JRST TYOF1
+
+TYOF9:	MOVEI B,12		; All done, restore the LF to B
+	POPJ P,
+
+TYOFCT:	0
+	>	; End IFNDEF KL
+IFDEF KL,<
+	SETZM DTEMTD
+	PUSH P,B
+	ANDI B,177
+	MOVEI B,.DTMTO(B)
+	MOVEM B,DTECMD
+	CONO DTE,TO11DB
+	SKIPN DTEMTD
+	JRST .-1
+	POP P,B
+	POPJ P,
+	>	; End IFDEF KL
+
+
+; Routine to wait until CTY output is done
+
+TTYODN:	CONSZ TTY,20		; Make sure CTY output is done
+	JRST .-1
+	POPJ P,
+
+; Routine to fetch an input character from CTY, waiting if necessary
+; Call:    PUSHJ P,TTYIW
+; Return:  +1 always, character in B
+
+TTYIW:	PUSHJ P,TTYIC		; Get input if any
+	 JRST .-1		; Nothing, wait some more
+	POPJ P,			; Return with char
+
+
+; Routine to test for TTY input.  Input is also checked against special
+; characters for RESET or DDT call
+; Call:   PUSHJ P,TTYIC
+; Return: +1 Nothing input
+;	  +2 Success, character in B
+
+TTYIC:
+IFNDEF KL,<
+	CONSO TTY,40		; TTY input busy?
+	 POPJ P,		; No
+	DATAI TTY,B		; Get the char
+	>	; End IFNDEF KL
+IFDEF KL,<
+	SKIPN DTEMTI		; KL, input char?
+	 POPJ P,		; No, return
+	SETZM DTEMTI		; Yes, clear flag and get char
+	MOVE B,DTEF11
+	>	; End IFDEF KL
+	ANDI B,177		; Strip only char bits
+	CAIE B,RSTCHR		; Did he type the restart char?
+	 JRST TTYIC0		; No
+	TYPE <
+^>				; Yes, let him know
+	MOVEI B,RSTCHR+100
+	PUSHJ P,TYO
+	TYPE < - Restarting
+>
+	JRST @ENTLOC		; Go restart
+
+TTYIC0:	CAIE B,DDTCHR		; Did he type the DDT char?
+	 JRST CPOPJ1		; No, just return +2 with the char
+	BUG (<Entering DDT, $P to continue>,CPOPJ1)
+
+; Routine to set up SA10 base address data and to initialize
+; I/O bus control commands for the SA10
+; Entry:   A = disk channel
+; Call:    PUSHJ P,CSET
+
+CSET:	MOVEM A,CHAN		; Save the channel address
+	LSH A,2
+	ADD A,BASEA
+	MOVEM A,CBASE
+	ADDI A,1
+	MOVEM A,CBASE+1
+	ADDI A,1
+	MOVEM A,CBASE+2
+	MOVE A,CHAN
+	DPB A,[POINT 2,STBSYC,32]	; Set busy flag]
+	DPB A,[POINT 2,CLSTFC,32]	; Clear status flag
+	DPB A,[POINT 2,STPIEC,32]	; Set PI enable
+	DPB A,[POINT 2,STSRQC,32]	; Set status request
+	DPB A,[POINT 2,RSTCHC,32]	; Reset channel
+	POPJ P,0
+
+
+; Routine to initialize PI system and enable clock and SA10 interrupts
+; Call:    PUSHJ P,INIPIS
+
+INIPIS:	MOVE A,[JSR UUOTRP]	; Set up for UUO traps
+	MOVEM A,41
+	MOVE A,[JSR DSKI]	; Set up for disk interrupts
+	MOVEM A,40+2*SA0CH
+	MOVE A,[JSR APRI]	; And for clock/error interrupts
+	MOVEM A,40+2*APRCH
+	PIRST			; Reset the PI system
+	CLKENB			; Enable the clock
+	MCONO SA0,@STPIEC	; Restart SA-10 interrupt enable
+	POPJ P,
+
+
+; Routine to initialize important control variables
+; Call:    PUSHJ P,INICTL
+
+INICTL:	SETOM ACTBFR		; Clear currently active I/O buffer
+	SETZM GETSNS		; Sense data request flag
+	SETZM DOEXCP		; Clear EXCP requests
+	SETZM SFTREQ		; Clear software request flag
+	SETZM LITES		; Clear light show
+	SETZM NOPRNT		; Allow printing of sense messages
+	MOVEI A,NRETRY		; Init retry counter
+	MOVEM A,ERETRY
+	SETOM BUGLCK		; Release the bug stuff
+	POPJ P,
+
+
+; Routine to initialize system hardware
+; Call:    PUSHJ P,INIHDW
+
+INIHDW:	PUSHJ P,RSTALL		; Reset the world
+	MOVEI A,DCHAN		; Set up base adr and dsk chan CONO templates
+	PUSHJ P,CSET
+	PUSHJ P,INIPIS		; Initialize PI's (leaves them deactivated)
+	POPJ P,
+; General data and control variables for SACOPY
+SRCDRV:	-1		; Source drive -  subchannel,,drive number
+DESDRV:	-1		; Destination drive -  subchannel,,drive number
+CPYMOD:	0		; CPYMOD flag
+			;  1 - do fast copy (no read-back verify)
+			;  0 - do copy and read-back verify
+			; -1 - do read/compare of source and destination
+INIFLG:	0		; Copy initialization flag
+			;  0 - copy not initialized
+			; -1 - copy initialized
+ENTLOC:	DDTE		; Entry dispatch
+	    		;   Initial setup = DDT
+	    		;   Subsequent    = CPY
+TIMET:	0		; Running time of day (1/60 second ticks)
+TIMEC:	0		; User definable time interval (incremented at 1/60
+			; second intervals too
+ADRLO:	0		; Highest used address in program
+
+; Following is a table for tabulating input and output drive errors
+ERRTAB:
+IECRCT:	0		; Input correctable errors
+IEUNCR:	0		; Input uncorrectable errors
+IEHARD:	0		; Input hard errors
+OECRCT:	0		; Output correctable errors
+OEUNCR:	0		; Output uncorrectable errors
+OEHARD:	0		; Output hard errors
+NETYPE=.-ERRTAB
+
+; Control variables for interrupt routines - describe current transfer
+; being processed.  Transfer is on the basis of input cylinder to 
+; corresponding output cylinder.  Cylinders are never mixed.
+
+ACTBFR:	0		; Currently active buffer
+ACTCYL:	0		; Currently active cylinder
+ACTDRV:	0		; Currently active drive
+GETSNS:	0		; Flag when acquiring drive sense data
+			;  0 - no sense data being collected
+			; -1 - sense data being collected
+DOEXCP:	0		; Flag when executing a special channel program
+			;  0 - No EXCP in progress
+			; -1 - EXCP in progress
+SFTREQ:	0		; Flag when processing a software interrupt request
+			;  0 - No software req in progress
+			; -1 - Software req in progress
+EXCPGM:	0		; Pointer for executing special channel program
+			;   LH - address of channel program
+			;   RH - address of dispatch word for chan pgm termination
+			; Dispatch word format:
+			;   LH - error return address
+			;   RH - success return address
+INTPC:	0		; Contains the PC from which interrupted at termination
+			; of EXCP operation.
+SNGCTL:	0		; Control word for single cylinder mode
+			;   LH = control bits for input (IXFER) or output (OXFER)
+			;   RH = cylinder to be transferred
+SNGFNT:	-1		; Single cylinder mode first time entry flag
+			;  0 - recently entered and initialized things
+			; -1 - complete initialization required
+SNGCYL:	-1		; Single cylinder mode, current cylinder to be copied
+ACS:	BLOCK 20	; AC storage area for interrupt routine
+
+; Variables controlling error handling
+CQUIET:	0		; Flag for printing any crctable error details
+			;  0 - print everything
+			; -1 - don't print details
+NOPRNT:	0		; Flag controlling error printing
+			;  0 - print sense data if correctable
+			; -1 - don't print sense data
+ERETRY:	0		; Current number of retries left before failure
+CMPERR:	0		; Count of compare errors during processing of a buffer
+BUFLOC:	0		; Location of buffer with error detected
+
+; Variables used in number collection routine
+NONUM:	0		; Flag indicating number collected
+NUMTYP:	0		; Flag for conversion type
+LSTCHR:	0		; Last character typed
+FOPTCT:	0		; Counter for blanks in formatted octal output
+
+; Variables to store status and sense information
+APCONI:	0		; Error APR CONI word
+PICONI:	0		; Error PI CONI word
+SACONI:	0		; Save area for SA-10 CONI data
+SENSED:	BLOCK 6		; Data area for SENSE I/O information
+STBUF:	BLOCK 4		; Save area for SA10 status words
+
+; Variables describing SA-10 addresses
+BASEA:	BASE		; Base address for SA-10 fixed data block
+CHAN:	0		; Disk channel
+CBASE:	BLOCK 3		; CBASE+n points to SA-10 control word n
+
+; Pushdown list storage
+PDL:	BLOCK 200	; Regular pushdown list
+IPDL:	BLOCK 200	; Interrupt routine pushdown list
+BPDL:	BLOCK 10	; BUG handler PDL
+
+; BUG routine variables and storage
+BUGCHK:	0		; Address at which BUG happened
+BUGRET:	0		; Return address if BUGCHK continued
+BUGLCK:	-1		; Lock for BUG handler
+CACS:	BLOCK 20	; AC storage for BUG handler
+BUGBLK:	0		; Address of BUG data block:
+			;  Loc 0  Adr of BUG
+			;      1  JSR BUGENT
+			;      2  Adr of String
+			;      3  Return adr
+
+; Miscellaneous storage and variables
+HOMERR:	BLOCK 2				; Home adr buffer for error reentry
+PHADRT:	EXP 70,61,52,43,34,25,16,07	; Weird names of drives (indexed by
+					; by physical number
+
+; Indirect I/O bus instructions for macro commands (MCONI, MCONO, etc.)
+DCONO:	CONO SA0,(DD)
+DCONI:	CONI SA0,DD
+DDATAO:	DATAO SA0,DD
+DDATAI:	DATAI SA0,DD
+
+; SA10 CONO command templates for common commands
+STBSYC:	STBSY+SA0CH
+CLSTFC:	CLSTF+SA0CH
+STPIEC:	STPIE+SA0CH
+STSRQC:	STSRQ+SA0CH
+RSTCHC:	RSTCH+SA0CH
+; Storage of fixed strings and string arrays used in the program
+
+CPYHLP:	ASCIZ \
+
+(C)opy:       Reads an input pack, writes an output pack, and
+              reads the output back for compare/check (13 min.)
+
+(F)ast copy:  Same as COPY without the read-back compare (9 min.)
+
+(V)erify:     Reads an input pack and reads an output pack to
+              compare the contents (output is not written) (9 min.)
+
+^C restarts the program
+^D enters DDT
+DEL or RUBOUT deletes a type-in
+
+\
+
+
+; Strings describing SA-10 types of status information
+
+STTT:	[ASCIZ /INITIAL SELECTION/]
+	[ASCIZ /ENDING/]
+	[ASCIZ /ASYNC/]
+	[ASCIZ /DUMMY/]
+
+; String decoding of disk status bytes 0-2
+
+SNSMSG:	[ASCIZ /COMMAND REJECT/]
+	[ASCIZ /INTERVENTION REQ/]
+	[ASCIZ /BUS OUT PAR CHK/]
+	[ASCIZ /EQUIPMENT CHECK/]
+	[ASCIZ /DATA CHECK/]
+	[ASCIZ /OVERRUN/]
+	[ASCIZ /BYTE 0, BIT 6 ??/]
+	[ASCIZ /BYTE 0, BIT 7 ??/]
+	[ASCIZ /PERMANENT ERROR/]
+	[ASCIZ /TRACK OVERRUN/]
+	[ASCIZ /CYLINDER END/]
+	[ASCIZ /BYTE 1, BIT 3 ??/]
+	[ASCIZ /NO RECORD FOUND/]
+	[ASCIZ /FILE PROTECT/]
+	[ASCIZ /WRITE INHIBIT/]
+	[ASCIZ /OPN INCOMPLETE/]
+	[ASCIZ /BYTE 2, BIT 0 ??/]
+	[ASCIZ /CORRECTABLE/]
+	[ASCIZ /BYTE 2, BIT 2 ??/]
+	[ASCIZ /ENVIRONMENTAL DATA/]
+
+; String decoding of SA10/controller status information bits
+
+STAMSG:	[ASCIZ /SELECT ERROR/]
+	[ASCIZ /BUS IN PAR ERR/]
+	[ASCIZ /CONTROL ERROR/]
+	[ASCIZ /BIT 5 ??/]
+	[ASCIZ /LENGTH ERROR/]
+	[ASCIZ /PROG INT FLAG/]
+	[ASCIZ /ATTENTION/]
+	[ASCIZ /STATUS MODIFIER/]
+	[ASCIZ /CONTROL UNIT END/]
+	[ASCIZ /BUSY/]
+	[ASCIZ /CHANNEL END/]
+	[ASCIZ /DEVICE END/]
+	[ASCIZ /UNIT CHECK/]
+	[ASCIZ /UNIT EXCEPTION/]
+; Following is a channel program stub to reenter an executing program
+; after an error.  It resets to the start of a track and starts
+; searching for the next record to be transferred.
+CPRTRY:	CW <070, RDHA, IDEV>		; Read home address
+	IOW 5, HOMERR
+	TIC 0		    		; Now reenter the chan pgm
+
+
+; NOOP channel command template
+PNOOP:	CW <052, NOOP, IDEV>
+	IOW 4,0
+	0
+
+
+; SENSE I/O channel command template
+PSENSE:	CW <050, SENSIO, IDEV>		; Channel program for SENSE I/O
+	IOW 30,SENSED	      		; 24 bytes of sensed data
+	0
+
+
+; Channel programs to check drive access status
+; READ
+CKPGR:	CW <070,SEEK,IDEV>		; Read program - Seek
+	IOW 6, CKADR
+CKPGR0:	CW <071,SCHIDE,IDEV>		; Search ID equal
+	IOW 5, CKADR
+	TIC CKPGR0			; Transfer back until record found
+CKPGR1:	CW <040,RDDATA,IDEV>		; Read
+	IOW (RECL,IBUFR0)
+	0
+
+; WRITE
+CKPGW:	CW <071,SCHIDE,IDEV>		; Write pgm - Search ID equal
+	IOW 5, CKADR
+	TIC CKPGW			; Transfer back until record found
+CKPGW0:	CW <040,WRDATA,IDEV>		; Write
+	IOW (RECL,IBUFR0)
+	0
+
+; SEEK/SEARCH ID EQ DATA
+CKADR:	BYTE (16) 0, CHKCYL	; 00CCHHR for access check cylinder
+	BYTE (16)0 (8)1		; Head 0, record 1
+
+; Byte pointers to install drive address in chan pgms
+CKPTR:	POINT 4,CKPGR,23	; Read pgm - SEEK
+	POINT 4,CKPGR0,23	; Read pgm - SEARCH ID EQ
+	POINT 4,CKPGR1,23	; Read pgm - READ DATA
+	POINT 4,CKPGW,23	; Write pgm - SEARCH ID EQ
+	POINT 4,CKPGW0,23	; Write pgm - WRITE DATA
+	0			; End of list
+
+; Macros to define data tables for buffer groups as described below
+; and macros to help lay out channel programs.
+
+DEFINE	DXWD(XLH,XRH,XMOD)<
+	<XLH'XMOD>,,<XRH'XMOD>		; Define an XWD
+	>
+
+DEFINE	DLABL(LABA,LMOD)<
+LABA'LMOD:
+	>				; Define compound label
+
+DEFINE	DSYMB(SYMA,SMOD)<SYMA'SMOD>	; Define compound symbol
+
+DEFINE	DPNAM(PNAM,PMOD<>,INC<1>)<
+	PNAM'PMOD=IQ			; Define incremented symbol
+	IQ=IQ+INC
+	>
+
+DEFINE	DTABL(LH,RH)<
+	IB=0			; Index initialization
+	REPEAT NBUFRS,<
+	DXWD(LH,RH,\IB)		; Set up an XWD with the right stuff
+	IB=IB+1
+	>	; End REPEAT
+	>	; End DEFINE
+
+DEFINE	DCYLS<
+	IB=0			; Index initialization
+	REPEAT	NBUFRS,<
+	BYTE (16) 0, IB		; Set up 00CC address
+	IB=IB+1
+	>	; End REPEAT
+	>	; End DEFINE
+
+
+; Template for search and I/O transfers of successive records/cylinder.
+; Note that SEARCH ID EQ(multi-track) is used for both READ and WRITE
+; sequences (rather than READ(multi-track) in READ's) so all channel
+; programs have the same structure.  No rotational loss occurs.
+DEFINE	CHPTMP(OPN,BUFFER,I) <
+	INCLSS=0			; Index into CLSSD - CCHHR table
+	BUFOFS=0			; Data buffer offset
+    REPEAT CYLREC,<
+	CW <071, SCHIDE+MULTRK, IDEV>	; Search ID Eq, byte offset, mult track
+	IOW (5,CLSSD'I+INCLSS)		; Seek data ptr
+	TIC .-2				; Wait for search success
+	CW <060, OPN, IDEV>		; Data transfer operation
+	IOW (RECL,BUFFER'I+BUFOFS)	; Data buffer ptr
+	INCLSS=INCLSS+2			; Bump CCHHR address
+	BUFOFS=BUFOFS+RECL		; and the data buffer adr
+	>	; End REPEAT
+	>	; End DEFINE
+
+
+; Following is a template for a channel program, including a starting SEEK
+; to move to a cylinder or head, a READ HOME ADDRESS to start at the track
+; origin, and successive SEARCH ID EQUAL(multi-track) + I/O transfers.
+
+DEFINE	DCHPGM(SKOPN,XFROPN,PGMID,BUFID,I)<
+PGMID'I:
+	CW <070, SKOPN, IDEV>		; Seek cylinder/head
+	IOW (6,CLSSD'I)			; CCHH = 0000
+	CW <070, RDHA, IDEV>		; Read home adr - start cyl
+	IOW (5,HOMAD'I)
+PGMID'A'I:
+	CHPTMP(XFROPN,BUFID,I)		; Pgm segments for each rec
+	0
+	>	; End DEFINE DCHPGM
+
+
+; Template for SEEK/SEARCH data tables.  Two words per entry in the format
+; 00CC, HHR0
+DEFINE	SKSRCH(I)<
+    MHEAD=0				; Head index
+    MREC=1				; Record index
+DLABL(CLSSD,\I)
+    REPEAT CYLREC,<
+	BYTE (16) 0, I			; 00CC
+	BYTE (16) MHEAD (8) MREC	; HHR
+	MREC=MREC+1			; Bump record
+	IFG <MREC-NRPT>,<
+	   MREC=1			; Next track, reset record
+	   MHEAD=MHEAD+1		; Increment head
+	>	; End IFG
+	>	; End REPEAT CYLREC
+	0
+	>	; End DEFINE SKSRCH
+
+
+; Following defines a group of pointers used in initializing the device code
+; and cross-coupling in various channel programs for a group
+DEFINE	DPTRS(I)<
+IQ=0					; Initialize index
+BFPTR'I:
+; The following pointers are to set up the channel program header (SEEK's,
+; SEEK HEAD, and READ HOME ADDRESS)
+   DPNAM(INSEEK)			; Ptr to input SEEK
+	POINT 4,IRPG'I,23
+   DPNAM(INRDHA)			; Ptr to input RDHA
+	POINT 4,IRPG'I+2,23
+   DPNAM(OWSEEK)			; Ptr to output write SEEK
+	POINT 4,OWPG'I,23 
+   DPNAM(OWRDHA)			; Ptr to output write RDHA
+	POINT 4,OWPG'I+2,23
+   DPNAM(ORSEEK)			; Ptr to output read SEEK HEAD
+	POINT 4,ORPG'I,23
+   DPNAM(ORRDHA)			; Ptr to output read RDHA
+	POINT 4,ORPG'I+2,23
+
+; The following pointers are to set up the channel program body including
+; successive SEARCH ID EQ and READ/WRITE operations for each record.  The
+; address index for each record in the chan pgm is in A.
+   DPNAM(INSRCH)			; Ptr to input SEARCH
+	POINT 4,IRPGA'I(A),23
+   DPNAM(INREAD)			; Ptr to input READ
+	POINT 4,IRPGA'I+3(A),23
+   DPNAM(OWSRCH)			; Ptr to output write SEARCH
+	POINT 4,OWPGA'I(A),23
+   DPNAM(OWRITE)			; Ptr to output WRITE
+	POINT 4,OWPGA'I+3(A),23
+   DPNAM(ORSRCH)			; Ptr to output read SEARCH
+	POINT 4,ORPGA'I(A),23
+   DPNAM(OREAD)				; Ptr to output READ
+	POINT 4,ORPGA'I+3(A),23
+
+; The following pointers are to finish up chaining control for the last
+; commands in the channel program.  A points just past the last command
+; in the program.
+   DPNAM(LSTIRD)			; Ptr to last inp READ
+	CAIA IRPGA'I-2(A)
+   DPNAM(IREOL)				; Ptr to End of Inp List
+	CAIA IRPGA'I(A)
+   DPNAM(LSTOWR)			; Ptr to last Out WRITE
+	CAIA OWPGA'I-2(A)
+   DPNAM(OWEOL)				; Ptr to End of Out WRITE List
+	CAIA OWPGA'I(A)
+   DPNAM(LSTORD)			; Ptr to last Out READ
+	CAIA ORPGA'I-2(A)
+   DPNAM(OREOL)				; Ptr to End of Out READ List
+	CAIA ORPGA'I(A)
+
+; The following TIC's are to set up internal channel program transfers
+; depending on CPYMOD.
+   DPNAM(TICSK)				; TIC to Out READ SEEK
+	TIC ORPG'I
+   DPNAM(TICRDH)			; TIC to output READ RDHA
+	TIC ORPG'I+2
+	0
+	>	; End DEFINE DPTRS
+
+; Define data space for home address data from RDHA
+DEFINE	DHMAD(I)<
+HOMAD'I:  BLOCK 2
+	>
+
+
+; Buffer storage and control data.  These give status information about each buffer
+; and addresses of data and channel programs associated with each buffer.
+; NBUFRS buffer pairs are allocated and used to process successive groups of
+; cylinders, i.e., buffer pair N processes cylinders N, N+NBUFRS, N+2*NBUFRS,
+; etc.  The following tables store information per buffer:
+;
+; BFSTAT:    Buffer status information
+;	         LH - buffer status information about what stage
+;	     	       a transfer is in and errors encountered.
+;	         RH - address of error handler to be called
+; BFADR:     Addresses of input and output data buffers for this pair
+; 		 LH - address of input buffer
+; 		 RH - address of output buffer
+; BFCYL:     Current cylinder number in format BYTE (8) 00CC
+; BFPGM:     Primary entry points for input and output channel programs
+; 		 LH - address of input channel program
+; 		 RH - address of output channel program
+; BFDAT:     Addresses of search/seek data table and a byte pointer table for
+;	     updating device addresses in channel programs
+; 		 LH - address of seek/search data
+; 		 RH - address of byte pointers to update chan pgm adrs
+; BFTMO:     Time by which current I/O operation must finish  before time-out
+
+
+BFSTAT:	BLOCK NBUFRS		; Buffer status table
+BFADR:	DTABL(IBUFR,OBUFR)	; I/O buffer address table
+BFCYL:	DCYLS			; Current cylinder in format BYTE (8) 00CC
+BFPGM:	DTABL(IRPG,OWPG)	; I/O channel program entry addresses
+BFDAT:	DTABL(CLSSD,BFPTR)	; Search/Seek data and device field ptrs
+BFTMO:	BLOCK NBUFRS		; Time out limit for current operation
+
+; Following actually sets up the channel programs, seek/search data, and
+; instruction pointers for the various groups.
+
+	IB=0
+REPEAT	NBUFRS,<
+	DCHPGM(SEEK,RDDATA,IRPG,IBUFR,\IB)	; Input READ chan pgm
+	DCHPGM(SEEK,WRDATA,OWPG,IBUFR,\IB)	; Output WRITE chan pgm
+	DCHPGM(SEEKHD,RDDATA,ORPG,OBUFR,\IB)	; Output READ chan pgm
+	SKSRCH(IB)				; Seek/Search data table
+	DHMAD(\IB)				; Home address data storage
+	DPTRS(\IB)				; Dev field ptr table
+	IB=IB+1
+	>
+
+
+
+	LIT
+	VAR
+
+; The following are declarations of CPY buffer addresses
+; These follow the code for SA10E
+
+BUFORG=14000+<1000*<<.+777>/1000>>
+RDBUF=BUFORG				; Single cylinder mode buffers
+RBBUF=RDBUF+CYLWDS
+
+IB=0					; Index for IO buffer pairs
+IQ=BUFORG				; Starting adr for labels
+REPEAT	NBUFRS,<
+	DPNAM(IBUFR,\IB,CYLWDS)		; Next input buffer
+	DPNAM(OBUFR,\IB,CYLWDS)		; Next output buffer
+	IB=IB+1
+	>	; End REPEAT for buffer definitions
+
+
+	END DDTG

@@ -1,0 +1,1460 @@
+;<SOURCES>SAIO.MAC;7	9/12/78			EDIT BY RINDFLEISCH
+; Fixed bug in literal at $EXCP3-12 to properly handle sense data
+; returned after Unit Check
+;<SOURCES>SAIO.MAC;4	12/8/77			EDIT BY RINDFLEISCH
+; Added code for asynchronous status conditions
+; Cleaned up code for disk environmental data handling
+
+	SUBTTL	SA10 I/O PACKAGE
+
+;          ****************************************************
+;          ****                                            ****
+;          ****           SUMEX Computer Project           ****
+;          ****     Stanford University Medical Center     ****
+;          **** Sponsored by National Institutes of Health ****
+;          ****      Biotechnology Resources Program       ****
+;          ****           T. Rindfleisch, 10/3/77          ****
+;          ****                                            ****
+;          ****************************************************
+
+IFDEF $USRMD,<
+	SEARCH STENEX
+	>
+
+IFDEF $MODUL,<
+	INTERN	$EXCP, $SCONI, $SSTAT, $SENSE
+  IFNDEF $NODKP,<
+	INTERN	$DSKCV, $DSKOP
+  >		; End IFNDEF $NODKP
+  IFNDEF $NOSTF,<
+	INTERN	$STMSG, $TTYO, $TTYIC, $TTYIW, $CHRI, $STRO
+  >		; End IFNDEF $NOSTF
+>		; End IFDEF $MODUL
+
+; Basic hardware definitions for SA10 stuff
+
+$$SA0==274	; I/O bus address of SA-10
+$$BASE==160	; Base address for SA-10 channel control blocks
+$$NCHN==2	; Number of SA10 channels
+$$DCHN==0	; SA10 channel assigned to disk controller
+$$DDEV==300	; Device address of disk controller (C0)
+$$TCHN==1	; SA10 channel assigned to tape controller
+$$TDEV==340	; Device address of tape controller (E0)
+$$TTMO=^D10000	; CTY time out count
+$$TLFL=4	; Number of CTY fill characters after LF
+$$QCHR=="V"-100	; Output quote character (^V)
+
+
+; AC definitions
+
+Z=0		; Z-F are general purpose registers
+A=1
+B=2
+C=3
+D=4
+E=5
+F=6
+G=7
+H=10
+$$DD=15		; Used by SA10 indirect I/O bus macros
+P=17		; PDL pointer
+IFNDEF R,<
+  R=0		; Relocation base register
+>
+
+
+; Disk parameters
+
+$$NPKS==4		; Number of drives on disk controller
+$$NCYL==^D815		; Total number of cylinders per pack
+$$NUCL==^D808		; Number of cylinders available to users
+$$NSCL==^D808+1		; Number of system cylinders (808 plus
+			; 1 cylinder worth of spare tracks)
+$$NSRF==^D19		; Number of surfaces (tracks/heads) per cylinder
+$$NRPT==^D5		; Number of records (pages) per track
+$$RECL==1000		; Number of data words per record
+$$NTWD==$$NRPT*$$RECL	; Number of words per track
+$$NCRC==$$NSRF*$$NRPT	; Number of records per cylinder
+$$NCWD==$$NSRF*$$NTWD	; Number of words per cylinder
+$$NCBT==^D10		; Number of bits for cyl field (hdwre disk adr)
+$$NRBT==3		; Number of bits for rec field (hdwre disk adr)
+$$DMSK==777774		; Mask of unused bits in LH of linear disk adr
+$$NRTY==^D5		; Number of times to retry errors
+$$NTPS==2		; Number of drives on tape controller
+$$OTMO==^D250000	; Delay for operation time out (2 sec)
+
+; Some 3330 commands
+
+OPDEF	$$TIC [1B1]	; Transfer in Channel
+
+NOOP==3		; No Op
+SENSIO==4	; Sense I/O
+SEEK==7		; Seek
+SEEKHD==33	; Seek Head
+SCHIDE==61	; Search ID Equal
+RDDATA==6	; Read Data
+WRDATA==5	; Write Data
+RDHA==32	; Read Home Address
+MULTRK==200	; Multi-track option for Search and Read commands
+
+; Some SENSE byte bit definitions
+
+$$CMRJ=1B0			; Command reject (sense byte 0)
+$$INTV=1B1			; Intervention required (sense byte 0)
+$$DTCK=1B4			; Data check (sense byte 0)
+$$WPRT=1B14			; Write protection (sense byte 1)
+$$ENVN=BYTE (8) 0,0,020,0	; Sense bytes 0-3 for environmental data
+$$CRCT=BYTE (8) 010,0,100,0	; Sense bytes 0-3 for correctable error
+$$UNCR=BYTE (8) 010,0,0,0	; Sense bytes 0-3 for uncorrectable error
+
+
+; SA10 Device command word bits (def relative to 8-bit byte)
+
+$$NOXF==200	; No data transfer
+$$NATM==100	; Natural mode bit
+$$EXEC==040	; Execute this command
+$$CHIN==020	; Chain to next command
+$$BMOD==010	; Transfer data in byte mode
+$$IRPT==004	; Interrupt after completing this command
+$$IGLN==002	; Ignore incorrect length
+$$BOFS==001	; Skip over the first 2 data bytes
+
+$$ECB==$$EXEC!$$CHIN!$$BMOD		; Exec, chain, and byte mode
+$$ECBO==$$EXEC!$$CHIN!$$BMOD!$$BOFS	; Exec, chain, and byte offset
+
+; SA10 Status word 1, byte 0 bits
+$$STYP==600000	; Mask for status type field
+$$ASYN==400000	; Asynchronous status
+$$ENDS==200000	; Ending status
+$$SELE==100000	; Select error
+$$BSPE==040000	; Bus in parity error
+$$CTLE==020000	; Control error
+$$LENE==004000	; Incorrect length error
+$$PGMI==002000	; Program interrupt flag
+
+; SA10 Status word 1, byte 1 (DEVICE STATUS) bits
+$$ATTN==001000	; Device attention
+$$STMD==000400	; Device status modifier
+$$CUND==000200	; Device control unit end
+$$BUSY==000100	; Device busy
+$$CHND==000040	; Device channel end
+$$DVND==000020	; Device end
+$$UNCK==000010	; Device unit check
+$$UNEX==000004	; Device unit exception
+
+$$SAER==$$SELE!$$BSPE!$$CTLE!$$PGMI!$$ATTN!$$CUND!$$UNCK!$$UNEX
+$$BDER==$$SELE!$$BSPE!$$CTLE!$$PGMI!$$ATTN!$$UNEX
+; Bit definitions for SA10 CONI, CONSZ, CONSO
+
+$$PIRQ==400000	; SA-10 is requesting an interrupt
+$$PERR==200000	; Par err in word (command or data) read from memory
+$$NXM==100000	; NXM when SA-10 tried to reference memory
+$$IENB==074000	; Channel interrupt enable bits
+$$CHGO==003600	; Channel go flag bits
+$$CHST==000170	; Channel status flag bits
+
+$$SACE==$$PIRQ!$$PERR!$$NXM!$$IENB
+
+
+; Bit definitions for SA10 CONO commands
+
+$$RSSA==400000	; Reset whole schmeer, start clock
+$$CMER==200000	; Clear memory error flags
+$$SSTP==1000	; Stop clock if running; step it if stopped
+$$SCGO==1040	; Start clock
+$$RSCH==300	; Reset channel specified by 10 and 20 bits
+$$CBSY==400	; Clear busy flag of channel
+$$SBSY==440	; Set busy flag of channel
+$$CSRQ==500	; Clear status request flag of channel
+$$SSRQ==540	; Set status request flag of channel
+$$CSTF==600	; Clear status flag of channel
+$$SSTF==640	; Set status flag of channel
+$$CPIE==700	; Clear pi enable of channel
+$$SPIE==740	; Set pi enable of channel
+
+
+; Flags and error return codes for DSKOP routine
+
+$$QTF==1B1	; Flag to suppress error information printout
+$$WRTF==1B14	; Write flag:  OFF = read, ON = write
+$$LADR==1B0	; Linear disk address flag
+
+DSKX1=600001	; Word count not 1000
+DSKX2=600002	; Invalid address
+DSKX3=604000	; I/O error ($SCONI, $SSTAT, and $SENSE contain
+		;   the error details)
+DSKX4=604001	; SA10 error
+DSKX5=604002	; Operation timed out
+
+
+; MACRO definitions
+
+DEFINE	$$TYPE(STR)<
+	MOVEI C,[ASCIZ |STR|](R)	; Output a string to TTY
+	PUSHJ P,$STRO(R)
+	>
+
+DEFINE	$$CRLF<
+	$$TYPE <
+>					; Do TTY CRLF
+	>
+
+DEFINE	$$CW(BYTS)<
+	BYTE (8) BYTS			; Command word
+	>
+
+DEFINE	$$IOW(CT,ADR)<
+	-CT*100,,ADR			; Data word (no chaining)
+	>
+
+DEFINE	$$IOWC(CT,ADR)<
+	400000-CT*100,,ADR		; Data word (with chaining)
+	>
+
+DEFINE	$$ERRT(ERRORN,EXTRA)<
+	JRST   [EXTRA			; Error MACRO
+		IFDIF <ERRORN>,<>,<
+		 MOVEI A,ERRORN
+		>
+		JRST $ERRDO(R)](R)
+	>
+
+
+; SA10 control MACROS
+
+DEFINE $$MCNO(DEV,DAT)<
+	MOVEI $$DD,DAT
+	XCT $CONO(R)
+>
+
+DEFINE $$MCNZ(DEV,DAT)<
+	XCT $CONI(R)
+	TRNE $$DD,DAT
+>
+
+DEFINE $$MCSO(DEV,DAT)<
+	XCT $CONI(R)
+	TRNN $$DD,DAT
+>
+
+DEFINE $$MDTO(DEV,DAT)<
+	MOVE $$DD,DAT
+	XCT $DATAO(R)
+>
+
+DEFINE $$MDTI(DEV,DAT)<
+	XCT $DATAI(R)
+	MOVEM $$DD,DAT
+>
+
+DEFINE $$MCNI(DEV,DAT)<
+	XCT $CONI(R)
+	MOVEM $$DD,DAT
+>
+; Here starts the actual code for these routines
+
+$STRT=.
+
+; Non-interrupt routine to run a channel program
+; Entry:  A = LH:  Channel number
+;	      RH:  Address of channel program
+; Call:   PUSHJ P,$EXCP
+; Return: +1  SA10 error 
+;	  +2  Time out (2 sec)
+;	  +3  Controller/device error
+;	  +4  Operation successful
+;
+; SA-10 CONI information in $SCONI
+; SA-10 status in $SSTAT
+; Device sense data in $SENSE (if available)
+
+$EXCP:	MOVEM D,$ACS+D(R)	; Save AC's
+	MOVEI D,$ACS(R)
+	BLT D,$ACS+D-1(R)
+	HRLI A,(<$$TIC 0>)	; Form TIC to chan pgm
+	MOVEM A,$CPADR(R)	; Save channel program address
+	PUSHJ P,$RSTAL(R)	; Initialize hardware if first time
+	HLRZ A,$ACS+A(R)	; Get channel number
+	PUSHJ P,$CSET(R)	; Set up SA10 I/O bus commands
+	SETZM $GTSNS(R)		; Running real program for now
+	PUSHJ P,$CLSNS(R)	; Clear SENSE bytes
+$EXCP0:	MOVE A,$CPADR(R)	; Install TIC to channel pgm
+	MOVEM A,@$CBASE(R)
+	$$MCNO $$SA0,@$STBSY(R)	; Start the SA-10
+$EXCP1:	$$MCNO $$SA0,@$CLSTF(R)	; Make sure status flag is cleared
+	MOVE B,[$$OTMO](R)	; Set up time out limit
+$EXCP2:	$$MCNI $$SA0,A		; Get CONI information
+	TRNE A,$$SACE		; PI req, Par Err, NXM, or Int Enables?
+	 JRST   [MOVEM A,$SCONI(R)  ; Yes, save SA10 CONI for posterity
+		 SETZM $INIFG(R)    ; Clear init flag so reset next time
+		 JRST $RET1(R)](R)  ; Return +1
+	TRNN A,$$CHST		; Any channel status flags up?
+	 SOJG B,$EXCP2(R)	; If not timed out, look again
+	JUMPLE B,[MOVEM A,$SCONI(R)  ; Oops, timed out
+		  SETZM $INIFG(R)    ; Clear init flag so reset next time
+		  JRST $RET2(R)](R)  ; Return +2
+	PUSH P,A		; Save SA10 CONI for now
+	ANDI A,$$CHST		; Isolate chn status flags
+	SKIPA B,[3](R)		; Now figure out which chan has status
+	LSH A,-1		; Shift over next bit
+	TRZN A,1B32		; Is it on?
+	SOJGE B,.-2(R)		; No, check the next one
+	CAIL B,0		; Didn't find one?
+	CAIE A,0		; Or more than one?
+	 HALT .+1(R)		; Oops, stop right here
+	CAME B,$CHAN(R)		; Is it the expected channel?
+	 JRST   [LSH B,3	; No, construct CLEAR command
+		 IORI B,$$CSTF
+		 CONO $$SA0,0(B)     ; Clear the status flag
+		 POP P,0(P)	     ; Clear stack
+		 JRST $EXCP2(R)](R)  ; And wait for right channel
+	POP P,A			; OK, recover the SA10 CONI data
+	MOVE B,@$CBASE+1(R)	; Get SA10 status word
+	TLC B,$$ASYN		; Asynchronous status?
+	TLNN B,$$STYP
+	 JRST $EXCP1(R)		; Yes, dismiss and wait for real one
+	SKIPE $GTSNS(R)		; Getting sense data?
+	 JRST   [TLNE B,$$SAER	      ; Yes, any kind of error?
+		  JRST $SNSER(R)      ; Yes, report it
+		 MOVE A,B	      ; OK, set to be sure we have dev end
+		 JRST $EXCP3(R)](R)
+	MOVEM A,$SCONI(R)	; Save CONI for posterity
+	HRL B,$CBASE(R)		; OK, save the status data
+	HRRI B,$SSTAT(R)
+	BLT B,$SSTAT+3(R)
+	MOVE A,$SSTAT+1(R)	; Get the Dev status word
+	TLNE A,$$BDER		; Sel err, Bus par, Ctl err, PI, Attn,
+				; or Unit exc?
+	 JRST $RET3(R)		; Yes, return +3
+	TLNE A,$$UNCK		; Unit check?
+	 JRST $EXCSN(R)		; Yes, go fetch sense data
+$EXCP3:	TLNE A,$$BUSY		; Device busy?
+	 JRST   [TLNE A,$$STMD	     ; Yes, status modifier?
+		  JRST $EXCP1(R)     ; Yes, wait for CU end
+		 TLNN A,$$CUND	     ; Control unit end?
+		  JRST $RET3(R)      ; No, error - return +3
+		 JRST $EXCP0(R)](R)  ; Yes, restart the operation
+	TLNE A,$$CUND		; Not busy, control unit end?
+	 JRST $EXCP0(R)		; Yes, restart operation
+	TLNN A,$$DVND		; Device End?
+	 JRST   [TLNE A,$$CHND	   ; No, better have channel end
+		  JRST $EXCP1(R)   ; OK, go wait for dev end
+		 SETZM $INIFG(R)   ; Oops, clear flag to reset next time
+		 JRST $RET1(R)](R) ; Must be SA10 screw up
+	TLNN A,$$LENE		; Dev end, better not have length error
+	SKIPE $GTSNS(R)		; OK, was this for sense data?
+	 JRST $RET3(R)		; Return +3
+	JRST $RET4(R)		; Good one - return +4
+; Entries to restore AC's and to skip return
+
+$RET4:	AOS 0(P)
+$RET3:	AOS 0(P)
+$RET2:	AOS 0(P)
+$RET1:	$$MCNO $$SA0,@$CLSTF(R)	; Clear the status flag
+	MOVSI D,$ACS(R)		; Restore AC's
+	BLT D,D
+	SETZM $GTSNS(R)		; Clear SENSE flag
+	POPJ P,
+
+
+; Routine to clear SENSE data area
+	
+$CLSNS:	PUSH P,A		; Save A
+	SETOM $SENSE(R)		; Clear out SENSE area
+	MOVEI A,0(R)		; Set up BLT ptr
+	HRLS A
+	ADD A,[$SENSE,,$SENSE+1](R)
+	BLT A,$SENSE+5(R)
+	POP P,A			; Restore things and return
+	POPJ P,
+
+
+; Set up to collect drive sense information
+
+$EXCSN:	LDB A,[POINT 8,$SSTAT+1(R),23](R)  ; Get the device code,
+	DPB A,[POINT 8,$PSENS(R),23](R)    ; Install it in SENSE ch pgm
+	MOVEI A,$SENSE(R)		   ; Install data address
+	HRRM A,$PSENS+1(R)
+	MOVE A,[$$TIC $PSENS](R)	   ; Set up TIC to ch pgm
+	ADDI A,0(R)			   ; Base reg offset
+	MOVEM A,$CPADR(R)
+	SETOM $GTSNS(R)		; Show we are collecting sense data
+	JRST $EXCP0(R)		; Run the program
+
+
+; Routine to complain about SENSE IO error
+
+$SNSER:	PUSH P,A		; Save A - SA10 CONI bits
+  IFNDEF $NOSTF,<
+	MOVEI C,[ASCIZ \
+!!! I/O ERROR AND SENSE I/O ERROR\](R)  ; Print as much data as poss.
+	HLL C,$ACS+A(R)			; Tack in channel number
+	PUSHJ P,$STMSG(R)		; Print out the drive data
+	$$TYPE <!!! SENSE I/O ERROR STATUS:
+>
+  >		; End IFNDEF $NOSTF
+	HRL A,$CBASE(R)		; Transfer the status info to the usual place
+	HRRI A,$SSTAT(R)
+	BLT A,$SSTAT+3(R)
+  IFNDEF $NOSTF,<
+	HLLZ C,$ACS+A(R)	; Indicate channel number
+	PUSHJ P,$PSTAT(R)	; Print what we know
+  >		; End IFNDEF $NOSTF
+	POP P,A			; Recover SA10 CONI bits
+	HALT .+1(R)		; Show bad error
+	SETZM $GTSNS(R)		; Clear the flag
+	JRST $RET3(R)
+IFNDEF $NODKP,<
+
+; Routine to convert an input disk address in either linear or hardware
+; format to the other format
+; Entry:   A = B0 off:  hardware disk address
+;		   on:  linear disk address
+; Call:    PUSHJ P,$DSKCV
+; Return:  +1 always with converted address in A
+;	      B0  on:  linear address returned
+;		 off:  hardware address returned
+
+$DSKCV:	TLZN A,($$LADR)		; Hardware or linear input?
+	 JRST $CDSKH(R)		; Hardware - convert it to linear
+	JRST $CDSKL(R)		; Linear - convert it to hardware
+
+
+; Convert linear address to hardware disk address
+; Entry:   A = linear disk address
+; Call:    PUSHJ P,$CDSKL
+; Return:  A = Hardware disk address [DDD,,CCCCCCCCCCHHHHHRRR]
+;		(B0 off)
+
+$CDSKL:	TLZE A,$$DMSK		; Flush extra bits
+	 HALT .+1(R)		; Halt if any extra bits on
+	PUSH P,B		; Save AC B
+	IDIVI A,$$NCRC		; A _ drive/cyl, B _ head/rec
+	PUSH P,B		; Save head/rec
+	IDIVI A,$$NUCL		; A _ drive, B _ cylinder
+	LSH B,^D18-$$NCBT	; Cyl to bits 18-XX
+	HRL B,A			; Drive number to B15-17
+	POP P,A			; Get back head/rec
+	PUSH P,B		; Save drive,,<cyl_n>
+	IDIVI A,$$NRPT		; A _ head, B _ record
+	LSH A,$$NRBT		; Head to B28-32
+	IORI A,0(B)		; Tack record in B33-35
+	POP P,B			; Recover drive and cylinder
+	IOR A,B			; Merge all fields
+	POP P,B			; Recover AC B
+	POPJ P,
+
+
+; Convert hardware disk address to linear address
+; Entry:   A = Hardware disk address [DDD,,CCCCCCCCCCHHHHHRRR]
+; Call:    PUSHJ P,$CDSKH
+; Return:  A = linear disk address (B0 on)
+
+$CDSKH:	PUSH P,B		; Save AC's
+	PUSH P,C
+	HLRZ C,A		; LH is drive number
+	IMULI C,$$NUCL		; Convert drive to cylinders
+	LDB B,[POINT $$NCBT,A,17+$$NCBT](R)   ; B18-27 = cyl number
+	CAIL B,$$NUCL		; Valid cylinder number?
+	 HALT .+1(R)		; Nope
+	ADDI C,0(B)		; Now have actual cyl address
+	IMULI C,$$NCRC		; Compute record number
+	LDB B,[POINT 5,A,35-$$NRBT](R)   ; B28-32 is head
+	CAIL B,$$NSRF		; Valid head number?
+	 HALT .+1(R)		; Nope
+	IMULI B,$$NRPT		; Rec to right head on this drive
+	ANDI A,<1_$$NRBT>-1	; B33-35 is record number for this head
+	CAIL A,$$NRPT		; Valid record number?
+	 HALT .+1(R)
+	ADDI A,0(B)		; Record count on right drive
+	ADD A,C			; And piece for preceeding drives
+	TLZE A,$$DMSK		; Valid linear address?
+	 HALT .+1(R)		; Nope
+	TLO A,($$LADR)		; Flag as linear address
+	POP P,C			; Recover AC's
+	POP P,B
+	POPJ P,
+
+>		; End IFNDEF $NODKP
+IFNDEF $NODKP,<
+
+; Routine to do a single page disk operation.
+; Entry:  A = (B0 off) right justified hardware disk address
+;	      (B0 on)  right justified linear (software) address
+;	  B = LH: B1  on  - don't print error details
+;		     off  - print details of any error
+;		  B14  on - write to disk
+;		      off - read from disk
+;	      RH: B25-35  - word count (must be 1000)
+;	  C = Virtual core address for the data
+; Call:   PUSHJ P,$DSKOP
+; Return: +1 always
+;	A =  0        successful
+;	     600000+n on error (see DKSXn definitions)
+;
+; Data check I/O errors are retried 5 times.  Transfers may cross page
+; boundaries contrary to the TENEX JSYS.
+
+$DSKOP:	SETZM $QUIET(R)			; Set error printing flag
+	TLNE B,($$QTF)
+	 SETOM $QUIET(R)		; Supress printing
+	TLZE A,($$LADR)			; Linear address?
+	 PUSHJ P,$CDSKL(R)		; Yes, convert it to hardware
+	MOVEM 15,$DACS+15(R)		; Save AC's
+	MOVEI 15,$DACS(R)
+	BLT 15,$DACS+14(R)
+	PUSHJ P,$CLSNS(R)		; Clear the SENSE data area
+	HLRZ B,A			; Get the drive number
+	CAIL B,$$NPKS			; In range?
+	 $$ERRT (DSKX2)			; No
+	MOVEI A,0(R)			; Yes, install drv no in ch pgm
+	SKIPN C,$DSKPT(A)
+	 JRST .+3(R)			; No more commands to update
+	DPB B,C				; Got one, install it
+	AOJA A,.-3(R)
+	MOVEI A,0(R)			; Install data adrs in ch pgm
+	MOVE B,A			; Template for base offset to
+	HRLS B				; data adr,,ch pgm adr
+	SKIPN C,$DSKAT(A)
+	 JRST .+4(R)			; No more adrs to update
+	ADD C,B				; Add offset to both halves
+	HLRM C,0(C)			; Install data adr in ch pgm
+	AOJA A,.-4(R)
+	LDB A,[POINT $$NRBT,$DACS+A(R),35](R)	; Get logical record number
+	CAIL A,$$NRPT		      	; In range?
+	 $$ERRT (DSKX2)		      	; No
+	ADDI A,1			; OK, convert it to physical
+	DPB A,[POINT 8,$DSKAD+1(R),23](R)    	; and install it
+	LDB A,[POINT ^D18-$$NCBT-$$NRBT,$DACS+A(R),35-$$NRBT](R)  ; Head number
+	CAIL A,$$NSRF		      	; In range?
+	 $$ERRT (DSKX2)		      	; No
+	DPB A,[POINT 16,$DSKAD+1(R),15](R)   	; OK, install it
+	HRRZ A,$DACS+A(R)	      	; Now isolate the cyl number
+	LSH A,-<^D18-$$NCBT>
+	CAIL A,$$NUCL		      	; In range?
+	 $$ERRT (DSKX2)		      	; No
+	DPB A,[POINT 16,$DSKAD(R),31](R)     	; OK, install it
+	MOVE A,$DACS+B(R)		; Recover the operation spec
+	MOVEI B,RDDATA			; Assume read
+	TLNE A,($$WRTF)			; If write requested,
+	 MOVEI B,WRDATA			; Change it
+	DPB B,[POINT 8,$DSKXF(R),15](R)  	; Install it
+IFDEF $USRMD,<
+	SETZM $DSKWR(R)			; Assume read
+	CAIE B,RDDATA			; Really?
+	 SETOM $DSKWR(R)		; No, flag as a write
+>		; End IFDEF $USRMD
+	HRRZS A				; Isolate word count
+	CAIE A,$$RECL			; One page worth?
+	 $$ERRT (DSKX1)			; Nope
+	MOVE A,$DACS+C(R)		; Finally install the core adr
+	HRRM A,$DSKXF+1(R)
+	MOVEI A,$$NRTY			; Set up retry limit
+	MOVEM A,$RETRY(R)
+$DSKP0:	
+  IFNDEF $USRMD,<
+	MOVEI A,0(R)			; Base offset for ch pgm
+	ADD A,[$$DCHN,,$DSKCP](R)	; Now execute the opn
+	PUSHJ P,$EXCP(R)
+	 $$ERRT (DSKX4)			; SA10 error
+	 $$ERRT (DSKX5)			; Opn timed out
+	 $$ERRT (DSKX3)			; I/O error
+	SETZ A,				; Success
+  >		; End IFNDEF $USRMD
+  IFDEF $USRMD,<
+	MOVE A,$DACS+A(R)		; Set up for DSKOP JSYS
+	MOVE B,$DACS+B(R)
+	MOVE C,$DACS+C(R)
+	SKIPE $DSKWR(R)			; Is it a write?
+	 JRST   [HRROI A,[ASCIZ \!! DSKOP write - are you sure? \](R)
+		 PSOUT
+		 PBIN			; Get his answer
+		 PUSH P,A		; Do a CRLF
+		 MOVEI A,37
+		 PBOUT
+		 POP P,A		; Recover the answer
+		 TRZ A,40		; Upper case only
+		 CAIE A,"Y"		; Take Y or 37
+		 CAIN A,37
+		  JRST .+1(R)		; Do the DSKOP
+		 SETZ A,		; Fake success
+		 JRST $DSKRT(R)](R)
+	MOVE A,$DACS+A(R)
+	DSKOP
+	JUMPE A,$DSKRT(R)		; If no errors, just return
+	 ADDI A,600000			; Otherwise format error code
+	PUSH P,A			; Save it for now
+	HRROI A,[ASCIZ \!! DSKOP error
+\](R)
+	SKIPN $QUIET(R)			; Print error if desired
+	 PSOUT
+	POP P,A				; Recover error code
+  >		; End IFDEF $USRMD
+$DSKRT:	MOVEM A,$DACS+A(R)		; Save return condition
+	MOVSI 15,$DACS(R)		; Restore the AC's
+	BLT 15,15
+	POPJ P,				; And return
+
+>		; End IFNDEF $NODKP
+IFNDEF $NODKP,<
+
+; Error return handling routine
+$ERRDO:	CAIE A,DSKX3			; Some kind of I/O error?
+	 JRST $DSKRT(R)			; No, return with the error
+	JSR $DIERR(R)			; Yes, analyze it more closely
+	MOVEI A,DSKX3			; No recovery
+	JRST $DSKRT(R)			; Return with error
+
+	
+; Routine to handle source drive I/O errors
+; Entry:  $SCONI = SA10 CONI word
+;	  $SENSE = disk sense information
+; Call:  JSR $DIERR
+; Return: JRST @$DIERR returns to the user with the error
+
+$DIERR:	0
+  IFNDEF $NOSTF,<
+	MOVEI C,[ASCIZ \
+!!! DISK I/O ERROR\](R)		; Header for printing status information
+	HLL C,$ACS+A(R)		; Indicate channel number
+  >		; End IFNDEF $NOSTF
+	PUSHJ P,$DSKER(R)	; Check error type and correct if possible
+	 JRST @$DIERR(R)	; +1  Hard error - don't retry
+	 JRST $DIER0(R)		; +2  Uncorrectable data check - retry
+	SETZ A,			; +3  Correctable data check
+	JRST $DSKRT(R)		; Data good so return success
+
+; Here to clean up after an uncorrectable data check.  Attempt a retry
+; with the $$NRTY limit.
+$DIER0:	SOSL $RETRY(R)		; Any retries left?
+	 JRST $DSKP0(R)		; Yes, take another go
+  IFNDEF $NOSTF,<
+	SKIPE $QUIET(R)		; Error printing wanted?
+	 JRST @$DIERR(R)	; No
+	MOVEI D,$$NRTY		; Count of retries
+	$$TYPE <
+!!! Uncorrectable disk error after %4D retries
+>
+  >		; End IFNDEF $NOSTF
+	JRST @$DIERR(R)		; And return
+
+>		; End IFNDEF $NODKP
+IFNDEF $NODKP,<
+
+; Routine to check type of disk I/O error
+; Entry: $SENSE contains drive sense data
+;	 C = LH:  Disk channel
+;	     RH:  Address of status message header
+; Call:  PUSHJ P,$DSKER
+; Return:  +1  if hard error
+;	   +2  if uncorrectable error
+;	   +3  if correctable error
+
+$DSKER:	
+  IFNDEF $NOSTF,<
+	SKIPN $QUIET(R)		; If error details wanted,
+	 PUSHJ P,$STMSG(R)	; Print status information
+  >		; End IFNDEF $NOSTF
+	MOVE C,$SENSE(R)	; Get first 4 sense bytes
+	CAMN C,[-1](R)		; If no status stored
+	 POPJ P,		; We have problems
+	TLNN C,($$DTCK)		; OK, is it a data check error?
+	 JRST $DSKE0(R)		; No, see about environmental stuff
+	CAME C,[$$CRCT](R)	; Data chk - correctable error?
+	 JRST CPOPJ1(R)		; No, return +2
+	HRRZ A,$SSTAT+2(R)	; Yes, fetch SA10 stat wrd 2:  -cnt,,adr+1
+	HRRZ A,-1(A)		; Get buffer adr from data wd of prev inst
+	PUSHJ P,$CRCTR(R)	; Go correct it
+	JRST CPOPJ2(R)		; And return +3
+
+$DSKE0:	CAME C,[$$ENVN](R)      ; Environmental data?
+	 POPJ P,	        ; No, we have problems
+	LDB C,[POINT 8,$SENSE+1(R),31](R)  ; Yes, get fmt/msg type
+	CAIN C,6_4		; Statistics (60 hex)?
+	 JRST CPOPJ1(R)         ; Yes, just retry the opn (uncorrect)
+	JRST CPOPJ2(R)		; No, controller corrected it OK
+
+
+; Routine to correct correctable data errors
+; Entry:  Sense data in $SENSE
+;	  A = address of record in error
+; Call:  PUSHJ P,$CRCTR
+
+$CRCTR:	LDB C,[POINT 8,$SENSE+1(R),31](R)   ; Get correction message type
+	CAIE C,123		; Message type 5 with data check?
+	 POPJ P,		; No, controller should have taken care of it
+	MOVEM A,$PGLOC(R)	; Yes, save buffer address (for debugging)
+	LDB A,[POINT 16,$SENSE+4(R),31](R)  ; Get offset to error in bytes
+	MOVE C,$SENSE+5(R)	; and the correction mask
+	TRZ C,7777		; Leave only the 3-byte mask
+	CAIGE A,3		; Right byte of mask in ECC field?
+	 TDZ C,[377B23](R)	; Yes, clear it
+	CAIGE A,2		; Middle byte of mask in ECC field?
+	 TLZ C,(377B15)		; Yes, clear it
+	CAIGE A,1		; Left byte of mask in ECC field?
+	 POPJ P,		; Yes, just return - correction not needed
+	SUBI A,<$$RECL*^D9>/2	; Compute neg byte cnt to msk from start of bfr
+	LSH A,3			; convert bytes to bits
+	IDIVI A,^D36		; Compute word and remaining bit offset
+	SETZ D,			; Clear right end of corr mask
+	LSHC C,0(B)		; Position it for correction
+	MOVNS A			; Dist to corr wds from rec start
+
+; The following aligns the correction mask with the data as it is
+; recorded ON THE DISK.  The SA-10 packs 2 36-bit words into 9 bytes
+; on the disk:  wrd 0, bytes 0-3 into bytes 0-3; wrd 1, bytes 0-3
+; into bytes 5-8; and wrd 0, bits 32-35 + wrd 1, bits 32-35 into 
+; byte 4 (last 4 bits of wrd 0 + last 4 bits of wrd 1).  Thus on the
+; disk the odd numbered words of a record appear rotated 4 bits
+; relative to their PDP-10 representation and the correction mask
+; must be rotated correspondingly to fix the odd words.
+	TRNE A,1		; Shift 1st word of mask?
+	 ROT C,4		; Yes,
+	TRNN A,1		; Shift 2nd word of mask?
+	 ROT D,4		; Yes
+	ADD A,$PGLOC(R)		; Absolute adr of error words
+	XORM C,0(A)		; Do corrections
+	XORM D,1(A)
+	POPJ P,			; Return
+
+>		; End IFNDEF $NODKP
+IFNDEF $NOSTF,<
+
+; Routine to print out status information
+; Entry:  $SSTAT  contains SA10 status data
+;	  $SENSE contains drive sense information (or -1 if none)
+;	  C = LH:  SA10 channel for device
+;	      RH:  address of header text
+; Call:  PUSHJ P,$STMSG	puts blank line and time stamp on output data
+;	 PUSHJ P,$PSTAT just prints status information
+
+$STMSG:	PUSH P,C			; Save C for now
+	HRRZS C				; Isolate header address
+	JUMPE C,$PSTAT-1(R)		; If no header, move on
+	PUSHJ P,$STRO(R)		; Print his header
+	$$CRLF
+	POP P,C				; Recover C
+$PSTAT:	HLRZM C,$PTCHN(R)		; Save channel number
+	LDB A,[POINT 2,$SSTAT+1(R),1](R)   ; GET 0=END,1=INIT,2=ASYNC,3=DUMMY
+	ADDI A,0(R)			; Base register offset
+	MOVE C,$STTT(A)			; String for status stored
+	ADDI C,0(R)			; Include base offset
+	PUSHJ P,$STRO(R)
+	LDB D,[POINT 8,$SSTAT+1(R),23](R)  ; Device number
+	$$TYPE < Status for device %4O:
+   >
+	HLLZ E,$SSTAT+1(R)		; Get 14 status bits from 1st word
+	TLZ E,3
+	LSH E,2				; Left justified
+	MOVEI D,$STAST(R)		; Bit dictionary
+	PUSHJ P,$PBITS(R)		; Interpret bits
+	$$CRLF				; New line
+	MOVE C,$PTCHN(R)		; Get channel number
+	CAIL C,$$NCHN			; In range?
+	 HALT .+1(R)			; No
+	ADDI C,0(R)			; Add base reg for dispatch
+	JRST .+1(C)			; dispatch to error prt code
+	 JRST $DSTAT(R)			; Disks
+	 JRST $TSTAT(R)			; Tapes
+
+; Print error details for disk
+
+$DSTAT:	PUSHJ P,$PHDR(R)		; Print physical drive number
+	LDB D,[POINT 4,$SSTAT+1(R),23](R)  ; Get logical drive number
+	MOVE A,$SENSE(R)		; Any sense data available?
+	CAMN A,[-1](R)
+	 JRST   [$$TYPE <, logical drive %4D, cylinder ?, head ?, record ?
+SENSE DATA:
+    - Not Available -
+>
+		 POPJ P,](R)		; And bomb out
+	PUSH P,G			; Save G for now
+	LDB C,[POINT 4,$SENSE+1(R),27](R)  ; Get the error format code
+	CAIE C,4			; If format 4 or 5
+	CAIN C,5
+	 JRST   [PUSHJ P,$GTCHR(R)	; Get CC, HH, R
+		 JRST .+3(R)](R)
+	PUSHJ P,$GTCH(R)		; Some other format, get CC, HH
+	SETZ G,				; Fake record 0
+	$$TYPE <, logical drive %4D, cylinder %5D, head %6D, record %7D
+SENSE DATA:
+>
+	POP P,G				; Recover G
+	PUSHJ P,$PSB(R)			; Print out hex format of bits
+	MOVEI D,$DSNST(R)		; Now interpret the bits in English
+	MOVE E,$SENSE(R)		; Get first 20 bits of sense data
+	TRZ E,177777			; Left justified
+	$$TYPE <   >			; Space over
+	PUSHJ P,$PBITS(R)
+	MOVE E,$SENSE(R)		; Get sense bytes 0-3 again
+	CAME E,[$$ENVN](R)		; Environmental data?
+	 JRST $DSTA0(R)			; No, wrap it up
+	LDB E,[POINT 8,$SENSE+1(R),31](R)   ; Yes, get fmt/msg
+	MOVEI C,[ASCIZ |(STATISTICS)|](R)   ; Select message
+	CAIE E,6_4
+	 MOVEI C,[ASCIZ |(CTLR RECOV ERROR)|](R)
+	PUSHJ P,$STRO(R)		    ; And print it
+$DSTA0:	$$CRLF
+	POPJ P,
+
+
+; Print error details for tape
+
+$TSTAT:	
+  IFDEF $TAPEF,<
+	LDB D,[POINT 4,$SSTAT+1(R),23](R)  ; Get logical drive number
+	$$TYPE <SENSE DATA for logical drive %4D:
+>
+	MOVE A,$SENSE(R)		; Any sense data available?
+	CAMN A,[-1](R)
+	 JRST   [$$TYPE <    - Not Available -
+>
+		 POPJ P,](R)		; And bomb out
+	PUSHJ P,$PSB(R)			; Print out hex format of bits
+	MOVEI D,$TSNST(R)		; Now interpret the bits in English
+	MOVE E,$SENSE(R)		; Get first 4 sense bytes
+	TDZ E,[3,,770000](R)		; Left justified
+	$$TYPE <   >			; Space over
+	PUSHJ P,$PBITS(R)
+	$$CRLF
+  >		; End IFDEF $TAPEF
+	POPJ P,
+
+>		; End IFNDEF $NOSTF
+IFNDEF $NOSTF,<
+
+; Routine to interpret and print SA10 and disk status information
+; Entry:  E = left-justified bit pattern to be converted to English
+;	  D = address of string table for bit field
+; Call:   PUSHJ P,$PBITS
+
+$PBITS:	JUMPE E,CPOPJ(R)	; If no bits left, exit
+	TLNN E,(1B0)		; Left-most bit on?
+	 JRST $PBIT1(R)		; No, try the next one
+	TLON D,400000		; Yes, do we need punctuation?
+	JRST $PBIT2(R)		; No
+	$$TYPE < + >		; Yes, add +
+$PBIT2:	MOVE C,0(D)		; Type the appropriate string for this bit
+	ADDI C,0(R)		; Add base offset
+	PUSHJ P,$STRO(R)
+$PBIT1:	LSH E,1			; Shift bits over
+	AOJA D,$PBITS(R)	; And test next bit
+
+
+
+; Routine to print the physical address of a disk drive
+; Entry:  $SENSE contains the sense data for a drive
+; Call:   PUSHJ P,$PHDR
+
+$PHDR:	$$TYPE <Physical drive >
+	MOVSI C,-10			  ; Max 8 drives
+	ADDI C,0(R)			  ; Base reg offset
+	LDB A,[POINT 6,$SENSE+1(R),7](R)  ; Get the drive number
+	CAMN A,$PHADT(C)		; Look through funny names
+	 JRST $PHDR2(R)			; Found it
+	AOBJN C,.-2(R)
+	MOVEI B,"?"			; Not on the list
+	JRST $PHDR3(R)
+$PHDR2:	SUBI C,0(R)			; Remove base offset
+	MOVEI B,"A"(C)			; Form character
+$PHDR3:	PUSHJ P,$TTYO(R)
+	POPJ P,0
+
+>		; End IFNDEF $NOSTF
+IFNDEF $NOSTF,<
+
+; Routine to list SENSE I/O data in hexadecimal
+; Entry:  $SENSE contains the sense information
+; Call:   PUSHJ P,$PSB
+
+$PSB:	MOVE F,$SENSE(R)	; Get first sense word
+	AOJE F,[$$TYPE < - Sense Bytes Missing -
+>
+ 		POPJ P,](R)
+	MOVE F,[POINT 4,$SENSE(R)](R)	; 4-bit byte ptr into data
+	MOVEI D,6			; 6 words of data
+$PSB0:	MOVEI E,^D8			; 8 hex chars/word
+	TRNE D,1			; Starting line?
+	 JRST $PSB1(R)			; No
+	$$TYPE <   >			; Yes, space over
+$PSB1:	ILDB B,F			; Get a half-byte
+	CAILE B,^D9			; Form hex char
+	ADDI B,"A"-"0"-^D10
+	ADDI B,"0"
+	PUSHJ P,$TTYO(R)		; Print the char
+	MOVEI B,40
+	TLNE F,40000
+	PUSHJ P,$TTYO(R)		; Add blank between bytes
+	SOJG E,$PSB1(R)
+	PUSHJ P,$TTYO(R)		; Extra blank between words
+	IBP F
+	TRNE D,1			; Only do 2 words worth per line
+	$$CRLF
+	SOJG D,$PSB0(R)
+	POPJ P,
+
+>		; End IFNDEF $NOSTF
+; Routine to set up SA10 base address data and to initialize
+; I/O bus control commands for the SA10
+; Entry:   A = disk channel
+; Call:    PUSHJ P,$CSET
+
+$CSET:	MOVEM A,$CHAN(R)	; Save the channel address
+	LSH A,2
+	ADDI A,$$BASE
+	MOVEM A,$CBASE(R)
+	ADDI A,1
+	MOVEM A,$CBASE+1(R)
+	ADDI A,1
+	MOVEM A,$CBASE+2(R)
+	MOVE A,$CHAN(R)
+	DPB A,[POINT 2,$STBSY(R),32](R)	; Set busy flag
+	DPB A,[POINT 2,$CLSTF(R),32](R)	; Clear status flag
+	DPB A,[POINT 2,$STPIE(R),32](R)	; Set PI enable
+	DPB A,[POINT 2,$STSRQ(R),32](R)	; Set status request
+	DPB A,[POINT 2,$RSTCH(R),32](R)	; Reset channel
+	POPJ P,0
+
+
+; Routines to reset things
+; Call:  PUSHJ P,$RSTAL
+
+$RSTAL:	
+  IFNDEF $NOSTF,<
+	PUSHJ P,$TTODN(R)	; Wait until CTY output is done
+  >		; End IFNDEF $NOSTF
+	SKIPE $INIFG(R)		; Initialized already?
+	 POPJ P,		; Yes, just return
+	PUSHJ P,$RSTSA(R)	; Reset the whole SA10
+	SETOM $INIFG(R)		; Set init flag
+	POPJ P,			; Return
+
+
+; Routine to reset the SA10
+; Entry:  $RSTSA  to reset the whole thing
+;	  $RSTSC  to reset the setup channel only
+
+$RSTSA:	$$MCNO $$SA0,$$RSSA	; Reset the whole thing
+	JRST $RSTWT(R)		; Wait to be sure
+
+$RSTSC:	$$MCNO $$SA0,@$RSTCH(R)	; Reset the setup channel
+$RSTWT:	MOVSI A,1		; Wait for things to settle
+	SOJG A,.(R)
+	POPJ P,
+
+
+IFNDEF $NOSTF,<
+
+; Routine to fetch cyl, head, and rec number into E, F, G
+; Sense data in $SENSE (assumed to be format 5)
+; Call:  PUSHJ P,$GTCHR
+
+$GTCHR:	LDB E,[POINT 16,$SENSE+2(R),15](R)  ; Fetch cylinder address
+	LDB F,[POINT 16,$SENSE+2(R),31](R)  ; And head address
+	LDB G,[POINT 8,$SENSE+3(R),7](R)    ; And record number
+	POPJ P,
+
+
+; Routine to fetch cyl, head, and rec addresses in E, F, and G
+; Sense data in $SENSE (any format)
+; Call:  PUSHJ P,$GTCH
+
+$GTCH:	LDB E,[POINT 2,$SENSE+1(R),18](R)  ; Get high order 2 bits of cyl
+	LSH E,^D8			   ; Position them
+	LDB F,[POINT 8,$SENSE+1(R),15](R)  ; Get the low order cyl bits
+	ADD E,F				   ; Combine them
+	LDB F,[POINT 5,$SENSE+1(R),23](R)  ; Finally get the head address
+	PUSH P,A			   ; Save A for now
+	MOVE A,$SENSE(R)		   ; Get first 4 sense bytes
+	SETZ G,				   ; Assume record 0
+	TLNE A,(1B8!1B17)		   ; Unless perm or corr error
+	 LDB G,[POINT 8,$SENSE+3(R),7](R)  ; Get valid record number
+	POP P,A
+	POPJ P,
+
+>		; End IFNDEF $NOSTF
+
+
+; Skip returns
+
+CPOPJ2:	AOS (P)		;SKIP2 RETURN
+CPOPJ1:	AOS (P)		;SKIP RETURN
+CPOPJ:	POPJ P,
+IFNDEF $NOSTF,<
+
+; Routine to print a string on TTY.  Numeric conversion formats are
+; provided for Octal, Decimal, and Hexadecimal data.  Each numeric
+; conversion is specified by a format descriptor encoded in the string. 
+; The descriptor has the form:  %<adr><fmt> where <adr> is the octal
+; address of the number to be printed (3 may not be used since this AC
+; is used to pass the string pointer).  <fmt> is one character
+; specifying the conversion.  Available formats include:
+;
+; <fmt> = O   Compact octal
+;         F   Formatted octal (fixed field width)
+;         D   Decimal
+;         H   Hexadecimal
+;
+; For example %4D would convert the contents of AC 4 to decimal and
+; %100H would convert the contents of location 100 to hexadecimal.
+; $$QCHR (currently ^V, octal 26) is used as a quote character and
+; prints any character following it.
+;
+; Entry:  C = address of ASCIZ string.  IF C is 0, nothing is typed.
+; Call:   PUSHJ P,$STRO
+
+$STRO:	JUMPE C,CPOPJ(R)	; If 0, just return
+	PUSH P,A		; Save working AC's
+	PUSH P,B
+	HRLI C,440700		; Complete C as a string pointer
+$STRO1:	ILDB B,C		; Get the next character
+	JUMPE B,$STRET(R)	; If the character is null, quit
+	CAIN B,"%"		; Escape character
+	 JRST $STRCV(R)		; Yes, go compute formatting
+	CAIN B,$$QCHR		; Is it a quote character?
+	 ILDB B,C		; Yes, get the next one whatever it is
+	PUSHJ P,$TTYO(R)	; OK, just print it
+	JRST $STRO1(R)		; And do the next one
+
+$STRET:	POP P,B			; Recover AC's
+	POP P,A
+	POPJ P,
+
+; Compute requested numeric format conversion
+$STRCV:	SETZ A,			; Accumulate address here
+$STRC0:	ILDB B,C		; Get next char
+	CAIL B,"0"		; Octal char?
+	CAILE B,"7"
+	 JRST $STRC1(R)		; No
+	LSH A,3			; Yes, include it in the address
+	ADDI A,-"0"(B)
+	JRST $STRC0(R)		; See if there are more
+
+; At this point A = number adr, B = format char
+$STRC1:	CAIN A,3		; Is the address 3?
+	 JRST $STRER(R)		; Yes, print error
+	CAIL A,1		; Is it 1 or 2?
+	CAILE A,2
+	 SKIPA			; No
+	ADDI A,-2(P)		; Yes, have to get it off the stack
+	MOVE A,0(A)		; OK, number now in A
+	TRZ B,40		; Make sure format is upper case
+	PUSHJ P,$STRSK(R)	; Go do the right format
+	JRST $STRO1(R)		; Done, finish the string
+
+$STRSK:	CAIN B,"O"		; Octal conversion requested?
+	 JRST $OPT(R)
+	CAIN B,"F"		; Formatted octal conversion requested?
+	 JRST $FOPT(R)
+	CAIN B,"D"		; Decimal conversion requested?
+	 JRST $DPT(R)
+	CAIN B,"H"		; Hexadecimal conversion requested?
+	 JRST $HPT(R)
+	POP P,0(P)		; Oops, not legal spec.  Reset stack
+$STRER:	PUSH P,B		; Save the char for now
+	MOVEI B,"*"		; Print an error filler
+	PUSHJ P,$TTYO(R)
+	PUSHJ P,$TTYO(R)
+	PUSHJ P,$TTYO(R)
+	POP P,B			; Recover the char
+	JUMPE B,$STRET(R)	; If null, return
+	JRST $STRO1(R)		; Otherwise finish the string
+
+>		; End IFNDEF $NOSTF
+IFNDEF $NOSTF,<
+
+; Compact octal conversion routine - prints an octal number as L,,R
+; where no leading 0's or blanks are inserted and L is not printed if
+; 0
+$OPT:	TLNN A,-1		; Anything in the left half?
+	 JRST $OPT1(R)		; No
+	PUSH P,A		; Yes, save the value
+	HLRZS A			; Isolate the left half
+	PUSHJ P,$OPT2(R)	; and print it
+	POP P,A			; Restore the full value
+	MOVEI B,","		; Separate the halves by ,,
+	PUSHJ P,$TTYO(R)
+	PUSHJ P,$TTYO(R)
+$OPT1:	HRRZS A			; Isolate the right half
+$OPT2:	IDIVI A,10		; Get a low order digit
+	JUMPE A,$OPT3(R)	; If nothing left, move on
+	HRLM B,0(P)		; Save this digit in LH of return PC
+	PUSHJ P,$OPT2(R)	; Get the next digit recursively
+	HLRZ B,0(P)		; Restore the previous digit
+$OPT3:	ADDI B,60		; Convert digit to char
+	CAILE B,"9"
+	ADDI B,"A"-"9"-1	; If high hex, form letter
+	JRST $TTYO(R)		; Now, go print it
+
+
+; Formatted octal conversion routine - prints an octal number as L,,R
+; where L is 6 characters (with leading blanks if needed) and R is
+; 6 characters (with trailing blanks if needed)
+$FOPT:	PUSH P,A		; Save the number
+	HLRZS A			; Isolate the left half
+	MOVEI B,6		; Set up to count blanks needed (print
+	MOVEM B,$FOBCT(R)	; them first)
+	PUSHJ P,$FOPT0(R)	; Print the left half with leading blanks
+	MOVEI B,","		; Separate the halves by ,,
+	PUSHJ P,$TTYO(R)
+	PUSHJ P,$TTYO(R)
+	POP P,A			; Restore the full value
+	HRRZS A			; Isolate the right half
+	SETZM $FOBCT(R)		; Set up to count blanks needed (don't print them)
+	PUSHJ P,$FOPT0(R)	; Print the right half
+	MOVE A,$FOBCT(R)	; Now add the blanks if needed
+	ADDI A,6
+	JRST $FPBLK(R)
+
+$FOPT0:	IDIVI A,10		; Get a low order digit
+	SOS $FOBCT(R)		; Decrement number of blanks
+	JUMPE A,[PUSH P,B	    ; Nothing left, save the last digit
+		 MOVE A,$FOBCT(R)   ; Print out the blanks first...
+		 CAILE A,0	    ; If a positive number
+		 PUSHJ P,$FPBLK(R)
+		 POP P,B	    ; Recover the last digit
+		 JRST $OPT3(R)](R)  ; Go start the printing
+	HRLM B,0(P)		; Save this digit in LH of return PC
+	PUSHJ P,$FOPT0(R)	; Get the next digit recursively
+	HLRZ B,0(P)		; Restore the previous digit
+	JRST $OPT3(R)		; And form a char to print it
+
+>		; End IFNDEF $NOSTF
+IFNDEF $NOSTF,<
+
+; Decimal conversion routine
+$DPT:	MOVEI B,"-"		; Is the number negative?
+	SKIPGE A
+	PUSHJ P,$TTYO(R)	; Yes, print a minus sign
+	MOVMS A			; Then form the magnitude of the number
+$DPT1:	IDIVI A,^D10		; Strip a low order decimal digit
+	JUMPE A,$OPT3(R)	; If last one, start printing
+	HRLM B,(P)		; More to go, save in LH of return PC
+	PUSHJ P,$DPT1(R)	; Get more digits recursively
+	HLRZ B,(P)		; Recover previous digit
+	JRST $OPT3(R)		; Form char and print it
+
+
+; Hexadecimal conversion routine
+$HPT:	MOVEI B,0		; Clear buffer AC
+	ROTC A,-4		; Strip one hex digit
+	ROT B,4
+	JUMPE A,$OPT3(R)	; If none left, start printing
+	HRLM B,(P)		; More, save this one in LH of return PC
+	PUSHJ P,$HPT(R)		; Get the others recursively
+	HLRZ B,(P)		; Now recover the previous digit
+	JRST $OPT3(R)		; Form char and print it
+
+
+; Routine to print out a number of blanks
+; Entry:   A = number of blanks
+; Call:    PUSHJ P,$FPBLK
+
+$FPBLK:	MOVEI B," "		; Set up to print blanks
+	SOJL A,CPOPJ(R)		; If counted out, quit
+	PUSHJ P,$TTYO(R)	; No, print one
+	JRST .-2(R)		; And try for another
+
+>		; End IFNDEF $NOSTF
+IFNDEF $NOSTF,<
+
+; Routines to print a prompt, fetch a character from the TTY, and to
+; echo it.
+; Entry:  C = address of prompt string (0 for none)
+; Call:   PUSHJ P,$CHRI   Get a character
+; Return: B = input character
+;	  $LCHR = input character
+
+$CHRI:	PUSHJ P,$STRO(R)	; Print the prompt
+	PUSHJ P,$TTYIW(R)	; Get an input TTY char
+	MOVEM B,$LCHR(R)	; Save it
+	CAIE B,15		; CR typed?
+	JRST $TTYO(R)		; No, just echo it
+	PUSH P,C		; Yes, make it CRLF
+	$$CRLF
+	POP P,C			; And restore things
+	MOVEI B,15
+	POPJ P,			; Return
+
+
+; Routine to wait for TTY output done and then to output one character.
+; Line feeds are handled specially to allow enought fill characters for
+; the carriage to reposition.
+
+$TTYO:	PUSHJ P,$TTODN(R)	; Wait for CTY output done
+  IFDEF $USRMD,<
+	PUSH P,A		; TENEX version
+	MOVE A,B
+	PBOUT
+	POP P,A
+	POPJ P,
+  >		; End IFDEF $USRMD
+  IFNDEF $USRMD,<
+	DATAO TTY,B		; Output another character
+	CAIE B,12		; Was it LF
+	CAIN B,7		;  or a bell?
+	SKIPA			; Here if LF or bell
+	POPJ P,			; No, return
+	PUSH P,B		; Yes, save the LF or bell
+	MOVNI B,$$TTMO		; Set time out
+$TTLF0:	CONSO TTY,20		; Output busy?
+	AOJL B,$TTLF0(R)	; No, wait some more
+	JUMPGE B,$TTLF2(R)	; Output busy now, if we timed out, just quit
+	MOVNI B,$$TLFL		; Otherwise, send some fill characters
+	MOVEM B,$TLFCT(R)
+	MOVEI B,0		; Make them NULL's
+$TTLF1:	AOSL $TLFCT(R)
+	JRST $TTLF2(R)
+	PUSHJ P,$TTYO(R)	; Send a NULL
+	JRST $TTLF1(R)
+
+$TTLF2:	POP P,B			; All done, restore the LF or bell to B
+	POPJ P,
+  >		; End IFNDEF $USRMD
+
+>		; End IFNDEF $NOSTF
+IFNDEF $NOSTF,<
+
+; Routine to wait until CTY output is done
+
+$TTODN:	
+  IFNDEF $USRMD,<
+	CONSZ TTY,20		; Make sure CTY output is done
+	JRST .-1(R)
+  >		; End IFNDEF $USRMD
+	POPJ P,
+
+
+; Routine to fetch an input character from CTY, waiting if necessary
+; Call:    PUSHJ P,$TTYIW
+; Return:  +1 always, character in B
+
+$TTYIW:	PUSHJ P,$TTYIC(R)	; Get input if any
+	 JRST .-1(R)		; Nothing, wait some more
+	POPJ P,			; Return with char
+
+
+; Routine to test for TTY input.  Input is also checked against special
+; characters for RESET or DDT call
+; Call:   PUSHJ P,$TTYIC
+; Return: +1 Nothing input
+;	  +2 Success, character in B
+
+$TTYIC:	
+  IFNDEF $USRMD,<
+	CONSO TTY,40		; TTY input busy?
+	 POPJ P,		; No
+	DATAI TTY,B		; Get the char
+	ANDI B,177		; Strip only char bits
+	JRST CPOPJ1(R)		; Return +2 with the char
+  >		; End IFNDEF $USRMD
+  IFDEF $USRMD,<
+	PUSH P,A		; TENEX input version
+	MOVEI A,-1		; Controlling TTY
+	SIBE			; Anything there?
+	 JRST   [BIN		; Yes, get a char in B
+		 AOS -1(P)	; Do SKIP return
+		 JRST .+1(R)](R)
+	POP P,A			; Restore AC
+	POPJ P,
+  >		; End IFDEF $USRMD
+
+>		; End IFNDEF $NOSTF
+; General data and control variables
+$INIFG:	0		; Initialization flag
+			;  0 - Not initialized
+			; -1 - Initialized
+$GTSNS:	0		; Flag when acquiring drive sense data
+			;  0 - no sense data being collected
+			; -1 - sense data being collected
+$CPADR:	0		; Save area for channel program address
+$ACS:	BLOCK 20	; AC storage area for $EXCP routine
+
+
+IFNDEF $NODKP,<
+; Variables for DSKOP routines
+
+$DACS:	BLOCK 20	; AC storage area for $DSKOP routine
+$RETRY:	0		; Current number of retries left before failure
+$QUIET:	0		;  0 - print error details from $DSKOP
+			; -1 - don't print error details
+$PGLOC:	0		; Location of buffer with error detected
+IFDEF $USRMD,<
+$DSKWR:	0		; Read/write flag for DSKOP
+>		; End IFDEF $USRMD
+>		; End IFNDEF $NODKP
+
+
+; Variables to store status and sense information
+$SCONI:	0		; Save area for SA-10 CONI data
+$SENSE:	BLOCK 6		; Data area for SENSE I/O information
+$SSTAT:	BLOCK 4		; Save area for SA10 status words
+
+; Variables describing SA-10 addresses
+$CHAN:	0		; Current channel
+$CBASE:	BLOCK 3		; $CBASE+n points to SA-10 control word n
+
+
+; Indirect I/O bus instructions for macro commands (MCONI, $$MCNO, etc.)
+$CONO:	CONO $$SA0,($$DD)
+$CONI:	CONI $$SA0,$$DD
+$DATAO:	DATAO $$SA0,$$DD
+$DATAI:	DATAI $$SA0,$$DD
+
+; SA10 CONO command templates for common commands
+$STBSY:	$$SBSY
+$CLSTF:	$$CSTF
+$STPIE:	$$SPIE
+$STSRQ:	$$SSRQ
+$RSTCH:	$$RSCH
+
+
+IFNDEF $NOSTF,<
+; Miscellaneous storage and variables
+$PTCHN:	0		; Channel number for device causing error
+$LCHR:	0		; Last character typed
+$FOBCT:	0		; Counter for blanks in formatted octal output
+$TLFCT:	0		; Counter for LF timing on TTY
+$PHADT:			; Weird hex drive names (indexed by phys adr)
+	EXP 70,61,52,43,34,25,16,07
+>		; End IFNDEF $NOSTF
+IFNDEF $NOSTF,<
+
+; Strings describing SA-10 types of status information
+
+$STTT:	[ASCIZ #INITIAL SELECTION#]
+	[ASCIZ #ENDING#]
+	[ASCIZ #ASYNC#]
+	[ASCIZ #DUMMY#]
+
+; String decoding of disk status bytes 0-2
+
+$DSNST:	[ASCIZ #COMMAND REJECT#]	; Byte 0
+	[ASCIZ #INTERVENTION REQ#]
+	[ASCIZ #BUS OUT PAR CHK#]
+	[ASCIZ #EQUIPMENT CHECK#]
+	[ASCIZ #DATA CHECK#]
+	[ASCIZ #OVERRUN#]
+	[ASCIZ #BYTE 0, BIT 6 ??#]
+	[ASCIZ #BYTE 0, BIT 7 ??#]
+	[ASCIZ #PERMANENT ERROR#]	; Byte 1
+	[ASCIZ #TRACK OVERRUN#]
+	[ASCIZ #CYLINDER END#]
+	[ASCIZ #BYTE 1, BIT 3 ??#]
+	[ASCIZ #NO RECORD FOUND#]
+	[ASCIZ #FILE PROTECT#]
+	[ASCIZ #WRITE INHIBIT#]
+	[ASCIZ #OPN INCOMPLETE#]
+	[ASCIZ #BYTE 2, BIT 0 ??#]	; Byte 2
+	[ASCIZ #CORRECTABLE#]
+	[ASCIZ #BYTE 2, BIT 2 ??#]
+	[ASCIZ #ENVIRONMENTAL DATA#]
+
+IFDEF $TAPEF,<
+
+; String decoding of tape status bytes 0-2
+
+$TSNST:	[ASCIZ #COMMAND REJECT#]	; Byte 0
+	[ASCIZ #INTERVENTION REQ#]
+	[ASCIZ #BUS OUT PAR CHK#]
+	[ASCIZ #EQUIPMENT CHECK#]
+	[ASCIZ #DATA CHECK#]
+	[ASCIZ #OVERRUN#]
+	[ASCIZ #WORD COUNT 0#]
+	[ASCIZ #DATA CONV CHK#]
+	[ASCIZ #NOISE#]			; Byte 1
+	[ASCIZ #TU STAT A#]
+	[ASCIZ #TU STAT B#]
+	[ASCIZ #7 TRK UNIT#]
+	[ASCIZ #LOAD POINT#]
+	[ASCIZ #WRITE STATUS#]
+	[ASCIZ #FILE PROTECT#]
+	[ASCIZ #NOT COMPAT#]
+	[ASCIZ #BYTE 2, BIT 0 ??#]	; Byte 2
+	[ASCIZ #BYTE 2, BIT 1 ??#]
+	[ASCIZ #BYTE 2, BIT 2 ??#]
+	[ASCIZ #BYTE 2, BIT 3 ??#]
+	[ASCIZ #BYTE 2, BIT 4 ??#]
+	[ASCIZ #BYTE 2, BIT 5 ??#]
+	[ASCIZ #BYTE 2, BIT 6 ??#]
+	[ASCIZ #BYTE 2, BIT 7 ??#]
+	[ASCIZ #R/W VRC#]		; Byte 3
+	[ASCIZ #MTE/LRCR#]
+	[ASCIZ #SKEW ERROR#]
+	[ASCIZ #END CHK/CRC#]
+	[ASCIZ #VRC ENVEL CHK#]
+	[ASCIZ #1600 BPI#]
+	[ASCIZ #BACKWD STATUS#]
+	[ASCIZ #C COMPARE#]
+
+>		; End IFDEF $TAPEF
+
+
+; String decoding of SA10/controller status information bits
+
+$STAST:	[ASCIZ #SELECT ERROR#]
+	[ASCIZ #BUS IN PAR ERR#]
+	[ASCIZ #CONTROL ERROR#]
+	[ASCIZ #BIT 5 ??#]
+	[ASCIZ #LENGTH ERROR#]
+	[ASCIZ #PROG INT FLAG#]
+	[ASCIZ #ATTENTION#]
+	[ASCIZ #STATUS MODIFIER#]
+	[ASCIZ #CONTROL UNIT END#]
+	[ASCIZ #BUSY#]
+	[ASCIZ #CHANNEL END#]
+	[ASCIZ #DEVICE END#]
+	[ASCIZ #UNIT CHECK#]
+	[ASCIZ #UNIT EXCEPTION#]
+
+>		; End IFNDEF $NOSTF
+; NOOP channel command template
+$PNOOP:	$$CW <$$EXEC!$$BMOD!$$IGLN, NOOP, $$DDEV>
+	$$IOW 4,0
+	0
+
+
+; SENSE I/O channel command template
+$PSENS:	$$CW <$$EXEC!$$BMOD, SENSIO, $$DDEV>	; Chn pgm for SENSE I/O
+	$$IOW 30,$SENSE	      			; 24 bytes of SENSE data
+	0
+
+
+IFNDEF $NODKP,<
+; Channel program to transfer 1 disk page
+$DSKCP:	$$CW <$$ECB,SEEK,$$DDEV>	; SEEK
+	$$IOW 6,$DSKAD
+	$$CW <$$ECBO,SCHIDE,$$DDEV>	; SEARCH ID EQUAL
+	$$IOW 5,$DSKAD
+	$$TIC $DSKCP+2
+$DSKXF:	$$CW <$$EXEC,NOOP,$$DDEV>	; I/O opn
+	$$IOW $$RECL,0
+	0
+
+; SEEK/SEARCH address block.  Word 1 - 00CC, word 2 - HHR0.
+$DSKAD:	BLOCK	2
+
+; Table of pointers to install drive number in disk channel program
+$DSKPT:	POINT 4,$DSKCP(R),23	; Ptr to SEEK command
+	POINT 4,$DSKCP+2(R),23	; Ptr to SEARCH ID EQ command
+	POINT 4,$DSKXF(R),23	; Ptr to transfer command
+	0			; End of table
+
+; Table of pointers to relocate fixed data and transfer addresses in
+; disk channel program template
+;   LH:  Unrelocated data/transfer address
+;   RH:  Unrelocated location or address word in channel program
+$DSKAT:	$DSKAD,,$DSKCP+1	; Seek data
+	$DSKAD,,$DSKCP+3	; Search data
+	$DSKCP+2,,$DSKXF-1	; TIC for search loop
+	0			; End of table
+>		; End IFNDEF $NODKP
+
+	LIT			; Assemble literals so far
+
+$SIZE=.-$STRT			; Program size
+
+IFDEF $MODUL,<
+	END
+	>
+

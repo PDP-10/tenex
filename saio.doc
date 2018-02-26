@@ -1,0 +1,232 @@
+SA10 I/O ROUTINES
+T. Rindfleisch
+10/31/77
+
+SAIO is a collection of routines for stand-alone PDP-10 programs to
+utilize the SA10 interface to I/O devices.  TENEX user mode versions of
+several of the routines are provided for more convenient debugging.
+The program is implemented with all addressing stack or index register
+based so the program will run if loaded into different areas of core.
+Routines are provided to run user channel programs, to do disk page
+operations (similar to the DSKOP JSYS), and to do character and string
+I/O functions.  Neither interrupts nor paging are not used for SA10 or
+CPU management.
+
+Since this package may be used in a variety of applications, several
+parameters and switches are provided to control program assembly and
+operation:
+
+	R	Program base register.  If R is not a defined symbol,
+		0 (no index offset) is assumed.  The contents of R
+		are assumed initialized at program entry
+
+	$MODUL	if defined, includes INTERN declarations and an
+		unlabeled END statement for linking as a separate module
+
+	$NOSTF	if defined, suppresses assembly of string code/data
+
+	$NODKP	if defined, suppresses assembly of DSKOP code
+
+	$TAPEF	if defined, includes code/strings for tape handling
+		(No MTOPR yet included)
+
+	$USRMD	if defined, assembles TENEX JSYS equivalents to device
+		I/O instructions for disk operations ($DSKOP) and TTY
+		I/O.  $DSKOP write operations request a confirmation
+		before completion.  No provision is made currently to
+		run general channel programs or tape operations in user
+		mode.
+
+	$SIZE	at runtime, this symbol is equal to the size of the
+		assembled SAIO code including literals.
+
+ENTRY POINTS - In all cases it is assumed that a stack has been set up
+with pointer in AC 17 and that the relocation register R is 0 or
+initialized.
+
+1)  $EXCP - Execute channel program
+
+This routine accepts a user-defined channel program and attempts to
+execute it through the SA10.  No checking for channel program content
+is made.  No retries are attempted except in the case of unrelated
+device status changes.
+
+  Entry:   A = LH:  channel # for device (disk = 0, tape = 1)
+	       RH:  address of channel program
+
+  Call:    PUSHJ P,$EXCP
+
+  Return:  +1  SA10 error
+	   +2  Time out (about 2 sec)
+	   +3  I/O error
+	   +4  Success
+
+On return:
+	
+	$SCONI = SA10 CONI data
+	$SSTAT = SA10 status block for channel (4 words)
+	$SENSE = Device sense data (-1 if not available)
+
+
+2) $DSKCV - Convert disk address
+
+This routine converts between linear (software) and hardware disk
+address format.  A linear address is a right justified, 20-bit number
+giving the logical index to a record in the file system.  The hardware
+address is a 21-bit number containing the packed address components of
+a record in the file system.  The binary layout of a hardware address
+is:
+	DDD,,CCCCCCCCCCHHHHHRRR
+
+where D is the drive number, C is the cylinder number, H is the head
+number, and R is the (logical) record number.  Note each disk track
+actually contains 6 physical records; where record 0 is a small 8 byte
+record and records 1-5 are the data records containing 1000 (octal)
+words each.  Physical record 0 is not accessible to the file system and
+is not counted in the above linear/hardware addresses.  In these address
+specifications, each track contains 5 LOGICAL data records, labeled 0-4,
+which correspond to PHYSICAL data records 1-5. 
+
+  Entry:    A =  B0 off:  input hardware disk address (to be converted
+			    to a linear address)
+		     on:  input linear disk address (to be converted to
+			    a hardware address)
+
+  Call:     PUSHJ P,$DSKCV
+
+  Return:   +1 always with A containing the converted address
+		B0 off:  Hardware address returned
+		    on:  Linear address returned
+
+$DSKCV executes a HALT instruction if anything illegal is encountered
+in the input address or its converted dual.
+3) $DSKOP - Read or write 1 disk page
+
+This routine accepts a specification similar to the DSKOP JSYS to read/
+write one disk page to/from core memory.  Correctable read errors are
+corrected before return and uncorrectable errors are retried 5 times
+before declaring a failure.
+
+  Entry:    A = B0  off:  hardware disk address
+		     on:  linear disk address
+
+	    B =	B1  off:  type I/O error descriptions
+		     on:  don't type I/O error descriptions (attempts
+				are still made to recover operations)
+		B14 off:  read from disk
+		     on:  write to disk
+		B25-35 :   word count (must be 1000)
+
+	    C = Core address of page (need not be a page boundary)
+
+  Call:     PUSHJ P,$DSKOP
+
+  Return:   +1 always, A contains error status
+
+	A =      0  Successful transfer
+	    600001  Word count not 1000 (DSKX1)
+	    600002  Invalid disk address (DSKX2)
+	    604000  I/O error (DSKX3)
+	    604001  SA10 error (DSKX4)
+	    604002  Operation timed out (DSKX5)
+
+On error return,
+
+	$SCONI = SA10 CONI data
+	$SSTAT = SA10 Status data (4 words)
+	$SENSE = Device sense data
+
+
+4) $STMSG  - Print channel status information
+
+This routine prints out channel status information (such as following an
+error).  The information includes the SA10 status and the drive sense
+data.  Following is an example of the format for a disk error:
+
+	--- User-supplied Header ---
+	INITIAL SELECTION Status for device 303:
+	   LENGTH ERROR + CHANNEL END + DEVICE END + UNIT CHECK
+	Physical drive B, logical drive 3, cylinder 15, head 0, record 0
+	SENSE DATA:
+	   80 02 00 00  71 0F 00 00
+	   00 00 00 00  00 00 00 00
+	   00 00 00 00  00 00 09 00
+	   COMMAND REJECT + WRITE INHIBIT
+
+
+  Entry:    C = LH:  Channel number for device
+		RH:  Address of header string (0 for none)
+	    $SSTAT = SA10 status block (4 words)
+	    $SENSE = disk sense data (24 bytes, 6 words)
+
+  Call:     PUSHJ P,$STMSG
+
+  Return:   +1 always
+
+
+5)  $TTYO - Output a character on TTY
+
+  Entry:    B = right justified 7 bit ASCII character
+
+  Call:     PUSHJ P,$TTYO
+
+  Return:   +1 always
+
+
+6)  $TTYIC - Conditional character input from TTY (input not echoed)
+
+  Entry:    None
+
+  Call:     PUSHJ P,$TTYIC
+
+  Return:   +1 - no input character
+	    +2 - 7-bit input character received and returned in B
+
+
+7)  $TTYIW - Unconditional character input from TTY (input not echoed)
+
+  Entry:    None
+
+  Call:     PUSHJ P,$TTYIW
+
+  Return:   +1 always with 7-bit input character in B
+
+
+8)  $CHRI - Prompt and TTY character input/echo
+
+  Entry:    C = address of prompt string (0 for none)
+
+  Call:     PUSHJ P,$CHRI
+
+  Return:   +1 always - 7-bit input character is in B and has been echoed
+
+
+9)  $STRO - String output to TTY (with numeric formats)
+
+This routine prints a string on TTY including the formatting of numeric
+fields for octal, decimal, and hexadecimal data.  Each numeric
+conversion is specified by a format descriptor encoded in the string. 
+The descriptor has the form:  "%<adr><fmt>" where "%" is the escape
+character signalling a format specification, <adr> is the octal address
+of the number to be printed (3 may not be used since this AC is used to
+pass the string pointer), and <fmt> is a one character conversion
+specification.  Available formats include:
+
+<fmt> = O   Compact octal
+        F   Formatted octal (14 char field width with ",," centered)
+        D   Decimal
+        H   Hexadecimal
+
+For example %4D would convert the contents of AC 4 to decimal and %100H
+would convert the contents of location 100 to hexadecimal.
+
+^V is used as a quote character and prints any character following it.
+
+  Entry:    C = address of 7-bit ASCIZ string to be printed (0 for none)
+
+  Call:     PUSHJ P,$STRO
+
+  Return:   +1 always
+
+
+
