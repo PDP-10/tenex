@@ -1,0 +1,746 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                   TCP JSYS calling Sequences
+
+
+
+                      Charles W. Lynn, Jr.
+
+
+                  Bolt Beranek and Newman, Inc.
+                        50 Moulton Street
+                      Cambridge MA   02238
+
+
+                          13 April 1981
+
+
+
+
+                   TCP JSYS calling Sequences
+Charles W. Lynn, Jr.                                13 April 1981
+
+
+                   TCP JSYS Calling Sequences
+
+This memo describes the TENEX and TOPS-20 JSYSs  for  using  TCP.
+There  are  a number of parameters that are common to this set of
+JSYSs and these are described first.
+
+These JSYSs use a Job Connection Number or "JCN" for  connections
+in  much  the  same  way  file  manipulating JSYSs use a Job File
+Number or "JFN" for files.  Typically a small number, the JCN  is
+a handle on a connection, and is assigned by the OPEN JSYS.
+
+These  JSYSs  also  use  a  Connection  Block, either directly or
+implicitly by reference to an  associated  JCN.   The  Connection
+Block is a 3-word block of right justified data:
+
+   Word-0:  16-bit Local Port.
+   Word-1:  8-bit Foreign Network and 24-bit Foreign Host.
+   Word-2:  16-bit Foreign Port.
+
+These  JSYSs  take  flags  in  the left half of AC 1.  Not all of
+these JSYSs look at all of the flags.  The flag bits are:
+
+TCP%JS  (1B0)   RH has JCN rather than pointer to connection
+                block.
+TCP%WT  (1B1)   Wait for the JSYS to complete.
+TCP%FS  (1B5)   ForceSync -- cause SYN to be sent (OPEN).
+TCP%PS  (1B6)   Persist -- keep resending SYN packet (OPEN).
+TCP%ST  (1B7)   Return statistics (STAT).
+TCP%SC  (1B8)   Secure connection (OPEN, SEND).
+TCP%HP  (1B9)   High priority (OPEN, SEND).
+TCP%VT  (1B10)  Virtual Terminal.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                              - 1 -
+
+
+
+
+                   TCP JSYS calling Sequences
+Charles W. Lynn, Jr.                                13 April 1981
+
+
+The SEND and RECV JSYSs  use  data  buffers  which  have  control
+blocks  and  which may be chained together to form a ring.  These
+control blocks are called Data Buffer Ring  Elements.   The  Data
+Buffer Ring Element format is:
+
+   Word-0:  Flags,,unused by TCP (typically a pointer to next
+             data buffer ring element)
+   Word-1:  0,,Address of data buffer
+   Word-2:  Word/Byte count for this buffer
+
+   Flags:
+
+TCP%ER  (1B0)   Error:  Buffer has an error associated with it.
+        (1B1)   Local error.
+        (1B2)   Permanent error.
+        (37B7)  Error number.  The error numbers are listed under
+                        "Error Returns".
+
+TCP%DN  (1B12)  Done:   Cleared when TCP receives this buffer.
+                        Set when TCP has finished with it.
+
+TCP%UR  (1B15)  Urgent: Last data byte is urgent.
+
+TCP%EL  (1B16)  EOL:    Send an end-of-letter with this buffer.
+                        Or, end-of-letter received with this
+                        buffer.
+
+TCP%WM  (1B17)  WordMode: Buffer is formatted as 36-bit bytes.
+                        Off if buffer has four 8-bit bytes left
+                        justified per word. (Not Implemented Yet,
+                        36-bit mode not supported.)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                              - 2 -
+
+
+
+
+                   TCP JSYS calling Sequences
+Charles W. Lynn, Jr.                                13 April 1981
+
+
+The  OPEN and SEND JSYSs take a "Retransmission Parameters" word.
+This is controls the retransmission function.
+
+The right half is the initial retransmission Interval which is to
+be used.  If the right half is 0, the initial  Interval  will  be
+computed based on the measured round trip time.  The left half of
+the   parameters  word  has  two  9-bit  quantities,  called  the
+Numerator  and  the   Denominator.    In   computing   the   next
+retransmission Interval from the previous one, the TCP multiplies
+the   Interval   by   the  Numerator  and  then  divides  by  the
+Denominator.  The Numerator must be greater than or equal to  the
+Denominator.   The  default values are 3 seconds for the interval
+and 1 for both the Numerator and Denominator.
+
+      Interval = Interval * ( Numerator / Denominator )
+
+Common retransmission functions are:
+
+
+SRI PR demo:  Numerator=1, Denominator=1, Initial Interval=3.
+
+   3 seconds constant retransmission interval with no backoff.
+
+
+BBN (vanilla):  Numerator=3, Denominator=2, Initial interval=0.
+
+   Used in "average" conditions involving congested gateways and
+   few dropped packets.  150% backoff from best guess initial
+   interval.
+
+
+BBN (old):  Numerator=4, Denominator=2, Initial interval=0.
+
+   Same as above but 200% backoff.  Quickly hits the 1 minute
+   maximum interval and turns into slow, constant period
+   retransmission.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                              - 3 -
+
+
+
+
+                   TCP JSYS calling Sequences
+Charles W. Lynn, Jr.                                13 April 1981
+
+
+Error Returns
+
+   When a JSYS does an error return (returns +1 instead  of  +2),
+AC 1 contains an error code.  This code is an 8-bit number (right
+justified in the 36-bit word) composed as follows:
+
+      Bit Assignments:
+
+         Bit 28:       Error
+         Bit 29:       Local
+         Bit 30:       Permanent
+         Bits 31-35:   Error Number
+
+      The error numbers are:
+
+   0    Unknown Error
+   1    Argument Error in JSYS (no access, bad JCN, no TCB, etc.)
+   3    Connection Not Open.
+   4    Temporarily Out of Resources (JCNs, free storage).
+   5    Wild foreign host/port only allowed if listening.
+   6    Connection Already Exists (or use of TCP%JS with OPEN).
+   7    Connection Error or Rejected (No such TCB either here or
+        there.)
+   9    Transmission Timeout.
+  12    Connection Closed or Closing (Closed remotely, cannot
+        activate TCB).
+  13    Wild local port is illegal (OPEN).
+  15    Bad Buffer Argument.
+  17    Bad Argument to CHANL.
+  20    Funny pointer to STAT (wraps around memory, etc).
+  21    Bad Transfer Size to STAT.
+  29    Cannot change security level (SCSLV).
+  30    Only internet fork can run TVTs (OPEN with TCP%VT).
+  31    TCP Not Available (not on or initialized).
+
+   The Error bit indicates if an error occured, for example error
+number 12 might not have the Error bit set in response to a CLOSE
+call.   The Local bit indicates if the situation is local to this
+host or is due to the remote host.  The Permanent  Bit  indicates
+if the situation is permanent, or temporary.
+
+
+
+
+
+
+
+
+
+
+                              - 4 -
+
+
+
+
+                   TCP JSYS calling Sequences
+Charles W. Lynn, Jr.                                13 April 1981
+
+
+Open a TCP connection.
+
+1/      Flags,,Pointer-to-Connection-Block
+2/      Persistence in seconds (5 minute max)
+3/      Retransmission parameters
+
+        OPEN    (JSYS 742)
+
+Ret+1:   Failed. Error code in AC 1.
+Ret+2:  Success. JCN (Job Connection Number) in AC 1 with TCP%JS
+        set.
+
+
+   Flags:
+
+      TCP%FS    ForceSync:
+
+        On to force synchronization without any data having been
+        sent.
+
+      TCP%WT    Wait:
+
+        Don't return until connection is opened.
+
+      TCP%PS    Persistent:
+
+        Keep trying by sending SYN packets periodically.
+
+      TCP%VT    Virtual terminal:
+
+        On for TVT process.
+
+Possible errors:
+
+ELT+04
+ELP+06
+ELP+12
+ELP+13
+ELP+30
+ELT+31
+
+
+
+
+
+
+
+
+
+
+                              - 5 -
+
+
+
+
+                   TCP JSYS calling Sequences
+Charles W. Lynn, Jr.                                13 April 1981
+
+
+Close a TCP connection.
+
+1/      TCP%JS!Flags,,JCN
+
+        CLOSE   (JSYS 743)
+
+Ret+1:   Failed. Error code in AC 1.
+Ret+2:  Success. Connection fully closed.
+
+
+   Flags:
+
+      TCP%JS    JCNSupplied:    (Must be set)
+
+        RH of AC 1 has a JCN.
+
+      TCP%WT    Wait:
+
+        Wait for close to happen in both directions.
+
+Note  that if the wait bit is not set, the JCN will remain valid,
+allowing more RECVs to be done.  ABORT may be used to release the
+JCN  when  it  has  been  discovered  that  the  connection   has
+terminated.
+
+Possible errors:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                              - 6 -
+
+
+
+
+                   TCP JSYS calling Sequences
+Charles W. Lynn, Jr.                                13 April 1981
+
+
+Send a buffer of data over a TCP connection.
+
+1/      Flags,,JCN or Pointer-to-Connection-Block
+2/      Pointer-to-Data-Ring
+3/      Timeout in Seconds (0 for infinite)
+4/      Retransmission parameters
+
+        SEND    (JSYS 740)
+
+Ret+1:   Failed. Error code in AC 1.
+Ret+2:  Success. JCN in AC 1.
+
+
+   Flags:
+
+      TCP%JS    JCNSupplied:
+
+        On if RH of AC 1 has a JCN. Off if RH has Pointer-to-
+        Connection Blk.
+
+      TCP%WT    Wait:
+
+        Wait for data buffer to be sent or error.
+
+The  count  word in the data buffer ring element must contain the
+number  of  bytes  to  be  sent.   The  urgent,  TCP%UR,   and/or
+end-of-letter,  TCP%EL,  flags may be set in the data buffer ring
+element.  If set, they apply to the last  byte  of  data  in  the
+buffer.
+
+Possible errors:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                              - 7 -
+
+
+
+
+                   TCP JSYS calling Sequences
+Charles W. Lynn, Jr.                                13 April 1981
+
+
+Receive a buffer of data from a TCP connection.
+
+1/      Flags,,JCN or Pointer-to-Connection-Block
+2/      0,,Pointer-to-Data-Ring
+
+        RECV     (JSYS 741)
+
+Ret+1:   Failed. Error code in AC 1.
+Ret+2:  Success. JCN in AC 1.
+
+
+   Flags:
+
+      TCP%JS    JCNSupplied:
+
+        On if RH of AC 1 has a JCN. Off if RH has Pointer-to-
+        Connection Blk.
+
+      TCP%WT    Wait:
+
+        Wait for data buffer to arrive.
+
+The  count  word  should  contain  the (maximum) size of the data
+buffer.  It will be set to the number  of  bytes  received.   The
+TCP%UR  and/or TCP%EL bits will be set if they were received with
+the data.
+
+Possible errors:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                              - 8 -
+
+
+
+
+                   TCP JSYS calling Sequences
+Charles W. Lynn, Jr.                                13 April 1981
+
+
+Read information from either the Transmission Control Block (TCB)
+of the connection or from the TCP statistics area.
+
+1/      Flags,,JCN or Pointer-to-Connection-Block
+2/      -N,,Offset into TCB or Statistics area
+3/      -M,,Address in user's space
+
+        STAT    (JSYS 745)
+
+Ret+1:   Failed. Error code in AC 1.
+Ret+2:  Success. Data copied to user specified area, counts and
+        pointers in 2 and 3 updated.
+
+
+   Flags:
+
+      TCP%JS    JCNSupplied:
+
+        On if RH of AC 1 has a JCN. Off if RH has Pointer-to-
+        Connection Blk.
+
+      TCP%ST    Returns statistics:
+
+        This flag causes words to be copied from the statistics
+        area rather than a specific TCB.  Thus, the JCN is
+        irrelevant.  The Source and Destination ACs are updated.
+        The entries in the statistics area are defined in STG.MAC
+        (TOPS-20) or STORAG.MAC (TENEX) between STAT0 and STATZZ.
+        (Beware: the order/entries may be site dependent).
+
+The TCB offset identifies  where  the  transfer  starts  and  the
+Address  in  user  space  identifies the start of the destination
+area.  If successful, min(M,N) words have been  transferred  from
+the TCB (or statistics area) to the caller's space.
+
+Possible errors:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                              - 9 -
+
+
+
+
+                   TCP JSYS calling Sequences
+Charles W. Lynn, Jr.                                13 April 1981
+
+
+Specify PSI channels for TCP interruts.
+
+1/      Flags,,JCN or Pointer-to-Connection-Block
+2/      Six 6-bit bytes (channel numbers)
+
+        CHANL   (JSYS 746)
+
+Ret+1:   Failed. Error code in AC 1.
+Ret+2:  Success. This fork will receive TCP PSIs.
+
+
+   Flags:
+
+      TCP%JS    JCNSupplied
+
+        On if RH of AC 1 has a JCN. Off if RH has Pointer-to-
+        Connection Blk.
+
+Each  of  the  6-bit  bytes  may be either a channel number or 77
+(octal) if no change is desired for the corresponding event.
+
+      Bits  0- 5:   INTRP channel
+      Bits  6-11:   RECV buffer done
+      Bits 12-17:   SEND buffer done
+      Bits 18-23:   Error
+      Bits 24-29:   State change (open or close)
+      Bits 30-35:   EOL acknowledged (Not implemented)
+
+PSIs for the above may be dropped or be  VERY  tardy  on  heavily
+loaded  systems.  Some defensive programming is required to guard
+against these problems.  See TCPTST.MAC which checks  the  buffer
+rings both when a "done" interrupt occurs and periodically.
+
+Possible errors:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                             - 10 -
+
+
+
+
+                   TCP JSYS calling Sequences
+Charles W. Lynn, Jr.                                13 April 1981
+
+
+Abort a TCP connection.
+
+1/      TCP%JS!Flags,,JCN
+
+        ABORT    (JSYS 747)
+
+Ret+1:   Failed. Error code in AC 1.
+Ret+2:  Success. Connection deleted.
+
+
+   Flags:
+
+      TCP%JS    JCNSupplied:    (Must be set)
+
+        RH of AC 1 has a JCN.
+
+The  local  end  of  the  connection is forgotten.  An attempt to
+notify the remote end is made by sending a  RST  packet.   Should
+this  not be delivered, the other end will discover its half open
+connection the next time it attempts to use it.
+
+Possible errors:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                             - 11 -
+
+
+
+
+                   TCP JSYS calling Sequences
+Charles W. Lynn, Jr.                                13 April 1981
+
+
+Set the security level for a TCP connection.
+
+1/      Flags,,JCN or Pointer-to-Connection-Block
+2/      36 bit security value
+
+        SCSLV   (JSYS 744)
+
+Ret+1:   Failed. Error code in AC 1.
+Ret+2:  Success. The security value has been associated with the
+        connection.
+
+
+   Flags:
+
+      TCP%JS    JCNSupplied
+
+        On if RH of AC 1 has a JCN. Off if RH has Pointer-to-
+        Connection Blk.
+
+The security value is not interpreted by the TCP (except  to  see
+that  it  matches).   The  number  of  bits of the security value
+actually used varries depending on the actual security  procedure
+being  in  use.   In all cases the rightmost bits of the word are
+used.
+
+Possible errors:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                             - 12 -
+
