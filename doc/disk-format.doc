@@ -1,0 +1,383 @@
+
+
+
+                The SUMEX File System  (as of 8/25/78)
+                ======================================
+
+
+A) Disk Parameters
+   ---------------
+
+   The  disk  system  consists  of  four  235-II  Calcomp  disk  units
+connected to a 1035 Calcomp disk controller which in turn is connected
+to the CPU through the Systems Concepts SA-10.  Only 3 of the  4  disk
+units are used and the unused disk unit is available as a spare should
+one of the other 3 units break down.  The disk packs are  dual-density
+3330 type packs and the total capacity of 1 pack is:
+
+        808 tracks/unit * 19 surfaces/track * 5 pages/surface
+        = 76760 (10) pages/unit
+        = 225730 (8) pages/unit
+
+Actually, there are 815 tracks per unit but the last 7 tracks (809  to
+815)  on each unit are never used.  At some point in the future, these
+tracks could be used as spares should some of the other tracks go bad.
+
+The total capacity of the entire disk system is:
+
+        3 units/system * 76760 pages/unit
+        = 230280 (10) pages/system
+        = 701610 (8) pages/system
+
+Note that while the terminology used here is not standard, it  is  the
+terminology used by TENEX in its monitor modules for the disk.
+
+        TENEX          Standard
+
+        Track    <==>  Cylinder
+        Surface  <==>  Track or Head
+        Page     <==>  Sector or Record
+
+Throughout the remainder of this document, the TENEX terminology  will
+be used.
+
+
+B) Disk Addressing
+   ---------------
+
+   There are 2 ways to  specify  a  unique  disk  address  (i.e.   the
+address  of  a  particular  disk page):  a hardware disk address and a
+linear disk address.  The hardware  disk  address  has  the  following
+format:
+
+        BYTE  (15)0 (3)Drive (10)Track (5)Surface (3)Page
+                                                                Page 2
+
+
+This format is similar  to  the  internal  format  used  by  the  disk
+controller  though  it  is  hardly  ever used in a program since it is
+non-linear.  In other  words,  adding  1  to  this  address  will  not
+necessarily  give  the  address  of  the  next  page on the disk.  For
+example,  the  following  2  hardware  disk  addresses  point   to   2
+consecutive pages on the disk:
+
+        BYTE  (15)0 (3)2 (10)321 (5)16 (3)4     (= 000002,,150564)
+        BYTE  (15)0 (3)2 (10)321 (5)17 (3)0     (= 000002,,150570)
+
+The linear disk address has a 1 to 1 correspondence with the  hardware
+disk address and is computed as follows:
+
+        (((Drive * 808) + Track) * 19 * 5) + ((Surface * 5) + Page)
+
+The linear disk address is used  by  most  programs  since  successive
+pages  on the disk can be pointed to by adding 1 to this address.  The
+linear disk addresses start at 0 (i.e.  the first page  on  the  first
+disk  pack)  and  end  at 701607 (i.e.  the last page on the last disk
+pack).  The linear disk address is  distinguished  from  the  hardware
+disk  address  by  setting  bit  0  of  the  linear disk address to 1.
+Therefore, the following 2 disk addresses are exactly equivalent:
+
+           Hardware               Linear
+
+        000002,,150564  <==>  400000,,522611
+        000002,,150570  <==>  400000,,522612
+
+The DSKCV jsys (number 774) is used to convert between the 2  formats.
+This  jsys  accepts either the linear or hardware disk address in AC 1
+and it always returns to  the  DSKCV  jsys  +1.   Upon  return,  AC  1
+contains the other form of the disk address.  The DSKCV jsys will give
+an Illegal Instruction Trap if it is passed an invalid  disk  address.
+When  passing  disk  addresses  to the monitor (via the DSKOP jsys for
+example), the setting of bit  0  determines  the  disk  address  type.
+However,  within the monitor itself, all disk addresses are assumed to
+be linear so that there is no need to set bit 0.   The  TENEX  monitor
+uses  3  different types of addresses:  disk, drum and core addresses.
+The setting of bits 14 to 17 determine the address type.  If bit 14 is
+set,  then bits 15 to 35 contain a linear disk address.  Otherwise, if
+bits 15 to 17 are all zero then the address is a core address, else it
+is a drum address.
+
+        Bits 14-35      Addr Type
+
+        1x,,xxxxxx      disk addr
+        07,,xxxxxx      drum addr
+           ...             ...
+        01,,xxxxxx      drum addr
+        00,,xxxxxx      core addr
+
+Throughout the remainder of this document, all disk addresses will  be
+linear unless otherwise stated.
+                                                                Page 3
+
+
+C) Disk Layout
+   -----------
+
+   The entire disk system is broken down into 5 distinct areas:
+
+    1)   File and swapping areas  (pages 0 to 672416, 672417 pages)
+
+         This area contains all the files in addition  to  some  pages
+         which are reserved for swapping.  This is the largest area on
+         the disks and it takes up all of the first 2 packs  and  most
+         of  the third pack.  The swapping area occupies the middle 31
+         (8) tracks (4507 pages) on each disk  pack.   This  has  been
+         done in an effort to minimize seek time should we be swapping
+         to disk.  In short, the file system takes up 654472 pages and
+         the swapping area takes up 15725 pages.
+
+    2)   Scratch area  (pages 672417 to 676766, 4350 pages)
+
+         This area is unused and is  available  should  we  need  more
+         pages in some other area of the disk.
+
+    3)   Monitor area  (pages 676767 to 677423, 435 pages)
+
+         This area contains the most recent  version  of  the  monitor
+         and, on a reload, the monitor could be read in from this area
+         (via  RLRMON.SAV).   The  resident  portion  of  the  monitor
+         occupies  pages  676767  to  677202 and the swappable portion
+         occupies pages 677203 to 677423.
+
+    4)   Core dump area  (pages 677424 to 701450, 2025 pages)
+
+         This area is reserved for core dumps via the  monitor.   When
+         the  monitor crashes, it dumps all of core into this area for
+         later  analysis.   With  our  current  memory   configuration
+         (512K),  we  need  2000  disk  pages  to  dump  all  of core.
+         Therefore, the last 25 pages of this area are unused.
+
+    5)   BOOTS area  (pages 701451 to 701607, 137 pages)
+
+         This area of the disk contains 2 versions of BOOTS.  The user
+         level  version occupies pages 701576 to 701602 and is used to
+         test out  BOOTS  during  normal  timesharing.   The  standard
+         version occupies pages 701603 to 701607 and is used to reload
+         the system after a crash.  The first 125 pages of  this  area
+         are unused.
+
+In short, the disk layout is as follows:
+
+   1)   000000 - 110567:  110570 pages for file system
+        110570 - 115276:  4507 pages for swapping
+        115277 - 336517:  221221 pages for file system
+        336520 - 343226:  4507 pages for swapping
+        343227 - 564447:  221221 pages for file system
+        564450 - 571156:  4507 pages for swapping
+        571157 - 672416:  101240 pages for file system
+                                                                Page 4
+
+
+   2)   672417 - 676766:  4350 pages for scratch
+
+   3)   676767 - 677202:  214 pages for resident portion of monitor
+        677203 - 677423:  221 pages for swappable portion of monitor
+
+   4)   677424 - 701423:  2000 pages for core dumps via monitor
+        701424 - 701450:  25 unused pages
+
+   5)   701451 - 701575:  125 unused pages
+        701576 - 701602:  5 pages for user level version of BOOTS
+        701603 - 701607:  5 pages for standard version of BOOTS
+
+
+D) Accessing a File
+   ----------------
+
+   Every file in the disk system has an index  block  associated  with
+it.   An index block is always 1 page long and it is nothing more than
+a list of linear disk addresses which point to the actual  data  pages
+of  the  file.  The format of each word in an index block is identical
+to those in the monitor`s Page Table.  Please refer to the  BBN  pager
+documentation  for  a  description  of  the format of these words.  In
+general, the first 0 word in an index  block  marks  the  end  of  the
+address  list.  However, this is not always the case with system files
+where one must know  the  format  and  contents  of  the  index  block
+associated with the file.  Note that there is no ambiguity between the
+linear disk address 0 and the 0 that marks the end of the address list
+since all linear disk addresses will have bit 14 set.
+
+   The first step  in  accessing  a  file  is  to  read  in  the  file
+"<SYSTEM>INDEX.;1".   To  read  this  file,  we must first read in the
+index block for this file.  The value of the monitor symbol DIDSC0  is
+the  linear disk address of the index block for this file.  This index
+block contains only 21 (8) entries (words 0 and 10 - 27).  Bits 15  to
+35  of  word 0 point to the first (and only) page of <SYSTEM>INDEX.;1.
+The format of this file  can  be  found  in  <MON>FILE.MAC.   Here  we
+concern  ourselves  with  only those entries necessary to find a file.
+Words 32 to 63 of <SYSTEM>INDEX.;1 are the subindex directory dispatch
+table.   Each  of  these 32 (8) words contains five 7-bit fields for a
+total of 130 fields.  The last 2 fields are unused and the  first  128
+correspond  to  the  128 ASCII characters.  Each of these 7-bit fields
+contains either a 1 or a 2 and the  table  is  indexed  by  the  first
+character  of  the  user`s directory name.  For example, if the user`s
+directory started with the letter "G" (code 107), then  we  would  use
+the  value  in  the  second field of word 16 in this table (word 50 in
+<SYSTEM>INDEX.;1).  If the value in this field  is  1,  then  we  must
+search  directory -1 for the user`s directory block.  Likewise, if the
+value is 2, then we must search directory -2.  Directory -1 and -2 are
+each  8  pages long and the disk addresses for these 2 directories can
+be found in the index block for <SYSTEM>INDEX.;1.  Words 10 to 17  are
+the  disk  addresses  for directory -1 and words 20 to 27 are the disk
+addresses for directory -2.
+                                                                Page 5
+
+
+   The next step is to read in either directory -1 or -2 and search it
+for  the user`s directory name.  The sole purpose of searching for the
+user`s directory name is to find the corresponding  directory  number.
+Even  if  we  know  the user`s directory number, we must still read in
+directory -1 or -2 in order to get the disk address of the index block
+for   <SYSTEM>DIRECTORY.;1.   Currently,  directory  -1  contains  all
+directories whose first character is less than or equal to the  letter
+"L"  (code  114) and directory -2 contains all directories whose first
+character is greater than or equal to the letter "M" (code 115).   The
+routine  to  search the directory blocks for the user`s directory name
+is somewhat complicated and will not be described here.  This  routine
+is called LOOKUP and it can be found in <MON>DIRECT.MAC.
+
+   Now that we`ve found the user`s directory number, the next step  is
+to   read   in   his   16   page   directory   block   from  the  file
+"<SYSTEM>DIRECTORY.;1".  This file is the directory of all directories
+and  it  contains  every  user`s  16  page  directory block ordered by
+directory number.  To read this file, we must first read in its  index
+block.   The  address  of  this index block is contained in word 17 of
+both directory -1 and -2 and the index block contains only 16  entries
+(words  0  -  17).   <SYSTEM>DIRECTORY.;1 is a "LONG" file which means
+that its index block does not contain  pointers  to  the  file`s  data
+pages,  but  rather,  it  contains  pointers to pages which themselves
+contain the pointers to the file`s data pages.  Since index blocks are
+only  1  page  long,  the file they point to can be no larger than 512
+pages.  Files larger than 512 pages are called LONG files and an extra
+level of indirectness is required to read these files.  The first word
+in this index block is  the  linear  disk  address  of  a  page  which
+contains  the  linear  disk  addresses  of the first 512 data pages of
+<SYSTEM>DIRECTORY.;1.  The second word in this index block points to a
+page which contains pointers to the second 512 data pages and so on.
+
+   <SYSTEM>DIRECTORY.;1 has 2 different formats and the current format
+is determined by the setting of the monitor flag FDFMTF.  With the old
+format (FDFMTF = -1), the user`s 16 page directory block is split into
+two  8  page directory blocks and each entry in the index block points
+to a page which contains the linear disk addresses of 64 of the 8 page
+directory  blocks.   The  first  8  pages  start  at  page  0 plus 8 *
+directory-number and the second 8 pages start at page 4096  plus  8  *
+directory-number  of  <SYSTEM>DIRECTORY.;1.   For example, the first 8
+pages of directory 637 start at page 6370 and the second 8 pages start
+at  page 16370.  To read the first 8 pages, we would use the addresses
+in words 370 - 377 of the page pointed to  by  word  6  of  the  index
+block.   To  read  the  second  8 pages, we would use the addresses in
+words 370 -377 of the page pointed to by word 16 of the  index  block.
+With  the  new format (FDFMTF = 0), the user`s 16 page directory block
+is contiguous and each entry in the index block points to a page which
+contains  the  linear  disk  addresses  of 32 of the 16 page directory
+blocks.  The directories start at page 0 plus 16 * directory-number of
+<SYSTEM>DIRECTORY.;1.   For  example,  directory  637  starts  at page
+14760.  To read this directory, we would use the  addresses  in  words
+760  -  777 of the page pointed to by word 14 of the index block.  The
+SYSGT jsys can be used to get the  monitor`s  directory  format  flag.
+The first entry in the monitor`s FDFMTF table is the current directory
+format flag.  Currently, we`re using the old format.
+                                                                Page 6
+
+
+   The following table illustrates both directory formats.  The  first
+column  represents the page pointed to by each successive entry in the
+index block for <SYSTEM>DIRECTORY.;1 and the next 2 columns  represent
+the  directories  pointed  to by the disk addresses in these pages for
+both the old and new format.
+
+                 Old format (64 dirs/page)      New format (32/page)
+
+        page 0   1st half of dirs 000 - 077        dirs 000 - 037
+             1                    100 - 177             040 - 077
+             2                    200 - 277             100 - 137
+             3                    300 - 377             140 - 177
+             4                    400 - 477             200 - 237
+             5                    500 - 577             240 - 277
+             6                    600 - 677             300 - 337
+             7                    700 - 777             340 - 377
+            10   2nd half of dirs 000 - 077             400 - 437
+            11                    100 - 177             440 - 477
+            12                    200 - 277             500 - 537
+            13                    300 - 377             540 - 577
+            14                    400 - 477             600 - 637
+            15                    500 - 577             640 - 677
+            16                    600 - 677             700 - 737
+            17                    700 - 777             740 - 777
+
+   Now that we`ve read in the user`s 16 page directory block, the next
+step  is  to find the file`s File Descriptor Block (FDB).  The routine
+to search the user`s directory for the file`s FDB is the same  routine
+as  that  used  to find the user`s directory number in directory -1 or
+-2.  Every file has an FDB associated with it and the FDB  format  can
+be  found  in  the JSYS Manual (section 2, page 58-1).  An FDB is a 25
+(8) word block which contains all the information pertinent to a  file
+such  as  its byte size, creation time, index block address, etc.  The
+search routine mentioned above will find the FDB address of the  first
+file  in  the user`s directory with the specified file name.  However,
+this file could have several extensions with the same  file  name  and
+several versions with the same extension.
+
+   The next step is to find the FDB for the specified extension.   The
+left  half  of word 2 in the FDB contains the address of the extension
+block for this file name.  If this extension  is  not  the  one  we`re
+looking  for, then we must use the right half of word 2 which contains
+the address of the next FDB  with  the  same  file  name  but  with  a
+different  extension.   If  the right half is 0, then there is no such
+file with the specified  extension.   Otherwise,  we  must  check  the
+extension  associated  with  this  new  FDB.  This process is repeated
+until we either find the FDB for the specified  File.Extension  or  we
+determine that there is no such extension for this file name.
+                                                                Page 7
+
+
+   The next step is to find the FDB for the specified version  number.
+The  left  half  of  word  7  contains the version number of the first
+occurrence of this File.Extension.  If this version number is not  the
+one we`re looking for, then we must use the right half of word 7 which
+contains the address of the next FDB  with  the  same  file  name  and
+extension  but  with a different version number.  If the right half is
+zero, then there is no such File.Extension with the specified  version
+number.   Otherwise,  we must check the version number associated with
+this new FDB.  This process is repeated until we either find  the  FDB
+for the specified File.Extension;Version or we determine that there is
+no such version number for this File.Extension.  Note how all FDBs for
+a  particular  file  name  are  linked  first by extension and then by
+version number.
+
+   At this point, we have  found  the  address  of  the  FDB  for  the
+specified  <Directory>File.Extension;Version.  If we wish to read this
+file into core, we must first read its index block.  Bits 15 to 35  of
+word  3 in the FDB contain the linear disk address of the file`s index
+block.  If bit 5 of word 1 in the FDB is set, then this is a LONG file
+and  we  must go through an extra level of indirectness before reading
+this file into core.
+
+
+To recapitulate, to following steps are required to access a file:
+
+    1)   Read in the index block for <SYSTEM>INDEX.;1 (pointed  to  by
+         DIDSC0) and then read in this file.
+
+    2)   Find  the  user`s  sub-directory  number  by   indexing   the
+         directory dispatch table (words 32-63 in <SYSTEM>INDEX.;1) by
+         the first character of the user`s directory name.
+
+    3)   Read in the appropriate 8 page directory block (i.e.   -1  or
+         -2) and find the user`s corresponding directory number.
+
+    4)   Read in the (indirect) index block  for  <SYSTEM>DIRECTORY.;1
+         (pointed  to  by  word  17  in  both directory -1 and -2) and
+         determine the linear disk addresses of  the  user`s  16  page
+         directory block.
+
+    5)   Read in the user`s 16 page directory block and find  the  FDB
+         for the specified File.Extension;Version.
+
+    6)   To read the file into core, get its index block address  from
+         bits 15 to 35 of word 3 in the FDB.
+
+
+
+[End of DSKFMT.DOC]

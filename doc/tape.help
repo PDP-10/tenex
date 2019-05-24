@@ -1,0 +1,219 @@
+
+Richard Q. Kahler
+October, 1977
+
+			Magnetic Tapes at SUMEX
+
+	The first item is a copy of a bulletin by Andy Sweer on the way
+our TENEX monitor handles our new CALCOMP magnetic tape drives.  The
+second is an informal tutorial written by myself on the use of our
+DECtape drives.
+
+
+Date: 26 SEP 1977 1418-PDT
+From: SWEER
+Topic: <SUMEX.bbd>System.magtape
+Subject: New magtape service
+
+The following writeup is excerpted from the new Tenex JSYS manual,
+as revised in December, 1976. It describes the magtape configuration
+at the BBN site, which fortunately for us at SUMEX is quite close
+to what we have here. The differences are that instead of STC drives
+we have CALCOMP drives (both are IBM plug compatible), and also
+we have only 2 nine track drives and no seven track drives. As this
+section is documented pretty well we've decided to maintain
+compatibility with it as the standard. Our software is thus virtually
+the same as the Tenex standard.
+
+			Magnetic Tape
+
+This sub-section describes magnetic tape arrangement consisting of an
+STC controller and three drives, of which two are nine-track and one
+is seven-track.this may be expanded in the future. The STC system is
+a plug-compatible competitor for the IBM 3803 controller and 3420
+drives which are currently used on 360 and 370 systems. The tape system
+is interfaced to the PDP-10 system via a Systems Concepts, Inc., 
+subsystem adaptor.
+
+Both the nine and seven-track drives have only two tape densities
+available. The seven-track drive has 556 BPI and 800 BPI; the nine 
+track drives have 800 BPI (NRZI) and 1600 BPI (phase encoded).
+
+There are only two bits available for density control in the TENEX 
+status commands. Therefore, the definitions of these bits has had 
+to be changed somewhat:
+
+Bits 27-28	Old tapes	New 7-tk	New 9-tk
+of SDSTS	(TM10)
+
+00		800		800		1600
+01		200		556		800
+10		556		556		800
+11		800		800		1600
+
+The default, 00, thus selects the "high" density for the drive 
+being used.  This is the same (800) as for the old tape system 
+on a 7-track drive, and is the most efficient (1600) on a 
+nine-track drive.
+
+NOTE:
+
+This redefinition of densities is the worst incompatibility which 
+most users will run into.  Programs which ask "200, 556, or 800?" 
+will be misleading on a nine-track drive, and will be wrong about 
+"200" on a seven track drive, since that density is not available.
+
+For users who have not seen the DEC nine-track drive description 
+before, the following may look rather strange.  There is a problem 
+with packing the 8-bit characters from nine-track tapes into a 
+36-bit word,since 8 is not an even divisor of 36.  The solution 
+implemented by DEC in the TM10 controller was to provide two modes: 
+"Industry-Compatible" and "DEC-compatible (also called Core-dump)".
+In the industry compatible mode, four bytes are written onto tape 
+from bits 0-7, 8-15, 16-23, and 24-31 of the PDP-10 word.  Bits 
+32-35 are not written.  This makes it simple use 8-bit IDPB pointers 
+to generate a tape to be read at an IBM site.  The other mode, 
+core-dump, is needed to dump and restore all 36 bits of a word, 
+the usual case desired within a PDP-10 site.  The actual layout 
+of the bits on tape is non-obvious.  You are referred to the DEC 
+documentation for details.  The important thing to note here is 
+that this mode provides compatibility with other sites using TM10 
+controllers with nine-track tapes, and that the actual byte count
+is five bytes per 36-bit word.
+
+The system currently on BBN-System C supports both of these modes.  
+In addition, two further modes are included.  One is a more natural 
+36-bit mode where for each two 36-bit words transferred, nine bytes 
+appear on tape in the expected order: byte 0 is transferred from 
+bits 0-7 of the first word, next is bits 8-5, then 16-23, then 24-31.
+The fifth byte is composed of bits 32-35 of the first word and bits 
+0-3 of the second word (or bits 32-39 of the 72 bit double-word).  
+The sixth through ninth bytes come from the rest of the second word, 
+bits 4-11, 12-19, 20-2, and 28-35 respectively. This mode is the 
+one used at 1600 BPI on the nine-track drives.
+
+The remaining mode (SA10A word mode) is similar to the natural 36-bit 
+mode just described in that nine bytes are transferred from two words, 
+but the bit layout is different.  This mode will probably not be used, 
+but is is documented here for completeness:  the bytes are transferred 
+from the following bits of two words, considered as bits 0-71  of a 
+double word:  bits 0-7, bits 8-15, bits 16-23, bits 24-31, (bits 32,
+33,34,35,68,69,70,71), bits 36-43, bits 44-51, 52-59, bits 60-67.  
+This packing mode is used on the disk packs because it is the fastest
+one, but this speed difference in not enough to worry about on the 
+magnetic tapes.
+
+The packing modes are selected as follows:
+
+For a seven-track drive, the layouts are compatible with the TM10:  
+The "natural word mode" is used at 1600 BPI. At 800 BPI, the 
+"core-dump" mode is used to provide compatibility with TM10 systems.
+
+The above selection of packing modes, and some IBM features, can be 
+overridden by a new MTOPR function, MTOPR 20 used with a magtape JFN.
+This MTOPR accepts the following bits in AC3 (other bits should be zero):
+
+Bits 32-33	Packing mode
+
+00		SA10A word mode
+01		Byte mode (Industry-compatible mode)
+10		Natural word mode
+11		Core-dump mode
+
+Note - At SUMEX the MTOPR 101 jsys sets the Byte mode packing mode,
+and MTOPR 100 sets Core-dump mode, to maintain compatibility with
+the TOPS10 MTAPE UUOS.
+
+Bit 34, if on, turns on the data-translate function of the controller, 
+used only on seven-track drives, which converts between BCD and EBCDIC.  
+See the IBM documentation for details.
+
+Bit 35, if on, turns OFF the data converter function, used only on 
+seven-track drives, which packs four six-bit bytes into three 8-bit 
+bytes on the IBM channel bus.  See the IBM documentation for details.
+
+There is no mechanism at present for declaring that the tape should 
+be written with other than an integral number of words.  That is, 
+the DUMPO command list is still in units of word count returned by 
+GDSTS in AC3 is actually a Byte count of the number of bytes read 
+on input.
+
+There is one further incompatibility.  When seven-track tapes are 
+written, if a record is written with an odd number of PDP-10 words, 
+an extra character of zeros is written on the tape.  This extra 
+character shows up when read on a TM10 (though not on the IBM 
+control) as an extra WORD of zeroes.  In practice, BSYS and DUMPER 
+write even numbers of words in all records.  Failsafe tapes are 
+never written at BBN.  If they were, a word of zeroes might be 
+appended to some records as read on a TM10.  This might or might 
+not cause trouble.  This experiment has not been performed.  
+It would be possible to program around this, at a great loss 
+of efficiency.  So far, the need has not arisen to do this.
+
+MTAn:
+
+     Magnetic tape device dependent status bits:
+
+B18	    illegal write
+B19	    device error (hung or data late)
+B20	    data error
+B21	    suppress automatic error correction
+B22	    device EOF mark
+B23	    incorrect record length (not same # words as specified by
+	    read op or not whole # words)
+B24	    beginning of tape
+B25	    end of tape
+B26	    parity: 1 = even
+B27-28	    density: 00=800, 01=200, 10=556, 11=800
+B29-31	    character counter if B23=1
+B32-35	    1
+
+Magtape I/O is currently available in TENEX only via the DUMPI/O Jsys
+Described in section 2.  Magtape control functions are performed via 
+the MTOPR JSYS in section 4.
+
+The compatibility package has been fixed so that it now will
+accept the dec MTAPE 101 and 100 uuos to set and clear
+industry compatibility mode respectively.
+
+
+
+
+
+			Informal DECtape Tutorial
+
+
+	[This tutorial is for PDP-10 DECtapes only.  For tapes
+	written under PDP-11 DOS, use the PIP11 program.  See
+	<DOC>PIP11.HELP.]
+
+	Ask someone to show you how to put the DECtape on the tape
+drive and how to tell the difference between DECtape drive 0 (DTA0:)
+and DECtape drive 1 (DTA1:).
+
+	Mount the DECtape on DTA0:, set the rocker switch on the left
+to WRITE ENABLE if you are writing on the tape, WRITE LOCK if not, and
+set the other rocker switch to REMOTE.  Then give the following
+commands to the EXEC:
+
+@assign dta0:		;no need for this unless tape is write enabled
+@mount dta0:
+@dir dta0:
+  If you get a question mark here, the drive can't read the directory,
+  if any, on the tape.  Try it on dta1: before giving up.
+
+  If you are writing on the tape and want to zero the tape directory:
+@clear dta0:
+
+  Read from tape:
+@copy dta0:file.ext (TO) file.ext;1 [New file]
+
+  Write to tape:
+@copy file.ext;1 (TO) dta0:file.ext [New file]
+  Here you may see [PAGES AFTER EOF WILL NOT BE COPIED].  That means that
+  the file has maybe a TV directory on it, which you don't want anyway.
+
+  When done:
+@rewind dta0:
+@deassign dta0:		;if you assigned it
+
