@@ -1,0 +1,316 @@
+begin "bbread"
+
+comment
+	This is a bulletin-board readmail.  It types out new
+	bulletins on any bulletin-board, according to the
+	user's own interest list;
+
+
+comment
+	the following 2 are used by bbd.common ;
+define	postmsg = false;		Comment for BBDMSG;
+INTEGER abort;
+BOOLEAN interested;
+require "bbd.common" source!file;
+require 10000 string!space;
+
+! special debugging switch: see pg. 137 of SAIL manual;
+external integer rpgsw;
+
+integer expoverride, curtpc, inttpc;
+string topicname;
+
+
+! option bits for type;
+
+define
+	interest!type	= '400000,
+	msgformat!type	= '200000,
+	new!type	= '100000,
+	output!type	=  '40000,
+	topic!type	=  '20000;
+
+
+
+!	<< after >>
+	Returns true if the creation date for bulnum >= time.
+	No validity checking for bulnum;
+
+simple integer procedure after (integer bulnum, time);
+begin "after"
+integer bbase;
+
+bbase _ bulnum * daterecordsize;
+swdptr (datefile, bbase + creation!date);
+return (wordin (datefile) geq time);
+
+end "after";
+
+
+
+!	<< deleted >>
+	Returns true if bulletin bulnum has been deleted.
+	No validity checking for bulnum;
+
+simple integer procedure deleted (integer bulnum);
+begin "deleted"
+integer bbase;
+
+bbase _ bulnum * daterecordsize;
+swdptr (datefile, bbase + deleted!);
+return (wordin (datefile));
+
+end "deleted";
+
+
+
+!	<< expired >>
+	Returns true if bulletin bulnum has expired.
+	No validity checking for bulnum;
+
+simple integer procedure expired (integer bulnum);
+begin "expired"
+integer bbase;
+
+bbase _ bulnum * daterecordsize;
+swdptr (datefile, bbase + expire!date);
+return (gtad > wordin (datefile));
+
+end "expired";
+
+
+
+!	<< type >>
+	Types a range of bulletins to ojfn;
+
+simple procedure type (integer ojfn, bstart, bstop, options);
+for bstart _ bstart upto bstop do
+BEGIN "type"
+
+integer ptr, size, bbase, ii;
+string bstr;
+
+if ctlosw and (ojfn = otty) then return;	! user typed ^O;
+
+bbase _ bstart * daterecordsize;
+
+! get a pointer to the bulletin;
+swdptr (bltptrfile, bstart);
+ptr _ wordin (bltptrfile);
+
+if not ptr
+    then
+	begin
+	print (" No pointer to bulletin ", bstart, ".");
+	continue "type";
+	end;
+
+if (options land new!type) and not after (bstart, userread)
+    then continue "type";
+
+if deleted (bstart)
+    then
+	begin
+	print (" Bulletin ", bstart, " has been deleted.", crlf);
+	continue "type";
+	end;
+
+if expired (bstart) and not expoverride then continue "type";
+
+if options land interest!type
+    then
+	begin
+
+	! get topic number for this bulletin;
+	swdptr (datefile, bbase + topic!list);
+	xx _ wordin (datefile);
+
+	! do we already know about this topic?;
+	if xx = curtpc
+	    then
+		begin
+		! did we find out it was on the interest list?;
+		if not inttpc then continue "type";
+		end
+	    else
+		! no, see if this topic is on interest list;
+		begin
+		curtpc _ xx;
+		inttpc _ false;
+		readrecord (tptrfile, trecfile, curtpc, trlength);
+
+		! get topic name;
+		topicname _ xrecord [topic!name];
+		scan (topicname, nexttab, brk);
+
+		temp _ xrecord [user!list];
+		while xx _ intscan (temp, brk) do if xx = logdir then done;
+		if xx = logdir
+		    then inttpc _ true
+		    else continue "type";
+		end;
+	end;
+
+
+IF debug THEN interested _ TRUE;
+! read in first two lines of bulletin;
+arrclr (xrecord);
+schptr (bltfile, ptr);
+for ii _ 1 upto 2 do
+	xrecord [ii] _ input (bltfile, oneline);
+
+! find bulletin length;
+temp _ xrecord [2] [24 to inf];
+size _ intscan (temp, brk);
+
+! read in text of bulletin;
+bstr _ sini (bltfile, size, null);
+
+if options land topic!type
+    then
+	begin "insert topic"
+
+	! insert topic name between From: line and Subject: line;
+	for ii _ 3 upto 4 do
+		xrecord [ii] _ scan (bstr, oneline, brk);
+	xrecord [5] _ "Topic: <" & bbdname [bbd#] & ">" & topicname;
+
+	! adjust bulletin length;
+	size _ size + length (xrecord [5]) + 2;
+
+	! print desired header;
+	if options land msgformat!type
+	    then
+		cprint (ojfn, xrecord [2][1 to 23], size, ";000000000000", crlf)
+	    else
+		cprint (ojfn, crlf, blthead (bstart, size), crlf2);
+
+	! print Date:, From:, and Topic: lines;
+	for ii _ 3 upto 5 do
+		cprint (ojfn, xrecord [ii], crlf);
+
+	end "insert topic"
+    else
+	! no need to insert anything in the bulletin, just type it out;
+	if options land msgformat!type
+	    then cprint (ojfn, xrecord [2], crlf)
+	    else cprint (ojfn, crlf, xrecord [1], crlf2);
+
+cprint (ojfn, bstr);
+
+! update last read date and number of reads;
+swdptr (datefile, bbase + last!read!date);
+wordout (datefile, gtad);
+swdptr (datefile, bbase + number!of!reads);
+xx _ wordin (datefile);
+swdptr (datefile, bbase + number!of!reads);
+wordout (datefile, xx + 1);
+swdptr (datefile, bbase + last!reader);
+wordout (datefile, logdir);
+
+end "type";
+
+
+
+simple procedure spaces (INTEGER n);
+BEGIN
+INTEGER i;
+FOR i _ 1 STEP 1 UNTIL n DO PRINT(" ");
+END;
+integer whichbbd, bulcnt, writedate, readdate, somethingnew;
+STRING uname, WritedateTime, ReadDateTime;
+DEFINE dFormat = '202201000000;
+! set up debugging switch;
+debug _ rpgsw;
+abort _ rpgsw _ 0;
+
+uname _ DIRST(logdir);
+! logo;
+PRINT("    BBread - version B.0", crlf);
+
+IF debug THEN BEGIN
+    PRINT("[checking for user <", uname, ">", crlf);
+    PRINT(" Bulletin board    Date of LATEST bullentin      Date Last Read");
+	  ! 12345678901234xxxxWed DD DEC YY HH:MMZZZZZZZZZZZ ;
+    PRINT(crlf, crlf) END;  ! 123456789012345678901234567890 ;
+
+somethingnew _ 0;
+for whichbbd _ 1 upto bbdmax do
+	begin "bloop"
+
+        IF debug THEN interested _ FALSE;
+	userfile _ openfile (bbdfilename (whichbbd) & "user", "hero");
+	if !skip! then continue;
+
+	! get creation date of newest bulletin on interest list;
+	swdptr (userfile, post!page + logdir);
+	writedate _ wordin (userfile);
+
+	! get user's last bbd read date;
+	swdptr (userfile, read!page + logdir);
+	readdate _ wordin (userfile);
+	cfile (userfile);
+	userfile _ 0;
+	IF debug THEN BEGIN
+	    PRINT(" ", uname _ bbdname[whichbbd]);
+	    spaces(18 - LENGTH(uname));
+	    IF WriteDate THEN
+		WriteDateTime _ ODTIM(writedate, dFormat) 
+	    ELSE 
+	        WriteDateTime _ "-NOT applicable-";
+	    PRINT(WriteDateTime);
+	    spaces(30 - LENGTH(writedateTime));
+	    IF ReadDate THEN
+		ReadDateTime _ ODTIM(readdate, dFormat) 
+	    ELSE 
+	        ReadDateTime _ "-NOT applicable-";
+	    PRINT(ReadDateTime, crlf) END;
+
+	! if nothing new then continue;
+	if not writedate or (writedate < readdate) then BEGIN
+	    IF debug THEN PRINT("----- Nothing New", crlf);
+	    continue "bloop" END;
+
+	! yes, there is something new;
+	somethingnew _ true;
+
+	if not setup (whichbbd) then continue;
+
+	if not openbbd then continue;
+
+	! find out how many bulletins we have;
+	swdptr (bltptrfile, 0);
+	bulcnt _ wordin (bltptrfile) - 1;
+
+	curtpc _ inttpc _ 0;
+
+	type (otty, 1, bulcnt, interest!type + new!type + topic!type);
+	IF debug THEN
+	    IF NOT interested THEN PRINT("-----NOT interested", crlf);
+	closebbd;
+
+	! update last user read date;
+	if bulcnt > 0 and not debug
+	    then
+		begin
+		openf (userfile, readwritethawed);
+		if !skip! then continue;		! no fuss;
+		swdptr (userfile, read!page + logdir);
+		wordout (userfile, gtad);
+		closf (userfile);
+		end;
+
+	releasebbdjfns;
+
+	end "bloop";
+
+IF debug THEN PRINT("]");
+
+if not somethingnew then print (" Nothing new on your interest list.");
+
+print (crlf);
+
+haltprocess;
+
+end "bbread"
+

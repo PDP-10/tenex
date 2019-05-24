@@ -1,0 +1,2285 @@
+begin "post"
+
+Comment
+	Patches:
+		1. Fix SENDMSG so as not to bomb in SEARCH if more
+		   than 1 bbd is sent to.  Had to get topic names
+		   prior to search.
+		   	Applicable lines in SENDMSG:
+				page     line  
+				 39       37
+				 39       63			
+		2. Allow post to send messages on the NET.   Bill Yeager
+								14-Dec-79.
+								  ;
+Comment
+	This is a display-oriented message sender and bulletin poster
+written by Richard Q. Kahler at SUMEX-AIM as part of his bulletin-board
+package.  It uses the terminal-independent display package written by
+Pentti Kanerva at IMSSS.
+	The name POST was suggested by Michael Heathman.
+;
+
+integer abort;
+define postmsg = true;			Comment for BBDMSG;
+require "bbd.common" source!file;
+
+ifc tops20 thenc
+require "dpy.sai" source!file;
+elsec
+require "<tv>dpy.sai" source!file;
+endc
+external integer dpytyp;
+external integer rpgsw;
+
+require 10000 string!space;
+
+
+integer	oneword,	! setbreak numbers;
+	punct,
+
+	pbrk,		! for special break characters;
+	err,		! used, like !skip!, for error returns;
+	doover,		! starts program over when user types ^^;
+	bltflg,		! on if bbd name in to: or cc: list;
+	sysflg,		! on if sending to <SYSTEM>;
+	outoforder,	! user wants to type msg first, then to: and cc:;
+
+	origmodes,	! JFN mode word for terminal at start of program;
+	postmodes,	! what we want the mode word to look like;
+	echomodes,	! postmodes with the echo turned back on;
+
+	rip,		! rubout-in-progress, for non-displays;
+	silent;		! on during word and line delete in erasechr;
+
+
+!	the next four arrays have one element each for
+	to, cc, subject, msg, topic and expire date;
+
+define	to#	= 1,
+	cc#	= 2,
+	topic#	= 3,
+	expire#	= 4,
+	sub#	= 5,
+	msg#	= 6;
+
+preload!with
+[6] -1;
+integer array screenline [1:6];		! screen starting places;
+
+integer array	bbdexpire [1:bmax];	! expire date for each bbd;
+
+string array	bbdtopic [1:bmax],	! topic name for each bbd;
+
+		text,			! to, cc, subject, etc. texts;
+		rest [1:6];		! used to store part of text
+					  while editing;
+
+preload!with
+"To: ",
+"cc: ",
+"Topic (? for list): ",
+"Expire date (MM/DD/YY): ",
+"Subject: ",
+"Message, or ""?"" for help:
+";
+string array prompt [1:6];		! user prompts;
+
+
+
+!	<< init >>
+	Initialization procedure;
+
+simple procedure init;
+begin "init"
+
+setbreak (oneword _ getbreak, " ,:	" & cr & lf, null, "ir");
+setbreak (punct   _ getbreak, " ,:	" & cr & lf, null, "xr");
+bltflg _ sysflg _ false;
+
+! JFN mode words;
+
+origmodes _ rfmod (otty);
+
+! for internal use: turn off bits 11-17, 24-25, 28, turn on bits 1, 3, 29;
+postmodes _ (origmodes land '777600771577) lor '240000000100;
+
+! before passing teletype control to external routines:
+  turn bit 24 (echo) back on;
+echomodes _ postmodes lor '000000004000;
+! if terminal does not have lowercase then turn bit 3 back off;
+if not (origmodes land '040000000000)
+    then echomodes _ echomodes land '737777777777;
+
+end "init";
+
+require init initialization;
+
+
+
+!	<< setmodes >>
+	Does an SFMOD and an STPAR using newval.  Used for turning echo
+	off and on, etc.;
+
+simple procedure setmodes (integer newval);
+begin "setmodes"
+sfmod (otty, newval);
+stpar (otty, newval);
+end "setmodes";
+
+
+!	<< xdpystr >>
+	Does dpystr to displays, psout to teletypes;
+
+simple procedure xdpystr (string g);
+begin "xdpystr"
+if ctlosw then return;
+if dpytyp
+    then dpystr (g)
+    else print (g);
+end "xdpystr";
+
+
+
+!	<< xdpychr >>
+	Does dpychr to displays, pbout to teletypes;
+
+simple procedure xdpychr (integer chr);
+begin "xdpychr"
+if ctlosw then return;
+if dpytyp
+    then dpychr (chr)
+    else pbout (chr);
+end "xdpychr";
+
+
+
+!	<< xdpyout >>
+	Dpyout on displays, no-op on teletypes;
+
+simple procedure xdpyout;
+if dpytyp then dpyout;
+
+
+
+!	<< errout >>
+	prints jsys errors on terminal;
+
+simple procedure errout (integer errno; string before, after);
+begin "errout"
+
+xdpystr (before);
+xdpyout;
+setmodes (echomodes);
+erstr (errno, 0);
+setmodes (postmodes);
+xdpystr (after);
+xdpyout;
+
+end "errout";
+
+
+
+!	<< reffix >>
+	Retypes prompt and text as it fixes up screenline.
+	Called only by refscreen;
+
+simple procedure reffix (integer index);
+begin "reffix"
+
+if cx or not dpytyp then xdpystr (crlf);
+xdpystr (crlf);
+screenline [index] _ cy;
+xdpystr (prompt [index]);
+xdpystr (text [index]);
+
+end "reffix";
+
+
+
+!	<< refscreen >>
+	Refreshes to, cc, subject, and message when user types ^D;
+
+simple procedure refscreen (integer index);
+begin "refresh screen"
+integer ii;
+
+if dpytyp
+    then docp
+    else print (crlf);
+
+arrclr (screenline, -1);
+
+if outoforder
+    then
+	for ii _ sub#, msg#, to#, cc#, topic#, expire# do
+	begin
+	if ii = index then done;
+	if text [ii] then reffix (ii);
+	end
+    else
+	for ii _ to#, cc#, topic#, expire#, sub#, msg# do
+	begin
+	if ii = index then done;
+	if text [ii] then reffix (ii);
+	end;
+
+if index then reffix (ii);
+
+end "refresh screen";
+
+
+
+!	<< retype >>
+	Retypes prompt and text beginning at screenline;
+
+simple procedure retype (integer index);
+begin "retype"
+
+if dpytyp and screenline [index]
+    then
+	begin
+	setcur (0, screenline [index]);
+	doeeop;
+	end
+    else
+	xdpystr (crlf2);
+
+xdpystr (prompt [index]);
+xdpystr (text [index]);
+rip _ false;
+
+end "retype";
+
+
+
+!	help messages;
+
+preload!with
+"
+Use the following control characters to edit:
+
+^A	Delete one character 
+^B	Insert file
+^D	Retype everything
+^E	Copy all of reserve buffer to text
+^H	Delete one character, save it in reserve buffer
+^K	Abort POST (continuation possible unless run from BBD)
+^L	Copy next line of reserve buffer to text
+^N	Copy next word of reserve buffer to text
+^Q	Delete one line
+^R	Retype current line
+^S	Retype entire text
+^U	Put all of text in reserve buffer, get it back with ^N, ^L, ^E
+^W	Delete one word
+^X	Also line delete
+^Z	Terminate message
+^\	Delete one word, save in reserve buffer   (^\ is <ctrl><shift>L)
+^]	Copy next char of res buf to text, undoes ^H    (<ctrl><shift>M)
+^^	Start program over                        (^^ is <ctrl><shift>N)
+DEL	Also character delete
+",
+
+ifc imsss thenc
+
+"
+POST is both a SNDMSG and a bulletin poster.
+
+Type in the names of the users to whom you would like to send your
+message.  To post a copy of your message on a bulletin board, type
+the name of the bulletin board followed by "".bbd"".  Example:
+
+To:  IMSSS.bbd, Sail.bbd, Mike, Greg, Rich
+
+<esc> provides recognition of user and bulletin-board names.
+
+End your line with a comma if you want to continue typing user names
+on the next line.
+
+Type * followed by a file name to send a copy of your message
+to that file.
+
+(Network mail not in yet.)
+",
+
+endc	! end of ifc imsss;
+
+ifc ecl thenc
+
+"
+POST is both a SNDMSG and a bulletin poster.
+
+Type in the names of the local users to whom you would like to send
+your message.  To post a copy of your message on a bulletin board,
+type the name of the bulletin board followed by "".bbd"".  Example:
+
+To:  ECL.bbd, JSLee
+
+<esc> provides recognition of user and bulletin-board names.
+
+End your line with a comma if you want to continue typing user names
+on the next line.
+
+Type * followed by a file name to send a copy of your message
+to that file.
+
+(Network mail not in yet.)
+",
+
+endc	! end of ifc ecl;
+
+ifc not (imsss or ecl) thenc
+
+"
+POST is both a SNDMSG and a bulletin poster.
+
+Type in the names of the local users to whom you would like to send
+your message.  To post a copy of your message on a bulletin board,
+type the name of the bulletin board followed by "".bbd"".  Example:
+
+To: Sumex.bbd, Dendral.bbd, Rindfleisch, CMiller, Kahler
+
+<esc> provides recognition of user and bulletin-board names.
+
+End your line with a comma if you want to continue typing user names
+on the next line.
+
+Type * followed by a file name to send a copy of your message
+to that file.
+
+(Network mail not in yet.)
+",
+
+endc	! end of ifc not (imsss or ecl);
+
+"
+Type in the names of the users, bulletin boards or files to which
+you would like to send a carbon copy of your message.
+",
+
+"
+Choose a topic from among this bulletin-board's existing topics.
+Use ? anywhere in the topic name for assistance in spelling.
+If the topic you want is not available, use the default topic Other
+and ask the bulletin-board manager to create a topic for you and
+move your bulletin to that topic.
+",
+
+"
+Every bulletin has an expiration date, after which the bulletin will be
+removed from the bulletin board and put in an expired-bulletins file for
+eventual archiving.  The default expiration date (type the <esc> or
+<return> key) is one month from today.
+",
+
+"
+Type in a one-line summary of your message.
+",
+
+"
+Your message should be typed in and ended with ^Z.
+Editing possible with several control characters.
+When you type ^Z, a copy of your message will be saved on a scratch
+file (message.copy) which goes away at the next expunge.
+";
+
+string array helpmsg [0:6];
+
+
+
+!	<< morehelp >>
+	Asks if the user wants more help;
+
+simple integer procedure morehelp;
+begin "more help"
+
+ctlosw _ false;
+
+xdpystr ("
+Would you like to see the control-character summary? ");
+
+xdpyout;
+clrbuf;
+setmodes (echomodes);
+
+temp _ intty;
+
+setmodes (postmodes);
+
+return (temp = "Y" or temp = "y");
+
+end "more help";
+
+
+
+!	<< help >>
+	Types help messages;
+
+simple procedure help (integer index);
+begin "help"
+integer ii;
+
+xdpystr ("?" & crlf);
+xdpystr (helpmsg [index]);
+
+if morehelp then xdpystr (helpmsg [0]);
+
+xdpystr (crlf);
+ctlosw _ rip _ false;
+xdpystr (crlf);
+xdpystr (prompt [index]);
+xdpystr (text [index]);
+xdpyout;
+clrbuf;
+
+end "help";
+
+
+
+!	<< delchr >>
+	Removes and returns last character or crlf of xtext;
+
+simple integer procedure delchr (reference string xtext);
+begin "delchr"
+integer dchar;
+
+if not xtext then return (0);
+
+dchar _ xtext [inf to inf];
+xtext _ xtext [1 to inf-1];
+
+! assume every lf is preceded by a cr;
+if dchar = lf then xtext _ xtext [1 to inf-1];
+
+! dchar is lf if a crlf was deleted;
+return (dchar);
+
+end "delchr";
+
+
+forward simple procedure typelast (integer index);
+
+
+!	<< erasechr >>
+	deletes last character of text and erases it on the screen;
+
+simple procedure erasechr (integer index);
+begin "erasechr"
+
+if not text [index] then return;
+
+brk _ delchr (text [index]);
+
+! special handling;
+if dpytyp and (brk = tab or brk = lf or brk = page)
+    then
+	begin
+	! if at bottom of screen (in which case textin arrclrs
+	  screenline), screen may have scrolled, so retype last line;
+	if not screenline [index] or brk = page
+	    then
+		begin
+		if brk = lf then doup;
+		typelast (index);
+		return;
+		end;
+	! otherwise retype whole string silently to get proper cursor
+	  postion.  Package optimization will move cursor only once,
+	  and it looks as if you know right where the end of the
+	  previous line or tab is without retyping the line;
+	dpyout;
+	dpyon _ false;
+	retype (index);
+	if not dpyon
+	    then
+		begin
+		turnon;
+		setmodes (postmodes);
+		end;
+	return;
+	end;
+
+! usual case;
+if dpytyp
+    then
+	begin
+	doleft;
+	doeeol;
+	end
+    else
+	begin
+	if silent then return;
+	if brk = lf
+	    then
+		begin
+		typelast (index);
+		rip _ false;
+		return;
+		end;
+	! enclose deleted characters in square brackets;
+	if not rip then print ("[");
+	rip _ true;			! rubout-in-progress;
+	pbout (brk);
+	end;
+
+end "erasechr";
+
+
+
+!	<< lastword >>
+	Returns the last word of xtext;
+
+simple string procedure lastword (string xtext);
+begin "lastword"
+integer count, xchar;
+
+if not xtext then return (null);
+
+count _ length (xtext);
+
+!	delete trailing spaces, tabs, etc.;
+while count do
+	begin
+	xchar _ xtext [count for 1];
+	if xchar = lf or xchar = space or xchar = comma
+			or xchar = tab or xchar = page or xchar = colon
+	    then count _ count - 1
+	    else done;
+	end;
+
+if not count
+    then return (xtext);
+
+!	delete the word;
+while count do
+	begin
+	xchar _ xtext [count for 1];
+	if xchar = lf or xchar = space or xchar = comma
+			or xchar = tab or xchar = page or xchar = colon
+	    then done;
+	count _ count - 1;
+	end;
+
+return (xtext [count+1 to inf]);
+
+end "lastword";
+
+
+!	<< eraseword >>
+	Deletes the last word of text [index] and removes it from the screen;
+
+simple procedure eraseword (integer index);
+begin "eraseword"
+integer count;
+string xword;
+
+if not text [index] then return;
+
+xword _ lastword (text [index]);
+count _ length (text [index]) - length (xword);
+
+if not dpytyp
+    then
+	begin
+	print ("__ ");
+	silent _ true;
+	end;
+
+while length (text [index]) > count do erasechr (index);
+silent _ false;
+
+end "eraseword";
+
+
+
+!	<< backupword >>
+	Deletes last word of text [index], saving it in rest [index];
+
+simple procedure backupword (integer index);
+begin "backupword"
+
+if not text [index] then return;
+
+rest [index] _ lastword (text [index]) & rest [index];
+eraseword (index);
+
+end "backupword";
+
+
+!	<< lastline >>
+	Returns the last line of xtext;
+
+simple string procedure lastline (string xtext);
+begin "last line"
+string last;
+
+if not xtext then return (null);
+
+while xtext do last _ scan (xtext, oneline, brk);
+if brk = lf then last _ last & crlf;
+return (last);
+
+end "last line";
+
+
+
+!	<< typelast >>
+	Retypes last line of text [index];
+
+simple procedure typelast (integer index);
+begin "typelast"
+string last;
+
+! get last line of text;
+last _ lastline (text [index]);
+
+! go up a line on displays so we will overtype current line;
+if dpytyp then doup;
+
+! go up (displays) or down (ttys) another line if current line is empty;
+if last [inf to inf] = lf
+    then
+	if dpytyp then doup else print (crlf);
+
+xdpystr (crlf);
+
+! retype prompt too if we are on the same line as the prompt;
+if length (last) = length (text [index])
+    then xdpystr (prompt [index]);
+
+xdpystr (last);
+
+rip _ false;
+
+end "typelast";
+
+
+
+!	<< eraseline >>
+	Deletes the last line of text [index] and removes it from the screen;
+
+simple procedure eraseline (integer index);
+begin "erase line"
+integer count;
+string last;
+
+last _ lastline (text [index]);
+count _ length (text [index]) - length (last);
+
+if not dpytyp
+    then
+	begin
+	print ("##
+");
+	silent _ true;
+	end;
+	
+!	delchr sometimes removes two characters at once,
+	so we can't use a for loop;
+while length (text [index]) > count do erasechr (index);
+silent _ false;
+
+end "erase line";
+
+
+
+!	<< addchr >>
+	Adds char to text [index];
+
+simple procedure addchr (integer index, char);
+begin "addchr"
+
+text [index] _ text [index] & char;
+if dpytyp
+    then
+	dpychr (char)
+    else
+	begin
+	if rip then pbout ("]");	! rubout-in-progress;
+	rip _ false;
+	pbout (char);
+	end;
+
+end "addchr";
+
+
+
+!	<< lopline >>
+	lops off and returns the first line of xrest;
+
+simple string procedure lopline (reference string xrest);
+begin "lopline"
+string chunk;
+
+if not xrest then return (null);
+
+!	remove leading crlf if there is one;
+if xrest = cr
+    then
+	begin
+	xrest _ xrest [3 to inf];
+	chunk _ crlf;
+	end
+    else
+	chunk _ null;
+
+chunk _ chunk & scan (xrest, oneline, brk);
+if brk = lf then xrest _ crlf & xrest;
+
+return (chunk);
+
+end "lopline";
+
+
+
+!	<< nxtlin >>
+	Takes next line from rest [index], adds it to text [index],
+	and displays it on the screen;
+
+simple procedure nxtlin (integer index);
+begin "nxtlin"
+string chunk;
+
+if not rest [index] then return;
+
+chunk _ lopline (rest [index]);
+text [index] _ text [index] & chunk;
+
+if not dpytyp and rip then pbout ("]");		! rubout-in-progress;
+rip _ false;
+
+xdpystr (chunk);
+
+end "nxtlin";
+
+
+
+!	<< lopwrd >>
+	Lops off and returns a word from xrest;
+
+simple string procedure lopwrd (reference string xrest);
+begin "lop word"
+string chunk;
+
+if not xrest then return (null);
+
+chunk _		scan (xrest, punct, brk);
+chunk _ chunk & scan (xrest, oneword, brk);
+chunk _ chunk & scan (xrest, punct, brk);
+
+return (chunk);
+
+end "lop word";
+
+
+
+!	<< nxtwrd >>
+	Takes a word from rest [index] and adds it to text [index]
+	and the screen;
+
+simple procedure nxtwrd (integer index);
+begin "next word"
+string chunk;
+
+if not rest [index] then return;
+
+chunk _ lopwrd (rest [index]);
+text [index] _ text [index] & chunk;
+
+if not dpytyp and rip then pbout ("]");		! rubout-in-progress;
+rip _ false;
+
+xdpystr (chunk);
+
+end "next word";
+
+
+
+!	<< lopchr >>
+	lops and returns next character or crlf from xrest;
+
+simple string procedure lopchr (reference string xrest);
+begin "lopchr"
+
+if not xrest then return (null);
+
+brk _ lop (xrest);
+if brk = cr
+    then
+	begin
+	brk _ lop (xrest);
+	return (cr & brk);
+	end
+    else
+	return (brk);
+
+end "lopchr";
+
+
+
+!	<< nxtchr >>
+	takes a character from rest [index] and adds it to text [index];
+
+simple procedure nxtchr (integer index);
+begin "next character"
+string chunk;
+
+if not rest [index] then return;
+
+chunk _ lopchr (rest [index]);
+text [index] _ text [index] & chunk;
+
+if not dpytyp and rip then pbout ("]");		! rubout-in-progress;
+rip _ false;
+
+xdpystr (chunk);
+
+end "next character";
+
+
+
+!	<< tpcrec >>
+	Tries to recognize topic names;
+
+simple integer procedure tpcrec (integer tbrk);
+begin "tpcrec"
+integer ii, match, tlength;
+string tstr, sp;
+
+if not tpcnam [1] then getopicnames;
+
+if tbrk = period then addchr (topic#, tbrk);
+tstr _ text [topic#] _ cvdown (text [topic#]);
+tlength _ length (tstr);
+sp _ blanks [1 to length (prompt [topic#])];
+if tbrk = "?"
+    then
+	begin
+	xdpychr (tbrk);
+	for ii _ 1 upto maxtpc do
+		begin
+		if not sequal (tstr, tpcnam [ii] [1 to tlength])
+		    then continue;
+		xdpystr (crlf);
+		xdpystr (sp);
+		xdpystr (tpcnam [ii]);
+		end;
+	xdpystr (crlf);
+	ctlosw _ rip _ false;
+	xdpystr (crlf);
+	xdpystr (prompt [topic#]);
+	xdpystr (tstr);
+	return (0);
+	end;
+
+if not tlength
+    then
+	begin "default"
+	xdpystr ("Other");
+	text [topic#] _ "Other";
+	return (2);
+	end "default";
+
+match _ 0;
+for ii _ 1 upto maxtpc do
+	begin "compare"
+	if sequal (tstr, tpcnam [ii] [1 to tlength])
+	    then
+		begin
+		if moresubtopics (tpcnam [ii] [tlength + 1 to inf])
+		    then continue "compare";
+
+		! if exact match, take it;
+		if length (tpcnam [ii]) = tlength
+		   then
+			begin
+			match _ ii;
+			done "compare";
+			end;
+
+		if match
+		    then
+			begin
+			if not tbrk = period then xdpystr (bell);
+			return (0);
+			end
+		    else
+			match _ ii;
+		end;
+	end "compare";
+
+if match
+    then
+	begin
+	if tbrk = period then return (tpcno [match]);
+	xdpystr (tpcnam [match] [tlength + 1 to inf]);
+	text [topic#] _ tpcnam [match];
+	end
+    else
+	begin
+	xdpystr (" ? ");
+	text [topic#] _ null;
+	end;
+
+return (tpcno [match]);
+
+end "tpcrec";
+
+
+
+!	<< bbdrec >>
+	Recognizes bulletin board names of form name.bbd;
+
+simple procedure bbdrec (reference string bname);
+begin "bbdrec"
+integer ii, blength, match, ambiguous;
+
+bname _ cvdown (bname);
+ambiguous _ match _ err _ 0;
+blength _ length (bname);
+for ii _ 1 upto bbdmax do
+	begin
+	if sequal (bname, bbdname [ii] [1 to blength])
+	    then
+		if match
+		    then ambiguous _ true
+		    else match _ ii;
+	end;
+
+if ambiguous
+    then
+	begin
+	err _ 2;
+	return;
+	end;
+
+if match
+    then bname _ bbdname [match]
+    else err _ 1;
+
+end "bbdrec";
+
+
+
+SIMPLE BOOLEAN PROCEDURE possibleHOST (REFERENCE STRING host);
+BEGIN
+
+INTEGER brk, bTab;
+STRING saveHost;
+
+saveHost _ host;
+bTab _ GETBREAK;
+SETBREAK(bTab, "@", NULL, "INA");
+! look for "@";
+SCAN(host, bTab, brk);
+RELBREAK(bTab);
+
+IF debug THEN PRINT(crlf, "  Host after scan =", host);
+! no "@", then forget it;
+IF brk = 0 THEN BEGIN host _ saveHost; RETURN(FALSE) END;
+
+RETURN(TRUE);
+
+END; 
+
+SIMPLE INTEGER PROCEDURE hostCheck (STRING host);
+BEGIN
+STRING holster, netTest;
+INTEGER chan;
+DEFINE invalid = 1, valid = 0;
+holster _ host;
+IF debug THEN PRINT(crlf, " Host check for, ", host);
+! somewhat of a name parse;
+IF NOT possibleHOST(holster) THEN RETURN(invalid);
+
+! see if host is valid;
+! use "NET:0."host"-2";
+NetTest _ "NET:0." & holster & "-2";
+IF debug THEN PRINT(crlf, " NET check for, ", NetTest);
+
+chan _ GTJFN(NetTest, 0);
+IF !SKIP! THEN RETURN(invalid);
+
+! ok host name...;
+RLJFN(chan);
+RETURN(valid);
+
+END;
+!	<< usrrec >>
+	If uname is a valid directory or bulletin board name,
+	returns the fully spelled name in uname, with 0 in err.
+	Otherwise, (err = 1) string does not match, uname _ null,
+	(err = 2) string is ambiguous, leaves uname untouched;
+
+simple procedure usrrec (reference string uname);
+begin "usrrec"
+integer dirno, count;
+string xxx;
+DEFINE validName = 0, unrecognized = 1, ambiguous = 2;
+
+err _ validName;
+if not uname then return;
+
+! raise first character of uname;
+brk _ lop (uname);
+if '141 leq brk leq '172 then brk _ brk - '40;
+uname _ brk & uname;
+
+dirno _ stdir (upper (uname), true);
+err _ !skip!;
+
+! fill out name if necessary;
+if not err
+    then ! err = 0, so valid directory name:;
+	begin
+	xxx _ cvdown (dirst (dirno));
+	if length (xxx) > length (uname)
+	    then uname _ uname & xxx [length (uname) + 1 to inf];
+	RETURN;
+	end;
+
+
+! see if host name;
+err _ hostCheck(uname);
+if err = validName THEN RETURN;
+
+! it's not a directory name, or HOST, so 
+  try to recognize as a bulletin-board name;
+bbdrec (uname);
+
+IF err = unrecognized THEN uname _ NULL;
+
+end "usrrec";
+
+
+
+!	<< getfilename >>
+	Passes control to GTJFN.  User just typed a * in a to: or cc: list;
+
+simple procedure getfilename (integer index);
+begin "getfilename"
+integer jfn;
+
+addchr (index, "*");
+xdpyout;
+setmodes (echomodes);
+jfn _ gtjfn (null, '000001000000);
+setmodes (postmodes);
+if !skip!
+    then
+	begin
+	text [index] _ text [index] [1 to inf-1];	! remove the *;
+	xdpystr (" ? ");
+	return;
+	end;
+
+text [index] _ text [index] & jfns (jfn, 0);
+rljfn (jfn);
+addchr (index, comma);
+addchr (index, space);
+
+end "getfilename";
+
+
+
+!	<< recognize >>
+	Lops off the last word of text [index], tries to recognize
+	it as a directory name.  Acts as if the user just
+	typed <esc>.  Called for every <esc>, space, tab,
+	comma or crlf in To and cc lists;
+
+simple integer procedure recognize (integer index, typchr);
+begin "recognize"
+integer dirno, jfn;
+string name, copy;
+
+!	if last word already recognized, get out;
+brk _ text [index] [inf to inf];
+if brk = space or brk = comma or brk = colon or brk = tab or brk = lf
+	or not brk
+    then
+	begin
+	if typchr = comma or typchr = space then addchr (index, typchr);
+	return (true);
+	end;
+
+!	Remove last word from text, try to recognize it;
+copy _ name _ lastword (text [index]);
+text [index] _ text [index] [1 to length (text [index]) - length (name)];
+
+usrrec (copy);
+case err of
+	begin
+	[0]	begin "match"
+		text [index] _ text [index] & copy;
+		xdpystr (copy [length (name) + 1 to inf]);
+		if typchr = space or typchr = comma
+		    then addchr (index, typchr);
+		return (true);
+		end "match";
+
+	[1]	xdpystr (" ? ");		! no match;
+
+	[2]	begin "ambiguous"
+		text [index] _ text [index] & name;
+		xdpychr (bell);
+		end "ambiguous"
+
+	end;
+
+return (false);
+
+end "recognize";
+
+
+
+!	<< exdate >>
+	Looks in text [expire#] for valid expiration date;
+
+simple integer procedure exdate;
+begin "exdate"
+integer month, day, year;
+string date;
+
+cleanup (text [expire#]);
+if not text [expire#]
+    then
+	! default is 1 month from now;
+	begin "default"
+	temp _ odtim (-1, dateonly);			! " 3/28/76";
+	month _ cvd (temp [1 to 2]);
+	day   _ cvd (temp [4 to 5]);
+	year  _ cvd (temp [7 to 8]);
+	month _ month + 1;
+	if month = 13
+	    then
+		begin
+		month _ 1;
+		year _ year + 1;
+		end;
+	if month = 2 and day > 28
+	    then
+		begin
+		month _ month + 1;
+		day _ 1;
+		end;
+	if day = 31 and (month = 9 or month = 4 or month = 6 or month = 11)
+	    then
+		begin
+		month _ month + 1;
+		day _ 1;
+		end;
+	date _ cvs (month) & "/" & cvs (day) & "/" & cvs (year);
+	xdpystr (date);
+	end "default"
+    else
+	begin
+	temp  _ text [expire#];
+	month _ intscan (temp, brk);
+	day   _ intscan (temp, brk);
+	year  _ intscan (temp, brk);
+	date  _ cvs (month) & "/" & cvs (day) & "/" & cvs (year);
+	end;
+
+xx _ idtim (date & " 23:59:59");
+if !skip!
+    then
+	begin
+	xdpystr (" ? ");
+	text [expire#] _ null;
+	return (false);
+	end
+    else
+	begin
+	text [expire#] _ date;
+	return (true);
+	end;
+
+end "exdate";
+
+
+
+!	<< ucleanup >>
+	Remove leading and trailing spaces, tabs, crlfs, commas (from
+	directory names);
+
+simple procedure ucleanup (reference string g);
+begin "ucleanup"
+integer count;
+
+while g = space or g = tab or g = comma or g = cr or g = lf do
+	brk _ lop (g);
+count _ length (g);
+brk _ g [count for 1];
+while brk = space or brk = tab or brk = comma or brk = cr or brk = lf do
+	begin
+	count _ count - 1;
+	brk _ g [count for 1];
+	end;
+
+g _ g [1 to count];
+
+end "ucleanup";
+
+
+
+!	<< usercheck >>
+	Checks userx to see that it contains valid user names;
+
+simple string procedure usercheck (string userx);
+begin "usercheck"
+integer dirno;
+string chunk, result;
+
+result _ null;
+while userx do
+	begin "uloop"
+	chunk _ lopwrd (userx);
+	ucleanup (chunk);
+	if not chunk then continue "uloop";
+
+	if chunk = "*"
+	    then
+		begin
+		brk _ gtjfn (chunk [2 to inf], '100001000000);	! old file;
+		if !skip!
+		    then
+			begin
+			xdpystr (" [Bad filename: ");
+			xdpystr (chunk [2 to inf]);
+			xdpychr ("]");
+			xdpyout;
+			end
+		    else
+			result _ result & chunk & ", ";
+		continue "uloop";
+		end;
+
+	if chunk [inf to inf] = colon
+	    then
+		begin
+		result _ result & chunk & space;
+		continue "uloop";
+		end;
+
+	temp _ chunk;
+	usrrec (chunk);
+	if err
+	    then
+		begin
+		xdpystr (" [Bad user: ");
+		xdpystr (temp);
+		xdpychr ("]");
+		xdpyout;
+		end
+	    else
+		result _ result & chunk & ", ";
+	end "uloop";
+
+return (result [1 to inf - 2]);
+
+end "usercheck";
+
+
+
+!	<< insertfile >>
+	Asks for a file, appends it to text [index];
+
+simple procedure insertfile (integer index, userinput);
+begin "insert file"
+integer jfn, eof;
+string filstr;
+
+xdpystr ("(Insert file: ");
+xdpyout;
+setmodes (echomodes);
+jfn _ openfile (null, "core");
+setmodes (postmodes);
+if jfn = -1
+    then
+	begin
+	xdpystr (" ?)");
+	return;
+	end;
+setinput (jfn, 200, brk, eof);
+
+xdpychr (space);
+
+filstr _ null;
+do
+	begin
+	xdpychr (".");
+	xdpyout;
+	filstr _ filstr & input (jfn, 0);
+	end
+until eof;
+
+cfile (jfn);
+
+if userinput
+    then filstr _ usercheck (filstr);
+
+text [index] _ text [index] & filstr;
+xdpystr (" eof)");
+
+end "insert file";
+
+
+!	<< teccnv >>
+	Converts lowercase from 3x5 pad on TEC terminals to
+	TAB, (, ), etc.;
+
+simple integer procedure teccnv (integer char);
+begin "teccnv"
+
+if char < '140 or char > '170 then return (char);
+
+! simulate ^C and HOLD keys;
+if char = "v" then sti (itty, 3);
+if char = "s" then sti (itty, eol);
+
+return (case char - '140 of (
+
+char, "\", lf, "^", "=",		! a - e ;
+"_", "[", "<", tab, char,		! f - j ;
+char, char, char, char, char,		! k - o ;
+char, char, "]", eol, ")",		! p - t ;
+">", 3, "(", 6				! u - x ;
+
+));
+
+end "teccnv";
+
+
+
+!	<< textin >>
+	Gets to and cc lists, subject line and message from user.
+	Prompts the user with prompt.  Screenline [index] is told
+	what line the cursor is on (for refreshing the screen);
+
+simple procedure textin (integer index);
+begin "textin"
+integer char, userinput, topicinput;
+
+rip _ silent _ false;
+xdpystr (crlf);
+screenline [index] _ cy;
+userinput _ if index = to# or index = cc# then true else false;
+topicinput _ if index = topic# then true else false;
+xdpystr (prompt [index]);
+xdpystr (text [index]);
+
+while true do
+	begin "message"
+
+!	if text is long enough to scroll the screen, clear screenline;
+	if cy = maxcy and screenline [index] then arrclr (screenline);
+
+	xdpyout;
+	char _ pbin land '177;
+
+	if char = del
+	    then
+		begin
+		erasechr (index);
+		continue "message";
+		end;
+
+	! TEC 3x5 pads send lowercase chars that need conversion;
+	if dpytyp = '11 and char geq "a"
+	    then char _ teccnv (char);
+
+	if topicinput and (char = esc or char = "?" or char = period)
+	    then
+		begin
+		tpcrec (char);
+		continue "message";
+		end;
+
+	if not text [index] and char = "?"
+	    then
+		begin
+		help (index);
+		continue "message";
+		end;
+
+	if userinput
+	    then
+		begin "special"
+		if char = "*"
+		    then
+			begin
+			getfilename (index);
+			continue "message";
+			end;
+
+		if char = esc or char = space or char = comma or char = tab
+		    then
+			begin
+			recognize (index, char);
+			continue "message";
+			end;
+		end "special";
+
+	if index = expire# and (char = cr or char = eol or char = esc)
+	    then
+		if exdate and (char = cr or char = eol)
+		    then done "message"
+		    else continue "message";
+
+	if char < space
+	    then case char of
+		begin
+		['1]	"^A"	erasechr (index);
+
+		['2]	"^B"	insertfile (index, userinput);
+
+		['4]	"^D"	refscreen (index);
+
+		['5]	"^E"	begin "everything"
+				text [index] _ text [index] & rest [index];
+				xdpystr (rest [index]);
+				rest [index] _ null;
+				end "everything";
+
+		['6]	"^F"	print ("  Type ^D  ");
+
+		['10]	"^H"	begin "backspace"
+				if text [index] [inf to inf] = lf
+				    then rest [index] _ text [index] [inf-1 to inf] & rest [index]
+				    else rest [index] _ text [index] [inf to inf] & rest [index];
+				erasechr (index);
+				end "backspace";
+
+		[tab]	"^I"	addchr (index, char);
+
+		['13]	"^K"	begin "abort"
+				xdpystr ("  Aborting...
+");
+				xdpyout;
+				setmodes (origmodes);
+				releasebbdjfns;
+				start!code haltf; end;
+				setmodes (postmodes);
+				end "abort";
+
+		[page]	"^L"	nxtlin (index);
+
+		[cr] [eol]	begin
+				! if subject line being typed, terminate;
+				if index = sub# then done "message";
+				if userinput and not text [index]
+							[inf to inf] = comma
+				    then
+					if recognize (index, char)
+					    then done "message"
+					    else continue "message";
+				if topicinput
+				    then
+					if tpcrec (char)
+					    then done "message"
+					    else continue "message";
+				addchr (index, cr);
+				addchr (index, lf);
+				end;
+
+		['16]	"^N"	nxtwrd (index);
+
+		['21]	"^Q"	eraseline (index);
+
+		['22]	"^R"	typelast (index);
+
+		['23]	"^S"	retype (index);
+
+		['25]	"^U"	begin "start over"
+				rest [index] _ text [index] & rest [index];
+				text [index] _ null;
+				retype (index);
+				end "start over";
+
+		['26]	"^V"	nxtchr (index);
+
+		['27]	"^W"	eraseword (index);
+
+		['30]	"^X"	eraseline (index);
+
+		['32]	"^Z"	if index = msg# then done "message";
+
+		['34]	"^\"	backupword (index);
+
+		['35]	"^]"	nxtchr (index);
+
+		['36]	"^^"	begin
+				doover _ true;
+				if not dpytyp then print (crlf);
+				done "message";
+				end;
+
+		['40]	" "
+
+		end
+	    else
+		addchr (index, char);
+
+	end "message";
+
+if cx or not dpytyp then xdpystr (crlf);
+
+end "textin";
+
+
+
+!	<< outds >>
+	output date and size line;
+
+simple procedure outds (integer file, bytcnt);
+cprint (file, odtim (-1, '000020000000), ",", bytcnt, ";000000000000
+");
+
+
+
+!	<< savecopy >>
+	Saves a copy of the message on <login directory>saved.messages;
+
+simple procedure savecopy (string mail);
+begin "savecopy"
+integer jfn;
+
+jfn _ gtjfn ("<" & logstr & ">saved.messages", '100001000000);
+if !skip! then return;			! assume file doesn't exist;
+openf (jfn, '070000021000);		! append, wait if busy;
+if !skip!
+    then
+	begin
+	errout (!skip!, crlf, " -- can't open <" & logstr & ">SAVED.MESSAGES");
+	return;
+	end;
+
+outds (jfn, length (mail));
+out (jfn, mail);
+cfile (jfn);
+
+end "savecopy";
+
+
+
+!	<< saveblt >>
+	Saves a copy of the message on <login directory>saved.bulletins;
+
+simple procedure saveblt (string mail);
+begin "saveblt"
+integer jfn;
+
+! in case of error, we want sendmsg to try saved.messages;
+bltflg _ false;
+
+jfn _ gtjfn ("<" & logstr & ">saved.bulletins", '100001000000);
+if !skip! then return;			! assume file doesn't exist;
+openf (jfn, '070000021000);		! append, wait if busy;
+if !skip!
+    then
+	begin
+	errout (!skip!, crlf, " -- can't open <" & logstr & ">SAVED.BULLETINS");
+	return;
+	end;
+
+outds (jfn, length (mail));
+out (jfn, mail);
+cfile (jfn);
+
+! success, don't save on saved.messages;
+bltflg _ true;
+
+end "saveblt";
+
+
+
+
+ifc sumex thenc
+
+!	<< syscopy >>
+	Saves a copy of the message on <bulletins>login-messages.bbd;
+
+simple procedure syscopy (string mail);
+begin "syscopy"
+integer jfn;
+
+jfn _ openfile ("<bulletins>login-messages.bbd", "aoe");
+if !skip!
+    then
+	begin
+	errout (!skip!, crlf, " -- (can't save copy on <bulletins>login-messages.bbd)");
+	return;
+	end;
+
+outds (jfn, length (mail));
+out (jfn, mail);
+cfile (jfn);
+
+xdpystr (" -- copy saved on login-messages file");
+
+end "syscopy";
+
+
+endc	! SUMEX only;
+
+
+!	<< queue >>
+	Queues an unsendable message;
+
+simple procedure queue (string user, mail);
+begin "queue"
+integer jfn;
+
+jfn _ openfile ("<" & logstr & ">[--unsent-mail--]." & user & '26 & "@",
+				"we");
+if !skip!
+    then
+	begin
+	errout (!skip!, crlf, " -- can't queue");
+	return;
+	end;
+
+outds (jfn, length (mail));
+out (jfn, mail);
+cfile (jfn);
+xdpystr (" -- queued");
+
+end "queue";
+
+
+
+!	<< bltqueue >>
+	Queues an unpostable bulletin;
+
+simple procedure bltqueue (integer whichbbd, exdate; string topicname, mail);
+begin "bltqueue"
+integer jfn;
+
+jfn _ openfile ("<" & logstr & ">[--queued-bulletin--].;", "we");
+if !skip!
+    then
+	begin
+	errout (!skip!, crlf, " -- can't queue");
+	return;
+	end;
+
+cprint (jfn, bbdname [whichbbd], crlf);
+cprint (jfn, topicname, crlf);
+cprint (jfn, odtim (exdate, slashcolon), crlf);
+outds (jfn, length (mail));
+out (jfn, mail);
+cfile (jfn);
+xdpystr (" -- queued");
+
+end "bltqueue";
+
+
+
+!	<< prettyup >>
+	Reformats to: and cc: lists to conform to current SNDMSG
+	conventions;
+
+simple string procedure prettyup (string xtext, preface);
+begin "prettyup"
+integer colonsonly;
+string result, xword, xline;
+
+result _ null;
+xline _ preface;
+colonsonly _ false;
+while xtext do
+	begin "word"
+	xword _ lopwrd (xtext);
+	ucleanup (xword);
+
+	! special treatment for distribution lists;
+	if xword [inf to inf] = colon
+	    then
+		colonsonly _ true
+	    else
+		if colonsonly then xword _ null;
+	if not xword then continue "word";
+
+	if length (xline) + length (xword) > 60
+	    then
+		begin
+		result _ result & xline [1 to inf-2] & crlf;
+		xline _ preface;
+		end;
+	xword _ cvdown (xword);
+	xline _ xline & xword & ", ";
+	end "word";
+
+! add final xline to result, replacing trailing ", " with crlf;
+if length (xline) > length (preface)
+    then result _ result & xline [1 to inf-2] & crlf;
+
+return (result);
+
+end "prettyup";
+
+
+
+!	<< hashcheck >>
+	Inserts a space at the left margin of any line in the text
+	of a bulletin which begins with the character #;
+
+simple string procedure hashcheck (string msg);
+begin "hashcheck"
+string result;
+
+result _ null;
+while msg do
+	begin
+	temp _ scan (msg, oneline, brk);
+	if brk = lf then temp _ temp & crlf;
+	if temp = "#" then temp _ space & temp;
+	result _ result & temp;
+	end;
+
+return (result);
+
+end "hashcheck";
+
+
+
+!	<< tobbd >>
+	Sends a copy of the message to a bulletin board;
+
+simple procedure tobbd (integer whichbbd);
+begin "tobbd"
+integer bulnum, topnum;
+string mail;
+
+! check for duplicates;
+if bbdpro [whichbbd]
+    then
+	begin
+	xdpystr (" -- already done");
+	return;
+	end
+    else
+	bbdpro [whichbbd] _ true;
+
+if not bbdtopic [whichbbd]
+    then
+	begin
+	xdpystr (" -- can't -- no topic given");
+	return;
+	end;
+
+mail _ "Date: " & odtim (-1, msgdate) & "
+From: " & logstr & "
+Subject: " & text [sub#] & crlf & crlf
+& hashcheck (text [msg#]) & "
+-------
+";
+
+comment  below used to read
+	If bbd# neq whichbbd  AND  NOT setup(WHichbbd)
+	I changed it so we always set up bbd  WHICHBBD ;
+
+if NOT setup(whichbbd)  AND   bbd# neq whichbbd   
+    then
+	begin
+	xdpystr (" -- can't -- the bulletin board is down");
+	bltqueue (whichbbd, bbdexpire [whichbbd], bbdtopic [whichbbd], mail);
+	return;
+	end;
+
+! post the bulletin.  #0 means assign the bulletin a number;
+arrclr (xrecord);
+xrecord [1] _ blthead (0, length (mail));
+xrecord [2] _ datesizestamp (length (mail));
+
+! remove trailing crlf, writerecord will put it back;
+xrecord [3] _ mail [1 to inf-2];
+if not bulnum _ writerecord (bltptrfile, bltfile, 3)
+    then
+	begin
+	xdpystr (" -- couldn't post the bulletin");
+	bltqueue (bbd#, bbdexpire [bbd#], bbdtopic [bbd#], mail);
+	return;
+	end;
+
+
+! record the author, creation date, expire date and topic in the date record;
+
+getopicnames;    					! patch #1;
+
+topnum _ tpcno [search (bbdtopic [bbd#], tpcnam)];
+if not topnum then topnum _ 2;			! topic default is "Other";
+if not writedates (bulnum, logdir, gtad, bbdexpire [bbd#], cvs (topnum))
+    then
+	begin
+	xdpystr (" -- nope -- date record not written");
+	bltqueue (bbd#, bbdexpire [bbd#], bbdtopic [bbd#], mail);
+	return;
+	end;
+
+! update the topic record;
+if not opentopic
+    then
+	begin
+	xdpystr (" -- nope -- opentopic failed");
+	bltqueue (bbd#, bbdexpire [bbd#], bbdtopic [bbd#], mail);
+	return;
+	end;
+readrecord (tptrfile, trecfile, topnum, trlength);
+closetopic;
+if xrecord [bul!list]
+    then xrecord [bul!list] _ xrecord [bul!list] & ", ";
+xrecord [bul!list] _ xrecord [bul!list] & cvs (bulnum);
+if not writerecord (tptrfile, trecfile, trlength)
+    then
+	begin
+	xdpystr (" -- nope -- topic record not written");
+	bltqueue (bbd#, bbdexpire [bbd#], bbdtopic [bbd#], mail);
+	return;
+	end;
+
+! tell BBD that every other user with this topic on their interest-list
+  has a new bulletin.  Do not do this for system messages, nor for self;
+if not sysflg
+    then
+	begin
+	temp _ xrecord [user!list];
+	openf (userfile, readwritethawed);
+	if !skip!
+	    then
+		xdpystr (" -- can't set new-bulletin flags for users")
+	    else
+		begin
+		integer datime;
+		datime _ gtad;
+		while xx _ intscan (temp, brk) do
+			begin
+			! don't do it for self;
+			if xx = logdir then continue;
+			swdptr (userfile, post!page + xx);
+			wordout (userfile, datime);
+			end;
+		closf (userfile);
+		end;
+	end;
+
+xdpystr (" -- ok");
+
+! set last POST date in BBD.lock page-The March hare again;	
+OPENF(lockfile, readwritethawed);
+IF !SKIP! THEN
+    XDPYSTR(crlf & "   BUT, can't change last POST date! " & cvos (!skip!))
+ELSE BEGIN
+    SWDPTR(lockfile, The!last!posted);
+    WORDOUT(lockfile, gtad);
+    CLOSF(lockfile) END;
+
+XDPYOUT;
+
+end "tobbd";
+
+
+
+!	<< sendmsg >>
+	Composes the message, sends it out;
+
+simple procedure sendmsg;
+begin "send message"
+integer jfn, ii, maillength;
+string Hfrom, from, userlist, mail, netHost;
+BOOLEAN mailer;
+
+arrclr (xarray);
+arrclr
+(bbdpro);
+userlist _ text [to#] & space & text [cc#];
+
+ifc sumex or imsss thenc
+    from _ cvdown (logstr);
+elsec
+    from _ logstr;
+endc
+
+
+mail _ "Date: " & odtim (-1, msgdate) & crlf & "From: " & From & crlf 
+& "Subject: " & text [sub#] & crlf & prettyup (text [to#], "To:   ");
+
+if text [cc#]
+    then mail _ mail & prettyup (text [cc#], "cc:   ");
+
+mail _ mail & crlf & text [msg#] & crlf & "-------" & crlf;
+
+! now mail has the complete message, and outds will print the
+  date/size stamp;
+
+! save it first on <login directory>saved.messages or saved.bulletins;
+if bltflg then saveblt (mail);
+if not bltflg then savecopy (mail);		! bltflg can get turned off;
+
+maillength _ length (mail);
+mailer _ FALSE;
+Hfrom _ from;
+while userlist do
+	begin "sendloop"
+	integer flags;
+	string xword;
+
+	xword _ lopwrd (userlist);
+	ucleanup (xword);
+	if not xword or xword [inf to inf] = colon
+	    then continue "sendloop";
+	xdpystr (crlf);
+	xdpystr (xword);
+	xdpyout;
+
+	! CHECK FOR NET MAIL - new patch -;
+	netHOST _ xword;
+	IF possibleHOST(xword) THEN BEGIN
+	    IF SEQUAL(Hfrom, from) THEN Hfrom _ Hfrom & " at Sumex-Aim";
+	    Send!message(netHOST, Hfrom, "", Text[sub#], Text[msg#], FALSE);
+	    mailer _ TRUE;
+	    xdpystr("-- queued -- OK"); xdpyout;
+	    CONTINUE "sendloop" END;
+
+	! check for bulletin boards;
+	for ii _ 1 upto bbdmax do
+		if sequal (xword, bbdname [ii])
+		    then
+			begin
+			tobbd (ii);
+			continue "sendloop";
+			end;
+
+	! check for duplicates;
+	if not xword = "*"
+	    then
+		begin
+		xx _ stdir (upper (xword), false);
+		if xarray [xx]
+		    then
+			begin
+			xdpystr (" -- already done");
+			continue "sendloop";
+			end
+		    else
+			xarray [xx] _ true;
+		end;
+
+	ifc sumex thenc
+	! send copy of system messages to <bulletins>login-messages.bbd;
+	if sequal (xword, "System") then syscopy (mail);
+	endc
+
+	! open message.txt or other file;
+	if xword = "*"
+	    then
+		begin
+		temp _ xword [2 to inf];
+		flags _ '000001000000;		! old or new file;
+		end
+	    else
+		begin
+		temp _ "<" & xword & ">message.txt;1";
+		flags _ '501001000000;
+		end;
+
+	jfn _ gtjfn (temp, flags);
+	if !skip!
+	    then
+		begin
+		errout (!skip!, " [", "] -- can't find the file");
+		continue "sendloop";
+		end;
+
+	openf (jfn, '070000020000);
+	if !skip!
+	    then
+		begin
+		errout (!skip!, " [", "] -- can't open the file");
+		queue (xword, mail);
+		continue "sendloop";
+		end;
+
+	! send out the message;
+	outds (jfn, length (mail)); out (jfn, mail);
+
+	cfile (jfn);
+	xdpystr (" -- ok");
+	xdpyout;
+
+	end "sendloop";
+! if some queued mail, then set necessary flags;
+IF mailer THEN set!mailer!flag;
+
+end "send message";
+
+
+
+!	<< foreachbbd >>
+	Returns a list of the bulletin boards the user has asked
+	to send the bulletin to;
+
+simple string procedure foreachbbd;
+begin "foreachbbd"
+integer ii;
+string userlist, xword, bbdlist;
+
+bltflg _ false;
+
+userlist _ text [to#] & ", " & text [cc#];
+bbdlist _ null;
+while userlist do
+	begin
+	xword _ lopwrd (userlist);
+	ucleanup (xword);
+	if sequal (xword, "System") then sysflg _ true;
+	for ii _ 1 upto bbdmax do
+		if sequal (xword, bbdname [ii])
+		    then bbdlist _ bbdlist & cvs (ii) & space;
+	end;
+
+! tell sendmsg to save copy on saved.bulletins instead of saved.messages;
+if bbdlist then bltflg _ true;
+
+return (bbdlist);
+
+end "foreachbbd";
+
+
+
+!	<< gettopic >>
+	For bulletins: calls textin for topic and expire date;
+
+simple procedure gettopic (string bbdlist);
+
+while bbdlist do
+begin "gettopic"
+integer whichbbd, time, ii;
+
+whichbbd _ intscan (bbdlist, brk);
+if not whichbbd then continue "gettopic";
+
+xdpystr ("
+-- For the " & bbdname [whichbbd] [1 to inf-4] & " bulletin board --
+");
+xdpyout;
+
+if bbd# neq whichbbd
+    then
+	begin
+	if not setup (whichbbd)
+	    then
+		begin
+		xdpystr ("   (The bulletin board is down)
+");
+		continue "gettopic";
+		end;
+	getopicnames;
+	if not tpcnam [1]
+	    then
+		begin
+		xdpystr ("   (Sorry, can't get topic names)
+");
+		continue "gettopic";
+		end;
+	end;
+
+text [topic#] _ bbdtopic [bbd#];
+textin (topic#);
+if doover then return;
+bbdtopic [bbd#] _ text [topic#];
+
+text [expire#] _ if bbdexpire [bbd#]
+		    then odtim (bbdexpire [bbd#], dateonly)
+		    else null;
+textin (expire#);
+if doover then return;
+bbdexpire [bbd#] _ idtim (text [expire#] & " 23:59:59");
+
+end "gettopic";
+
+
+
+!	<< savemsg >>
+	Saves text [msg#] on message.copy;
+
+simple procedure savemsg;
+begin "savemsg"
+integer cjfn;
+
+ifc tops20 thenc
+cjfn _ gtjfn ("message.copy.-1;p770000", '610001000000);
+elsec
+cjfn _ gtjfn ("message.copy;-1;p770000", '610001000000);
+endc
+if !skip!
+    then
+	begin
+	errout (!skip!, crlf & "Message.copy error: ", crlf);
+	return;
+	end;
+
+openf (cjfn, '070000100000);
+if !skip!
+    then
+	begin
+	errout (!skip!, crlf & "Message.copy error: ", crlf);
+	return;
+	end;
+
+out (cjfn, text [msg#]);
+cfile (cjfn);
+
+end "savemsg";
+
+
+
+
+integer cocac2, cocac3;
+
+! initialize display package (puts terminal in binary mode);
+dpyini;
+
+! put terminal in ASCII mode, no echo;
+setmodes (postmodes);
+
+! "send actual code" for all control characters, mimicing binary mode;
+rfcoc ('101, cocac2, cocac3);
+sfcoc ('101, '125252525252, '525252525000);
+
+! terminal types 9 and 10 are not TEC and IMLAC at ECL;
+ifc ecl thenc
+if dpytyp neq 3 then dpytyp _ 0;
+endc
+
+! at ISIE, DM is terminal type 5;
+ifc isie thenc
+if gttyp (itty, xx) = 5
+    then dpytyp _ 3
+    else dpytyp _ 0;
+endc
+IF NOT debug THEN debug _ rpgsw;       ! Set DEBUG if program was started at;
+          			       ! 400011 entry point;
+				       ! (which sets RPGSW);
+while true do
+	begin "prloop"
+
+	if dpytyp then docp;
+
+	if dpytyp
+	    then
+		xdpystr ("
+
+			Bulletin poster and SNDMSG
+			   Type ""?"" for help
+
+")
+	    else
+		xdpystr ("
+Bulletin poster and SNDMSG
+   Type ""?"" for help
+");
+
+	xdpyout;
+
+	doover _ outoforder _ false;
+
+	textin (to#);
+	if doover then continue "prloop";
+
+	if text [to#]
+	    then
+		begin
+		textin (cc#);
+		if doover then continue "prloop";
+		gettopic (foreachbbd);
+		if doover then continue "prloop";
+		end
+	    else
+		outoforder _ true;
+
+	textin (sub#);
+	if doover then continue "prloop";
+	textin (msg#);
+	if doover then continue "prloop";
+
+	savemsg;
+
+	if outoforder
+	    then
+		begin
+		do
+			begin
+			textin (to#);
+			if doover then continue "prloop";
+			end
+		until text [to#];
+		textin (cc#);
+		if doover then continue "prloop";
+		gettopic (foreachbbd);
+		if doover then continue "prloop";
+		end;
+
+	while true do
+		begin "confirm"
+		xdpystr ("
+Type <return> to send: ");
+		xdpyout;
+		brk _ pbin land '177;
+		if brk = "?"
+		    then
+			begin
+			xdpystr ("?
+
+Type <return> (the key marked ""RETURN"" or ""CR"") to send the message
+	or bulletin.
+Type ^^ (ctrl-^) to start over and review or change your user lists,
+	subject or message.
+Type ^D (ctrl-D) to type out everything you have so far.
+Type ^K or ^C to abort.
+A copy of your message has been saved on the file message.copy
+");
+			continue "confirm";
+			end;
+		if brk = 4					! ^D;
+		    then
+			begin
+			refscreen (0);
+			xdpystr (crlf);
+			continue "confirm";
+			end;
+
+		if brk = '13
+		    then
+			begin "abort"
+			xdpystr ("  Aborting...
+");
+			xdpyout;
+			setmodes (origmodes);
+			releasebbdjfns;
+			start!code haltf; end;
+			setmodes (postmodes);
+			continue "confirm";
+			end "abort";
+
+		if brk = '36 then continue "prloop";		! ^^;
+		if brk = eol or brk = cr then done "prloop";
+		xdpystr (" ? ");
+		end "confirm";
+
+	end "prloop";
+
+xdpystr ("
+");
+
+sendmsg;
+if dpytyp then turnof;
+
+releasebbdjfns;
+setmodes (origmodes);
+print (crlf);
+
+haltprocess;
+
+end "post"

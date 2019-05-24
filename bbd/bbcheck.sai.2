@@ -1,0 +1,301 @@
+begin "bbchk"
+
+comment
+	This prints a [You have new bulletins on Sumex.bbd, Dendral.bbd]
+	type message;
+
+require "macros" source!file;
+require "<sail>ctrlo.rel" load!module;
+external integer ctlosw;
+external integer rpgsw;
+
+! require "bbd.site" source!file;
+
+
+!	Upper bounds for bbd, topic and scratch arrays.
+	These can be increased "indefinitely";
+define	bmax	= 50;
+
+
+!	OPENF flags and record lengths;
+define	readthawed	 = '440000202000,
+	readwritethawed	 = '440000302000,
+	appendthawed	 = '070000022000,
+	trlength	 = 5;
+
+
+!	ODTIM flags;
+define	slashcolon	= '045000000000,
+	dateonly	= '045400000000,
+	msgdate		= '012260000000;
+
+
+integer	oneline,	! setbreak numbers;
+	nexttab,
+	cvup,
+
+	bbdmax,		! number of bulletin boards on the system;
+	bbd#,		! number of bulletin board currently in use;
+	ithops,
+
+	userfile,	! for each user: last read date for this bbd;
+
+	logdir,		! login directory number;
+	userread,	! user's last read date for current bbd;
+	debug,		! switch to control output of debugging information;
+	bbdtst,		! gets a test set of bulletin boards;
+	xx,		! scratch integer;
+	brk,		! break character for scan;
+	eof;		! end-of-file flag;
+
+
+string	temp,		! scratch string;
+	scratch,	! scratch string;
+	logstr;		! logdir converted to a string;
+
+
+string array
+	bbdname,			! names of the bulletin boards;
+	bbddir  [1:bmax];		! directory where each is located;
+
+
+! <Sumex bulletin-board>;
+define	bbdlogo (x) = <"<" & bbdname [x] [1 to inf-4] & " bulletin-board>">;
+
+! filename of bbd files;
+define	bbdfilename (x) = <"<" & bbddir [x] & ">"
+		& bbdname [x] [1 to inf-4] & "-bbd.">;
+
+
+integer array
+	bbdpro [0:bmax];		! bbd privilege bits;
+
+
+!	starting points for userfile arrays indexed by logdir;
+define	read!page	=     0;
+DEFINE SUMEX = TRUE, ECL = FALSE;
+
+ifc ecl OR sumex thenc
+define	post!page	= '2000;
+elsec
+define	post!page	= '1000;
+endc
+
+
+
+!	<< cinit >>
+	Initialization procedure;
+
+simple procedure cinit;
+begin "cinit"
+
+setbreak (oneline    _ getbreak, lf, cr, "i");
+setbreak (nexttab    _ getbreak, tab, null, "i");
+setbreak (cvup       _ getbreak, null, null, "ik");
+
+xx _ gjinf (logdir, xx, xx);
+logstr _ dirst (logdir);
+
+bbd# _ 0;
+
+end "cinit";
+
+
+require cinit initialization;
+
+
+
+!	<< cvdown >>
+	Converts cstr to lower case, capitalizing first letter;
+
+simple string procedure cvdown (string cstr);
+begin "cvdown"
+integer char;
+string result;
+
+if not cstr then return (null);
+
+char _ lop (cstr);
+result _ if "a" leq char leq "z" then (char - space) else char;
+while char _ lop (cstr) do
+	begin
+	char _ if "A" leq char leq "Z" then (char + space) else char;
+	result _ result & char;
+	end;
+
+return (result);
+
+end "cvdown";
+
+
+
+!	<< haltprocess >>
+	Does a HALTF, no continuing;
+
+simple procedure haltprocess;
+
+    start!code
+    label zap;
+zap:	haltf;
+	jrst zap;
+    end;
+
+
+
+!	<< getbbdnames >>
+	Initializes bbdname and bbddir from <system>bulletin-board.names.;
+
+simple procedure getbbdnames;
+begin "getbbdnames"
+integer jfn;
+string line;
+
+ifc ecl thenc jfn _ openfile ("<bboard>bulletin-board.names", "reh");
+elsec jfn _ openfile ("<system>bulletin-board.names", "reh"); endc
+if !skip! then
+    begin
+    print ("
+ The bulletin boards are down for maintenance.
+ Try again in a few seconds.
+
+");
+    haltprocess; end;
+
+arrclr (bbdpro);
+setinput (jfn, 200, brk, eof);
+
+brk _ gjinf (ithops, brk, brk);
+ithops _ lnot (ithops lsh 1);
+
+! read in first line;
+line _ input (jfn, oneline);
+while xx _ intscan (line, brk) do if xx = logdir then done;
+if xx = logdir then bbdpro [0] _ lnot (logdir lsh 1);
+
+bbdmax _ 0;
+do
+	begin
+	line _ input (jfn, oneline);
+	if not line then continue;
+	bbdmax _ bbdmax + 1;
+	do temp _ scan (line, nexttab, brk) until temp;
+	bbdname [bbdmax] _ cvdown (temp);
+	do temp _ scan (line, nexttab, brk) until temp;
+	bbddir [bbdmax] _ cvdown (temp);
+	while xx _ intscan (line, brk) do if xx = logdir then done;
+	if xx = logdir then bbdpro [bbdmax] _ lnot (logdir lsh 1);
+	end
+until eof;
+
+cfile (jfn);
+
+if ithops = bbdpro [0]
+    then arrclr (bbdpro, ithops);
+
+end "getbbdnames";
+
+require getbbdnames initialization;
+
+
+
+SIMPLE PROCEDURE PrintN (INTEGER n);
+BEGIN
+INTEGER k;
+
+IF n LEQ 0 THEN RETURN;
+FOR k _ 1 UPTO n DO PRINT(" ");
+END;
+integer whichbbd, readdate, writedate, dunit;
+INTEGER nblanks;
+string rStr, wStr;
+DEFINE dFormat = '202201000000;
+DEFINE conF = '41, conV = '26;
+BOOLEAN firstOnly, laconic;
+string hold, line;
+
+! for debug stuff;
+debug _ rpgsw;
+bbdtst _ rpgsw _ 0;
+! let's assume an impatient audience;
+laconic _ TRUE;
+
+! just the first one?;
+firstOnly _ FALSE;
+
+! if user typed "bbcheck ", bbd name, or ^V for verbose;
+bkjfn (itty);
+brk _ pbin;
+if brk = space then
+    BEGIN
+    hold _ line _ intty;
+    xx _ !skip!;
+    brk _ LOP(hold);
+    IF brk NEQ 0 THEN
+        IF brk = conV THEN laconic _ FALSE
+        ELSE
+	    IF brk = conF THEN FirstOnly _ TRUE;
+        IF FirstOnly OR NOT laconic THEN brk _ LOP(line);
+	if line
+	    then
+		begin
+		line _ scan (line, cvup, brk);
+		logdir _ stdir (line, true);
+		if !skip! then begin  print (" ? ", crlf); haltprocess;  end;
+		if xx = esc
+		    then
+			begin
+			logstr _ dirst (logdir);
+			print (logstr [length (line) + 1 to inf], crlf);
+			end;
+		end
+	    else
+		if xx = cr
+		    then print (" [", logstr, "]", crlf)
+		    else print (logstr, crlf);
+	end;
+dunit _ 0;
+PRINT(crlf, "   BBcheck - version B.0", crlf);
+IF NOT laconic THEN PRINT(crlf, "   Bulletin Board    New bulletins", crlf);
+for whichbbd _ 1 upto bbdmax do
+	begin "bloop"
+
+	IF laconic THEN PRINT(".");
+	userfile _ openfile (bbdfilename (whichbbd) & "user", "hero");
+	if !skip! then continue;
+	swdptr (userfile, read!page + logdir);
+	readdate _ wordin (userfile);
+	swdptr (userfile, post!page + logdir);
+	writedate _ wordin (userfile);
+        IF debug THEN BEGIN
+	    rStr _ ODTIM(readDate, dFormat); 
+	    wStr _ ODTIM(writedate, dFormat);
+	    PRINT(" For ", bbdname[whichbbd], crlf, "  Last read on ", 
+		  rStr, "; Last POST date ", wStr, crlf) END;
+        IF NOT laconic THEN
+            BEGIN
+            nblanks _ 14 - LENGTH(bbdName[whichbbd]);
+            PRINT("   ");
+            PRINTn(nblanks); PRINT(bbdname[whichbbd]);
+            PRINT("        ") END;
+
+	    ! anything here?;
+	    IF (writedate and (writedate geq readdate)) THEN 
+		BEGIN
+                IF NOT laconic THEN PRINT("Yes", crlf)
+		ELSE BEGIN
+		    IF NOT dunit THEN BEGIN
+	                dunit _ 1;
+			PRINT("[You have NEW bulletins on") END;
+		    PRINT(" ", bbdname[whichbbd], " ") END;
+		IF FirstOnly THEN DONE "bloop" END
+	    ELSE
+		IF NOT laconic THEN PRINT(" No", crlf);
+	cfile (userfile);
+	end "bloop";
+
+IF (NOT dunit)  AND  laconic THEN print (crlf, " [NO new bulletins");
+IF laconic THEN PRINT("]");
+
+haltprocess;
+
+end "bbchk";

@@ -1,0 +1,4489 @@
+begin "bbd"
+
+Comment
+	This program manages any number of bulletin boards.
+	Written in TENEX SAIL by Richard Q. Kahler at SUMEX-AIM,
+	Spring 1976;
+
+Comment
+	PATCHES :
+	     1. Bug in NEWS.  After wildcard fix, wouldnot find NEWS
+		at all.  Problem was in a call to directory.  A 1 was
+		passed and it should of been a string, to correspond
+		with wildcard feature. See page 61(procedure NEWS)	
+
+	     2. Same problem found in NOTIFY call on DIRECTORY.
+
+	     3. Bug in FORWARD which caused an overrun on JFNs if 
+	        someone tried to forward from a directory for which
+	        they were NOT write enabled.  The DELF wouldn't work!
+
+	     4. Fixed LIST option so the bbd was closed in case of errors
+
+	     5. CLOSEbbd added in DELX if error condition "for illegal 
+                bulletin number occured. Otherwise, files left open.
+
+	     6. Fix NOTIFY to queue notices for MAILER to send out
+
+	     7. Added NEW command BuildTR which will speed up initial
+		directory searches--the topic record file will now have
+		as a record a list of topic names and topic numbers...
+
+	     8. Added NEW command Net!MAIL to create bulletins from
+		mail received over the net.     
+		    Dec. 7, 1979 WJY(i:sgmsf)  Version B.1
+									;
+define	postmsg = false;		Comment for BBDMSG;
+integer abort;				Comment general abort flag;
+
+require "bbd.common" source!file;
+
+! SAIL routines to call the CMEDIT line editor;
+require "cmedit.sai" source!file;
+
+! Tom Rindfleisch's wild card match routine;
+require "wccmp.rel" load!module;
+external integer wccmp;
+
+require 10000 string!space;
+
+external integer rpgsw;
+
+string	substr,			! string argument for subject-line searches;
+	textstr,		! string argument for text searches;
+	lasttop;		! name of last topic printed by PRTOPIC;
+
+integer oneword,		! setbreak number;
+
+	hombbd,			! bbd to connect to by default;
+	bcount,			! bulletin count for directory;
+	tcount,			! topic count for directory;
+	afttim,			! "after" time for dir and type;
+	beftim,			! "before" time for dir and type;
+	curtpc,			! for type with interest list;
+	inttpc,			! ditto;
+	placemark,		! remembers last bulletin typed;
+	ldopts,			! remembers last dir  options;
+	ltopts,			! remembers last type options;
+	expoverride,		! override normal suppression of expired bulletins;
+	ambiguous,		! set by RECOGNIZE;
+	oldccoc2,		! for control-character output control;
+	oldccoc3,		! ditto;
+	newccoc3,		! ditto;
+
+	pbrk,			! break character for KPSTIN;
+
+	savbbd,			! for saving bbd parameters through;
+	savrd,			! quit-and-continue, or a POST session,;
+	savmark,		! or an expunge;
+
+	bltcnt,    tpccnt,	! for expunge and initialize;
+	ntrecfile, ntptrfile,
+	nbltfile,  nbltptrfile,
+	ndatefile, nuserfile,
+	nlockfile, norename;
+
+
+integer array
+	newtpc	[0:tmax],	! used by expunge when renumbering topics;
+	ktable	[0:31];		! special character table for KPSTIN;
+
+
+! command and noise word arrays;
+
+define	maxcmd	= 26;						  ! patch 7;
+define	regularcommandlist = 					  ! and 8;
+	<1, 2, 3, 6, 8 upto 11, 14, 16, 17, 18, 20 upto 23, maxcmd>;
+define	managercommandlist = <1 upto maxcmd>;
+
+preload!with
+"Add",
+"Connect",
+"Copy",
+"Create",			! manager command;
+"DDT",				! manager command;
+"Delete",
+"Destroy",			! manager command;
+"Directory",
+"Drop",
+"Exit",
+"Expire",
+"Expunge",			! manager command;
+"Forward",			! manager command;
+"Help",
+"Initialize",			! manager command;
+"List",
+"Move",
+"News",
+"Notify",			! manager command;
+"Post",
+"Quit",
+"Type",
+"Undelete",
+"BuildTR",			! manager command;		  ! patch 7;
+"Net!Mail",
+del;
+string array bbdcmd [1:maxcmd];
+
+string array commands [1:maxcmd];
+
+
+preload!with
+"(topic to interest list)",
+"(to bulletin board)",
+"(bulletin range)",
+"(topic)",
+"",
+"(bulletin range)",
+"(topic)",
+"",
+"(topic from interest list)",
+"",
+"(date for bulletins)",
+"",
+"(queued bulletins on directory)",
+"(on BBD command)",
+"(bulletin board)",
+"(bulletin range)",
+"(bulletin range)",
+"(new bulletins on your interest list)",
+"(users of new bulletins)",
+"(a new bulletin)",
+"",
+"(bulletin range)",
+"(bulletin range)",
+"",								  ! patch 7;
+"(BBD MAIL forwarding service)",
+del;
+string array bbdnoi [1:maxcmd];
+
+
+!	option bits for directory;
+
+define
+	after!bit		= '400000,
+	author!bit		= '200000,
+	before!bit		= '100000,
+	creation!bit		=  '40000,
+	deleted!bit		=  '20000,
+	everything!bit		=  '10000,
+	expire!bit		=   '4000,
+	interest!bit		=   '2000,
+	length!bit		=   '1000,
+	new!bit			=    '400,
+	nreads!bit		=    '200,
+	output!bit		=    '100,
+	read!bit		=     '40,
+	subject!bit		=     '20,
+	subsearch!bit		=     '10,
+	textsearch!bit		=      '4;
+
+
+preload!with
+"After",
+"Author",
+"Before",
+"Creation-date",
+"Deleted",
+"Everything",
+"Expire-date",
+"Interest-list",
+"Length",
+"New",
+"Number-of-reads",
+"Output-to-file",
+"Read-date",
+"Subject",
+"Subsearch",
+"Textsearch",
+del;
+string array diropt [1:17];
+
+
+! option bits for type;
+
+define
+	interest!type	= '400000,
+	msgformat!type	= '200000,
+	new!type	= '100000,
+	output!type	=  '40000,
+	topic!type	=  '20000;
+
+
+preload!with
+"Interest-list-only",
+"Message-format",
+"New",
+"Output-to-file",
+"Topic-names",
+del;
+string array typopt [1:6];
+
+
+
+!	<< init >>
+	Initialization procedure;
+
+simple procedure init;
+begin "init"
+
+setbreak (oneword _ getbreak, space & tab & cr & lf, null, "i");
+
+rfcoc (otty, oldccoc2, oldccoc3);
+! ignore output to terminal of ESC and ^X;
+newccoc3 _ oldccoc3 land '777717177777;
+sfcoc (otty, oldccoc2, newccoc3);
+
+substr _ textstr _ null;
+
+end "init";
+
+
+require init initialization;
+
+
+!	<< savparms >>
+	Saves current values of bbd#, userread, and placemark and
+	restores old control-character output control words for
+	any situation where the current bbd jfns have to be released
+	temporarily;
+
+simple procedure savparms;
+begin "savparms"
+
+savbbd _ bbd#;
+savrd _ userread;
+savmark _ placemark;
+sfcoc (otty, oldccoc2, oldccoc3);
+
+end "savparms";
+
+
+
+!	<< resparms >>
+	Restores userread and placemark, and sets new control-character
+	output control words.  Restore bbd# with "connect (savbbd)",
+	then "resparms";
+
+simple procedure resparms;
+begin "resparms"
+
+userread _ savrd;
+placemark _ savmark;
+sfcoc (otty, oldccoc2, newccoc3);
+end "resparms";
+
+
+
+!	<< getdef >>
+	Set up defaults from (bbd.profile) file;
+
+simple procedure getdef;
+begin "getdef"
+integer projfn;
+
+hombbd _ 0;
+
+projfn _ openfile ("<" & logstr & ">(bbd.profile)", "re");
+if !skip! then return;
+
+temp _ input (projfn, oneline);			! Connect: line;
+cfile (projfn);
+
+temp _ temp [10 to inf];
+cleanup (temp);
+
+hombbd _ search (temp, bbdname);
+
+end "getdef";
+
+
+
+!	<< conwait >>
+	Wait for confirmation, as in the EXEC;
+
+simple procedure conwait (string prompt; integer confirm (false));
+begin "conwait"
+integer char;
+
+if confirm then print (" [Confirm]");
+
+abort _ false;
+while (char _ pbin) = "?" do
+	print (" Confirm with <return>", crlf, prompt);
+
+if char = eol then return;
+
+! for TOPS-20;
+if char = cr 
+    then
+	begin
+	! discard any linefeed following;
+	brk _ inchrs;
+	if brk > 0 then if brk neq lf then bkjfn (itty);
+	return;
+	end;
+
+abort _ true;
+if char = '30 or char = del then return;	! no complaint;
+print (" ? ");
+
+end "conwait";
+
+
+
+!	<< findtpc >>
+	Convert topnum into index to topics arrays
+	(which are in directory order).  It should
+	always return a number geq 1 and leq maxtpc;
+
+simple integer procedure findtpc (integer topnum);
+begin "findtpc"
+integer ii;
+
+for ii _ 1 upto maxtpc do if tpcno [ii] = topnum then done;
+return (ii);
+
+end "findtpc";
+
+
+
+!	<< after >>
+	Returns true if the creation date for bulnum >= time.
+	No validity checking for bulnum;
+
+simple integer procedure after (integer bulnum, time);
+begin "after"
+integer bbase;
+
+bbase _ bulnum * daterecordsize;
+swdptr (datefile, bbase + creation!date);
+return (wordin (datefile) geq time);
+
+end "after";
+
+
+
+!	<< deleted >>
+	Returns true if bulletin bulnum has been deleted.
+	No validity checking for bulnum;
+
+simple integer procedure deleted (integer bulnum);
+begin "deleted"
+integer bbase;
+
+bbase _ bulnum * daterecordsize;
+swdptr (datefile, bbase + deleted!);
+return (wordin (datefile));
+
+end "deleted";
+
+
+
+!	<< expired >>
+	Returns true if bulletin bulnum has expired.
+	No validity checking for bulnum;
+
+simple integer procedure expired (integer bulnum);
+begin "expired"
+integer bbase;
+
+bbase _ bulnum * daterecordsize;
+swdptr (datefile, bbase + expire!date);
+return (gtad > wordin (datefile));
+
+end "expired";
+
+
+!	<< loadcommands >>
+	Load commands array with appropriate set of commands;
+
+simple procedure loadcommands;
+begin "loadcommands"
+integer ii;
+
+arrclr (commands);
+if ithops = bbdpro [bbd#]
+    then for ii _ managercommandlist do commands [ii] _ bbdcmd [ii]
+    else for ii _ regularcommandlist do commands [ii] _ bbdcmd [ii];
+
+end "loadcommands";
+
+
+!	<< connect >>
+	Changes bulletin boards;
+
+simple integer procedure connect (integer whichbbd);
+begin "connect"
+
+if not whichbbd then return (false);
+
+if setup (whichbbd)
+    then
+	begin
+	print ("   ", bbdlogo (bbd#));
+	placemark _ 0;
+	loadcommands;
+	return (true);
+	end;
+
+print (" Cannot find the ", bbdname [whichbbd] [1 to inf-4], " bulletin-board.");
+return (false);
+
+end "connect";
+
+
+
+!	<< recognize >>
+	Tries to convert string to string array index, types out
+	rest of name if rbrk = esc;
+
+simple integer procedure recognize (reference string command;
+				string array opts;  integer rbrk);
+begin "recognize"
+integer ii, lngth, match, count;
+
+cleanup (command);
+if not command then return (0);
+lngth _ length (command);
+ambiguous _ false;
+
+match _ searchcount (command, opts, count);
+if count > 1 then ambiguous _ true;
+
+if ambiguous
+    then
+	begin
+	if rbrk = esc
+	    then
+		outchr (bell)
+	    else
+		begin
+		print (" ? ");
+		command _ null;
+		end;
+	return (0);
+	end;
+
+if match
+    then
+	begin
+	if rbrk = esc
+	    then
+		begin
+		print (opts [match] [lngth + 1 to inf], " ");
+		command _ opts [match] & " ";
+		end
+	    else
+		if rbrk neq cr
+		    then command _ command & rbrk;
+	end
+    else
+	begin
+	print (" ? ");
+	command _ null;
+	end;
+
+return (match);
+
+end "recognize";
+
+
+
+!	<< wccompare >>
+	Compares USERSTR (which may contain wild cards) against ARYSTR
+	(which must not contain any wild cards) to see if it can find a
+	match.  Uses Tom Rindfleisch's WCCMP routine;
+
+simple integer procedure wccompare (string userstr, arystr);
+begin "wccompare"
+integer wmatch;
+string utemp, atemp;
+
+! add nulls to make ASCIZ strings;
+utemp _ userstr & 0;
+atemp _ arystr & 0;
+
+    start!code
+	setom wmatch;
+	move 1,utemp;			! put byte pointer to UTEMP in 1;
+	move 2,atemp;			! put byte pointer to ATEMP in 2;
+	pushj p,wccmp;
+	 setzm wmatch;
+    end;
+
+return (wmatch);
+
+end "wccompare";
+
+
+!	<< wcmatch >>
+	Tries to find any and all wild-card matches of WSTR with
+	the elements of WARY.  Returns a string containing a list
+	of array indices;
+
+simple string procedure wcmatch (string wstr; string array wary);
+begin "wcmatch"
+integer ii;
+string result;
+
+ii _ 0;
+result _ null;
+
+while true do
+	begin
+	if not length (wary [ii _ ii + 1]) then continue;
+	if wary [ii] = del then done;
+	if wccompare (wstr, wary [ii])
+	    then result _ result & cvs (ii) & space;
+	end;
+
+return (result);
+
+end "wcmatch";
+
+
+!	<< typhlp >>
+	When ? is typed in the middle of a word, this will print the
+	options remaining.  Wild card characters in the command string
+	are recognized as such;
+
+simple procedure typhlp (string command, prompt; string array opts);
+begin "typhlp"
+integer ii, lngth, matchfound;
+string indent, idxlist;
+
+indent _ blanks [1 to length (prompt)];
+
+idxlist _ wcmatch (command & "*", opts);
+if length (idxlist)
+    then while ii _ intscan (idxlist, brk) do
+	print (crlf, indent, opts [ii])
+    else
+	print (crlf, indent, "No partial matches");
+
+print (crlf, crlf, prompt, command);
+
+clrbuf;
+
+end "typhlp";
+
+
+
+!	<< getrange >>
+	Gets a range of bulletin numbers from tty:
+	for directory, type, copy, etc.;
+
+simple string procedure getrange (string prompt);
+begin "getrange"
+integer gbrk;
+string command;
+
+makespctbl ("?", ktable);
+
+command _ null;
+while true do
+	begin "gloop"
+	command _ kpstin (command, prompt, 200, 0, ktable, gbrk);
+	if abort then return (null);
+	if gbrk = cr then return (command);
+	if gbrk = "?"
+	    then
+		begin
+		print (crlf, blanks [1 to length (prompt)]);
+		print ("Number or number list (e.g. 5-12, 13, 18-21)");
+		print (crlf2, prompt, command);
+		continue "gloop";
+		end;
+	end "gloop";
+
+end "getrange";
+
+
+
+!	<< subcom >>
+	Sets bits for subcommands it recognizes.
+	Stops search on empty element in subx;
+
+simple integer procedure subcom (string array subx; integer calledfromtype (false));
+begin "subcommand"
+integer bits, sindex, sbrk;
+string text, word, arg;
+
+bits _ 0;
+text _ null;
+newline;
+print ("**");
+
+makespctbl ("? ", ktable);
+
+while true do
+	begin "sloop"
+	text _ kpstin (text, "**", 200, 0, ktable, sbrk);
+	if abort then return (0);
+	if sbrk = "?"
+	    then
+		begin "help"
+		typhlp (text, "**", subx);
+		continue "sloop";
+		end "help";
+
+	! return on empty subcommand;
+	if not length (text) and sbrk = cr then return (bits);
+
+	! we try to recognize the first word of the line only except
+	  when ESC is typed;
+	word _ text;
+	if sbrk neq esc then word _ scan (word, oneword, brk);
+	sindex _ recognize (word, subx, sbrk);
+	if ambiguous
+	    then
+		if sbrk = esc
+		    then
+			begin
+			outchr (bell);
+			continue "sloop";
+			end
+		    else
+			begin
+			newline;
+			print ("**");
+			text _ null;
+			continue "sloop";
+			end;
+
+	if sindex
+	    then
+		begin
+		integer thisbit;
+
+		if sbrk = esc
+		    then
+			begin
+			text _ subx [sindex] & space;
+			continue "sloop";
+			end;
+
+		if sbrk = space
+		    then
+			begin
+			text _ text & space;
+			continue "sloop";
+			end;
+
+		! set the bit for this subcommand;
+		thisbit _ 1 lsh (18-sindex);
+		bits _ bits lor thisbit;
+
+		! now throw away the first word on the line and consider
+		  the rest to be the argument, if any, to the subcommand;
+		scan (arg _ text, oneword, brk);
+		if length (arg) and not calledfromtype and thisbit = subsearch!bit
+		    then substr _ arg;
+		if length (arg) and not calledfromtype and thisbit = textsearch!bit
+		    then textstr _ arg;
+
+		end;
+
+	if sbrk = cr
+	    then
+		begin
+		text _ null;
+		newline;
+		print ("**");
+		end;
+
+	end "sloop";
+	
+end "subcommand";
+
+
+
+!	<< gtbbd >>
+	Gets a bulletin-board name, returns index or 0;
+
+simple integer procedure gtbbd (string prompt);
+begin "gtbbd"
+integer whichbbd, ii, bbrk;
+string bstr;
+
+makespctbl ("?", ktable);
+
+bstr _ null;
+while true do
+	begin "bloop"
+	bstr _ kpstin (bstr, prompt, 200, 0, ktable, bbrk);
+	if abort then return (0);
+	if bbrk = "?"
+	    then
+		begin
+		typhlp (bstr, prompt, bbdname);
+		continue "bloop";
+		end;
+	if not bstr then return (0);
+
+	whichbbd _ recognize (bstr, bbdname, bbrk);
+	if ambiguous and bbrk = esc then continue "bloop";
+
+	if bbrk = cr then return (whichbbd);
+	if not whichbbd then bstr _ null;
+
+	end "bloop";
+
+end "gtbbd";
+
+
+
+!	<< manager help messages >>;
+
+preload!with
+"",
+
+"",
+
+"",
+
+"
+ The Create (topic) command is used to create new topics on
+ the connected bulletin-board.  The basic idea is to add a
+ new subtopic field to an already existing topic to create
+ a new one.  Subtopic fields are separated by periods.  In
+ the case of new main topics type the new name with no spaces
+ and no periods, e.g., ""Create Bulletin-board"".  To create a
+ subtopic for it, type ""Create Bulletin-board"", then a period,
+ then ""features"", or whatever.
+
+ ? and <esc> are very helpful here.  ""Create ?"" will tell
+ you what topics already exist.  <Esc> gives you recognition
+ as far as the topic exists, then you add your period and
+ subtopic.  ""Create Bulletin-board.?"" gives you a list
+ of all of the subtopics of Bulletin-board, etc., etc.
+
+ As Create will tell you, you may not create more than one
+ new subtopic field at a time.  Bulletin-board.features must
+ exist before Bulletin-board.features.proposed can be created.
+
+ Use the Destroy (topic) command to get rid of a topic with
+ a misspelled name BEFORE any bulletins are posted on it or
+ subtopics created.
+",
+
+"
+ DDT (Dynamic Debugging Technique) is for debugging BBD.
+",
+
+"",
+
+"
+ Use the Destroy (topic) command to get rid of a topic with
+ a misspelled name before any bulletins are posted on it or
+ subtopics created.
+
+ A topic must be empty of bulletins and have no subtopics before
+ it can be Destroyed.  The Move command can be used to move bulletins
+ elsewhere.
+
+ For more information, type ""Help create"".
+",
+
+"",
+
+"",
+
+"",
+
+"",
+
+"
+ Expunge cleans up destroyed topics, copies expired bulletins to
+ backup files, removes expired and deleted bulletins, renumbers both
+ bulletins and topics, and verifies or corrects bulletin lengths.
+ It is best to check that no one is running BBD when you do an expunge.
+ Non-wheels must be connected to the directory where the bbd is located.
+
+ Debugging mode:  If you want to know what is going on during an
+ expunge, start BBD at 400011 rather than at the usual start address
+ (which is 400010).  You will get extra typeout during expunges and
+ more verbose error messages elsewhere.
+",
+
+"
+ Forward looks for [--QUEUED-BULLETIN--] files and tries to post
+ them on the appropriate bulletin-board.  ""Forward<cr>"" searches
+ the entire file system, ""Forward <directory-name>"" will search
+ that directory.  No angle brackets around <directory-name>.
+",
+
+"",
+
+"
+ Initialize sets up a brand new bulletin-board with one empty topic
+ (""Other"").  It will also clear an existing bulletin-board,
+ creating a set of empty new versions of the bbd files.  This
+ command is disabled for most bbd managers.
+",
+
+"",
+
+"",
+
+"",
+
+"
+ Notify is the command that the nightly batch job uses to send
+ out the new-bulletin notices which you receive in your message.txt
+ file.  You, as bulletin-board manager, may run it for your own
+ bulletin-board when you have a special announcement and you want
+ interested parties to know about it right away.
+",
+
+"",
+
+"",
+
+"",
+
+"",
+
+"BuildTR  creates a sorted topic name list in the <name-bbd>.TR file
+	  to speed up initial directory searches",
+"Net!MAIL forwards mail received on the NET to the correct bbd under
+	  topic NET-BULL.",
+"";
+string array mgrhlp [1:maxcmd];
+
+
+
+SIMPLE STRING PROCEDURE RestMessage (INTEGER chn, msgLEN);
+BEGIN
+STRING mail;
+mail _ "";
+DO BEGIN
+    mail _ mail & SINI(chn, msgLen, '177); 
+    msgLEN _ msgLEN - LENGTH(mail) END UNTIL !SKIP! = -1;
+
+RETURN(mail);
+END;
+SIMPLE STRING PROCEDURE fixup (STRING firstLine; INTEGER Len);
+BEGIN
+INTEGER brk, bTable;
+STRING newFirst, piece1;
+
+! change length in date time stamp of message - Kahler's folly;
+bTable _ GETBREAK;
+SETBREAK(bTable, ",;", NULL, "INA");
+
+! get stuff preceding length of message;
+piece1 _ SCAN(firstLine, bTable, brk);
+! discard length;
+SCAN(firstLine, bTable, brk);
+newFirst _ piece1 & CVS(Len) & ";" & firstLine;
+RELBREAK(bTable);
+RETURN(newFirst);
+
+END;
+SIMPLE STRING PROCEDURE zapLBsign (STRING letter, firstLine);
+BEGIN
+INTEGER brk, bTable;
+BOOLEAN foundPound;
+STRING part, newLetter;
+
+! look for "#" in column 1.  If there replace by " #";
+bTable _ GETBREAK;
+SETBREAK(bTable, '12, NULL, "INA");
+newLetter _ part _ NULL;
+foundPound _ FALSE;
+DO BEGIN
+    part _ SCAN(letter, bTable, brk);        
+    IF part[1 FOR 1] = "#" THEN 
+        BEGIN part _ " " & part; foundPound _ TRUE END;
+    newLetter _ newLetter & part;
+    END UNTIL LENGTH(letter) = 0;
+IF NOT foundPound THEN newLetter _ firstLine & newLetter
+ELSE
+    newLetter _ fixup(firstLine, LENGTH(newLetter)) & newLetter;
+RELBREAK(bTable);
+RETURN(newLetter);
+END;
+simple procedure BBDbltqueue (integer whichbbd, exdate, ext; 
+			      string topicname, mail, DIRstr);     ! patch 8;
+begin "bltqueue"
+integer jfn;
+STRING name;
+name _ "<" & DIRstr & ">[--queued-bulletin--]." & CVS(ext) & ";";
+jfn _ openfile (name, "we");
+if !skip!
+    then
+	begin
+	PRINT ("OPEN file error: ", CVOS(!skip!), crlf, " -- can't queue");
+	return;
+	end;
+
+cprint (jfn, bbdname [whichbbd], crlf);
+cprint (jfn, topicname, crlf);
+cprint (jfn, odtim (exdate, slashcolon), crlf);
+out (jfn, mail);
+cfile (jfn);
+
+end "bltqueue";
+PROCEDURE Net!MAIL;
+BEGIN
+STRING firstLine, scratch, letter, mailfile, bbdN;
+INTEGER versions, msgCount;
+INTEGER ext, bTable, jfn, chn, brk, EOF;
+INTEGER expire, msgPTR, msgLEN;
+BOOLEAN result;
+DEFINE PURGE = '675;
+
+SIMPLE INTEGER PROCEDURE getLength (REFERENCE STRING firstLine);
+BEGIN
+    STRING len;
+    INTEGER iLen;
+    ! get length from        ***
+      24-Jul-79 16:21:59-PDT,733;
+    
+    ! get first line;
+    len _ firstLine _ SINI(chn, 80, '12);
+    IF EOF THEN RETURN(-1);
+    ! bTable has "R"etain, so;
+    DO SCAN(len, bTable, brk) UNTIL brk = '54; brk _ LOP(len);
+    ! now have "nnn";
+    iLen _ INTSCAN(len, brk);
+    RETURN(iLen);
+END;
+
+! make sure we have a BBD;
+IF NOT bbd# THEN BEGIN
+    PRINT("  Sorry, you must be connected to a BBD...bye!", crlf);
+    RETURN END;
+
+! confirm this command;
+bbdN _ "   Forward for " & bbdname[bbd#] & "?";
+conWAIT(bbdN, TRUE);
+IF abort THEN RETURN;
+
+IF debug THEN PRINT("  [Mail check for ", bbdname[bbd#], 
+      		    " on directory <", bbddir[bbd#], ">]");
+
+! open the file <bbddir[bbd#]>bbdname-bbd.txt.;
+bTable _ GETBREAK;
+SETBREAK(bTable, ".,", NULL, "INR");
+! have "bbdname.bbd" - want "bbdname";
+scratch _ bbdname[bbd#];
+bbdN _ SCAN(scratch, bTable, brk);
+mailFile _ "<" & bbddir[bbd#] & ">" & bbdN & "-bbd.TXT";
+chn _ OPENFILE(mailFile, "ROE");
+IF !SKIP! THEN BEGIN
+    PRINT(crlf, mailFile, " can NOT be opened -- bye - bye", crlf);
+    RETURN END;
+
+SETINPUT(chn, 50000, brk, EOF);
+! leave for 1 year;
+expire _ GTAD + '555000000;
+msgCount _ 0;
+! Now read it a message at a time, and queue that message as a bulletin;
+ext _ 1;
+versions _ 0;
+IF debug THEN PRINT(crlf, "Queueing - *.1;");
+DO BEGIN "readfile"
+    ! point to next message;
+    msgLEN _ getLength(firstLine);
+    IF msgLEN = -1 THEN DONE "readfile";
+    ! only 5 versions per extension;
+    versions _ versions + 1;
+    IF versions = 6 THEN BEGIN
+	ext _ ext + 1; versions _ 1;
+	IF debug THEN PRINT(crlf, "Queueing - *.", ext, ";") END;
+    letter _ RestMessage(chn, msgLEN);
+    ! Kahler's silly # stuff ;
+    letter _ zapLBsign(letter, firstLine);
+    ! queue on bbd's directory for forwarding ...;
+    BBDbltqueue(bbd#, expire, ext, "NET-BULLETINS", letter, bbddir[bbd#]);
+    IF debug THEN PRINT(versions, " ");
+    msgCount _ msgCount + 1; 
+    ! set to next message;
+    msgPTR _ RCHPTR(chn); SCHPTR(chn, msgPTR); 
+    END "readfile" UNTIL FALSE;
+! purge file - need REAL jfn - close but don't release jfn;
+CLOSF(chn);
+jfn _ CVJFN(chn);
+START!CODE
+    MOVE    1,jfn;
+    JSYS    PURGE;
+    TDZA    1,1;
+    MOVEI   1,1;
+    MOVEM   1,RESULT;
+END;
+IF NOT RESULT THEN PRINT(crlf, "  ERROR: could NOT purge ", bbdN, crlf);
+RELBREAK(bTable);
+
+! tell results;
+PRINT(crlf, msgCount, " bulletins -- queued on <", bbddir[bbd#], ">", crlf);
+
+END;
+!	<< typehelp >>
+	Types manager help messages from preloaded strings, others
+	from doc file;
+
+simple procedure typehelp (integer helpidx);
+begin "typehelp"
+integer hjfn, nameln, found;
+string line, cname;
+
+! if there is a string for this command in MGRHLP, print it and return;
+if helpidx and length (mgrhlp [helpidx])
+    then
+	begin
+	print (mgrhlp [helpidx]);
+	print (crlf);
+	return;
+	end;
+
+! otherwise look for it in the doc file;
+define	helpfil	= <"<DOC>BBD.HELP">;
+
+ifc isie thenc
+redefine helpfil = <"<DSN>BBD.HELP">;
+endc
+
+if helpidx
+    then cname _ "*" & commands [helpidx]
+    else cname _ "*Introduction";
+
+nameln _ length (cname);
+
+hjfn _ openfile (helpfil, "re");
+if !skip!
+    then
+	begin
+	print (" Sorry, cannot get help file (", helpfil, ").");
+	return;
+	end;
+
+found _ false;
+while true do
+	begin "read"
+	line _ input (hjfn, oneline);
+	if !skip! = -1 then done "read";
+	! look for line beginning with "*";
+	if line neq "*" then continue "read";
+	! look for command name following the *;
+	if not sequal (cname, line [1 to nameln])
+	    then continue "read";
+	! found it;
+	found _ true;
+	while true do
+		begin
+		line _ input (hjfn, oneline);
+		if !skip! = -1 or line = "*" then done "read";
+		print (line, crlf);
+		end;
+	end "read";
+
+cfile (hjfn);
+
+if not found
+    then print (" Sorry, the command description seems to be missing.");
+
+end "typehelp";
+
+
+!	<< help >>
+	Gives general help, and help on specific commands;
+
+simple procedure help (string prompt);
+begin "help"
+integer which, hbrk;
+string command;
+
+if pbrk = cr or pbrk = comma
+    then
+	begin
+	typehelp (0);
+	return;
+	end;
+
+! make special character table for KPSTIN, break on "? ,";
+makespctbl ("? ,", ktable);
+
+! get command;
+which _ 0;
+command _ null;
+while true do
+	begin "cloop"
+
+	command _ kpstin (command, prompt, 200, 0, ktable, hbrk);
+	if abort then return;
+	if hbrk = "?"
+	    then
+		begin
+		typhlp (command, prompt, commands);
+		continue "cloop";
+		end;
+	if not command then done "cloop";
+	which _ recognize (command, commands, hbrk);
+	if ambiguous and hbrk = esc then continue "cloop";
+
+	if hbrk = cr then done "cloop";
+	if not which then command _ null;
+
+	end "cloop";
+
+typehelp (which);
+
+end "help";
+
+
+!	<< type >>
+	Types a range of bulletins to ojfn;
+
+simple procedure type (integer ojfn, bstart, bstop, options);
+
+for bstart _ bstart upto bstop do
+begin "type"
+integer ptr, size, bbase, ii;
+string bstr;
+
+if ctlosw and (ojfn = otty) then return;	! user typed ^O;
+
+placemark _ bstart;
+bbase _ bstart * daterecordsize;
+
+! get a pointer to the bulletin;
+swdptr (bltptrfile, bstart);
+ptr _ wordin (bltptrfile);
+
+if not ptr
+    then
+	begin
+	if debug then print (" No pointer to bulletin ", bstart, ".");
+	continue "type";
+	end;
+
+if (options land new!type) and not after (bstart, userread)
+    then continue "type";
+
+if deleted (bstart)
+    then
+	begin
+	print (" Bulletin ", bstart, " has been deleted.");
+	continue "type";
+	end;
+
+if expired (bstart) and not expoverride
+    then
+	begin
+	print (" Bulletin ", bstart, " has expired.");
+	continue "type";
+	end;
+
+if options land interest!type
+    then
+	begin
+
+	! get topic number for this bulletin;
+	swdptr (datefile, bbase + topic!list);
+	xx _ wordin (datefile);
+
+	! do we already know about this topic?;
+	if xx = curtpc
+	    then
+		begin
+		! did we find out it was on the interest list?;
+		if not inttpc then continue "type";
+		end
+	    else
+		! no, see if this topic is on interest list;
+		begin
+		curtpc _ xx;
+		inttpc _ false;
+		readrecord (tptrfile, trecfile, curtpc, trlength);
+		temp _ xrecord [user!list];
+		while xx _ intscan (temp, brk) do if xx = logdir then done;
+		if xx = logdir
+		    then inttpc _ true
+		    else continue "type";
+		end;
+	end;
+
+
+! read in first two lines of bulletin;
+arrclr (xrecord);
+schptr (bltfile, ptr);
+for ii _ 1 upto 2 do
+	xrecord [ii] _ input (bltfile, oneline);
+
+! find bulletin length;
+temp _ xrecord [2] [24 to inf];
+size _ intscan (temp, brk);
+
+! read in text of bulletin;
+bstr _ sini (bltfile, size, null);
+
+if options land topic!type
+    then
+	begin "insert topic"
+	if not tpcnam [1]
+	    then
+		begin
+		topcluge _ true;
+		IF NOT getopicnames THEN RETURN;
+		topcluge _ false;
+		end;
+
+	! insert topic name between From: line and Subject: line;
+	for ii _ 3 upto 4 do
+		xrecord [ii] _ scan (bstr, oneline, brk);
+	swdptr (datefile, bbase + topic!list);
+	xx _ wordin (datefile);
+	xrecord [5] _ "Topic: <" & bbdname [bbd#] & ">"
+			& tpcnam [findtpc (xx)];
+
+	! adjust bulletin length;
+	size _ size + length (xrecord [5]) + 2;
+
+	! print desired header;
+	if options land msgformat!type
+	    then
+		cprint (ojfn, xrecord [2][1 to 23], size, ";000000000000", crlf)
+	    else
+		cprint (ojfn, crlf, blthead (bstart, size), crlf2);
+
+	! print Date:, From:, and Topic: lines;
+	for ii _ 3 upto 5 do
+		cprint (ojfn, xrecord [ii], crlf);
+
+	end "insert topic"
+    else
+
+	! no need to insert anything in the bulletin, just type it out;
+	if options land msgformat!type
+	    then cprint (ojfn, xrecord [2], crlf)
+	    else cprint (ojfn, crlf, xrecord [1], crlf2);
+
+cprint (ojfn, bstr);
+
+! update last read date and number of reads;
+swdptr (datefile, bbase + last!read!date);
+wordout (datefile, gtad);
+swdptr (datefile, bbase + number!of!reads);
+xx _ wordin (datefile);
+swdptr (datefile, bbase + number!of!reads);
+wordout (datefile, xx + 1);
+swdptr (datefile, bbase + last!reader);
+wordout (datefile, logdir);
+
+end "type";
+
+
+
+!	<< typex >>
+	Gets a bulletin range, calls type;
+
+simple procedure typex (string prompt);
+begin "typex"
+integer bstart, bstop, bulcnt, dosub, options, ojfn;
+string tylist;
+
+if not bbd#
+    then
+	begin
+	print (" You are not connected to a bulletin board.");
+	return;
+	end;
+
+dosub _ curtpc _ inttpc _ false;
+tylist _ null;
+
+if pbrk = comma
+    then
+	begin
+	dosub _ true;
+	conwait (prompt, false);
+	if abort then return;
+	end
+    else
+	if pbrk = cr
+	    then
+		begin
+		print (
+" I need a bulletin number (like 1), or a range (like 1-10, 12-15),
+ or a comma if you want to give subcommands.");
+		return;
+		end
+	    else
+		tylist _ getrange (prompt);
+
+if abort then return;
+
+cleanup (tylist);
+if tylist [inf to inf] = comma then dosub _ true;
+
+options _ if dosub then subcom (typopt, true) else ltopts;
+if abort then return;
+
+! two of the options are sticky until cleared;
+ltopts _ options land (msgformat!type + topic!type);
+
+! get an output file, if wanted;
+if options land output!type
+    then
+	begin
+	print ("   Output file: ");
+	ojfn _ openfile (null, "ace");	! append, confirm;
+	if !skip! then return;
+	end
+    else
+	ojfn _ otty;			! output to user terminal;
+
+if not openbbd
+    then
+	begin
+	print (" Cannot open the bulletin board.");
+	return;
+	end;
+
+! find out how many bulletins we have;
+swdptr (bltptrfile, 0);
+bulcnt _ wordin (bltptrfile) - 1;
+if bulcnt < 0
+    then
+	begin
+	closebbd;
+	if ojfn neq otty then cfile (ojfn);
+	print (" You have been caught by an expunge of this bulletin board.");
+	setup (bbd#);
+	print (crlf, " If it doesn't work now, get help.");
+	return;
+	end;
+
+if not tylist then tylist _ "1-" & cvs (bulcnt);
+
+while tylist do
+	begin
+	bstart _ intscan (tylist, brk);
+	if bstart < 1 then continue;
+	if bstart > bulcnt
+	    then
+		begin
+		closebbd;
+		print (" Bulletin ", bstart, " does not exist.");
+		return;
+		end;
+	bstop _ if brk neq "-" then bstart else -intscan (tylist, brk);
+	if bstop > bulcnt then bstop _ bulcnt;
+	type (ojfn, bstart, bstop, options);
+	if ctlosw and (ojfn = otty) then done;
+	end;
+
+if ojfn = otty
+    then print (crlf)
+    else cfile (ojfn);
+closebbd;
+
+! update last user read date when he has asked to see new bulletins;
+if options land new!type
+    then
+	begin
+	openf (userfile, readwritethawed);
+	if !skip! then return;			! no fuss;
+	swdptr (userfile, read!page + logdir);
+	wordout (userfile, gtad);
+	closf (userfile);
+	end;
+
+end "typex";
+
+
+
+!	<< ptrfix >>
+	Rewrites the record pointers in ptrfile so that they are again
+	in order ;
+
+simple integer procedure ptrfix (integer ptrfile, recfile);
+begin "ptrfix"
+integer ptr, rec#, recmax;
+string line;
+
+! open the files;
+openf (ptrfile, readwritethawed);
+if !skip!
+    then
+	begin
+	if debug then print (" Openf error ", !skip!, " in ptrfix for ptrfile.");
+	return (false);
+	end;
+
+openf (recfile, readthawed);
+if !skip!
+    then
+	begin
+	closf (ptrfile);
+	if debug then print (" Openf error ", cvos (!skip!), " in ptrfix for recfile.");
+	return (false);
+	end;
+
+setinput (recfile, 200, brk, eof);
+recmax _ 0;
+if debug then print (crlf, " Fixing pointers: ");
+
+while true do
+	begin "msg"
+	do
+		begin "line"
+		ptr _ rchptr (recfile);
+		line _ input (recfile, oneline);
+		if eof then done "msg";
+		end "line"
+	until line = "#";
+
+	rec# _ intscan (line, brk);
+	if debug then if rec# NEQ -1 THEN print (rec#, " ");
+	! don't do topic 0 or topic -1(latter is topic name list);
+	if not rec#  OR  rec# = -1 then continue "msg";
+	swdptr (ptrfile, rec#);
+	wordout (ptrfile, ptr);
+	if rec# > recmax then recmax _ rec#;
+
+	end "msg";
+
+swdptr  (ptrfile, 0);
+wordout (ptrfile, recmax + 1);
+
+closf (ptrfile);
+closf (recfile);
+return (true);
+
+end "ptrfix";
+
+
+
+!	<< savexpires >>
+	Save a copy of expired bulletins about to be expunged
+	on bbdfilename.expired and on author's expired.bulletins;
+
+simple procedure savexpires;
+begin "savexpires"
+integer ii, bulcnt;
+
+! get bulletin count;
+swdptr (bltptrfile, 0);
+bulcnt _ wordin (bltptrfile) - 1;
+
+for ii _ 1 upto bulcnt do
+	begin "eloop"
+	integer ejfn;
+
+	if not expired (ii) then continue "eloop";
+	print (" ", ii);
+	ejfn _ openfile (bbdfilename (bbd#) & "expired", "ae");
+	if !skip!
+	    then
+		begin
+		abort _ true;
+		print (" Can't save expired bulletin ", ii, ", error ",
+						cvos (!skip!), ".");
+		return;
+		end;
+
+	type (ejfn, ii, ii, msgformat!type + topic!type);
+	cfile (ejfn);
+
+	! get author of bulletin;
+	swdptr (datefile, ii * daterecordsize + author!);
+	xx _ wordin (datefile);
+
+	ejfn _ openfile ("<" & dirst (xx) & ">expired.bulletins", "aoe");
+	if !skip!
+	    then
+		if !skip! = '600104	! GTJFN: Old file required;
+		    then
+			continue "eloop"
+		    else
+			begin
+			print (" Can't save author's copy of expired bulletin, ", ii,
+				" error ", cvos (!skip!), ", please report.");
+			continue "eloop";
+			end;
+
+	type (ejfn, ii, ii, msgformat!type + topic!type);
+	chfdb (ejfn, 4, '777777, '777744);
+	cfile (ejfn);
+
+	end "eloop";
+
+end "savexpires";
+
+
+
+!	<< renumber >>
+	Goes through the bulletin board in directory order,
+	renumbering topics and bulletins from #1 on up
+	in the order encountered.  Writes new topic-records file;
+
+recursive procedure renumber (integer topnum);
+begin "renumber"
+string tstr;
+
+! get the existing topic record;
+readrecord (tptrfile, trecfile, topnum, trlength);
+tstr _ xrecord [father!sons];
+
+! give it its new number;
+intscan (xrecord [1], brk);
+xrecord [1] _ "#" & cvs (newtpc [topnum]) & xrecord [1];
+
+! renumber its sons;
+temp _ xrecord [father!sons];
+xrecord [father!sons] _ cvs (newtpc [intscan (temp, brk)]) & tab;
+while xx _ intscan (temp, brk) do
+	begin
+	if not newtpc [xx] then newtpc [xx] _ (tpccnt _ tpccnt + 1);
+	xrecord [father!sons] _ xrecord [father!sons] & cvs (newtpc [xx])
+				& ", ";
+	end;
+if equ (xrecord [father!sons] [inf-1 to inf], ", ")
+    then xrecord [father!sons] _ xrecord [father!sons] [1 to inf-2];
+
+! renumber its bulletins;
+temp _ xrecord [bul!list];
+xrecord [bul!list] _ null;
+while xx _ intscan (temp, brk) do
+	begin
+	if deleted (xx) or expired (xx) then continue;
+
+	! give bulletin a new number if it doesn't already have one;
+	if not xarray [xx] then xarray [xx] _ (bltcnt _ bltcnt + 1);
+
+	xrecord [bul!list] _ xrecord [bul!list] & cvs (bltcnt) & ", ";
+	end;
+xrecord [bul!list] _ xrecord [bul!list] [1 to inf-2];
+
+! write out the new topic record;
+if not firstrecord (ntptrfile, ntrecfile, trlength)
+    then print (" Could not create topic ", newtpc [topnum], ".");
+
+if debug then print (newtpc [topnum], " ");
+
+! do the same for all the subtopics;
+scan (tstr, nexttab, brk);
+while topnum _ intscan (tstr, brk) do renumber (topnum);
+
+end "renumber";
+
+
+
+!	<< chgbltno >>
+	Copies bulletin to new file with new number;
+
+simple integer procedure chgbltno (integer oldnum, newnum);
+begin "chgbltno"
+integer ptr, size, ii;
+string bstr;
+own integer array datrcd [0:daterecordsize-1];
+
+arrclr (xrecord);
+
+! get the pointer;
+swdptr (bltptrfile, oldnum);
+ptr _ wordin (bltptrfile);
+if not ptr then return (false);
+
+! Read in the bulletin, down to eof or next line beginning with #.
+  Setinput (bltfile, 200, brk, eof) was done in expunge;
+schptr (bltfile, ptr);
+bstr _ null;
+temp _ input (bltfile, oneline);
+do
+	begin
+	bstr _ bstr & temp & crlf;
+	temp _ input (bltfile, oneline);
+	end
+until eof or temp = "#";
+
+! Remove the first two lines from bstr, change the bulletin number and be
+  sure length is correct;
+temp _ scan (bstr, oneline, brk);
+temp _ scan (bstr, oneline, brk);
+xrecord [1] _ blthead (newnum, length (bstr));
+xrecord [2] _ temp [1 to 23] & cvs (length (bstr)) & ";000000000000";
+
+! the rest goes to xrecord [3], minus the last crlf;
+xrecord [3] _ bstr [1 to inf-2];
+
+! write it out;
+if not firstrecord (nbltptrfile, nbltfile, 3)
+    then print (" Couldn't write new bulletin ", newnum, ".");
+
+! copy the date record, changing bulletin and topic numbers;
+swdptr (datefile, oldnum * daterecordsize);
+arryin (datefile, datrcd [0], daterecordsize);
+datrcd [blt!no] _ newnum;
+for ii _ 1 upto datrcd [topic!count] do
+	datrcd [topic!list + ii - 1] _ newtpc [datrcd [topic!list + ii - 1]];
+
+swdptr (ndatefile, newnum * daterecordsize);
+arryout (ndatefile, datrcd [0], daterecordsize);
+
+return (true);
+
+end "chgbltno";
+
+
+
+!	<< expunge >>
+	Cleans up the bulletin board, saving copies of expired
+	bulletins, expunging expired and deleted bulletins, renumbering
+	the remaining bulletins and topics, and then it renames the new
+	set of files on top of the old.  If initonly, just creates a
+	new set of files and initializes them;
+
+simple procedure expunge (string prompt; integer initonly (false));
+begin "expunge"
+integer oldnum, newnum, whop, enab, ii, prot;
+string bname;
+label locked;
+
+! if initializing, get rid of any current bulletin-board
+  and ask for a new one;
+if initonly
+    then
+	begin
+	! only those with manager privileges for every bbd can initialize;
+	if ithops neq bbdpro [0]
+	    then
+		begin
+		print (" You can't do that.");
+		return;
+		end;
+	xx _ gtbbd (prompt);
+	if abort or not xx then return;
+	releasebbdjfns;
+	bbd# _ xx;
+	end;
+
+if not bbd#
+    then
+	begin
+	print (" You are not connected to a bulletin board.");
+	return;
+	end;
+
+! wait for confirmation;
+conwait (prompt, true);
+if abort then return;
+
+! enable if wheel or operator;
+    start!code
+	setzm	whop;
+	setzm	enab;
+	movei	1,'400000;
+	RPCAP;
+	trne	2,'600000;		! wheel or operator?;
+	 setom	whop;
+	trne	3,'600000;		! already enabled?;
+	 setom	enab;
+	tro	3,'600000;
+	EPCAP;
+    end;
+
+if whop and not enab then print (" You are enabled.
+");
+
+! require connected or login directory unless wheel or operator;
+if not whop
+    then
+	begin
+	integer condir, thatdir;
+	brk _ gjinf (logdir, condir, brk);
+	temp _ upper (bbddir [bbd#]);
+	thatdir _ stdir (temp, false);
+	if !skip! or not (thatdir = condir or thatdir = logdir)
+	    then
+		begin
+		print (" You must be connected to <", temp, ">.");
+		return;
+		end;
+	end;
+
+if not initonly and not gcunlock
+    then
+	begin
+	print (" Can't get the garbage-collection lock.");
+	return;
+	end;
+
+
+! open some new files;
+
+if debug then print (" Creating new files.");
+bname _ bbdfilename (bbd#);
+
+! make the new files for expunge slightly different ($ up front);
+if not initonly
+    then bname _ "<" & bbddir [bbd#] & ">$"
+	& bbdname [bbd#] [1 to inf-4] & "-bbd.";
+
+! change protection on the text files, if not enabled, so that the
+  rename at the end will succeed;
+if not (initonly or whop or norename)
+    then
+	begin
+	own integer array fdb [0:'24];
+	gtfdb (trecfile, fdb);
+	prot _ fdb [4];			! save old protection;
+	chfdb (trecfile, 4, '770000, '777777);
+	chfdb (bltfile, 4, '770000, '777777);
+	end;
+
+! Flag is "for output use";
+ntptrfile   _ gtjfn (bname & "tp", '400001000000);
+if !skip!
+    then
+	begin
+	print (" Can't create any new files, GTJFN error ", cvos (!skip!));
+	if initonly
+	    then bbd# _ 0
+	    else gcreslck;
+	return;
+	end;
+ntrecfile   _ gtjfn (bname & "tr", '400001000000);
+nbltptrfile _ gtjfn (bname & "ptr", '400001000000);
+nbltfile    _ gtjfn (bname & "blt", '400001000000);
+ndatefile   _ gtjfn (bname & "date", '400001000000);
+
+! create topic 0;
+arrclr (xrecord);
+xrecord [1] _ "#0	Topic-records file";
+if not firstrecord (ntptrfile, ntrecfile, trlength)
+    then print (" Could not create topic 0.");
+
+! create bulletin 0;
+temp _ "Date: " & odtim (-1, msgdate) & "
+From: " & logstr & "
+Subject: Message zero
+To:   " & bbdlogo (bbd#) & "
+
+	Do not delete this message
+-------
+";
+
+xrecord [1] _ blthead (0, length (temp));
+xrecord [2] _ datesizestamp (length (temp));
+! remove trailing crlf, firstrecord will put it back;
+xrecord [3] _ temp [1 to inf-2];
+if not firstrecord (nbltptrfile, nbltfile, 3)
+    then print (" Could not create bulletin 0.");
+
+if initonly
+    then
+	begin "init"
+	integer expfile;
+
+	! make this the current bulletin-board;
+	tptrfile   _ ntptrfile;
+	trecfile   _ ntrecfile;
+	bltptrfile _ nbltptrfile;
+	bltfile    _ nbltfile;
+	datefile   _ ndatefile;
+
+	! create three more files;
+	userfile   _ gtjfn (bname & "user", '400001000000);
+	lockfile   _ gtjfn (bname & "lock", '400001000000);
+	expfile    _ gtjfn (bname & "expired", '400001000000);
+
+	! set file protection;
+
+define	txtfileprot	= '774444,
+	binfileprot	= '776464,
+	expfileprot	= '777757;
+
+ifc tops20 thenc
+redefine
+	txtfileprot	= '775757,
+	binfileprot	= '777777,
+	expfileprot	= '777757;
+endc
+
+ifc sumex thenc
+redefine
+	txtfileprot	= '444444,
+	binfileprot	= '646464,
+	expfileprot	= '777757;
+endc
+
+	chfdb (tptrfile,   4, '777777, binfileprot);
+	chfdb (trecfile,   4, '777777, txtfileprot);
+	chfdb (bltptrfile, 4, '777777, binfileprot);
+	chfdb (bltfile,    4, '777777, txtfileprot);
+	chfdb (datefile,   4, '777777, binfileprot);
+	chfdb (userfile,   4, '777777, binfileprot);
+	chfdb (lockfile,   4, '777777, binfileprot);
+	chfdb (expfile,    4, '777777, expfileprot);
+
+	! open and close date, user and expire files so they will exist;
+	openf (datefile, readwritethawed);
+	openf (userfile, readwritethawed);
+	openf (expfile,  readwritethawed);
+	closf (datefile);
+	closf (userfile);
+
+	cfile (expfile);
+
+	! initialize bulletin board write and garbage-collection locks;
+	openf (lockfile, readwritethawed);
+	swdptr (lockfile, 0);
+	wordout (lockfile, -1);
+	swdptr (lockfile, '10);
+	wordout (lockfile, -1);
+	closf (lockfile);
+
+	! create topic 1 (father of all the rest) and topic 2 ("Other");
+	arrclr (xrecord);
+	xrecord [1] _ "#1" & tab & bbdlogo (bbd#);
+	xrecord [2] _ "0" & tab & "2";
+	if not firstrecord (tptrfile, trecfile, trlength)
+	    then print (" Could not create topic 1.");
+
+	xrecord [1] _ "#2	Other";
+	xrecord [2] _ "1" & tab;
+	if not firstrecord (tptrfile, trecfile, trlength)
+	    then print (" Could not create topic 2.");
+
+	print ("   ", bbdlogo (bbd#));
+
+	! new bbd initialized;
+	return;
+
+	end "init";
+
+! Continue with expunge if not initonly.
+  Transfer everything to the new files;
+
+! first redo both sets of pointers;
+if not ptrfix (tptrfile, trecfile)
+or not ptrfix (bltptrfile, bltfile)
+    then
+	begin
+	gcreslck;
+	print (" Can't fix pointers.");
+	return;
+	end;
+
+if not openbbd
+    then
+	begin
+	gcreslck;
+	print (" Can't open bulletin board.");
+	return;
+	end;
+
+if debug then print (crlf, " Copying any expired bulletins: ");
+
+expoverride _ true;
+savexpires;
+expoverride _ false;
+if abort
+    then
+	begin
+	closebbd;		! don't restore gclock, things are fouled up;
+	return;
+	end;
+
+! give topics and bulletins new numbers and write a new topic records file;
+arrclr (newtpc);
+arrclr (xarray);
+newtpc [1] _ 1;
+newtpc [2] _ 2;
+bltcnt _ 0;
+tpccnt _ 2;
+if debug then print (crlf, " Renumbering topics: ");
+renumber (1);
+
+setinput (bltfile, 200, brk, eof);
+openf (ndatefile,   readwritethawed);
+
+! copy each bulletin to the new file with its new number;
+if debug then print (crlf, " Copying bulletins: ");
+for newnum _ 1 upto bltcnt do
+	begin "copy"			! new bulletin numbers are in xarray;
+	for oldnum _ 1 upto xmax do if xarray [oldnum] = newnum then done;
+	if oldnum > xmax
+	    then
+		begin
+		print (" Can't find new bulletin #", newnum, ".");
+		continue "copy";
+		end;
+	chgbltno (oldnum, newnum);
+	if debug then print (newnum, " ");
+	end "copy";
+
+closf (ndatefile);
+closebbd;
+
+
+! rename new files on top of the old ones unless norename has been set
+  with DDT;
+
+if not norename
+    then
+	begin
+	if debug then print (crlf, " Renaming.");
+	rnamf (ntptrfile, tptrfile); 
+	if !skip! then print (" Rnamf error ", cvos (!skip!), ".");
+	rnamf (ntrecfile, trecfile); 
+	if !skip! then print (" Rnamf error ", cvos (!skip!), ".");
+	rnamf (nbltptrfile, bltptrfile); 
+	if !skip! then print (" Rnamf error ", cvos (!skip!), ".");
+	rnamf (nbltfile, bltfile); 
+	if !skip! then print (" Rnamf error ", cvos (!skip!), ".");
+	rnamf (ndatefile, datefile); 
+	if !skip! then print (" Rnamf error ", cvos (!skip!), ".");
+	! change protection back for the two text files;
+	if not whop
+	    then
+		begin
+		chfdb (trecfile, 4, '770000, prot);
+		chfdb (bltfile, 4, '770000, prot);
+		end;
+	end;
+
+! we do this whether renaming or not, because the RNAMF runtime doesn't
+  clear the JFNtable entry for the released file on success;
+rljfn (ntptrfile);
+rljfn (ntrecfile);
+rljfn (nbltptrfile);
+rljfn (nbltfile);
+rljfn (ndatefile);
+
+gcreslck;
+if debug then print (crlf, " Done.");
+
+savparms;
+connect (bbd#);
+! and make the topic name record;
+MakeTopicNameRecord;						  ! patch 7;
+
+resparms;
+
+end "expunge";
+
+
+
+!	<< prbulletin >>
+	Prints out directory information for all bulletins in bullist;
+
+simple procedure prbulletin (integer ojfn, options; string bullist);
+begin "prbulletin"
+integer bulnum, bbase;
+
+setformat (4, 3);
+while bulnum _ intscan (bullist, brk) do
+	begin "bline"
+
+	! indent;
+	cprint (ojfn, "      ");
+
+	! if information is wanted from the bulletin itself, get it;
+	if options land (length!bit + subject!bit)
+	    then readrecord (bltptrfile, bltfile, bulnum, 5);
+
+	! print bulletin number, followed by options requested.
+	  show user what datefile thinks the bulletin number is;
+
+	bbase _ bulnum * daterecordsize;
+	swdptr (datefile, bbase + blt!no);
+	bulnum _ wordin (datefile);
+	cprint (ojfn, bulnum, "  ");
+
+! author = -1 means author is not a local user, get it from bulletin;
+	
+	if options land author!bit
+	    then
+		begin
+		swdptr (datefile, bbase + author!);
+		xx _ wordin (datefile);
+		temp _ dirst (xx) [1 to 11] & blanks [1 to 13];
+		cprint (ojfn, temp [1 to 13]);
+		end;
+
+	if options land length!bit
+	    then
+		begin
+		temp _ xrecord [2] [24 to inf];
+		cprint (ojfn, intscan (temp, brk), "  ");
+		end;
+
+	if options land creation!bit
+	    then
+		begin
+		swdptr (datefile, bbase + creation!date);
+		xx _ wordin (datefile);
+		cprint (ojfn, odtim (xx, dateonly), "  ");
+		end;
+
+	if options land expire!bit
+	    then
+		begin
+		swdptr (datefile, bbase + expire!date);
+		xx _ wordin (datefile);
+		cprint (ojfn, odtim (xx, dateonly), "  ");
+		end;
+
+	if options land read!bit
+	    then
+		begin
+		swdptr (datefile, bbase + last!read!date);
+		xx _ wordin (datefile);
+		if xx
+		    then cprint (ojfn, odtim (xx, dateonly), "  ")
+		    else cprint (ojfn, "Not read  ");
+		end;
+
+	if options land nreads!bit
+	    then
+		begin
+		swdptr (datefile, bbase + number!of!reads);
+		xx _ wordin (datefile);
+		cprint (ojfn, xx, "  ");
+		end;
+
+	if options land subject!bit
+	    then cprint (ojfn, xrecord [5] [10 to inf]);
+
+	cprint (ojfn, crlf);
+
+	end "bline";
+
+setformat (0, 3);
+
+end "prbulletin";
+
+
+
+!	<< findtext >>
+	Searches the text of bulletin BULNUM for GOAL, returns true if
+	found, false otherwise.  If SUBJECTONLY is set, only the subject
+	line is searched.  This routine is not as fast as it might be;
+
+simple integer procedure findtext (integer bulnum; string goal; integer subjectonly (false));
+begin "findtext"
+integer ptr, size, glen, ii;
+INTEGER oneLess, bTab, c1, c2;
+STRING s1, s2;
+BOOLEAN Sorry;
+string bstr;
+
+glen _ length (goal);
+if not glen then return (false);
+
+! get a pointer to the bulletin;
+swdptr (bltptrfile, bulnum);
+ptr _ wordin (bltptrfile);
+if not ptr then return (false);
+
+! set file pointer;
+schptr (bltfile, ptr);
+
+if subjectonly
+    then
+	begin
+
+	! read in first five lines of the bulletin;
+	for ii _ 1 upto 5 do
+		temp _ input (bltfile, oneline);
+
+	if sequal (temp [1 to 9], "Subject: ")
+	    then
+		bstr _ temp [10 to inf]
+	    else
+		begin
+		if debug then print (" Subject line in wrong place in bulletin ", bulnum, ".");
+		return (false);
+		end;
+
+	end
+    else
+	begin
+
+	! read in first two lines of bulletin;
+	for ii _ 1 upto 2 do
+		temp _ input (bltfile, oneline);
+
+	! find bulletin length;
+	temp _ temp [24 to inf];
+	size _ intscan (temp, brk);
+
+	! read in text of bulletin;
+	bstr _ sini (bltfile, size, null);
+
+	! scan to the empty line between header and text;
+	do temp _ scan (bstr, oneline, brk) until not length (temp);
+
+	end;
+
+oneLess _ gLen - 1;
+c1 _ LOP(goal);
+IF "a" LEQ c1 LEQ "z" THEN c2 _ c1 - '40
+ELSE
+    IF "A" LEQ c1 LEQ "Z" THEN c2 _ c1 + '40
+    ELSE  c2 _ c1;
+bTab _ GETBREAK;
+IF c1 = c2 THEN SETBREAK(bTab, c1, NULL, "INS")
+ELSE  SETBREAK(bTab, c1 & c2, NULL, "INS");
+
+WHILE TRUE DO BEGIN "search"
+    SCAN(bStr, bTab, brk);
+    IF oneLess > LENGTH(bStr) THEN BEGIN Sorry _ TRUE; DONE "search" END;
+    ! compare for oneless characters...;
+    s1 _ bStr; s2 _ goal;
+    FOR brk _ 1 STEP 1 UNTIL oneless DO BEGIN
+        c1 _ LOP(s1); c2 _ LOP(s2);
+        ! make case - Less...;
+        IF "a" LEQ c1 LEQ "z" THEN c1 _ c1 - '40;
+        IF "a" LEQ c2 LEQ "z" THEN c2 _ c2 - '40;
+        IF c1 NEQ c2 THEN CONTINUE "search" END;
+    ! success - means never having to say were sorry...puke;
+    Sorry _ FALSE; DONE "search" END "search";
+RELBREAK(bTab);
+RETURN(NOT Sorry);
+
+end "findtext";
+!	<< trim >>
+	Returns only those bulletins in bullist that satisfy options;
+
+simple string procedure trim (string bullist; integer options);
+begin "trim"
+integer bulnum, bbase;
+string result;
+
+result _ null;
+while bulnum _ intscan (bullist, brk) do
+	begin "bscan"
+	bbase _ bulnum * daterecordsize;
+
+	! if deleted, print only if deleted bulletins wanted;
+	if options land deleted!bit
+	    then
+		begin
+		if not deleted (bulnum) then continue "bscan";
+		end
+	    else
+		if deleted (bulnum) then continue "bscan";
+
+	! print expired bulletins only if expire date wanted;
+	if expired (bulnum) and not (options land expire!bit)
+	    then continue "bscan";
+
+	! after;
+	if options land after!bit and not after (bulnum, afttim)
+	    then continue "bscan";
+	
+	! before;
+	if options land before!bit and after (bulnum, beftim)
+	    then continue "bscan";
+
+	! new bulletins wanted;
+	if options land new!bit and not after (bulnum, userread)
+	    then continue "bscan";
+
+	! search of subject line;
+	if options land subsearch!bit and not findtext (bulnum, substr, true)
+	    then continue "bscan";
+
+	! search of text;
+	if options land textsearch!bit and not findtext (bulnum, textstr)
+	    then continue "bscan";
+
+	result _ result & cvs (bulnum) & ", ";
+	end "bscan";
+
+return (result [1 to inf-2]);
+
+end "trim";
+
+
+
+!	<< shorten >>
+	Takes a list of positive numbers, returns it in short form.
+	Example:  1, 2, 3, 7, 8, 11, 13, 14 prints as 1-3, 7-8, 11, 13-14;
+
+simple string procedure shorten (string nlist);
+begin "shorten"
+integer first, last, next;
+string result;
+
+result _ null;
+first _ last _ intscan (nlist, brk);
+
+while next _ intscan (nlist, brk) do
+	if next = last + 1
+	    then
+		last _ next
+	    else
+		begin
+		result _ result & ", " & cvs (first);
+		if last neq first
+		    then result _ result & "-" & cvs (last);
+		first _ last _ next;
+		end;
+
+if first
+    then
+	begin
+	result _ result & ", " & cvs (first);
+	if last neq first then result _ result & "-" & cvs (last);
+	end;
+
+return (result);
+
+end "shorten";
+
+
+
+!	<< samechar >>
+	Does a case-independent comparison of A and B;
+
+simple integer procedure samechar (integer a, b);
+begin "samechar"
+
+if '140 leq a leq '172 then a _ a - '40;
+if '140 leq b leq '172 then b _ b - '40;
+
+return (a = b);
+
+end "samechar";
+
+
+!	<< prtopic >>
+	Prints out topic TOPNUM and its bulletins according to OPTIONS.
+	Output goes to OJFN, which is usually '101 for the user terminal;
+
+simple procedure prtopic (integer ojfn, topnum, options);
+begin "print topic"
+integer here, ii, ll;
+string tname, tlist, bullist;
+
+! topic #1 has no bulletins, only subtopics;
+if topnum leq 1 then return;
+
+readrecord (tptrfile, trecfile, topnum, trlength);
+if not xrecord [1]
+    then
+	begin
+	cprint (ojfn, " Bad topic pointer.");
+	return;
+	end;
+
+! save list of subtopics;
+tlist _ xrecord [father!sons];
+
+! skip this topic if not on interest list and user said interest list only;
+if options land interest!bit
+    then
+	begin
+	temp _ xrecord [user!list];
+	while xx _ intscan (temp, brk) do if xx = logdir then done;
+	if xx neq logdir then return;
+	end;
+
+! weed out all bulletins user doesn't want to see;
+bullist _ trim (xrecord [bul!list], options);
+
+! This is the printing part.  It is skipped if topic has no bulletins
+  and user is asking for per-bulletin directory information (author,
+  creation date, etc.);
+if bullist or not (options land lnot (interest!bit + output!bit))
+    then
+	begin
+
+	! keep a running count of topics and bulletins;
+	tcount _ tcount + 1;
+	temp _ bullist;
+	while intscan (temp, brk) do bcount _ bcount + 1;
+
+	tname _ xrecord [topic!name];
+	scan (tname, nexttab, brk);	! throw away topic number;
+	scratch _ space;		! indentation;
+
+	! condense the topic name a bit to avoid repeating the parts
+	  of the name that have already been printed on preceding lines;
+	here _ 1;
+	if ll _ length (lasttop)
+	    then for ii _ 1 upto ll do
+		begin
+		if not samechar (tname [ii for 1], lasttop [ii for 1])
+		    then done;
+		if tname [ii+1 for 1] = "."
+		    then
+			begin
+			scratch _ "   " & scratch & period;
+			here _ ii + 2;
+			end;
+		end;
+
+	! indent and print topic name;
+	cprint (ojfn, scratch, tname [here to inf]);
+	lasttop _ tname;
+
+	if options land (author!bit + length!bit + creation!bit
+		+ expire!bit + read!bit + nreads!bit + subject!bit)
+	    then
+		begin
+		cprint (ojfn, crlf);
+		prbulletin (ojfn, options, bullist);
+		end
+	    else
+		begin
+		if bullist then cprint (ojfn, shorten (bullist));
+		cprint (ojfn, crlf);
+		end;
+	end;
+
+end "print topic";
+
+
+
+!	<< directory >>
+	Prints out directory header, calls prtopic to print
+	directory information on each topic, per options;
+
+procedure directory (integer ojfn; string idxlist; integer options);
+begin "directory"
+integer topidx;
+
+
+cprint (ojfn, crlf, "   ", bbdlogo (bbd#));
+if options land output!bit then cprint (ojfn, "   ", odtim (-1, slashcolon));
+cprint (ojfn, crlf);
+
+if options land everything!bit
+    then options _ options lor (author!bit + length!bit + creation!bit
+		 + expire!bit + read!bit + nreads!bit + subject!bit);
+
+if options land (author!bit + length!bit + creation!bit + expire!bit
+			        + read!bit + nreads!bit + subject!bit)
+    then
+	begin
+	cprint (ojfn, "	 #  ");
+	if options land author!bit   then cprint (ojfn, "Author       ");
+	if options land length!bit   then cprint (ojfn, "Lngt  ");
+	if options land creation!bit then cprint (ojfn, " Created  ");
+	if options land expire!bit   then cprint (ojfn, " Expires  ");
+	if options land read!bit     then cprint (ojfn, " Read     ");
+	if options land nreads!bit   then cprint (ojfn, "#Rds  ");
+	if options land subject!bit  then cprint (ojfn, "Subject");
+	cprint (ojfn, crlf);
+	end;
+
+
+tcount _ bcount _ 0;
+lasttop _ null;
+while topidx _ intscan (idxlist, brk) do
+	prtopic (ojfn, tpcno [topidx], options);
+
+! print topic and bulletin counts, turning output back on if needed;
+if ctlosw
+    then
+	begin
+	ctlosw _ false;
+	print (crlf);
+	end;
+
+cprint (ojfn, "  ", tcount, if tcount = 1 then " topic, " else " topics, ",
+	bcount, if bcount = 1 then " bulletin" else " bulletins");
+if (options land new!bit) and userread
+    then cprint (ojfn, crlf, "   since ", odtim (userread, slashcolon + '1000000));
+if (options land after!bit)
+    then cprint (ojfn, crlf, "   since ", odtim (afttim, slashcolon + '1000000));
+if (options land before!bit)
+    then cprint (ojfn, crlf, "  before ", odtim (beftim, slashcolon + '1000000));
+
+cprint (ojfn, crlf2);
+
+end "directory";
+
+
+
+!	<< gwtpc >>
+	Translates topic name to (list of) topic number(s), with
+	recognition.  Allows wild-card characters * (which matches zero
+	or more characters) and % (which matches exactly one character).
+	Returns a string containing a list of indices into the topic
+	name array (not topic numbers).
+	Takes input from the user terminal;
+
+simple string procedure gwtpc (string tprompt; reference integer trailingcomma);
+begin "gwtpc"
+integer ii, tlength, tbrk, match;
+string tstr, wcopy;
+
+makespctbl ("? .", ktable);
+if not tpcnam [1] then IF NOT getopicnames THEN RETURN("");
+
+tstr _ null;
+while true do
+	begin "loop"
+	trailingcomma _ 0;
+	tstr _ kpstin (tstr, tprompt, 200, 0, ktable, tbrk);
+	if abort then return (null);
+	if tbrk = "?"
+	    then
+		begin
+		typhlp (tstr, tprompt, tpcnam);
+		continue "loop";
+		end;
+	if tbrk = space
+	    then
+		begin
+		print (" ? ", crlf, tprompt, tstr);
+		continue "loop";
+		end;
+	if not tstr then return (null);
+	if tstr [inf to inf] = comma
+	    then
+		begin
+		tstr _ tstr [1 to inf-1];
+		trailingcomma _ true;
+		end;
+	if tbrk = period then tstr _ tstr & tbrk;
+	if tbrk = cr then tstr _ tstr & "*";
+
+	! check for wild cards;
+	wcopy _ tstr;
+	scan (wcopy, wildcards, brk);
+	if brk = "%" or brk = "*"
+	    then
+		begin
+		if tbrk neq cr then continue "loop";
+		wcopy _ wcmatch (tstr, tpcnam);
+		if length (wcopy)
+		    then
+			return (wcopy)
+		    else
+			begin
+			newline;
+			print (" No matches found", crlf);
+			abort _ true;
+			return (null);
+			end;
+		end;
+
+	match _ 0;
+	tlength _ length (tstr);
+	for ii _ 1 upto maxtpc do
+		begin "compare"
+		if sequal (tstr, tpcnam [ii] [1 to tlength])
+		    then
+			begin
+			if tlength = length (tpcnam [ii])
+			    then
+				! exact match, we're done;
+				begin
+				match _ ii;
+				done "compare";
+				end;
+			if moresubtopics (tpcnam [ii] [tlength + 1 to inf])
+			    then continue "compare";
+			if match
+			    then
+				begin
+				if not tbrk = period then outchr (bell);
+				continue "loop";
+				end
+			    else
+				match _ ii;
+			end;
+		end "compare";
+	if match
+	    then
+		begin
+		if tbrk = period then continue "loop";
+		if tbrk = cr
+		    then
+			begin
+			if tlength = length (tpcnam [match])
+			    then
+				return (cvs (match))
+			    else
+				begin
+				print (" ? ");
+				return (null);
+				end;
+			end;
+		print (tpcnam [match] [tlength + 1 to inf]);
+		tstr _ tpcnam [match];
+		end
+	    else
+		begin
+		print (" ? ");
+		if tbrk = cr then return (null);
+		tstr _ null;
+		end;
+
+	end "loop";
+
+end "gwtpc";
+
+
+
+!	<< gttpc >>
+	Translates topic name to topic number, with recognition.
+	Returns a valid topic number or 0.  Input from TTY:;
+
+simple integer procedure gttpc (string tprompt;
+	reference integer trailingcomma;  integer newtopic (false));
+begin "gttpc"
+integer ii, tlength, tbrk, match;
+string tstr;
+
+makespctbl ("? .", ktable);
+if not tpcnam [1] then IF NOT getopicnames THEN RETURN(FALSE);
+
+tstr _ null;
+while true do
+	begin "loop"
+	trailingcomma _ 0;
+	tstr _ kpstin (tstr, tprompt, 200, 0, ktable, tbrk);
+	if abort then return (0);
+	if tbrk = "?"
+	    then
+		begin
+		typhlp (tstr, tprompt, tpcnam);
+		continue "loop";
+		end;
+	if tbrk = space
+	    then
+		begin
+		print (" ? ");
+		if newtopic then print (" (Try ""-"") ");
+		print (crlf, tprompt, tstr);
+		continue "loop";
+		end;
+	if not tstr then return (0);
+	if tstr [inf to inf] = comma
+	    then
+		begin
+		tstr _ tstr [1 to inf-1];
+		trailingcomma _ true;
+		end;
+	if tbrk = period then tstr _ tstr & tbrk;
+	match _ 0;
+	tlength _ length (tstr);
+	for ii _ 1 upto maxtpc do
+		begin "compare"
+		if sequal (tstr, tpcnam [ii] [1 to tlength])
+		    then
+			begin
+			if tlength = length (tpcnam [ii])
+			    then
+				! exact match, we're done;
+				begin
+				match _ ii;
+				done "compare";
+				end;
+			if moresubtopics (tpcnam [ii] [tlength + 1 to inf])
+			    then continue "compare";
+			if match and not newtopic
+			    then
+				begin
+				if not tbrk = period then outchr (bell);
+				continue "loop";
+				end
+			    else
+				match _ ii;
+			end;
+		end "compare";
+	if match
+	    then
+		begin
+		if tbrk = period then continue "loop";
+		if tbrk = cr
+		    then
+			begin
+			if newtopic
+			    then
+				begin
+				if tlength neq length (tpcnam [match])
+				    then
+					begin
+! sneak the string back to Create;	temp _ tstr;
+					return (true);
+					end;
+				print (" That topic already exists.");
+				return (0);
+				end;
+			if tlength = length (tpcnam [match])
+			    then
+				return (tpcno [match])
+			    else
+				begin
+				print (" ? ");
+				return (0);
+				end;
+			end;
+		print (tpcnam [match] [tlength + 1 to inf]);
+		tstr _ tpcnam [match];
+		end
+	    else
+		begin
+		if newtopic
+		    then
+			begin
+			if tbrk = esc or tbrk = period then continue "loop";
+			temp _ tstr;	! sneak the string back to create;
+			return (true);
+			end;
+		print (" ? ");
+		if tbrk = cr then return (0);
+		tstr _ null;
+		end;
+
+	end "loop";
+
+end "gttpc";
+
+
+
+!	<< dirx >>
+	Gets topic and subcommands (both optional), calls directory;
+
+simple procedure dirx (string prompt);
+begin "dirx"
+integer ii, options, trailingcomma, ojfn;
+string idxlist;
+
+if not bbd#
+    then
+	begin
+	print (" You are not connected to a bulletin board.");
+	return;
+	end;
+
+if not tpcnam [1] then IF NOT getopicnames THEN RETURN;
+
+idxlist _ null;
+trailingcomma _ 0;
+if pbrk = comma
+    then
+	begin
+	trailingcomma _ true;
+	conwait (prompt, false);
+	if abort then return;
+	end
+    else
+	if pbrk neq cr then idxlist _ gwtpc (prompt, trailingcomma);
+
+if abort then return;
+
+if not length (idxlist) then idxlist _ wcmatch ("*", tpcnam);
+
+options _ if trailingcomma then subcom (diropt) else ldopts;
+if abort then return;
+
+! make some options sticky;
+ldopts _ options land (author!bit + creation!bit + everything!bit
+       + expire!bit + length!bit + nreads!bit + read!bit + subject!bit);
+
+! get after date;
+if options land after!bit
+    then
+	begin
+	print ("   After date: ");
+	temp _ intty;
+	afttim _ idtim (temp);
+	if !skip! then afttim _ idtim (temp & " 0");
+	if !skip!
+	    then
+		begin
+		print (" ? Try MM/DD/YY HH:MM:SS");
+		afttim _ 0;
+		return;
+		end;
+	end
+    else
+	afttim _ 0;
+
+! get before date;
+if options land before!bit
+    then
+	begin
+	print ("   Before date: ");
+	temp _ intty;
+	beftim _ idtim (temp);
+	if !skip! then beftim _ idtim (temp & " 0");
+	if !skip!
+	    then
+		begin
+		print (" ? Try MM/DD/YY HH:MM:SS");
+		beftim _ 0;
+		return;
+		end;
+	end
+    else
+	beftim _ 0;
+
+! get output file;
+if options land output!bit
+    then
+	begin
+	print ("   Output file: ");
+	ojfn _ openfile (null, "wce");
+	if !skip! then 
+            BEGIN print(crlf, "can't open that file!", crlf); return END;
+	! don't clobber any existing file, append to it;
+	schptr (ojfn, -1);
+	end
+    else
+	ojfn _ otty;
+
+if not openbbd
+    then
+	begin
+	print (" Cannot open the bulletin board.");
+	return;
+	end;
+
+! type out the directory;
+directory (ojfn, idxlist, options);
+
+closebbd;
+if ojfn neq otty then cfile (ojfn);
+
+! update last user read date when he has asked to see new bulletins;
+if options land new!bit
+    then
+	begin
+	openf (userfile, readwritethawed);
+	if !skip! then return;			! no fuss;
+	swdptr (userfile, read!page + logdir);
+	wordout (userfile, gtad);
+	closf (userfile);
+	end;
+
+end "dirx";
+
+
+
+!	<< addtpc >>
+	Adds or drops a topic (and all its sons) from user's interest list;
+
+recursive procedure addtpc (integer topnum, add);
+begin "addtpc"
+string tlist;
+
+! get topic record;
+if not opentopic
+    then
+	begin
+	print (" Opentopic failure, try again.");
+	abort _ true;
+	return;
+	end;
+readrecord (tptrfile, trecfile, topnum, trlength);
+closetopic;
+
+! drop login directory number from the user list;
+temp _ xrecord [user!list];
+tlist _ null;
+while xx _ intscan (temp, brk) do
+	if xx neq logdir then tlist _ tlist & cvs (xx) & ", ";
+
+! add it back if adding (guards against duplicates);
+if add then tlist _ tlist & cvs (logdir) & ", ";
+xrecord [user!list] _ tlist [1 to inf-2];
+
+! write out the change;
+if not writerecord (tptrfile, trecfile, trlength)
+    then
+	begin
+	print (" Writetopic failure (#", topnum, "), try again.");
+	abort _ true;
+	return;
+	end;
+
+if debug then print (" ", topnum);
+
+! do the same for all the sons;
+tlist _ xrecord [father!sons];
+scan (tlist, nexttab, brk);
+while topnum _ intscan (tlist, brk) do
+	begin
+	addtpc (topnum, add);
+	if abort then return;
+	end;
+
+end "addtpc";
+
+
+
+!	<< addx >>
+	Adds a topic to user's interest list;
+
+simple procedure addx (string prompt; integer add (false));
+begin "addx"
+integer topnum;
+
+if not bbd#
+    then
+	begin
+	print (" You are not connected to a bulletin board.");
+	return;
+	end;
+
+if pbrk = comma or pbrk = cr
+    then
+	begin
+	print (" I need a topic name.");
+	return;
+	end;
+
+if not tpcnam [1] then IF NOT getopicnames THEN RETURN;
+
+! add topic "*";
+tpcnam [maxtpc _ maxtpc + 1] _ "*";
+tpcno [maxtpc] _ 1;
+tpcnam [maxtpc+1] _ del;
+
+topnum _ gttpc (prompt, brk);
+
+! remove topic "*";
+tpcno [maxtpc] _ 0;
+tpcnam [maxtpc] _ del;
+maxtpc _ maxtpc - 1;
+
+if abort then return;
+
+if not topnum
+    then
+	begin
+	print (" I need a topic name.");
+	return;
+	end;
+
+addtpc (topnum, add);
+if abort then return;
+
+print (if add then " Added to" else " Dropped from", " your interest list.");
+
+end "addx";
+
+
+
+!	<< connx >>
+	Allows user to change bulletin boards;
+
+simple procedure connx (string prompt);
+begin "connx"
+integer whichbbd, oldbbd;
+
+if pbrk = comma
+    then
+	begin
+	print (" ? ");
+	return;
+	end;
+
+if pbrk = cr
+    then
+	begin
+	! if user is already connected to his home bbd, make a fuss,
+	  otherwise connect him back home;
+	if bbd# = hombbd
+	    then
+		begin
+		print (" I need a bulletin-board name.  Type ""Connect ?"".");
+		return;
+		end
+	    else
+		whichbbd _ hombbd;			! default;
+	end
+    else
+	begin
+	! get a bulletin board to connect to;
+	whichbbd _ gtbbd (prompt);
+	if abort then return;
+	if not whichbbd then whichbbd _ hombbd;		! default;
+	end;
+
+! are we already connected?;
+if bbd# = whichbbd
+    then
+	begin
+	print ("   ", bbdlogo (bbd#));
+	return;
+	end;
+
+! try connecting to it;
+oldbbd _ bbd#;
+if connect (whichbbd) then return;
+
+! failed, connect back to where you were;
+if not oldbbd then return;
+print (crlf);
+connect (oldbbd);
+
+end "connx";
+
+
+
+!	<< strleq >>
+	String comparison:  Returns true if astr is less than
+	or equal to bstr, that is, if astr and bstr are in
+	alphabetical order;
+
+simple integer procedure strleq (string astr, bstr);
+begin "strleq"
+integer x, y;
+
+while length (astr) do
+	begin "eqloop"
+	x _ lop (astr);
+	y _ lop (bstr);
+	if "a" leq x leq "z" then x _ x - '40;
+	if "a" leq y leq "z" then y _ y - '40;
+	if x < y then return (true);
+	if x = y then continue "eqloop";
+	return (false);
+	end "eqloop";
+
+return (true);
+
+end "strleq";
+
+
+
+!	<< sonsort >>
+	Inserts son in oldlist in alphabetical order.  Sonname
+	is the new topic name, son the new topic number;
+
+simple string procedure sonsort (integer son; string sonname, oldlist);
+begin "sonsort"
+integer tnum, tpcindex, otherflag;
+string newlist;
+
+! cluge to keep topic #2 (Other) at the end of the list;
+otherflag _ false;
+if equ (oldlist, "2") then return (cvs (son) & ", 2");
+if equ (oldlist [inf-2 to inf], ", 2")
+    then
+	begin
+	oldlist _ oldlist [1 to inf-3];
+	otherflag _ true;
+	end;
+
+newlist _ null;
+while tnum _ intscan (oldlist, brk) do
+	begin
+	
+	! find topic name;
+	tpcindex _ findtpc (tnum);
+
+	if strleq (sonname, tpcnam [tpcindex])
+	    then
+		begin
+		newlist _ newlist & ", " & cvs (son)
+				  & ", " & cvs (tnum) & oldlist;
+		if otherflag then newlist _ newlist & ", 2";
+		return (newlist [3 to inf]);
+		end;
+
+	! add the topic to newlist until we get where we want the son to go;
+	newlist _ newlist & ", " & cvs (tnum);
+
+	end;
+
+! if we get here, topic goes at the end of the list;
+newlist _ newlist & ", " & cvs (son);
+if otherflag then newlist _ newlist & ", 2";
+return (newlist [3 to inf]);
+
+end "sonsort";
+
+
+
+!	<< create >>
+	Creates a new topic;
+
+simple procedure create (string prompt);
+begin "create"
+integer topnum, trailingcomma, father;
+integer newNum;
+string topicname, fname, sonslist;
+
+if not bbd#
+    then
+	begin
+	print (" You are not connected to a bulletin board.");
+	return;
+	end;
+
+if pbrk = cr or pbrk = comma
+    then
+	begin
+	print (" I need a new topic name.");
+	return;
+	end;
+
+if not tpcnam [1] then IF NOT getopicnames THEN RETURN;
+
+! try to get new topicname;
+if not gttpc (prompt, trailingcomma, true) then return;
+if abort then return;
+
+! gttpc sneaks the new name back in temp;
+topicname _ temp;
+
+! See if there is any room for another topic--;
+if not opentopic
+    then
+	begin
+	print (" Opentopic failure in CREATE");
+	return;
+	end;
+
+SWDPTR(tptrfile, 0);
+newNum _ WORDIN(tptrfile);
+IF debug THEN print(crlf & "[NEW topic is number ", CVS(newNUM),"] ");
+closetopic;
+
+IF newNum > tmax - 1 THEN ! NO room left;
+BEGIN
+    print(crlf & "Topic upperbound reached--See Yeager@SUMEX-AIM");
+    print(crlf & "NEW topic NOT created!!!");
+    RETURN
+END;
+
+! check it out;
+if topicname [inf to inf] = period
+    then
+	begin
+	print (" Null fields not allowed.");
+	return;
+	end;
+
+! find father's name by scanning back to last period;
+brk _ length (topicname);
+while topicname [brk for 1] and topicname [brk for 1] neq period do
+	brk _ brk - 1;
+fname _ topicname [1 to brk-1];
+father _ if fname then tpcno [search (fname, tpcnam)] else 1;
+if not father
+    then
+	begin
+	print (" Only one new field at a time.");
+	return;
+	end;
+
+! raise first character of topicname;
+brk _ lop (topicname);
+if '141 leq brk leq '172
+    then brk _ brk - '40;
+topicname _ brk & topicname;
+
+! get the father's topic record;
+if not opentopic
+    then
+	begin
+	print (" Opentopic failure.");
+	return;
+	end;
+readrecord (tptrfile, trecfile, father, trlength);
+closetopic;
+
+! copy father's list of interested users to son;
+temp _ xrecord [user!list];
+
+! write the new topic record, copying father's userlist;
+arrclr (xrecord);
+xrecord [1] _ "#0" & tab & topicname;
+xrecord [father!sons] _ cvs (father) & tab;
+xrecord [user!list] _ temp;
+
+!
+#3	Sail.storage-allocation			number and name
+2	16, 17, 18				father and sons
+3, 78, 144, 356					bulletin numbers
+436, 123, 277					interested users
+
+;
+
+! write out new topic record, find out number assigned to it;
+topnum _ writerecord (tptrfile, trecfile, trlength);
+if not topnum
+    then
+	begin
+	print (" Failure writing topic record.");
+	return;
+	end;
+
+! Get the father's topic record (again).
+  We don't want to write a new father's record to point
+  to the new son until the son is there;
+if not opentopic
+    then
+	begin
+	print (" Opentopic failure.");
+	return;
+	end;
+readrecord (tptrfile, trecfile, father, trlength);
+closetopic;
+
+! put the new topic with the other sons in alphabetical order;
+sonslist _ xrecord [father!sons];
+temp _ scan (sonslist, nexttab, brk) & tab;	! save the father;
+sonslist _ sonsort (topnum, topicname, sonslist);
+xrecord [father!sons] _ temp & sonslist;
+
+! write it back;
+if not writerecord (tptrfile, trecfile, trlength)
+    then
+	begin
+	print (" Failure rewriting father's record.");
+	return;
+	end;
+
+print (crlf & " New topic: ", topicname);
+
+IF NOT MaketopicnameRecord THEN RETURN;				  ! patch 7;
+getopicnames;
+
+end "create";
+
+
+
+!	<< ddtx >>
+	Calls DDT;
+
+simple procedure ddtx (string prompt);
+begin "ddtx"
+
+if pbrk neq cr then conwait (prompt);
+if abort then return;
+
+ifc tops20 thenc
+print (" Not available.", crlf);
+elsec
+print (" DDT  POPJ 17,$X to return.", crlf);
+ddt;
+endc
+
+end "ddtx";
+
+
+
+!	<< ownblt >>
+	Returns true if user is a manager or is the author of bulletin
+	bulnum.  Returns false otherwise;
+
+simple integer procedure ownblt (integer bulnum);
+begin "ownblt"
+integer bbase, adir;
+
+if ithops = bbdpro [bbd#] then return (true);
+
+bbase _ bulnum * daterecordsize;
+swdptr (datefile, bbase + author!);
+if wordin (datefile) neq logdir
+    then
+	begin
+	print (" Bulletin ", bulnum, " does not belong to you.");
+	return (false);
+	end;
+
+return (true);
+
+end "ownblt";
+
+
+
+!	<< delund >>
+	Deletes a range of bulletins if delete is true.
+	Otherwise, undeletes them;
+
+simple procedure delund (integer bstart, bstop, delete);
+
+for bstart _ bstart upto bstop do
+begin "delund"
+integer bbase;
+
+if not ownblt (bstart) then continue "delund";
+
+bbase _ bstart * daterecordsize;
+swdptr (datefile, bbase + deleted!);
+wordout (datefile, delete);
+print (" ", bstart);
+
+end "delund";
+
+
+
+!	<< delx >>
+	Gets bulletin range from user, calls delund;
+
+simple procedure delx (string prompt; integer delete (false));
+begin "delx"
+integer bstart, bstop, bulcnt;
+string delist;
+
+if not bbd#
+    then
+	begin
+	print (" You are not connected to a bulletin board.");
+	return;
+	end;
+
+if pbrk = cr or pbrk = comma
+    then
+	begin
+	print (" I need a bulletin number (or range of numbers).");
+	return;
+	end;
+
+delist _ getrange (prompt);
+if abort then return;
+
+if not openbbd
+    then
+	begin
+	print (" Cannot open the bulletin board.");
+	return;
+	end;
+
+! find out how many bulletins we have;
+swdptr (bltptrfile, 0);
+bulcnt _ wordin (bltptrfile) - 1;
+
+while delist do
+	begin
+	bstart _ intscan (delist, brk);
+	bstop _ if brk neq "-" then bstart else -intscan (delist, brk);
+	if bstart < 1 or bstart > bulcnt
+	    then
+		begin
+		print (" Bulletin ", bstart, " does not exist.");
+
+		! added close below 8-sept-78( Yeager );
+		closebbd;
+		return;
+		end;
+	if bstop > bulcnt then bstop _ bulcnt;
+	delund (bstart, bstop, delete);
+	end;
+
+closebbd;
+
+end "delx";
+
+
+
+!	<< destroy >>
+	Removes topic from list of its father's sons, so it can't be found;
+
+simple procedure destroy (string prompt);
+begin "destroy"
+integer topnum, father;
+string tname;
+
+if not bbd#
+    then
+	begin
+	print (" You are not connected to a bulletin board.");
+	return;
+	end;
+
+if pbrk = comma or pbrk = cr
+    then
+	begin
+	print (" I need a topic name.");
+	return;
+	end;
+
+if not tpcnam [1] then IF NOT getopicnames THEN RETURN;
+
+topnum _ gttpc (prompt, brk);
+if abort or not topnum then return;
+
+if topnum = 2
+    then
+	begin
+	print (" You may not destroy ""Other"".");
+	return;
+	end;
+
+if not opentopic
+    then
+	begin
+	print (" Opentopic failure, try again.");
+	return;
+	end;
+
+! get topic record;
+readrecord (tptrfile, trecfile, topnum, trlength);
+
+! are there any subtopics?;
+temp _ xrecord [father!sons];
+father _ intscan (temp, brk);
+scan (temp, nexttab, brk);
+if temp or xrecord [bul!list]
+    then
+	begin
+	closetopic;
+	if temp
+	    then print (" You must destroy the subtopics first.")
+	    else print (" You must get rid of the bulletins first.");
+	return;
+	end;
+
+! save topic name;
+tname _ xrecord [1];
+scan (tname, nexttab, brk);
+
+! get father's record;
+readrecord (tptrfile, trecfile, father, trlength);
+
+closetopic;
+
+! remove topnum from list of father's sons;
+temp _ xrecord [father!sons];
+xrecord [father!sons] _ scan (temp, nexttab, brk) & tab;  ! save father's father;
+scratch _ null;
+while xx _ intscan (temp, brk) do
+	if xx neq topnum then scratch _ scratch & cvs (xx) & ", ";
+xrecord [father!sons] _ xrecord [father!sons] & scratch [1 to inf-2];
+
+! write out the change;
+if not writerecord (tptrfile, trecfile, trlength)
+    then
+	begin
+	print (" Writetopic failure, try again.");
+	return;
+	end;
+
+print (" Topic ", tname, " destroyed.");
+
+IF NOT makeTopicNameRecord THEN RETURN;				  ! patch 7;
+
+getopicnames;
+
+end "destroy";
+
+
+
+!	<< expire >>
+	Changes expire dates of bulletins; 
+
+simple procedure expire (integer bstart, bstop, exdate);
+
+for bstart _ bstart upto bstop do
+begin "expire"
+integer bbase;
+
+if not ownblt (bstart) then continue "expire";
+
+bbase _ bstart * daterecordsize;
+swdptr (datefile, bbase + expire!date);
+wordout (datefile, exdate);
+print (" ", bstart);
+
+end "expire";
+
+
+
+!	<< expx >>
+	Gets bulletin range from user, calls expire;
+
+simple procedure expx (string prompt);
+begin "expx"
+integer bstart, bstop, bulcnt, exdate;
+string exlist;
+
+if not bbd#
+    then
+	begin
+	print (" You are not connected to a bulletin board.");
+	return;
+	end;
+
+if pbrk = cr or pbrk = comma
+    then
+	begin
+	print (" I need a bulletin number (or range of numbers).");
+	return;
+	end;
+
+exlist _ getrange (prompt);
+if abort then return;
+
+print (" (change to) ");
+temp _ intty;
+if not temp then return;
+exdate _ idtim (temp);
+if !skip! then exdate _ idtim (temp & " 23:59:59");
+if !skip!
+    then
+	begin
+	print (" ? Try MM/DD/YY HH:MM:SS");
+	return;
+	end;
+
+if not openbbd
+    then
+	begin
+	print (" Cannot open the bulletin board.");
+	return;
+	end;
+
+! find out how many bulletins we have;
+swdptr (bltptrfile, 0);
+bulcnt _ wordin (bltptrfile) - 1;
+
+while exlist do
+	begin
+	bstart _ intscan (exlist, brk);
+	bstop _ if brk neq "-" then bstart else -intscan (exlist, brk);
+	if bstart < 1 or bstart > bulcnt
+	    then
+		begin
+		print (" Bulletin ", bstart, " does not exist.");
+		return;
+		end;
+	if bstop > bulcnt then bstop _ bulcnt;
+	expire (bstart, bstop, exdate);
+	end;
+
+closebbd;
+
+end "expx";
+
+
+
+!	<< gtdir >>
+	Gets a directory name;
+
+simple integer procedure gtdir (string prompt);
+begin "gtdir"
+integer dirno;
+string dirnam, fullname;
+
+dirno _ 0;
+dirnam _ null;
+do
+	begin
+	dirnam _ kpstin (dirnam, prompt, 200, 0, defaulttable, pbrk);
+	if abort then return (0);
+	if pbrk = cr and not dirnam then done;
+	dirnam _ upper (dirnam);
+	dirno _ stdir (dirnam, true);
+	if !skip!
+	    then
+		begin
+		dirno _ 0;
+		if !skip! = 2 and pbrk = esc
+		    then
+			begin			! ambiguous;
+			outchr (bell);
+			continue;
+			end;
+		print (" ? ");
+		dirnam _ null;
+		if pbrk = cr
+		    then
+			begin
+			abort _ true;
+			done;
+			end
+		    else
+			continue;
+		end;
+	fullname _ dirst (dirno);
+	if pbrk = esc then print (fullname [length (dirnam)+1 to inf]);
+	dirnam _ fullname;
+	end
+until pbrk = cr;
+
+return (dirno);
+
+end "gtdir";
+
+
+
+!	<< forward >>
+	Picks up queued bulletins and posts them;
+
+simple procedure forward (string prompt);
+begin "forward"
+integer qjfn, whichbbd, exdate, dirno, onedir;
+string topicname, mail, dirName;
+Define NOwriteACCESS = '600123;
+
+onedir _ 0;
+if pbrk neq cr
+    then
+	begin					! single directory;
+	onedir _ gtdir (prompt);
+	if abort then return;
+	end;
+
+conwait (prompt, true);
+if abort then return;
+
+! save bbd#, userread and placemark through a possible connect elsewhere;
+savparms;
+
+for dirno _ 1 upto '2000 do
+	begin "qloop"
+
+	if onedir
+	    then			! do one directory only;
+		begin
+		if dirno = 1 then dirno _ onedir;
+		if dirno neq onedir then done "qloop";
+		end;
+
+	Temp _ DirName _ dirst (dirno);
+	if !skip! then continue "qloop";
+
+	! "*roe" was changed to "*rwoe" for write access check(PATCH 3);
+ifc tops20 thenc
+	qjfn _ openfile ("<" & temp & ">[--queued-bulletin--].*.*", "*rwoe");
+elsec
+	qjfn _ openfile ("<" & temp & ">[--queued-bulletin--].*;*", "*rwoe");
+endc
+	If !skip! Then ! error stuff is for PATCH 3;	             
+	Begin "error"
+	  If !skip! = NOwriteACCESS Then ! Write Acc. illegal;
+          Begin "illegal"		 ! So will not be able to delete;
+	     print( crlf );		 ! from this directory;
+	     print("   Sorry, you canNOT forward from <",Dirname,">");
+	     print( crlf );
+	  End "illegal";
+	  CONTINUE "qloop";
+	End "error";
+
+	setinput (qjfn, 200, brk, eof);
+	! find out which bulletin-board to post it on;
+	temp _ input (qjfn, oneline);
+	whichbbd _ search (temp, bbdname);
+	if not whichbbd
+	    then
+		begin
+		print (" Illegal bbd name for ", jfns (qjfn, 0), ".", crlf);
+		continue "qloop";
+		end;
+
+	! get the topic name;
+	topicname _ input (qjfn, oneline);
+
+	! get the expire date;
+	temp _ input (qjfn, oneline);
+	exdate _ idtim (temp);
+	if !skip!
+	   then
+		begin
+		temp _ temp & " 23:59:59";		! try again;
+		exdate _ idtim (temp);
+		if !skip!
+		    then
+			begin
+			print (" Illegal expire date for ", jfns (qjfn, 0), ".", crlf);
+			continue "qloop";
+			end;
+		end;
+
+	mail _ null;
+	do mail _ mail & input (qjfn, 0) until eof;
+
+	! post the bulletin;
+	if bltpost (whichbbd, exdate, topicname, mail)
+	    then
+		begin
+		closf (qjfn);
+		delf (qjfn);		! delete the file;
+		rljfn(qjfn);		! release the jfn - they aren't inf;
+		dirno _ dirno - 1;	! scan this directory again;
+		end;
+
+	print (crlf);
+
+	end "qloop";
+
+! restore bbd#, placemark and userread;
+connect (savbbd);
+resparms;
+
+end "forward";
+
+
+
+!	<< listx >>
+	Copies bulletins to a file or lpt:
+	Gets bulletin range from user, calls type;
+
+simple procedure listx (string prompt; integer needfilename (false));
+begin "listx"
+integer bstart, bstop, bulcnt, ojfn;
+string bullname;
+string bullist;
+
+if not bbd#
+    then
+	begin
+	print (" You are not connected to a bulletin board.");
+	return;
+	end;
+
+if pbrk = cr or pbrk = comma
+    then
+	begin
+	print (" I need a bulletin number (or range of numbers)." & crlf );
+	print ("    (NOTE: LIST does NOT have SUBCOMMANDS.)" & crlf);
+	return;
+	end;
+
+bullist _ getrange (prompt);
+if abort then return;
+
+! IMSSS has no LPT:, so always ask for a file;
+ifc imsss thenc
+needfilename _ true;
+endc
+
+! output to file or LPT:;
+if needfilename
+    then
+	begin
+	print (" (to file) ");
+	ojfn _ openfile (null, "ace");	! append, confirm;
+	if !skip! then return;
+	end
+    else
+	begin
+	ojfn _ openfile ("lpt:", "we");
+	if !skip!
+	    then
+		begin	
+		print (" Can't get lpt:");
+		return;
+		end;
+	end;
+
+! find out how many bulletins we have;
+rljfn (bltptrfile);
+bullname _ bbdfilename (bbd#);
+bltptrfile _ openfile (bullname & "PTR", "RHO");
+if !skip!
+    then
+	begin
+	print (crlf & "CanNOT open " & bullname & "PTR" & crlf);
+	erstr( -1, '400000);
+	! close open files ;
+	cfile (ojfn);
+	return;
+	end;
+swdptr (bltptrfile, 0);			
+bulcnt _ wordin (bltptrfile) - 1;	
+cfile (bltptrfile);			! Close file, and release jfn;
+					! and unmapping any mapped pages;
+! get jfn back again (renew the earlier environment);
+bltptrfile _ gtjfn (bullname & "ptr", '100001000000); 
+if !skip! then 
+	begin
+	print (crlf & "CanNOT gtjfn for " & bullname & "PTR" & crlf);
+	erstr( -1, '400000);
+	! close open files ;
+	cfile (ojfn);
+	return;
+	end;
+
+if not openbbd
+    then
+	begin
+	print (" Cannot open the bulletin board.");
+	return;
+	end;
+
+while bullist do
+	begin
+	bstart _ intscan (bullist, brk);
+	if bstart < 1 or bstart > bulcnt
+	   then
+	   BEGIN
+	   print (crlf & " Bulletin ", bstart, " does not exist.");
+	   print (crlf & " (Perhaps you terminated the list with "","")");
+	   print (crlf & " Valid bulletins preceding error are listed");
+
+	   ! close lpa: ;
+	   cfile (ojfn);
+	   
+	   ! close bbd;
+	   closebbd;
+	   return;
+	   END;
+	bstop _ if brk neq "-" then bstart else -intscan (bullist, brk);
+	if bstop > bulcnt then bstop _ bulcnt;
+	type (ojfn, bstart, bstop, topic!type);
+	if abort then done;
+	end;
+
+cfile (ojfn);
+closebbd;
+
+end "listx";
+
+
+
+!	<< move >>
+	Moves a range of bulletins to a new topic (topnum),
+	removing them from their current topic;
+
+simple procedure move (integer bstart, bstop, topnum);
+
+for bstart _ bstart upto bstop do
+begin "move"
+integer bbase, curtpc;
+string blist;
+
+! find current topic;
+openf (datefile, readwritethawed);
+if !skip!
+    then
+	begin
+	print (" Openf failure ", cvos (!skip!), " for datefile.");
+	abort _ true;
+	return;
+	end;
+
+if not ownblt (bstart)
+    then
+	begin
+	closf (datefile);
+	continue "move";
+	end;
+
+bbase _ bstart * daterecordsize;
+swdptr (datefile, bbase + topic!list);
+curtpc _ wordin (datefile);
+
+! remove bstart from current topic;
+if not opentopic
+    then
+	begin
+	print (" Opentopic failure, try again.");
+	abort _ true;
+	return;
+	end;
+readrecord (tptrfile, trecfile, curtpc, trlength);
+closetopic;
+
+zapnum (bstart, xrecord [bul!list]);
+
+if not writerecord (tptrfile, trecfile, trlength)
+    then
+	begin
+	print (" Writetopic failure (#", curtpc, "), try again.");
+	abort _ true;
+	return;
+	end;
+
+! add bstart to new topic;
+if not opentopic
+    then
+	begin
+	print (" Opentopic failure for new topic, please repeat.");
+	abort _ true;
+	return;
+	end;
+readrecord (tptrfile, trecfile, topnum, trlength);
+closetopic;
+
+zapnum (bstart, xrecord [bul!list]);
+addnum (bstart, xrecord [bul!list]);
+
+if not writerecord (tptrfile, trecfile, trlength)
+    then
+	begin
+	print (" Writetopic failure for new topic, please repeat.");
+	abort _ true;
+	return;
+	end;
+
+! change topic number in bulletin's date record;
+swdptr (datefile, bbase + topic!list);
+wordout (datefile, topnum);
+closf (datefile);
+
+print (" ", bstart);
+
+end "move";
+
+
+
+!	<< movex >>
+	Gets bulletin range from user, calls move;
+
+simple procedure movex (string prompt);
+begin "movex"
+integer bstart, bstop, bulcnt, topnum;
+string movlist;
+
+if not bbd#
+    then
+	begin
+	print (" You are not connected to a bulletin board.");
+	return;
+	end;
+
+if pbrk = cr or pbrk = comma
+    then
+	begin
+	print (" I need a bulletin number (or range of numbers).");
+	return;
+	end;
+
+movlist _ getrange (prompt);
+if abort then return;
+
+print (" (to topic) ");
+topnum _ gttpc (prompt & movlist & space, brk);
+if abort or not topnum then return;
+
+! find out how many bulletins we have;
+openf (bltptrfile, readthawed);
+if !skip!
+    then
+	begin
+	print (" Openf failure.");
+	return;
+	end;
+swdptr (bltptrfile, 0);
+bulcnt _ wordin (bltptrfile) - 1;
+closf (bltptrfile);
+
+while movlist do
+	begin
+	bstart _ intscan (movlist, brk);
+	if bstart < 1 or bstart > bulcnt
+	    then
+		begin
+		print (" Bulletin ", bstart, " does not exist.");
+		return;
+		end;
+	bstop _ if brk neq "-" then bstart else -intscan (movlist, brk);
+	if bstop > bulcnt then bstop _ bulcnt;
+	move (bstart, bstop, topnum);
+	if abort then done;
+	end;
+
+end "movex";
+
+
+
+!	<< news >>
+	Calls directory with subcommands interest-list, new,
+	author, length, expire-date and subject;
+
+simple procedure news (string prompt);
+begin "news"
+integer bulcnt, i;
+string tindices;					  ! patch 1 ;
+
+if not bbd#
+    then
+	begin
+	print (" You are not connected to a bulletin board.");
+	return;
+	end;
+
+if not pbrk = cr
+    then
+	begin
+	conwait (prompt);
+	if abort then return;
+	end;
+
+! get topic names if we don't have them ;		  ! patch 1 ;
+if not tpcnam [1] then IF NOT getopicnames THEN RETURN;	  ! patch 1 ;
+
+if not openbbd
+    then
+	begin
+	print (" Can't open the bulletin board.");
+	return;
+	end;
+
+
+swdptr (userfile, post!page + logdir);	! cr date of newest blt on int lst;
+xx _ wordin (userfile);
+
+
+if xx and (xx geq userread)		! compare with last bbd read date;
+    then
+      begin "find news"
+
+	! build little string list for indexing Tpcno in directory ; 
+	i _ 0;						          ! patch 1 ;
+	tindices _ "";					          ! patch 1 ;
+	While ( (tpcno[i _ i + 1])  and  (i Leq tmax) )	          ! patch 1 ;
+	      DO tindices _ tindices & cvs(i) & "," ;	          ! patch 1 ;
+	
+	! type out directory of new bulletins;
+	! tindices was a 1 before patch 1 ;
+	directory (otty, tindices, interest!bit + new!bit + author!bit 
+	           + length!bit + expire!bit + subject!bit)
+      end "find news"
+    else
+	print (" Nothing new on your interest list.");
+
+closebbd;
+
+! update last user read date;
+openf (userfile, readwritethawed);
+if !skip! then return;			! no fuss;
+swdptr (userfile, read!page + logdir);
+wordout (userfile, gtad);
+closf (userfile);
+
+end "news";
+
+
+
+!	<< getint >>
+	Makes a list of everybody who has an interest list on this bbd;
+
+recursive procedure getint (integer topnum);
+begin "getint"
+string tlist;
+
+! get the topic record;
+readrecord (tptrfile, trecfile, topnum, trlength);
+
+temp _ xrecord [user!list];
+while xx _ intscan (temp, brk) do xarray [xx] _ true;
+
+! do the same for all the sons;
+tlist _ xrecord [father!sons];
+scan (tlist, nexttab, brk);
+while topnum _ intscan (tlist, brk) do getint (topnum);
+
+end "getint";
+
+
+
+!	<< wantsit >>
+	Returns true if user wants to be notified by mail,
+	false otherwise;
+
+simple integer procedure wantsit;
+begin "wantsit"
+integer projfn;
+
+projfn _ openfile ("<" & logstr & ">(bbd.profile)", "re");
+if not !skip!
+    then
+	begin
+	! ignore "Connect:" line;
+	input (projfn, oneline);
+	! read "Notify?" line;
+	temp _ input (projfn, oneline);
+	cfile (projfn);
+	if temp [9 to 9] = "Y" or temp [9 to 9] = "y"
+	    then return (true);
+	if temp [9 to 9] = "N" or temp [9 to 9] = "n"
+	    then return (false);
+	end;
+
+! default;
+ifc ecl thenc
+return (false);
+elsec
+return (true);
+endc
+
+end "wantsit";
+
+
+
+!	<< notify >>
+	Notifes each user of new bulletins on his interest list;
+
+simple procedure notify (string prompt);
+begin "notify"
+integer nottime, i, ii, njfn;
+string dirstr, tindices, nmail;
+string from, to, subject;
+
+if NOT tpcnam[1] then IF NOT getopicnames THEN RETURN;		! patch 1;
+
+if not bbd#
+    then
+	begin
+	print (" You are not connected to a bulletin board.");
+	return;
+	end;
+
+conwait (prompt, true);
+if abort then return;
+
+! find date/time of last notify;
+openf (lockfile, readwritethawed);
+if !skip!
+    then
+	begin
+	print (" Openf error ", cvos (!skip!), " for lockfile.");
+	return;
+	end;
+swdptr (lockfile, last!notify);
+nottime _ wordin (lockfile);
+closf (lockfile);
+
+if not openbbd
+    then
+	begin
+	print (" Can't open the bulletin board.");
+	return;
+	end;
+
+arrclr (xarray);
+getint (1);
+
+! notify each interest lister;
+for logdir _ 1 upto xmax do
+	begin "nloop"
+
+	if not xarray [logdir] then continue "nloop";
+	logstr _ dirst (logdir);
+
+	print (crlf, " ", logstr);
+
+	if not wantsit
+	    then
+		begin
+		print (" -- doesn't want it");
+		continue "nloop";
+		end;
+
+	! get last time user looked at new bulletins;
+	swdptr (userfile, read!page + logdir);
+	xx _ wordin (userfile);
+
+	! get creation date of newest bulletin on user's interest list;
+	swdptr (userfile, post!page + logdir);
+	if xx > wordin (userfile)
+	    then
+		begin
+		print (" -- nothing new");
+		continue "nloop";
+		end;
+
+	! tell directory we want the later of the two times
+	  (last read date and last notify date);
+	afttim _ xx max nottime;
+
+	! open a temporary file for the directory listing;
+ifc tops20 thenc
+	njfn _ openfile ("notify.tmp.-1", "rwte");
+elsec
+	njfn _ openfile ("notify.tmp;-1", "rwte");
+endc
+	if !skip!
+	    then
+		begin
+		print (" Openfile error ", cvos (!skip!), " for .tmp file.");
+		continue "nloop";
+		end;
+
+	! build little string list for indexing Tpcno in directory ; 
+	i _ 0;						          ! patch 1 ;
+	tindices _ "";					          ! patch 1 ;
+	While ( (tpcno[i _ i + 1])  and  (i Leq tmax) )	          ! patch 1 ;
+	      DO tindices _ tindices & cvs(i) & "," ;	          ! patch 1 ;
+	
+	! get directory of new bulletins;
+	! tindices was a 1 before patch 1 ;
+	directory (njfn, tindices, interest!bit + after!bit + author!bit
+				+ length!bit + expire!bit + subject!bit);
+
+	! reject this user if no new bulletins;
+	if not bcount
+	    then
+		begin
+		cfile (njfn);
+		if nottime = afttim
+		    then print (" -- previously notified")
+		    else print (" -- read them already");
+		continue "nloop";
+		end;
+
+	! read the directory listing back in;
+	schptr (njfn, 0);
+	setinput (njfn, 200, brk, eof);
+	dirstr _ null;
+	do dirstr _ dirstr & input (njfn, 0) until eof;
+	cfile (njfn);
+
+	! compose a message;
+	nmail _
+! below removed with patch 6;
+!  "Date: " & odtim (-1, msgdate) & "
+   From: " & bbdname [bbd#] & "
+   Subject: New bulletins on your interest list
+   To:   " & cvdown (logstr) & "
+   " & dirstr
+   & "-------
+";
+
+   	From _  bbdname [bbd#];
+	To _ cvdown (logstr);
+   	Subject _ "New bulletins on your interest list";
+
+! Queue bulletin for MAILER of the form:
+Date: 22 MAY 1976 13:13:33-PST
+From: Sumex.bbd
+Subject: New bulletins on your interest list
+To:   Kahler
+
+   <Sumex bulletin-board>
+	#	Author		Length	Expires 	Subject
+ Bulletin-board
+	1	KAHLER		2	4/4/77		Whatever
+  1 topic, 1 bulletin
+   since whenever
+
+-------
+;
+	! Queue the message;					 ! patch 6;
+	Send!Message(To, From, NULL, Subject, dirstr);		 ! patch 6;
+
+	! Kick up Queue count for exit time;			 ! patch 6;
+	nQueued _ nQueued + 1;					 ! patch 6;
+
+	print ("--Queued -- ok");
+	end "nloop";
+
+closebbd;
+
+openf (lockfile, readwritethawed);
+if !skip!
+    then
+	print (" Can't change last notify date. ", cvos (!skip!))
+    else
+	begin
+	swdptr (lockfile, last!notify);
+	wordout (lockfile, gtad);
+	closf (lockfile);
+	end;
+
+brk _ gjinf (logdir, brk, brk);
+logstr _ dirst (logdir);
+
+end "notify";
+
+
+
+!	<< postx >>
+	Runs POST for the user;
+
+simple procedure postx (string prompt);
+begin "postx"
+
+ifc sumex thenc
+! not for guests;
+if sequal (logstr, "GUEST")
+    then
+	begin
+	print (" Not for guests.");
+	return;
+	end;
+endc
+
+! wait for confirmation;
+if pbrk neq cr
+    then
+	begin
+	conwait (prompt, true);
+	if abort then return;
+	end;
+
+print (" Type ^K to abort POST.", crlf);
+
+! save bbd#, userread and placemark through the POST session;
+savparms;
+
+releasebbdjfns;
+
+ifc isie thenc
+runprg ("<dsn>post.exe", 0, true);
+elsec
+runprg ("<subsys>post.sav", 0, true);
+endc
+
+connect (savbbd);
+resparms;
+
+end "postx";
+
+
+
+! --ALL PATCH 7 ;
+PROCEDURE BUILDTR;
+BEGIN
+
+! wait for confirmation;
+conWait("Build Topic Record? ", TRUE);
+IF abort THEN RETURN;
+
+IF Debug THEN print(crlf & "{IN BuildTR");
+if not bbd#
+    then
+	begin
+	print (" You are not connected to a bulletin board.");
+	return;
+	end;
+
+if pbrk = comma
+    then
+	begin
+	print (" NO subcommands for THIS COMMAND!!");
+	return;
+	end;
+
+IF NOT MakeTopicNameRecord THEN RETURN;
+GetopicNames;
+
+IF Debug THEN print("}");
+
+END;
+!	<< whatever >>
+	Gets a command, carries it out;
+
+simple procedure whatever;
+begin "whatever"
+integer which, trailingcomma;
+string command;
+
+while true do
+	begin "cloop"
+
+	! make special character table for KPSTIN, break on "? ,^";
+	makespctbl ("? ,^", ktable);
+
+	if ctlosw
+	    then
+		begin
+		ctlosw _ false;
+		print (crlf);
+		end
+	    else
+		newline;
+
+	print ("*");
+	command _ null;
+	while true do
+		begin "command"
+
+		command _ kpstin (command, "*", 200, 0, ktable, pbrk);
+		if abort then done "command";
+
+		! ignore comment lines;
+		if command = ";"
+		    then
+			if pbrk = cr
+			    then
+				command _ null
+			    else
+				begin
+				command _ command & pbrk;
+				continue "command";
+				end;
+
+		if pbrk = "?"
+		    then
+			begin
+			if not command
+			    then print ("
+ For more help, type ""Help"".
+ Commands are:
+
+ ^	previous bulletin
+ <ESC>	current bulletin
+ <LF>	next bulletin
+ ;	comment line, ignored
+");
+			typhlp (command, "*", commands);
+			continue "command";
+			end;
+		if pbrk = '32 then done "cloop";	! ^Z exit;
+
+		! when ^ or or ESC or LF is typed, type previous,
+		  current or next bulletin, retaining msgformat
+		  and topic options if specified;
+		if not command and (pbrk = "^" or pbrk = esc or pbrk = lf)
+		    then
+			begin
+			integer bulcnt;
+			if pbrk = "^" then placemark _ placemark - 1;
+			if pbrk = lf  then placemark _ placemark + 1;
+			if placemark < 1 then placemark _ 1;
+			if pbrk neq lf then print (crlf);
+			if not openbbd then continue "command";
+			swdptr (bltptrfile, 0);
+			bulcnt _ wordin (bltptrfile);
+			if placemark < bulcnt
+			    then
+				type (otty, placemark, placemark, ltopts)
+			    else
+				print (" Bulletin ", placemark, " does not exist.");
+			closebbd;
+			print (crlf);
+			continue "cloop";
+			end;
+
+		if pbrk = cr and not command
+		    then
+			begin
+			ctlosw _ false;
+			print ("*");
+			continue "command";
+			end;
+
+		! cluge for people used to MSG:  allow "t1";
+		if (command = "T" or command = "t")
+			and xx _ cvd (command [2 to inf])
+		    then
+			begin
+			integer bulcnt;
+
+			temp _ command;
+			xx _ intscan (temp, brk);
+			yy _ if brk = "-" then -intscan (temp, brk) else xx;
+
+			ltopts _ ltopts land (msgformat!type + topic!type);
+			if not openbbd then continue "command";
+			swdptr (bltptrfile, 0);
+			bulcnt _ wordin (bltptrfile);
+			yy _ yy min (bulcnt - 1);
+			if xx < bulcnt
+			    then type (otty, xx, yy, ltopts)
+			    else print (" Bulletin ", xx, " does not exist.");
+			closebbd;
+			print (crlf);
+			continue "cloop";
+			end;
+
+		which _ recognize (command, commands, pbrk);
+		if ambiguous
+		    then
+			if pbrk = esc
+			    then continue "command"
+			    else done "command";
+
+		! print noise words;
+		if which and (pbrk = esc) and bbdnoi [which]
+		    then print (bbdnoi [which], " ");
+
+		command _ "*" & command;
+
+		! find the command requested in a case statement;
+		case which of
+			begin
+	"(don't know)"	;
+		"Add"	addx (command, true);
+	     "Connect"	connx (command);
+	        "Copy"	listx (command, true);
+	      "Create"	create (command);
+		 "DDT"	ddtx (command);
+	      "Delete"	delx (command, true);
+	     "Destroy"	destroy (command);
+	   "Directory"	dirx (command);
+		"Drop"	addx (command);
+		"Exit"	done "cloop";
+	      "Expire"	expx (command);
+	     "Expunge"	expunge (command);
+	     "Forward"	forward (command);
+		"Help"	help (command);
+	  "Initialize"	expunge (command, true);
+	        "List"	listx (command);
+		"Move"	movex (command);
+		"News"	news (command);
+	      "Notify"	notify (command);
+		"Post"	postx (command);
+		"Quit"	done "cloop";
+		"Type"	typex (command);
+	    "Undelete"	delx (command);
+	     "BuildTR"	BuildTR;				  ! patch 7;
+	    "Net!MAIL"	Net!MAIL;				  ! patch 8;
+			end;
+
+		done "command";
+
+		end "command";
+
+	end "cloop";
+
+newline;
+
+end "whatever";
+
+
+
+String Is;							 ! patch 6;
+print(crlf, "       BBD - version B.1");
+print (crlf);		! Tell the user we're past SAIL initialization;
+debug _ rpgsw;		! Set DEBUG if program was started at the other
+			  entry point (which sets RPGSW);
+rpgsw _ 0;
+
+IF debug THEN print("{with expanded directory numbers to '1777}", crlf);
+
+! set up defaults;
+getdef;
+
+loadcommands;
+
+! connect to some bbd;
+if not hombbd then hombbd _ 1;
+if not connect (hombbd)
+    then
+	begin
+	integer ii;
+	print (crlf);
+	for ii _ 1 upto bbdmax do
+		begin
+		if ii = hombbd then continue;
+		if connect (ii) then done else print (crlf);
+		end;
+	end;
+
+print ("
+      Type ? for help
+
+");
+
+while true do
+	begin
+
+	whatever;
+
+	! save bbd#, userread and placemark through a quit and continue;
+	savparms;
+	releasebbdjfns;
+
+	! check for Queued notices;				 ! patch 6;
+	IF nQueued > 0 THEN 					 ! patch 6;
+	BEGIN 							 ! patch 6;
+	   IF debug THEN 
+	   BEGIN
+	      Is _ (IF nQueued = 1 THEN "is " ELSE "are ");
+	      print(crlf, "There ", IS, cvs(nQueued), " queued NOTICES.");
+	   END;
+	   Set!Mailer!Flag; nQueued _ 0;		         ! patch 6;
+	END;
+
+	start!code haltf; end;			! halt program;
+	connect (savbbd);			! if continued;
+	resparms;
+
+	end;
+
+end "bbd"

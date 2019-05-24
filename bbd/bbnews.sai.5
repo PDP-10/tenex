@@ -1,0 +1,537 @@
+begin "bbnews"
+
+comment
+	This little program in effect runs the BBD News
+	command on every bulletin-board.  It types out
+	author, length, expire date, and subject of every
+	new bulletin on the user's interest list;
+
+
+INTEGER abort;
+define postmsg = FALSE;
+require "bbd.common" source!file;
+
+
+integer afttim, beftim, wholename, tcount, bcount, updatenews;
+
+
+!	option bits for directory;
+
+define
+	after!bit		= '400000,
+	author!bit		= '200000,
+	before!bit		= '100000,
+	creation!bit		=  '40000,
+	deleted!bit		=  '20000,
+	everything!bit		=  '10000,
+	expire!bit		=   '4000,
+	interest!bit		=   '2000,
+	length!bit		=   '1000,
+	new!bit			=    '400,
+	nreads!bit		=    '200,
+	output!bit		=    '100,
+	read!bit		=     '40,
+	subject!bit		=     '20;
+
+
+
+!	<< after >>
+	Returns true if the creation date for bulnum >= time.
+	No validity checking for bulnum;
+
+simple integer procedure after (integer bulnum, time);
+begin "after"
+integer bbase;
+
+bbase _ bulnum * daterecordsize;
+swdptr (datefile, bbase + creation!date);
+return (wordin (datefile) geq time);
+
+end "after";
+
+
+
+!	<< deleted >>
+	Returns true if bulletin bulnum has been deleted.
+	No validity checking for bulnum;
+
+simple integer procedure deleted (integer bulnum);
+begin "deleted"
+integer bbase;
+
+bbase _ bulnum * daterecordsize;
+swdptr (datefile, bbase + deleted!);
+return (wordin (datefile));
+
+end "deleted";
+
+
+
+!	<< expired >>
+	Returns true if bulletin bulnum has expired.
+	No validity checking for bulnum;
+
+simple integer procedure expired (integer bulnum);
+begin "expired"
+integer bbase;
+
+bbase _ bulnum * daterecordsize;
+swdptr (datefile, bbase + expire!date);
+return (gtad > wordin (datefile));
+
+end "expired";
+
+
+
+!	<< prbulletin >>
+	Prints out directory information for all bulletins in bullist;
+
+simple procedure prbulletin (integer ojfn, options; string bullist);
+begin "prbulletin"
+integer bulnum, bbase;
+
+setformat (4, 3);
+while bulnum _ intscan (bullist, brk) do
+	begin "bline"
+
+	! indent;
+	cprint (ojfn, "      ");
+
+	! if information is wanted from the bulletin itself, get it;
+	if options land (length!bit + subject!bit)
+	    then readrecord (bltptrfile, bltfile, bulnum, 5);
+
+	! print bulletin number, followed by options requested.
+	  show user what datefile thinks the bulletin number is;
+
+	bbase _ bulnum * daterecordsize;
+	swdptr (datefile, bbase + blt!no);
+	bulnum _ wordin (datefile);
+	cprint (ojfn, bulnum, "  ");
+	
+	if options land author!bit
+	    then
+		begin
+		swdptr (datefile, bbase + author!);
+		xx _ wordin (datefile);
+		temp _ dirst (xx) [1 to 11] & blanks [1 to 13];
+		cprint (ojfn, temp [1 to 13]);
+		end;
+
+	if options land length!bit
+	    then
+		begin
+		temp _ xrecord [2] [24 to inf];
+		cprint (ojfn, intscan (temp, brk), "  ");
+		end;
+
+	if options land creation!bit
+	    then
+		begin
+		swdptr (datefile, bbase + creation!date);
+		xx _ wordin (datefile);
+		cprint (ojfn, odtim (xx, dateonly), "  ");
+		end;
+
+	if options land expire!bit
+	    then
+		begin
+		swdptr (datefile, bbase + expire!date);
+		xx _ wordin (datefile);
+		cprint (ojfn, odtim (xx, dateonly), "  ");
+		end;
+
+	if options land read!bit
+	    then
+		begin
+		swdptr (datefile, bbase + last!read!date);
+		xx _ wordin (datefile);
+		if xx
+		    then cprint (ojfn, odtim (xx, dateonly), "  ")
+		    else cprint (ojfn, "Not read  ");
+		end;
+
+	if options land nreads!bit
+	    then
+		begin
+		swdptr (datefile, bbase + number!of!reads);
+		xx _ wordin (datefile);
+		cprint (ojfn, xx, "  ");
+		end;
+
+	if options land subject!bit
+	    then cprint (ojfn, xrecord [5] [10 to inf]);
+
+	cprint (ojfn, crlf);
+
+	end "bline";
+
+setformat (0, 3);
+
+end "prbulletin";
+
+
+
+!	<< trim >>
+	Returns only those bulletins in bullist that satisfy options;
+
+simple string procedure trim (string bullist; integer options);
+begin "trim"
+integer bulnum, bbase;
+string result;
+
+result _ null;
+while bulnum _ intscan (bullist, brk) do
+	begin "bscan"
+	bbase _ bulnum * daterecordsize;
+
+	! if deleted, print only if deleted bulletins wanted;
+	if options land deleted!bit
+	    then
+		begin
+		if not deleted (bulnum) then continue "bscan";
+		end
+	    else
+		if deleted (bulnum) then continue "bscan";
+
+	! print expired bulletins only if expire date wanted;
+	if expired (bulnum) and not (options land expire!bit)
+	    then continue "bscan";
+
+	! after;
+	if options land after!bit and not after (bulnum, afttim)
+	    then continue "bscan";
+	
+	! before;
+	if options land before!bit and after (bulnum, beftim)
+	    then continue "bscan";
+
+	! new bulletins wanted;
+	if options land new!bit and not after (bulnum, userread)
+	    then continue "bscan";
+
+	result _ result & cvs (bulnum) & ", ";
+	end "bscan";
+
+return (result [1 to inf-2]);
+
+end "trim";
+
+
+
+!	<< shorten >>
+	Takes a list of positive numbers, returns it in short form.
+	Example:  1, 2, 3, 7, 8, 11, 13, 14 prints as 1-3, 7-8, 11, 13-14;
+
+simple string procedure shorten (string nlist);
+begin "shorten"
+integer first, last, next;
+string result;
+
+result _ null;
+first _ last _ intscan (nlist, brk);
+
+while next _ intscan (nlist, brk) do
+	if next = last + 1
+	    then
+		last _ next
+	    else
+		begin
+		result _ result & ", " & cvs (first);
+		if last neq first
+		    then result _ result & "-" & cvs (last);
+		first _ last _ next;
+		end;
+
+if first
+    then
+	begin
+	result _ result & ", " & cvs (first);
+	if last neq first then result _ result & "-" & cvs (last);
+	end;
+
+return (result);
+
+end "shorten";
+
+
+
+!	<< prtopic >>
+	Prints out topic topnum and all its subtopics;
+
+recursive procedure prtopic (integer ojfn, topnum, options);
+begin "print topic"
+string tname, tlist, bullist;
+label next;
+
+readrecord (tptrfile, trecfile, topnum, trlength);
+if not xrecord [1]
+    then
+	begin
+	cprint (ojfn, " Bad topic pointer.");
+	return;
+	end;
+
+! save list of subtopics;
+tlist _ xrecord [father!sons];
+
+! Topic #1 has no bulletins, only subtopics;
+if topnum = 1 then go to next;
+
+! skip this topic if not on interest list and user said interest list only;
+if options land interest!bit
+    then
+	begin
+	temp _ xrecord [user!list];
+	while xx _ intscan (temp, brk) do if xx = logdir then done;
+	if xx neq logdir
+	    then
+		begin
+		wholename _ true;    ! print full name of next topic printed;
+		go to next;
+		end;
+	end;
+
+! weed out all bulletins user doesn't want to see;
+bullist _ trim (xrecord [bul!list], options);
+
+! This is the printing part.  Skip it for empty topics unless doing dir
+  with no options or dir with interest-list-only;
+if bullist or not (options land lnot interest!bit)
+    then
+	begin
+
+	! keep a running count of topics and bulletins;
+	tcount _ tcount + 1;
+	temp _ bullist;
+	while intscan (temp, brk) do bcount _ bcount + 1;
+
+	! print either whole topic name or last part only;
+	tname _ xrecord [topic!name];
+	scan (tname, nexttab, brk);	! throw away topic number;
+	scratch _ space;		! indentation;
+	if not wholename		! only print the last extension;
+	    then
+		begin
+		do
+			begin
+			temp _ scan (tname, nextperiod, brk);
+			if brk = period
+			    then scratch _ "   " & scratch & period;
+			end
+		until not tname;
+		tname _ temp;
+		end;
+
+	! indent and print topic name;
+	cprint (ojfn, scratch, tname);
+	wholename _ false;
+
+	if options land (author!bit + length!bit + creation!bit
+		+ expire!bit + read!bit + nreads!bit + subject!bit)
+	    then
+		begin
+		cprint (ojfn, crlf);
+		prbulletin (ojfn, options, bullist);
+		end
+	    else
+		begin
+		if bullist then cprint (ojfn, shorten (bullist));
+		cprint (ojfn, crlf);
+		end;
+	end
+    else
+	wholename _ true;	! if we print nothing this time, be sure
+				  to print whole topic name next time;
+
+next:
+scan (tlist, nexttab, brk);			! throw away the father;
+while topnum _ intscan (tlist, brk) do
+	prtopic (ojfn, topnum, options);
+
+end "print topic";
+
+
+
+!	<< directory >>
+	Prints out directory header, calls prtopic to print
+	directory information on each topic, per options;
+
+simple procedure directory (integer ojfn, topnum, options);
+begin "directory"
+
+if not topnum then topnum _ 1;
+
+cprint (ojfn, crlf, "   ", bbdlogo (bbd#));
+if options land output!bit then cprint (ojfn, "   ", odtim (-1, slashcolon));
+cprint (ojfn, crlf);
+
+if options land everything!bit
+    then options _ options lor (author!bit + length!bit + creation!bit
+		 + expire!bit + read!bit + nreads!bit + subject!bit);
+
+if options land (author!bit + length!bit + creation!bit + expire!bit
+			        + read!bit + nreads!bit + subject!bit)
+    then
+	begin
+	cprint (ojfn, "	 #  ");
+	if options land author!bit   then cprint (ojfn, "Author       ");
+	if options land length!bit   then cprint (ojfn, "Lngt  ");
+	if options land creation!bit then cprint (ojfn, " Created  ");
+	if options land expire!bit   then cprint (ojfn, " Expires  ");
+	if options land read!bit     then cprint (ojfn, " Read     ");
+	if options land nreads!bit   then cprint (ojfn, "#Rds  ");
+	if options land subject!bit  then cprint (ojfn, "Subject");
+	cprint (ojfn, crlf);
+	end;
+
+tcount _ bcount _ 0;
+wholename _ true;
+prtopic (ojfn, topnum, options);
+
+! print topic and bulletin counts;
+ctlosw _ false;
+cprint (ojfn, "  ", tcount, if tcount = 1 then " topic, " else " topics, ",
+	bcount, if bcount = 1 then " bulletin" else " bulletins");
+if (options land new!bit) and userread
+    then cprint (ojfn, crlf, "   since ", odtim (userread, slashcolon + '1000000));
+if (options land after!bit)
+    then cprint (ojfn, crlf, "   since ", odtim (afttim, slashcolon + '1000000));
+if (options land before!bit)
+    then cprint (ojfn, crlf, "  before ", odtim (beftim, slashcolon + '1000000));
+cprint (ojfn, crlf);
+
+if ojfn neq otty then cprint (ojfn, crlf);
+
+end "directory";
+
+
+
+!	<< nwsdef >>
+	Set up BBNEWS-specific default from (bbd.profile) file;
+
+simple procedure nwsdef;
+begin "nwsdef"
+integer projfn;
+
+! default;
+updatenews _ false;
+
+projfn _ openfile ("<" & logstr & ">(bbd.profile)", "re");
+if !skip! then return;
+
+input (projfn, oneline);			! Connect:  line;
+input (projfn, oneline);			! Notify?   line;
+temp _ input (projfn, oneline);			! Repeat... line;
+cfile (projfn);
+
+temp _ temp [27 to inf];
+
+if temp = "N" or temp = "n"
+    then updatenews _ true;
+
+if temp = "Y" or temp = "y"
+    then updatenews _ false;
+
+end "nwsdef";
+
+
+
+
+integer whichbbd, writedate, readdate, somethingnew;
+
+
+
+! see if user wants to see news only once.
+  Nwsdef sets updatenews if he does;
+! CURSES ON YOU KAHLER;
+ABORT _ 0;
+nwsdef;
+
+! if user typed "bbnews ", input directory name;
+bkjfn (otty);
+brk _ pbin;
+if brk = space
+    then
+	begin
+	string line;
+	line _ intty;
+	xx _ !skip!;
+	if line
+	    then
+		begin
+		line _ scan (line, cvup, brk);
+		logdir _ stdir (line, true);
+		if !skip! then begin  print (" ? ", crlf); haltprocess;  end;
+		if xx = esc
+		    then
+			begin
+			logstr _ dirst (logdir);
+			print (logstr [length (line) + 1 to inf], crlf);
+			end;
+		! don't update someone else's news;
+		updatenews _ false;
+		end
+	    else
+		if xx = cr
+		    then print (" [", logstr, "]", crlf)
+		    else print (logstr, crlf);
+	end;
+
+! logo...;
+PRINT(crlf, "    BBnews - version B.0", crlf);
+! check each bbd for news;
+somethingnew _ 0;
+for whichbbd _ 1 upto bbdmax do
+	begin "bloop"
+
+	userfile _ openfile (bbdfilename (whichbbd) & "user", "hero");
+	if !skip! then continue;
+
+	! get creation date of newest bulletin on interest list;
+	swdptr (userfile, post!page + logdir);
+	writedate _ wordin (userfile);
+
+	! get user's last bbd read date;
+	swdptr (userfile, read!page + logdir);
+	readdate _ wordin (userfile);
+	cfile (userfile);
+	userfile _ 0;
+
+	! if nothing new then continue;
+	if not writedate or (writedate < readdate) then continue "bloop";
+
+	! something new;
+	somethingnew _ true;
+
+	if not setup (whichbbd) then continue;
+
+	if not openbbd then continue;
+
+	directory (otty, 1, interest!bit + new!bit + author!bit + length!bit
+		+ expire!bit + subject!bit);
+
+	closebbd;
+
+	! update last user read date;
+	if updatenews and (bcount > 0) and (not debug)
+	    then
+		begin
+		openf (userfile, readwritethawed);
+		if !skip! then continue;		! no fuss;
+		swdptr (userfile, read!page + logdir);
+		wordout (userfile, gtad);
+		closf (userfile);
+		end;
+
+	releasebbdjfns;
+
+	end "bloop";
+
+if not somethingnew then print (" Nothing new on your interest list.");
+
+print (crlf);
+
+haltprocess;
+
+end "bbnews"

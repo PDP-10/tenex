@@ -1,0 +1,1751 @@
+comment
+	Patches :
+		1. Put arrclr(tpcnam) into CINIT 	May 31, 78
+		2. Changed closf to cfiles to insure all
+		   pages get unmapped when load average is high.
+		3. Fixes to queue notifications instead of sndmsg them
+		4. A slight restructuring of TP, and TR files so that
+		   a topic name list is kept in the TR file.  This will
+		   speed up the FIRST directory search incredibly---
+		   The lethargy of this DIR has been a major complaint...
+		5. important fix -- convert CHANNEL to JFN...damn you KAHLER.
+		    (SEE simple integer procedure maplock - around p. 28)
+						        March 12, 79.
+		6. xmax = 2000 for change of max directory number to 1777(8).
+		     (W. Yeager  - Oct. 16, 79)
+							;
+
+comment
+	This file is required as a source!file by both BBD and POST;
+
+require "bbd.site" source!file;
+require "macros.sai" source!file;
+
+ifc tops20 thenc
+
+require "ctrlo.rel" load!module;
+
+elsec
+
+require "<sail>ctrlo.rel" load!module;
+
+require "<subsys>ddt.rel" load!module;
+external procedure ddt;
+
+endc
+
+PRELOAD!WITH "TPTR", "TREC", "PTR", "BLT", "DATE", "USER";
+string array fileNames[1:6];
+
+!	Upper bounds for bbd, topic and scratch arrays.
+	These can be increased "indefinitely";
+define	bmax	= 50,
+	tmax	= 300,
+	xmax	= 2000;
+
+
+!	OPENF flags and record lengths;
+define	readthawed	 = '440000202000,
+	readwritethawed	 = '440000302000,
+	appendthawed	 = '070000022000,
+	trlength	 = 5;
+
+
+!	ODTIM flags;
+define	slashcolon	= '045000000000,
+	dateonly	= '045400000000,
+	msgdate		= '012260000000;
+
+
+! for use with output suppression provided by ctrlo.rel;
+external integer ctlosw;
+
+integer	oneline,	! setbreak numbers;
+	nexttab,
+	nextperiod,
+	cvup,		! convert to upper case;
+	wildcards,
+	bulldirNum,	! directory number of <bulletines>. Patch 3;
+
+	bbdmax,		! number of bulletin boards on the system;
+	bbd#,		! number of bulletin board currently in use;
+	ithops,
+	nQueued,	! Number of queued NOTIFICATIONS (Sept. 28, 78);
+
+	! bulletin board jfns;
+	tptrfile,	! file of pointers to topic records;
+	trecfile,	! file of topic records;
+	bltptrfile,	! file of pointers to bulletins;
+	bltfile,	! file of bulletins;
+	datefile,	! dates and statistics for each bulletin;
+	userfile,	! for each user: last read date for this bbd;
+	lockfile,	! bulletin-board write and garbage-collection locks;
+
+	maxtpc,		! number of topics at last connect;
+	logdir,		! login directory number;
+	userread,	! user's last read date for current bbd;
+	debug,		! switch to control output of debugging information;
+	topcluge,	! tells getopicnames that the files are open already;
+	xx,		! scratch integer;
+	yy,		! scratch integer;
+	brk,		! break character for scan;
+	eof;		! end-of-file flag;
+
+
+string	temp,		! scratch string;
+	scratch,	! scratch string;
+	logstr,		! logdir converted to a string;
+	blanks;		! for filling out directory fields with blanks;
+
+
+string array
+	bbdname,			! names of the bulletin boards;
+	bbddir  [1:bmax],		! directory where each is located;
+
+	tpcnam [1:tmax+1],		! array of topic names from bbd.tr;
+
+	xrecord [1:(trlength max 5)];	! Records are read into and
+					  written from this array;
+
+
+! <Sumex bulletin-board>;
+define	bbdlogo (x) = <"<" & bbdname [x] [1 to inf-4] & " bulletin-board>">;
+define  StaffContact = <"<yeager>@Sumex-aim">;
+
+! filename of bbd files;
+define	bbdfilename (x) = <"<" & bbddir [x] & ">"
+		& bbdname [x] [1 to inf-4] & "-bbd.">;
+
+
+integer array
+	tpcno [0:tmax],			! topic numbers for names in tpcnam;
+	bbdpro [0:bmax],		! bbd privilege bits;
+	xarray [0:xmax];		! for renumbering bulletins,
+					  user flags, etc.;
+
+
+	! lines in topic records;
+define	topic!name	= 1,
+	father!sons	= 2,
+	bul!list	= 3,
+	user!list	= 4;
+
+	! words in the bulletin information on datefile;
+define	daterecordsize	= '20,
+	blt!no		=   0,
+	deleted!	=   1,
+	author!		=   2,
+	creation!date	=   3,
+	last!read!date	=   4,
+	number!of!reads	=   5,
+	expire!date	=   6,
+	last!reader	=   7,
+
+	topic!count	= '12,
+	topic!list	= '13;
+
+
+!	starting points for userfile arrays indexed by logdir;
+define	read!page	=     0;
+
+ifc ecl or sumex thenc
+define	post!page	= '2000;
+elsec
+define	post!page	= '1000;
+endc
+
+
+
+!	<< haltprocess >>
+	Does a HALTF, with no continuing;
+
+simple procedure haltprocess;
+
+    start!code
+    label zap;
+zap:	haltf;
+	jrst zap;
+    end;
+
+
+
+!	<< blthead >>
+	Constructs the first line for a bulletin, of form [#0:  (Length 0)];
+
+simple string procedure blthead (integer blt#, blength);
+return ("#" & cvs (blt#) & ":  (Length " & cvs (blength) & ")");
+
+
+
+!	<< datesizestamp >>
+	Returns a SNDMSG-style date/size stamp;
+
+simple string procedure datesizestamp (integer bytcnt);
+return (odtim (-1, '000020000000) & comma & cvs (bytcnt) & ";000000000000");
+
+
+
+!	<< cinit >>
+	Initialization procedure;
+
+simple procedure cinit;
+begin "cinit"
+
+setbreak (oneline    _ getbreak, lf, cr, "i");
+setbreak (nexttab    _ getbreak, tab, null, "i");
+setbreak (nextperiod _ getbreak, ".", null, "i");
+setbreak (cvup	     _ getbreak, null, null, "ik");
+setbreak (wildcards  _ getbreak, "*%", null, "ik");
+
+xx _ gjinf (logdir, xx, xx);
+logstr _ dirst (logdir);
+
+bbd# _ topcluge _ tptrfile _ trecfile _ bltptrfile _ bltfile
+	 _ datefile _ userfile _ lockfile _ 0;
+arrclr(tpcnam);						! patch 1. BY;
+
+blanks _ "                                                                 ";
+
+nQueued _ 0;						! patch 3. 9/28/78;
+bulldirNum _ STDIR("BULLETINS",1) LSH 18;		! patch 3.  ";
+
+end "cinit";
+
+
+require cinit initialization;
+
+
+
+!	<< newline >>
+	If terminal is not at left margin, print a CRLF;
+
+simple procedure newline;
+begin "newline"
+integer docrlf;
+
+start!code
+setzm	docrlf;
+movei	1,'100;
+RFPOS;
+trne	2,-1;
+ setom	docrlf;
+end;
+
+if docrlf then print (crlf);
+
+end "newline";
+
+
+!	<< upper >>
+	Raises string to uppercase;
+
+simple string procedure upper (string s);
+return (scan (s, cvup, brk));
+
+
+!	<< bbdmsg >>
+	Puts two hyphens before POST messages, a period after
+	BBD messages.  If bnum is non-zero, prints it in decimal;
+
+simple procedure bbdmsg (string bstr; integer bnum (0));
+begin "bbdmsg"
+
+if postmsg
+    then print (" --")
+    else newline;
+print (" ", bstr);
+if bnum then print (bnum);
+if not postmsg then print (".");
+
+end "bbdmsg";
+
+
+!	<< bbomsg >>
+	Same as BBDMSG, except that bnum, if non-zero, is printed
+	in octal;
+
+simple procedure bbomsg (string bstr; integer bnum (0));
+begin "bbomsg"
+
+if postmsg
+    then print (" --")
+    else newline;
+print (" ", bstr);
+if bnum then print (cvos (bnum));
+if not postmsg then print (".");
+
+end "bbomsg";
+
+
+!	<< abrtst >>
+	Checks abort flag in places where it should not be on;
+
+simple procedure abrtst;
+begin "abrtst"
+
+ifc sumex thenc
+if abort and logdir = '436 then bbdmsg ("Abort flag not cleared");
+endc
+
+abort _ 0;
+
+end "abrtst";
+
+
+!	<< cvdown >>
+	Converts cstr to lower case, capitalizing first letter;
+
+simple string procedure cvdown (string cstr);
+begin "cvdown"
+integer char;
+string result;
+
+if not cstr then return (null);
+
+char _ lop (cstr);
+result _ if "a" leq char leq "z" then (char - space) else char;
+while char _ lop (cstr) do
+	begin
+	char _ if "A" leq char leq "Z" then (char + space) else char;
+	result _ result & char;
+	end;
+
+return (result);
+
+end "cvdown";
+
+
+
+!	<< sequal >>
+	Performs the same function as EQU, except that all letters
+	are converted to uppercase before comparison;
+
+simple integer procedure sequal (string str1, str2);
+begin "sequal"
+integer x, y;
+
+! if lengths are different, return "false" immediately;
+if length (str1) neq length (str2) then return (false);
+
+! compare character by character;
+while length (str1) do
+	begin
+	x _ lop (str1);
+	y _ lop (str2);
+	if "a" leq x leq "z" then x _ x - '40;
+	if "a" leq y leq "z" then y _ y - '40;
+	if x neq y then return (false);
+	end;
+
+! they are all the same;
+return (true);
+
+end "sequal";
+
+
+!	<< zapnum >>
+	Removes num from list of numbers in numstr;
+
+simple procedure zapnum (integer num; reference string numstr);
+begin "zapnum"
+integer jj;
+string copy;
+
+copy _ numstr;
+numstr _ null;
+while jj _ intscan (copy, brk) do
+	if jj neq num then numstr _ numstr & cvs (jj) & ", ";
+numstr _ numstr [1 to inf-2];
+
+end "zapnum";
+
+
+!	<< addnum >>
+	Adds num to end of list of numbers in numstr;
+
+simple procedure addnum (integer num; reference string numstr);
+begin "addnum"
+
+if numstr then numstr _ numstr & ", ";
+numstr _ numstr & cvs (num);
+
+end "addnum";
+
+
+
+!	<< getbbdnames >>
+	Initializes bbdname and bbddir from bulletin-board.names file;
+
+simple procedure getbbdnames;
+begin "getbbdnames"
+integer jfn;
+string line, filstr;
+define NewName = false;
+
+filstr _ null;
+
+ifc sumex thenc
+filstr _ "<bulletins>bulletin-board.names";
+endc
+
+! for testing new bulletin-board.names file only;
+ifc NewName thenc 
+filstr _ "<YEAGER>bulletin-board.names";
+endc
+
+ifc ecl thenc
+filstr _ "<bboard>bulletin-board.names";
+endc
+
+ifc isie thenc
+filstr _ "<dsn>bulletin-board.names";
+endc
+
+if not length (filstr) then filstr _ "<system>bulletin-board.names";
+
+jfn _ openfile (filstr, "re");
+if !skip!
+    then
+	begin
+	print ("
+ The bulletin boards are unavailable.
+ Try again in a few seconds.
+
+");
+	haltprocess;
+	end;
+
+arrclr (bbdpro);
+setinput (jfn, 200, brk, eof);
+
+brk _ gjinf (ithops, brk, brk);
+ithops _ lnot (ithops lsh 1);
+
+! read in first line;
+line _ input (jfn, oneline);
+while xx _ intscan (line, brk) do if xx = logdir then done;
+if xx = logdir then bbdpro [0] _ lnot (logdir lsh 1);
+
+bbdmax _ 0;
+do
+	begin
+	line _ input (jfn, oneline);
+	if not line then continue;
+	bbdmax _ bbdmax + 1;
+	do temp _ scan (line, nexttab, brk) until temp;
+	bbdname [bbdmax] _ temp;
+	do temp _ scan (line, nexttab, brk) until temp;
+	bbddir [bbdmax] _ temp;
+	while xx _ intscan (line, brk) do if xx = logdir then done;
+	if xx = logdir then bbdpro [bbdmax] _ lnot (logdir lsh 1);
+	end
+until eof;
+
+cfile (jfn);
+bbdname [bbdmax+1] _ bbddir [bbdmax+1] _ del;
+
+if ithops = bbdpro [0]
+    then arrclr (bbdpro, ithops);
+
+end "getbbdnames";
+
+require getbbdnames initialization;
+
+
+
+!	<< search >>
+	Looks up sstr in sarry, returns index.
+	Letter case disregarded.
+	Array must terminate with a string containing '177;
+
+simple integer procedure search (string sstr; string array sarry);
+begin "search"
+integer ii;
+
+if not sstr then return (0);
+ii _ 0;
+while true do
+	begin
+	if not length (sarry [ii _ ii + 1]) then continue;
+	if sarry [ii] = del then done;
+	if sequal (sstr, sarry [ii]) then return (ii);
+	end;
+
+return (0);
+
+end "search";
+
+
+
+!	<< searchcount >>
+	Counts the number of times cstr is found in carry.
+	Returns index to first match found, count in COUNT.
+	Letter case disregarded.
+	Array must terminate with a string containing '177;
+
+simple integer procedure searchcount (string cstr; string array carry;
+						reference integer count);
+begin "searchcount"
+integer ii, clen, firstfind;
+
+ii _ count _ firstfind _ 0;
+clen _ length (cstr);
+if not clen then return (0);
+while true do
+	begin
+	if not length (carry [ii _ ii + 1]) then continue;
+	if carry [ii] = del then done;
+	if sequal (cstr, carry [ii] [1 to clen])
+	    then
+		begin
+		count _ count + 1;
+		if not firstfind then firstfind _ ii;
+		end;
+	end;
+
+return (firstfind);
+
+end "searchcount";
+
+
+
+!	<< findeof >>
+	Gets an EOF byte count for xfile;
+
+simple integer procedure findeof (integer xfile);
+begin "findeof"
+own integer array fdb [0:'24];
+
+gtfdb (xfile, fdb);
+return (fdb ['12]);
+
+end "findeof";
+
+
+
+!	<< releasebbdjfns >>
+	Releases the bulletin-board jfns;
+
+simple procedure releasebbdjfns;
+begin "release"
+integer ii;
+
+for ii _ tptrfile, trecfile, bltptrfile, bltfile,
+		   datefile, userfile, lockfile
+	do if (CVJFN(ii) LAND '777) NEQ '777  then rljfn (ii);
+
+bbd# _ tptrfile _ trecfile _ bltptrfile _ bltfile
+	 _ datefile _ userfile _ lockfile _ 0;
+
+end "release";
+
+
+INTEGER PROCEDURE availableJFNs;
+BEGIN
+INTEGER i, vacancies, NameBit;
+DEFINE named = '200000000,
+      MaxJFN = '154;
+
+NameBit _ Named;
+vacancies _ 0;
+start!code
+LABEL l;
+    MOVEI 1, MaxJFN;
+    MOVE  3, NameBit;
+l:  JSYS  '24;
+    TDNN  2, 3;
+    AOS   0, vacancies;
+    SOJGE 1, l;
+end;
+
+IF debug THEN PRINT(crlf, " Available jfns = ", vacancies);
+RETURN(vacancies);
+END;
+procedure jfnfail(string filename);
+IF debug THEN print(crlf, "!!IN getThemJFNS gtjfn failure on ", 
+                    filename, crlf);
+
+boolean procedure getthemjfns( string dname );
+begin
+
+! see if enough JFNs are available;
+IF availableJFNs < 7 THEN BEGIN
+    releasebbdjfns;
+    PRINT("!! You have TOO many JFNS for BBD/POST to run.", crlf);
+    PRINT("   There must be at least 8 free JFNs ", crlf);
+    PRINT("   in the range of 0 - 17 octal in order", crlf);
+    PRINT("   to run POST or BBD. (A SAIL RUNTIME BUG)", crlf, crlf);
+    start!code haltf; end;			! halt program;
+    END;
+! existing file required;
+tptrfile _ gtjfn (dname & "tp",   '100001000000);  
+if !skip! THEN BEGIN
+   jfnfail(dname & "tp");
+   RETURN(FALSE) END;
+trecfile _ gtjfn (dname & "tr",   '100001000000);  
+if !skip! then BEGIN
+   jfnfail(dname & "tr");
+   RETURN(FALSE) END;
+
+bltptrfile _ gtjfn (dname & "ptr", '100001000000); 
+if !skip! then BEGIN
+   jfnfail(dname & "ptr");
+   RETURN(FALSE) END;
+
+bltfile  _ gtjfn (dname & "blt",  '100001000000);  
+if !skip! then BEGIN
+   jfnfail(dname & "blt");
+   RETURN(FALSE) END;
+
+datefile _ gtjfn (dname & "date", '100001000000);  
+if !skip! then BEGIN
+   jfnfail(dname &"date");
+   RETURN(FALSE) END;
+
+userfile _ gtjfn (dname & "user", '100001000000);  
+if !skip! then BEGIN
+   jfnfail(dname& "user");
+   RETURN(FALSE) END;
+
+IF lockfile = 0 THEN BEGIN
+    lockfile _ gtjfn (dname & "lock", '100001000000);  
+    if !skip! then BEGIN
+       jfnfail(dname& "lock");
+       RETURN(FALSE) END END;
+
+RETURN(TRUE);
+END;
+!	<< setup >>
+	Gets some jfns for one of the bulletin boards;
+
+simple integer procedure setup (integer whichbbd);
+begin "setup"
+string dname;
+
+if debug then print ("{");
+
+releasebbdjfns;
+arrclr (tpcnam);
+bbd# _ maxtpc _ 0;
+
+if whichbbd < 1 or whichbbd > bbdmax then return (false);
+dname _ bbdfilename (whichbbd);
+
+! existing file required;
+lockfile _ 0;
+IF NOT getthemjfns( dname ) THEN
+BEGIN
+    if debug then print (" File error ", cvos (!skip!), " in setup.");
+    releasebbdjfns;
+    return (false); END;
+
+! get last user read date for this bbd (to decide which bulletins are new);
+openf (userfile, readthawed);
+if !skip! then 
+BEGIN
+    if debug then print (" File error ", cvos (!skip!), " in setup.");
+    releasebbdjfns;
+    return (false); END;
+
+swdptr (userfile, logdir);
+userread _ wordin (userfile);
+closf (userfile);
+
+bbd# _ whichbbd;
+if debug then print ("}");
+return (true);
+
+end "setup";
+
+
+
+!	<< closebbd >>
+	Closes the bulletin board files;
+
+simple procedure closebbd;
+begin "closebbd"
+string dname;
+
+! closf CHANGED to cfile to make sure pages are unmapped;
+! so we can openf ( why OH why did Rich Kahler use mixed i/o);
+
+cfile (tptrfile);
+cfile (trecfile);
+cfile (bltptrfile);
+cfile (bltfile);
+cfile (datefile);
+cfile (userfile);
+
+dname _ bbdfilename (bbd#);
+
+! release lockfile jfn if there, since getTHEMjfns gets IT again :
+! patched sept 8, 78 (by BILL);
+IF lockfile > 0 THEN 
+BEGIN
+    ! First see if it's open( if SO, then just leave it that way );
+    openf (lockfile, readwritethawed);
+    IF !skip! NEQ '600120 THEN 
+        IF NOT !skip! THEN ! we've opened it so close it;
+	BEGIN cfile(lockfile); lockfile _ 0  END
+	ELSE
+	    IF Debug THEN
+	    BEGIN
+		erstr(!skip!, '400000);
+	        PRINT(crlf, " something weird with LOCK file",
+		      "on bbd ", dname, crlf);
+	    END;
+END;
+! restore the environment ;
+IF NOT getTHEMjfns( dname ) THEN
+    IF debug THEN print(crlf & "could NOT close BBD" & crlf);
+end "closebbd";
+
+
+
+!	<< openbbd >>
+	Opens the bulletin board files for reading.
+	Datefile and userfile opened for writing as well;
+
+simple integer procedure openbbd;
+begin "openbbd"
+integer i;
+label err;
+
+openf (tptrfile, readthawed);      i _ 1;	if !skip! then go to err;
+openf (trecfile, readthawed);      i _ 2;	if !skip! then go to err;
+openf (bltptrfile, readthawed);    i _ 3;	if !skip! then go to err;
+openf (bltfile,    readthawed);    i _ 4;	if !skip! then go to err;
+openf (datefile, readwritethawed); i _ 5;	if !skip! then go to err;
+openf (userfile, readwritethawed); i _ 6;	if !skip! then go to err;
+
+return (true);
+
+err:
+if debug then 
+BEGIN
+    print (" Openf error ", cvos (!skip!), " in openbbd.");
+    print (crlf & fileNames[i] & " file errored!"); END;
+
+closebbd;
+return (false);
+
+end "openbbd";
+
+
+
+!	<< opentopic >>
+	Opens the topic-records file and its pointers file for reading;
+
+simple integer procedure opentopic;
+begin "opentopic"
+
+openf (tptrfile, readthawed);
+if !skip!
+    then
+	begin
+	if debug then print (" Openf error ", cvos (!skip!), " for tptrfile in opentopic.");
+	return (false);
+	end;
+
+openf (trecfile, readthawed);
+if !skip!
+    then
+	begin
+	if debug then print (" Openf error ", cvos (!skip!), " for trecfile in opentopic.");
+	closf (tptrfile);
+	return (false);
+	end;
+
+return (true);
+
+end "opentopic";
+
+
+
+!	<< closetopic >>
+	Closes topic files;
+
+procedure closetopic;
+begin "closetopic"
+STRING dname;
+
+procedure jfnfail(string filename);
+IF debug THEN print(crlf, "!!IN getThemJFNS gtfjn failure on ", 
+                    filename, crlf);
+
+! AGAIN-if an openf is tried prior to ALL pages being unmapped
+  on a closf, then we fail--this happens with high system loads--
+  so we thus use CFILE to guarantee unmapping-- ;
+
+CFILE (tptrfile);
+CFILE (trecfile);
+
+dname _ bbdfilename (bbd#);
+
+! existing file required;
+tptrfile _ GTJFN (dname & "tp",   '100001000000);  
+if !skip! then BEGIN
+    jfnfail(dname & "tp"); RETURN END;
+
+trecfile _ GTJFN (dname & "tr",   '100001000000);  
+if !skip! then BEGIN
+    jfnfail(dname & "tr"); RETURN END;
+
+end "closetopic";
+
+
+
+!	<< readrecord >>
+	Goes rec# words into ptrfile for a character pointer into recfile,
+	puts the first reclength lines following the pointer into xrecord.
+	Assumes ptrfile and recfile are open to read;
+
+simple procedure readrecord (integer ptrfile, recfile, rec#, reclength);
+begin "read record"
+integer recptr, ii;
+string line;
+
+arrclr (xrecord);
+if not rec# then return;
+
+! get pointer for records file from pointers file;
+swdptr (ptrfile, rec#);
+recptr _ wordin (ptrfile);
+if not recptr then return;
+
+! read the record;
+schptr (recfile, recptr);
+for ii _ 1 upto reclength do
+	xrecord [ii] _ sini (recfile, 3000, lf) [1 to inf-2];
+! *** change sini to input;
+
+! look for errors;
+line _ xrecord [1];
+if line neq "#" then arrclr (xrecord);
+if intscan (line, brk) neq rec# then arrclr (xrecord);
+
+end "read record";
+
+
+
+! macros for bulletin-board locks;
+
+define	lockpage	= '370,
+	last!notify	= '20,
+	bbdlock		= lockpage lsh 9,
+	unlocked	= bbdlock + 1,
+	owner		= bbdlock + 2,
+	gclock		= bbdlock + '10,
+	gcunlocked	= bbdlock + '11,
+	gcowner		= bbdlock + '12,
+	broken		= bbdlock + '100,
+	timout		= 30,
+	gctimout	= 60;
+
+
+
+!	<< maplock >>
+	PMAPs in the bulletin-board locks;
+
+simple integer procedure maplock;
+begin "maplock"
+INTEGER JFN;
+
+openf (lockfile, readwritethawed);
+if !skip!
+    then
+	begin
+	if debug then print (" Openf error ", cvos (!skip!), " in maplock.");
+	return (false);
+	end;
+
+! pmap page 0 of lock file to core page lockpage, read, write;
+! important fix -- convert CHANNEL to JFN...damn you KAHLER;
+JFN _ CVJFN(lockfile);
+IF debug THEN
+    PRINT(crlf, "lockfile: channel =", lockfile, " jfn = ",JFN, crlf);
+pmap (JFN lsh 18, '400000000000 + lockpage, '140000000000);
+
+return (true);
+
+end "maplock";
+
+
+
+!	<< unmaplock >>;
+
+procedure unmaplock;
+begin "unmap"
+procedure jfnfail(string filename);
+IF debug THEN print(crlf, "!!IN unmaplock, gtfjn failure on ", 
+		    filename, crlf);
+string dname;
+
+pmap (-1, '400000000000 + lockpage, 0);	   ! map out page;
+
+! cfile to make sure JFN gets released, and page unmapped;	 ! patch 6;
+! OTHERwise REAL trouble if page still around;			 ! patch 6;
+								 ! patch 6;
+dname _ bbdfilename (bbd#);					 ! patch 6;
+IF NOT cfile (lockfile) THEN					 ! patch 6;
+BEGIN								 ! patch 6;
+    PRINT(crlf, "!! Could NOT close LOCK file ", dname, crlf);	 ! patch 6;
+    erstr(!skip!, '400000);					 ! patch 6;
+    return;							 ! patch 6;
+END;								 ! patch 6;
+								 ! patch 6;
+! IF Debug THEN PRINT(crlf, "!! [unmap] LOCK file closed",	 ! patch 6;
+!	            " JFN = ", cvs(lockfile));			 ! patch 6;
+								 ! patch 6;
+! And get jfn back incase someone wants it;			 ! patch 6;
+lockfile _ gtjfn (dname & "lock", '100001000000);  		 ! patch 6;
+if !skip! then 							 ! patch 6;
+    IF DEBUG THEN BEGIN						 ! patch 6;
+        erstr(!skip!, '400000);					 ! patch 6;
+	jfnfail(dname& "lock") END;				 ! patch 6;
+								 ! patch 6;
+end "unmap";
+
+
+
+!	<< unlock >>
+	Tries to grab the bulletin-board write lock;
+
+simple integer procedure unlock;
+begin "unlock"
+integer forced;
+
+forced _ false;
+if not maplock then return (false);
+
+if memory [gclock] neq -1
+    then
+      Begin "locked"
+	unmaplock;
+	if gtad > (memory [gcunlocked] + gctimout)
+	  then
+	  Begin	"Expunge lock"
+	    print ( crlf );
+	    print (" Expunge lock set.  CanNOT continue!");
+	    print ( crlf );
+	    print (" Error during last expunge: Contact " & StaffContact);
+	  End "Expunge lock"
+	  else
+	    print (" Down for garbage collection.");
+	print ( crlf );
+	return (false);
+      End   "locked";
+
+while true do
+	begin "tryit"
+	label locked;
+
+	! grab the lock;
+	    start!code
+		aose	bbdlock;
+		jrst	locked;
+	    end;
+
+	memory [owner] _ logdir;
+	memory [unlocked] _ gtad;
+
+	if forced then print (" Write lock had to be forced.");
+	return (true);
+
+
+locked:	if gtad > (memory [unlocked] + timout)
+	    then
+		! break lock after timout seconds;
+		begin
+
+		! restore the lock;
+		memory [bbdlock] _ -1;
+		forced _ true;
+
+		! increment # of times lock has been broken;
+		xx _ memory [broken] _ memory [broken] + 1;
+
+		! record previous owner of lock;
+		memory [broken + (xx min '500)] _ memory [owner];
+
+		end
+	    else
+		begin
+		unmaplock;
+if forced then print (" Write lock was forced, but someone else got it.");
+		return (false);
+		end;
+
+	end "tryit";
+
+end "unlock";
+
+
+
+!	<< reslck >>
+	Restores the bulletin-board lock;
+
+simple procedure reslck;
+begin "reslck"
+
+memory [bbdlock] _ -1;
+unmaplock;
+
+end "reslck";
+
+
+
+!	<< gcunlock >>
+	Tries to get the garbage-collection lock;
+
+simple integer procedure gcunlock;
+begin "gcunlock"
+label locked;
+
+! be sure no one has the write lock;
+if not unlock
+    then
+	begin
+	if debug then print (" Cannot get bulletin-board write lock.");
+	return (false);
+	end;
+
+! try to get garbage-collection lock;
+    start!code
+	aose	gclock;
+	jrst	locked;
+    end;
+
+memory [gcowner] _ logdir;
+memory [gcunlocked] _ gtad;
+
+! we have the gc lock, we don't need to sit on the write lock;
+memory [bbdlock] _ -1;
+
+return (true);
+
+locked:
+if debug then print (" Got write lock, but can't get gc lock.");
+return (false);
+
+end "gcunlock";
+
+
+
+!	<< gcreslck >>
+	Restore garbage-collection lock;
+
+simple procedure gcreslck;
+begin "gcreslck"
+
+memory [gclock] _ -1;
+unmaplock;
+
+end "gcreslck";
+
+
+
+!	<< writerecord >>
+	Appends xrecord [1:reclength] to recfile.
+	Saves character pointer on ptrfile;
+
+simple integer procedure writerecord (integer ptrfile, recfile, reclength);
+begin "writerecord"
+BOOLEAN NEWtopic;						  ! patch 4;
+INTEGER topPTR;							  ! patch 4;
+
+
+integer ptr, rec#, ii;
+
+! see first if we have something to write;
+if xrecord [1] neq "#"
+    then
+	begin
+	if debug then print (" Writerecord: no record to write.");
+	return (false);
+	end;
+
+! unlock bulletin board;
+if not unlock
+    then
+	begin
+	if debug then print (" Writerecord: can't unlock bulletin board.");
+	return (false);
+	end;
+
+! open the records file and its pointers file;
+openf (ptrfile, readwritethawed);
+if !skip!
+    then
+	begin
+	if debug then print (" Openf error ", cvos (!skip!), 
+			     " for ptrfile in writerecord.");
+	reslck;
+	return (false);
+	end;
+
+openf (recfile, appendthawed);
+if !skip!
+    then
+	begin
+	if debug then print (" Openf error ", cvos (!skip!), " for recfile in writerecord.");
+	closf (ptrfile);
+	reslck;
+	return (false);
+	end;
+
+! get a pointer to the future record;
+ptr _ findeof (recfile);
+if not ptr
+    then
+	begin
+	closf (ptrfile);
+	closf (recfile);
+	reslck;
+	if debug then print (" Writerecord: empty recfile.");
+	return (false);
+	end;
+
+! find the record's number, if 0 assign one;
+temp _ xrecord [1];
+rec# _ intscan (temp, brk);
+NEWtopic _ FALSE;						  ! patch 4;
+
+
+if not rec# OR rec# = -1 					  ! patch 4;
+    ! -1 for topic name string and 0 for NEW topic;		  ! patch 4;
+    then
+	begin
+	swdptr (ptrfile, 0);
+	rec# _ (If rec# = -1 THEN -wordin (ptrfile) 		  ! patch 4;
+                ELSE  wordin(ptrfile));				  ! patch 4;
+	if not rec#
+	    then
+		begin			! assume connected to old versions;
+		closf (ptrfile);	! ...of the bulletin-board files;
+		closf (recfile);
+		reslck;
+		print (" You got caught in the middle of an expunge, try again.");
+		return (false);
+		end;
+	! see if acutally a topic-;
+        IF rec# > 0 THEN BEGIN		! increment next slot-;
+	    NEWtopic _ TRUE;
+	    swdptr (ptrfile, 0);
+	    wordout (ptrfile, rec# + 1);
+	    xrecord [1] _ "#" & cvs (rec#) & temp END;
+	rec# _ ABS(rec#);					  ! patch 4;
+	end;
+
+! write the record;
+for ii _ 1 upto reclength do cprint (recfile, xrecord [ii], crlf);
+
+! save the pointer;
+swdptr (ptrfile, rec#);
+! See if we have to save pointer to topicnamelist;
+IF NEWtopic THEN BEGIN
+    topPTR _ WordIN(ptrfile);			  ! patch 4;
+    swdptr (ptrfile, rec#) END;
+
+! write NEW ptr at ABS(rec#);
+wordout (ptrfile, ptr);
+
+! IF a NEWtopic was written, then update topicnamelist;
+IF NEWtopic THEN BEGIN						  ! patch 4;
+    swdptr(ptrfile, rec# + 1);					  ! patch 4;
+    WordOUT(ptrfile, topPTR) END;				  ! patch 4;
+
+! close the files;
+closf (ptrfile);
+closf (recfile);
+reslck;
+
+return (rec#);
+
+end "writerecord";
+
+
+
+!	<< firstrecord >>
+	Special writerecord for initialize and expunge.
+	Appends xrecord [1:reclength] to recfile.
+	Saves character pointer on ptrfile;
+
+simple integer procedure firstrecord (integer ptrfile, recfile, reclength);
+begin "firstrecord"
+integer ptr, rec#, ii;
+
+! open the records file and its pointers file;
+openf (ptrfile, readwritethawed);
+if !skip!
+    then
+	begin
+	if debug then print (" Openf error ", cvos (!skip!), " for ptrfile in firstrecord.");
+	return (false);
+	end;
+openf (recfile, appendthawed);
+if !skip!
+    then
+	begin
+	closf (ptrfile);
+	if debug then print (" Openf error ", cvos (!skip!), " for recfile in firstrecord.");
+	return (false);
+	end;
+
+! get a pointer to the future record;
+ptr _ findeof (recfile);
+
+! get the number of the record;
+temp _ xrecord [1];
+rec# _ intscan (temp, brk);
+
+! Be sure word 0 of ptrfile is greater than rec#.
+  New bulletin numbers are assigned from word 0;
+swdptr (ptrfile, 0);
+xx _ wordin (ptrfile);
+if xx leq rec#
+    then
+	begin
+	swdptr (ptrfile, 0);
+	wordout (ptrfile, rec# + 1);
+	end;
+
+! write the record;
+for ii _ 1 upto reclength do cprint (recfile, xrecord [ii], crlf);
+
+! save the pointer;
+if rec#
+    then
+	begin
+	swdptr (ptrfile, rec#);
+	wordout (ptrfile, ptr);
+	end;
+
+! close the files;
+closf (ptrfile);
+closf (recfile);
+
+return (if rec# then rec# else true);
+
+end "firstrecord";
+
+
+
+!	<< enttpc >>
+	Adds a topic number to the topic list for a bulletin in datefile
+	until the list is full.  Assumes datefile is open;
+
+simple integer procedure enttpc (integer bulnum, topnum);
+begin "enttpc"
+integer bbase, tcount;
+
+bbase _ bulnum * daterecordsize;
+swdptr (datefile, bbase + topic!count);
+tcount _ wordin (datefile);
+if tcount geq (daterecordsize - topic!list)
+    then
+	begin
+	print (" Cannot assign a bulletin to more than ",
+			daterecordsize - topic!list, " topics.");
+	return (false);
+	end;
+
+! increment topics count for this bulletin and append topic to list;
+swdptr  (datefile, bbase + topic!count);
+wordout (datefile, tcount + 1);
+swdptr  (datefile, bbase + topic!list + tcount);
+wordout (datefile, topnum);
+
+end "enttpc";
+
+
+
+!	<< writedates >>
+	Initializes the bulletin statistics on datefile;
+
+simple integer procedure writedates (integer bulnum, author, crdate, exdate;
+						string topiclist);
+begin "dates"
+integer bbase, topnum, ii;
+
+if not bulnum then return (false);
+
+! unlock bulletin board;
+if not unlock
+    then
+	begin
+	if debug then print (" Writedates: can't unlock bulletin board.");
+	return (false);
+	end;
+
+! open datefile;
+openf (datefile, readwritethawed);
+if !skip!
+    then
+	begin
+	if debug then print (" Openf error ", cvos (!skip!), " for datefile in wrdates.");
+	reslck;
+	return (false);
+	end;
+
+! clear the daterecordsize words belonging to this bulletin;
+bbase _ bulnum * daterecordsize;
+swdptr (datefile, bbase);
+for ii _ 1 upto daterecordsize do wordout (datefile, 0);
+
+! record the bulletin number, author, creation and expire dates;
+swdptr (datefile, bbase + blt!no);
+wordout (datefile, bulnum);
+swdptr (datefile, bbase + author!);
+wordout (datefile, author);
+swdptr (datefile, bbase + creation!date);
+wordout (datefile, crdate);
+swdptr (datefile, bbase + expire!date);
+wordout (datefile, exdate);
+
+! enter topic numbers into topic list until full;
+while topnum _ intscan (topiclist, brk) do
+	if not enttpc (bulnum, topnum) then done;
+
+closf (datefile);
+reslck;
+
+return (bulnum);
+
+end "dates";
+
+
+
+!	<< tnread >>
+	Reads topic names in directory order for recognition purposes;
+
+recursive procedure tnread (integer topnum; 
+			    REFERENCE STRING toplist);	          ! patch 4;
+begin "tnread"
+STRING dlm;							  ! patch 4;
+string tstr;
+
+readrecord (tptrfile, trecfile, topnum, trlength);
+
+! put the topic name in tpcnam and topic number in tpcno;
+tstr _ xrecord [topic!name];
+topnum _ intscan (tstr, brk);	! be sure we have correct topic number;
+if topnum < 1 then return;
+if (maxtpc _ maxtpc + 1)			! all but topic #0;
+    then
+	begin
+	dlm _ (IF maxtpc = 1 THEN "" ELSE ",");			  ! patch 4;
+	scan (tstr, nexttab, brk);		! scan to topic name;
+	toplist _ toplist & dlm & tstr & "," & CVS(topnum);	  ! patch 4;
+	end;
+
+! do the same for all its subtopics;
+tstr _ xrecord [father!sons];
+scan (tstr, nexttab, brk);			! throw away the father;
+while topnum _ intscan (tstr, brk) do tnread (topnum, toplist);
+
+end "tnread";
+! this is all PATCH 4  ;
+boolean procedure ReadTopicList (REFERENCE STRING TopList);
+BEGIN
+INTEGER ptr, rec#;
+INTEGER strSize;
+DEFINE dpage = 512;
+! word 0 of ptr file contains word# of topic name lists file ptr;
+SWDPTR(tptrfile, 0);
+rec# _ WORDIN(tptrfile);
+
+! now get actual PTR;
+SWDPTR(tptrfile, rec#);
+ptr _ WORDIN(tptrfile);
+! IF 0 we have NOT made the topic name list yet;
+IF ptr = 0 THEN RETURN(FALSE);
+
+strSize _ 2560 + 1280;
+DO BEGIN ! get in ALL of TopLIST;
+    SCHPTR(trecfile, ptr);
+    TopLIST _ SINI(trecfile, strSize, lf); 
+    IF debug THEN
+        IF !SKIP! = -1 THEN 
+            PRINT(strSize, " NOT big enough for TopLIST", crlf)
+	ELSE  
+	    PRINT(" - ", LENGTH(TopLIST), "  chars. for TopLIST");
+    strSize _ strSize + dpage;
+    END UNTIL !SKIP! NEQ -1;
+RETURN(TRUE);
+
+END;
+boolean procedure makeTopicNameRecord;				  ! patch 4;
+begin "make topic name record"					  ! patch 4;
+integer ii, top#;
+STRING TopLIST;							  ! patch 4;
+
+if not bbd# then BEGIN
+    print(crlf & "You MUST be connected to a bulletin board!");
+    return(FALSE) END;
+
+if debug then print (crlf & "[making topic name record ");
+
+maxtpc _ -1;
+TopLIST _ "#-1 ";
+if topcluge
+    then
+	! files already open;
+	tnread (1, TopLIST)
+    else
+	begin
+	if not opentopic
+	    then
+		begin
+		print (" Can't get topic names.");
+		return(false);
+		end;
+	tnread (1, TopLIST);
+	end;
+
+! close the topic files--;
+closetopic;
+
+! write out the topList;
+Xrecord[1] _ TopLIST;
+IF NOT WriteRecord(tptrfile, trecfile, 1) THEN RETURN(FALSE);
+
+if debug then print ("]");
+
+RETURN(TRUE);
+end "make topic name record";
+!	<< getopicnames >>
+     ---THIS IS ALL PATCH 4---
+	Reads the current topic names in directory order into tpcnam
+	and their topic numbers into tpcno;
+
+boolean procedure getopicnames;
+begin "get topic names"
+STRING TopLIST;
+INTEGER i, brk;
+INTEGER t;							  ! patch 4;
+
+if debug then print ("[getting topic names ");
+if topcluge
+    THEN BEGIN
+	! files already open;
+	IF NOT readTopicLIST(TopList) THEN BEGIN
+	    closetopic;
+	    IF NOT MakeTopicNameRecord THEN BEGIN
+		print(crlf & "CanNOT make topic name record"); 
+		RETURN(FALSE) END;
+	    opentopic;
+	    readTopicList(TopList) END
+    END ELSE
+	BEGIN
+	if not opentopic
+	    then
+		BEGIN
+		print (crlf & " Can't get topic names.");
+		return(FALSE);
+		END;
+
+	IF NOT readTopicLIST(TopList) THEN BEGIN
+	    closetopic;
+	    IF NOT MakeTopicNameRecord THEN BEGIN
+		print(crlf & "CanNOT make topic name record"); 
+		RETURN(FALSE) END;
+	    opentopic;
+	    readTopicList(TopList) END;
+
+	closetopic;
+	END;
+
+
+! Toplist is of the form
+  "#-1 name1,no1,name2,no2,...,nameN,noN<cr><lf>;
+! remove "-1 " from TopList;
+INTSCAN(TopList, brk);
+brk _ LOP(TopList);
+
+SETBREAK(t _ GETBREAK, "," & cr, "", "ISN");
+
+arrclr (tpcnam);
+arrclr (tpcno);
+maxtpc _ 0;
+
+WHILE TRUE DO BEGIN
+    ! get topicname, and topic number-1,...,N;
+    IF (maxtpc _ maxtpc + 1) = tmax THEN BEGIN
+        maxtpc _ tmax - 1; DONE END;
+
+    tpcNam[maxtpc] _ SCAN(TopLIST, t, brk);
+    tpcno[maxtpc] _ INTSCAN(TopLIST, brk);
+
+!   IF debug THEN PRINT(crlf, maxtpc, " ", tpcno[maxtpc], " ", tpcNam[maxtpc], " ", brk);
+
+    IF brk = lf THEN DONE ! INTSCAN ignores <cr> but NOT <lf> ;
+    ELSE  
+        brk _ LOP(TopLIST) END;	! remove ","  ;
+
+! put in tpcname terminator--;
+TpcNam[maxtpc + 1] _ del;
+
+if debug then print ("- There are ", maxtpc, " topics]");
+
+RETURN(TRUE);
+
+end "get topic names";
+
+!	<< moresubtopics >>
+	Returns true if there are further subtopic fields in
+	lastpartoftopicname;
+
+simple integer procedure moresubtopics (string lastpartoftopicname);
+begin "more"
+
+scan (lastpartoftopicname, nextperiod, brk);
+return (brk);
+
+end "more";
+
+
+
+!	<< cleanup >>
+	Remove leading and trailing spaces and tabs;
+
+simple procedure cleanup (reference string g);
+begin "cleanup"
+integer count;
+
+while g = space or g = tab do brk _ lop (g);
+count _ length (g);
+while g [count for 1] = space or g [count for 1] = tab
+	do count _ count - 1;
+g _ g [1 to count];
+
+end "cleanup";
+
+
+
+!	<< bltpost >>
+	Posts bulletins.  Mail is a complete message with datesizestamp;
+
+simple integer procedure bltpost (integer whichbbd, exdate;
+					string topicname, mail);
+begin "bltpost"
+integer bulnum, topnum;
+
+if bbd# neq whichbbd and not setup (whichbbd)
+    then
+	begin
+	if debug then print (" Bltpost: The bulletin board is down");
+	return (false);
+	end;
+
+if not topicname
+    then
+	begin
+	if debug then print (" Bltpost: No topic name given.");
+	return (false);
+	end;
+
+if not tpcnam [1] then getopicnames;
+
+arrclr (xrecord);
+temp _ scan (mail, oneline, brk);
+xrecord [1] _ blthead (0, length (mail));
+xrecord [2] _ temp [1 to 23] & cvs (length (mail)) & ";000000000000";
+
+! remove trailing crlf, writerecord will put it back;
+xrecord [3] _ mail [1 to inf-2];
+if not bulnum _ writerecord (bltptrfile, bltfile, 3)
+    then
+	begin
+	print (" Couldn't post the bulletin.");
+	return (false);
+	end;
+
+
+! record the expire date and topic in the date record;
+topnum _ tpcno [search (topicname, tpcnam)];
+if not topnum then topnum _ 2;			! topic default is "Other";
+
+scan (mail, oneline, brk);			! Date line;
+temp _ scan (mail, oneline, brk);		! Author line;
+cleanup (temp);
+print (temp);
+if not writedates (bulnum, stdir (temp [7 to inf], false),
+			idtim (xrecord [2] [1 to 22]), exdate, cvs (topnum))
+    then
+	begin
+	print (" -- date record not written");
+	return (false);
+	end;
+
+! update the topic record;
+if not opentopic
+    then
+	begin
+	print (" -- opentopic failure");
+	return (false);
+	end;
+readrecord (tptrfile, trecfile, topnum, trlength);
+closetopic;
+if xrecord [bul!list]
+    then xrecord [bul!list] _ xrecord [bul!list] & ", ";
+xrecord [bul!list] _ xrecord [bul!list] & cvs (bulnum);
+if not writerecord (tptrfile, trecfile, trlength)
+    then
+	begin
+	print (" -- topic record not written");
+	return (false);
+	end;
+
+print (" -- ok");
+return (true);
+
+end "bltpost";
+
+SIMPLE PROCEDURE Set!Mailer!Flag;
+
+COMMENT *****************************************************************
+	Routine to set the flag in <SYSTEM>MAILER.FLAGS for CONNECTED
+directory to indicate mail exists to be forwarded.  Finds a free page,
+starting from the top and uses it to buffer flags page.
+*************************************************************************
+;
+
+BEGIN "Set!Mailer!Flag"
+
+INTEGER	Flag!Channel,
+	Flag!JFN,
+	Page!No;
+
+EXTERNAL INTEGER   !Skip!;
+
+LABEL	RGOTIT,
+	RPACLP;
+
+DEFINE	!! = "COMMENT",
+	CRLF = "'15 & '12";
+
+START!CODE "Find free page"
+	HRLI 1,'400000;		!! Set to check access all pages;
+	HRRI 1,'777;
+RPACLP:	RPACS;			!! Read accessibility;
+	TLNN 2,'010000;		!! Does it exist?;
+	 JRST RGOTIT;		!! No, use this one;
+	SUBI 1,1;		!! Busy, try next one;
+	TRNE 1,'777777;		!! If any left;
+	 JRST RPACLP;		!! Yup;
+RGOTIT:	HRRZM 1,Page!No;	!! OK, save the number;
+END "Find free page";
+
+IF NOT Page!No THEN
+BEGIN "No free pages"
+   OUTSTR(CRLF & "*** Couldn't find free page for MAILER.FLAGS" & CRLF);
+   RETURN;
+END "No free pages";
+
+Flag!Channel _ OPENFILE("<SYSTEM>MAILER.FLAGS;1", "RWOHE");
+IF !Skip! THEN
+BEGIN "Error on getting file"
+   OUTSTR(CRLF & "*** Couldn't get MAILER.FLAGS: " & CVOS(!Skip!) & CRLF);
+   RETURN;
+END "Error on getting file";
+Flag!JFN _ CVJFN(Flag!Channel);
+
+START!CODE "Set the bit"
+	HRLZ 1,Flag!JFN;	!! Map the .FLAGS page;
+	MOVE 2,Page!No;
+	HRLI 2,'400000;
+	MOVSI 3,'140000;
+	PMAP;
+	GJINF;			!! Get conn dir number;
+	IDIVI 2,36;		!! Compute word index and bit;
+	MOVE 1,Page!No;		!! Finish word address;
+	IMULI 1,512;
+	ADD 2,1;
+	MOVSI 1,'400000;	!! Make a bit mask to set right bit;
+	MOVNS 3;
+	ROT 1,0(3);
+	IORM 1,0(2);		!! Now set the bit;
+	SETO 1,;		!! Unmap the .FLAGS page;
+	MOVE 2,Page!No;
+	HRLI 2,'400000;
+	PMAP;
+END "Set the bit";
+
+CFILE(Flag!Channel);
+
+END "Set!Mailer!Flag";
+SIMPLE PROCEDURE Send!Message(STRING To, From, CC, Subject;
+			REFERENCE STRING Text; BOOLEAN Notify (TRUE));
+
+COMMENT **************************************************************
+	Creates a SNDMSG format message in a a file for MAILER to
+pickup and forward:
+
+	  Date: <Date>
+	  From: <From>
+	  Subject: <Subject>
+	  To:   <To>
+	  cc:   <cc>  (if CC in non-null)
+
+		<Text>
+	  -------
+***********************************************************************;
+	
+BEGIN "Send!Message"
+
+INTEGER	Channel,
+	Adr!Break,
+	Site!Break,
+	Brk!Char,
+	Date!Time;
+
+EXTERNAL INTEGER   !Skip!;
+
+STRING	User,
+	Host,
+	Preamble, 
+	Tail;
+
+DEFINE	CtlV = "'26",
+	CRLF = "'15 & '12";
+
+SETFORMAT(0, 0);
+SETBREAK(Adr!Break_GETBREAK, ",", " ", "ISN");
+SETBREAK(Site!Break_GETBREAK, "@", NULL, "ISN");
+Date!Time _ GTAD;
+Preamble _ "Date: " & ODTIM(Date!Time, '012261 LSH 18) & CRLF &
+           "From: " & From & CRLF &
+           "Subject: " & Subject & CRLF &
+           "To:   " & To & CRLF;
+IF LENGTH(CC) THEN
+   Preamble _ Preamble & "cc:   " & CC & CRLF;
+Preamble _ Preamble & CRLF;
+
+Tail _ CRLF & "-------" & CRLF;
+
+To _ To & "," & CC;
+WHILE LENGTH(Host _ SCAN(To, Adr!Break, Brk!Char)) OR LENGTH(To) DO
+BEGIN "Message all addressees"
+   User _ SCAN(Host, Site!Break, Brk!Char);
+   IF NOT LENGTH(User) THEN
+      CONTINUE "Message all addressees";
+   Channel _ OPENFILE("[--UNSENT-MAIL--]." & User & CtlV & "@" & Host, "WE");
+   IF !Skip! THEN
+      CONTINUE "Message all addressees";
+   OUT(Channel, Preamble);
+   OUT(Channel, Text);
+   OUT(Channel, Tail);
+
+   ! Change author field to BULLETINS - if BBD doing a NOTIFY;
+   IF Notify THEN CHFDB(Channel, 6, '777777000000, BullDirNUM);	 ! patch 6;
+
+   CFILE(Channel);
+END "Message all addressees";
+
+RELBREAK(Adr!Break);
+RELBREAK(Site!Break);
+
+RETURN;
+END "Send!Message";
+

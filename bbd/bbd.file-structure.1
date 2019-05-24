@@ -1,0 +1,230 @@
+
+Richard Q. Kahler
+December, 1976
+Last update:  January 13, 1978
+
+
+			Bulletin-board file formats
+
+
+	This is a description of the format for the files used by
+BBD and its companion programs.
+
+
+BULLETIN-BOARD.NAMES file
+
+	The BULLETIN-BOARD.NAMES file is a text file read by each of the
+bulletin board programs every time they start up.  The speed of TENEX
+SAIL I/O allows us to read this file as part of the initialization
+process and avoid the necessity of recompiling all programs every time a
+bulletin board is to be created or destroyed.
+
+	The first line of the file contains a list of the directory
+numbers (in decimal, for INTSCAN's sake) of those users who are to be
+managers of every bbd.  These users only are allowed to use the BBD
+Initialize command, which creates bulletin boards after they have been
+entered in this file.  (If such a user should accidentally Initialize an
+already existing bbd, just delete the new versions thus created of the
+existing files, the existing files are not touched.)
+
+	The second and each succeeding line of the file names a bulletin
+board (which must always end in ".bbd"), the directory it will be found
+on, and a list of users (decimal directory numbers) who are to have
+manager privileges on that bbd.  You may put spaces and tabs liberally
+between these three items so that they line up in columns.
+
+	The file may be put on any system or user directory and should
+be protected for read access only.  Put the name of the file in the
+GETBBDNAMES initialization routine in BBD.COMMON under compile switch
+for your site (see the file BBD.SITE).  BBD.COMMON is required by every
+bulletin board program during SAIL compilation except the small one,
+BBCHECK, which must be told separately where this file may be found.
+
+	Here is a copy of <BULLETINS>BULLETIN-BOARD.NAMES at SUMEX-AIM:
+
+				286
+SUMEX.bbd	Bulletins	49, 296
+AI.bbd		Aihandbook	170, 310, 26, 148, 316
+CSD.bbd		Levin		26, 142, 424, 129
+Dendral.bbd	Dendral		22, 114
+Hydroid.bbd	Wiederhold	11, 26, 310
+Lore.bbd	Bulletins	49
+Mainsail.bbd	Mainsail	111, 128
+Molgen.bbd	Molgen		28, 238, 149
+Mycin.bbd	Mycin		148
+Protein.bbd	Engelmore	38
+PUB.bbd		Bulletins	328, 140
+SECS.bbd	Auxsecs		203
+
+
+
+
+
+	The seven files comprizing each bulletin board are described
+below.  Filenames are of the form name-BBD.ext, where "name" is the name
+of the bulletin board and "ext" indicates the function of that
+particular file.  Sample filenames given in parentheses are those of the
+SUMEX bulletin board.  The PUB bulletin board would consist of files with
+names like PUB-BBD.BLT and PUB-BBD.USER .  The .BLT and .TR files are
+text files, the other five are binary.
+
+
+Bulletins file  (SUMEX-BBD.BLT)
+
+	Text file containing bulletins in message-format, except for a
+line at the beginning containing the bulletin delimiter (a # at the
+beginning of a line), bulletin number and length in characters, e.g.
+
+#1:  (Length 187)
+13-DEC-76 15:45:13-PST,187;000000000000
+Date: 13 DEC 1976 1545-PST
+From: KAHLER
+Subject: Sample bulletin
+
+	Text goes here.
+
+-------
+
+"#" is not allowed to be the first character in any line of a bulletin.
+A space is inserted before the "#" in such cases before the bulletin
+is posted.
+
+
+
+Bulletin pointers file  (SUMEX-BBD.PTR)
+
+Word		Contents
+0		N + 1, where N is the number of bulletins on the bbd
+1 to N		File pointer (7-bit byte count from beginning of
+		 file) to the # at the beginning of the bulletin
+
+
+
+Topic records file  (SUMEX-BBD.TR)
+
+	Text file, contains 5-line topic records for each topic,
+including topic name, topic number of father, topic numbers of sons,
+bulletins posted, users interested.  All numbers are DECIMAL.
+
+#2	Other			topic number, tab, topic name
+1	33, 76			father, tab, sons
+123, 124, 125, 126		bulletins under this topic
+286, 343, 72, 11		users interested
+				blank line
+
+
+
+
+
+Topic pointers file  (SUMEX-BBD.TP)
+
+Word		Contents
+0		M + 1, where M is the number of topics on the bbd
+1 to M		File pointer to the # at the beginning of the topic
+		 record
+
+
+
+Date file  (SUMEX-BBD.DATE)
+
+	Fixed-length records, one per bulletin.
+First word of record = bulletin number * daterecordsize.
+Currently daterecordsize = 20 (octal).
+
+Word	Contents
+0	Bulletin number
+1	If non-zero, bulletin is deleted
+2	Directory number of author
+3	Creation date, TENEX internal format
+4	Last read date
+5	Number of reads
+6	Expire date
+7	Directory number of last reader
+10	Not used
+11	Not used
+12	Not used
+13	Topic number
+14	Not used
+15	Not used
+16	Not used
+17	Not used
+
+Words 13-17 were originally reserved for additional topics to which
+this bulletin could belong, pending a satisfactory resolution of
+the issues involved.  Currently a bulletin can be filed under one
+topic at a time only.
+
+At the moment I think that the best way to post a bulletin under more
+than one topic is to introduce another level of abstraction (logical
+bulletins) between physical bulletins and topics.  Any given physical
+bulletin may then have more than one logical bulletin pointing to it,
+so that a new logical bulletin may be created each time it is desired
+to file a bulletin under another topic.  The bulletin numbers that the
+user would see in the directory listing would be logical bulletin
+numbers.  Physical bulletins would be removed from the bulletin board
+when the last logical bulletin pointing to it is deleted or expires.
+
+Another much needed feature is "examined" bulletins (a la MSG).  This
+would require doubling the record size in this file to 40 (octal) words
+to provide one bit per user for each physical bulletin.  This originally
+was considered too much overhead in terms of file space.
+
+
+
+
+
+User file  (SUMEX-BBD.USER)
+
+	Page 0:  "Last news date" table, indexed by directory number,
+		 of date/time when user last read his new bulletins.
+		 (At USC-ECL, this table occupies pages 0-1)
+
+	Page 1:  "Last post date" table containing creation date of
+		 newest bulletin on user's interest list, maintained
+		 by POST.  (At USC-ECL, this table occupies pages 2-3)
+
+Each user has a one-word entry in each table.  These two numbers are
+compared whenever a bulletin-board program wants to know whether the
+user has new bulletins.
+
+This does not allow individual classification of bulletins into "alert
+the user about this" and "we know that the user has already seen this"
+categories as examined bulletins (above) would.
+
+
+
+Lock file  (SUMEX-BBD.LOCK)
+
+Word	Contents
+0	Bulletin board write lock (normally -1)
+1	Date/time when last locked
+2	Directory number of last owner of write lock
+3	Count of times write lock has been locked (bbd written upon)
+	since last expunge.  Could be used to decide whether to expunge
+
+10	Bulletin board expunge lock (normally -1)
+11	Date/time when last locked
+12	Last owner of expunge lock
+
+20	Date/time of last notify
+
+100	Count of times write lock had to be broken (as when somebody
+	locks the lock and never restores it, hasn't happened yet)
+101-500	Directory numbers of users who had the write lock too long
+
+
+In the light of experience, only one lock (the write lock) is necessary
+as long as a flag is kept with it that would be set at the beginning of
+the expunge process and cleared at its successful completion.  The flag,
+if set, would mean, "do not attempt to write even if the write lock is
+available or timed out", indicating that an expunge was aborted before
+it could clear the flag and that things might be messed up.  The only
+expunge errors that have ever occurred have been harmless "directory
+full" errors when trying to create scratch files, which is the first
+step of the process.  These errors rarely occur anymore.
+
+If a bulletin-board program ever complains "Error during last
+expunge..." or "Can't get bulletin-board lock", use VIEW or another
+FILDDT-type program to examine and/or reset the bulletin-board locks in
+words 0 and 10 above.
+
