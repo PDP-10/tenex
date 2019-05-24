@@ -1,0 +1,297 @@
+;Conditionialize the calls to INQCHK, TCPCHK and GGPCHK,
+;in case the modules are loaded, but features turned
+;off
+;HWM, 14-Jul-82
+;
+;In INTBP1, change the check interval for calling INQCHK,
+;TCPCHK, and GGPCHK to 1 second, which should make them
+;run on about every tenth call to CLK2.
+;HWM, 26-May-82.
+;
+;| Tenex support
+;ISISRC:<4.TCP>INPROC.MAC.2520  1-May-81 17:14:45, Edit by CHASE
+;#253 Set INTON flag when internet is initialized
+;ISISRC:<4.BBNC-TCP>INPROC.MAC.42023 20-Apr-81 18:34:50, Edit by CHASE
+;#131 At INTBP0+4, make INTFRK run on Queue 0 only
+;SNARK:<402-INET>INPROC.MAC.22 10-Feb-81 09:59:15, Edit by CLYNN
+;PINGTM should be compared to the TODCLK, not TCPTIM
+;	INTBP1+17	MOVE T1,TCPTIM		MOVE T1,TODCLK
+;			CAMGE T1,PINGTM		CAMGE T1,PINGTM
+;[BBND]SNARK:<402-INET>INPROC.MAC.21, 29-Dec-80 14:39:16, Ed: TAPPAN
+;	INTRBF+5	XMOVEI T1,-IMP96L(T2)	XMOVEI T1,-LCLPKT(T2)
+;	RETPKT+4	XMOVEI T2,IMP96L(PKT)	XMOVEI T2,LCLPKT(PKT)
+
+	SEARCH	INPAR,TCPPAR,IMPPAR,PROLOG
+	TTITLE	INPROC
+	SUBTTL	Internet Process, William W. Plummer, 28Feb79
+	SWAPCD
+
+COMMENT	!
+These routines control the running of the various Internet processes
+such as the Internet User Queue mechansism, TCP, etc.
+This process keeps a supply of input buffers available for the
+various interfaces and handles returning of spent buffers.
+
+* INTBEG ..  3 ...... Start up the Internet fork
+  INTBP0 ..  3 ...... Start of the Internet fork code
+  INTBP1 ..  3 ...... Top of main loop
+* INTBPT ..  4 ...... Scheduler activation test to Internet fork
+
+  INTNRB ..  5 ...... Release empty output bfrs left by interrupt level
+  INTRBF ..  5 ...... Release one empty Internet bfr (packet, segment)
+  INTGIB ..  6 ...... Get a supply of packet buffers for input
+* RETPKT ..  7 ...... Release packet storage
+
+  INTINI ..  8 ...... Grand initialization
+	!
+
+; Local parameters:
+
+NINTIB==4	; Number of input buffers to keep queued for PI level
+
+IFKA <EXTERN CHNSON,FORKX,FREINI,GATINI,GETBLK,GGPCHK,GGPFLG,GGPINI> ;|
+IFKA <EXTERN GGPPRC,INQCHK,INQINI,INTDSP,INTFLG,INTFRI,INTLKB,INTULK> ;|
+IFKA <EXTERN INTFRK,INTIBO,INTNFB,INTNFI,INTNIB,INTON,INTSCR,INTTIM> ;|
+IFKA <EXTERN PINGTM,RETBLK,RPICHK,TCPCHK,TCPFLG,TCPTIM,TODCLK> ;|
+IFKA <EXTERN TCPINI,TCPPRC,WTBINI> ;|
+
+
+; INTBEG	Start the Internet process at system startup time.
+
+;	CALL INTBEG
+;Ret+1:	Always.
+
+INTBEG::MOVSI T1,(CR%CAP)
+	CFORK			; Get a fork of JOB0
+	 INBUG (HLT,<INTBEG: Can't create Internet fork>,INTMA0)
+	XMOVEI T2,INTBP0
+	MSFRK			; Start fork in monitor mode
+	RET
+
+	rescd
+; Internet fork top level
+
+INTBP0::MOVSI T1,(PC%USR)	; User mode bit
+	MOVEM T1,FPC		; Fake a return PC
+	MCENTR			; Establish monitor context
+	SE1ENT
+IFKL <	MOVEI T1,.FHSLF		;#131 Give the INT fork some priority
+	MOVEI T2,1		;#131 Only allow queue 0
+	SPRIW%			;#131
+	 ERJMP .+1		;#131
+> ;| End of IFKL
+IFKA <
+  IFE PIESLC,<
+	MOVEI 1,202
+	MOVEM 1,JOBBIT
+  > ;| End of IFE PIESLC
+
+IFN PIESLC,<
+	CALL SETSPQ##
+>				;NCPFRK GETS SPECIAL QUEUE
+
+> ;| End of IFKA
+	MOVE T1,FORKX		; ID of this fork
+	MOVEM T1,INTFRK		; Save for debugging
+	MOVE T1,[ITFPC,,INTUXI]
+	MOVEM T1,MONBK		; Setup unexpected interrupt dispatch
+	MOVE T1,CHNSON
+	MOVEM T1,MONCHN		; Setup for panic channels
+	CALL INTINI		; Initialize everything
+
+INTBP1:	PUSH P,[MSEC1,,INTBP1]	; Return for following routines.
+	SETZM INTFLG		; Clear forced run flag.
+	SKIPE INTIBO		; Packets waiting for dispatch?
+	 CALL INTDSP		; Yes.  Hand them out to TCP, etc.
+	SKIPE INTNFB		; Any empty output buffers around?
+	 JRST INTNRB		; Yes.  Go release them.
+	MOVE T1,INTNFI		; Number of free input buffers
+	CAMGE T1,INTNIB		; Below desired level?
+	 CALL INTGIB		; Yes.  Go queue some more for PI level.
+	SKIPE INTSCR		; Using the Raw Packet Interface
+	 CALL RPICHK		; Maybe give it an input buffer
+	MOVE T1,TODCLK		; "Now"
+	CAMGE T1,TCPTIM		; TCP due for a run
+	SKIPE TCPFLG		; TCP has input waiting
+	 CALL TCPPRC		; Do TCP processing
+	MOVE T1,TODCLK		; GET "NOW" BACK
+	CAMGE T1,PINGTM		; Time for a ping?
+	SKIPE GGPFLG		;#252 Gateway-Gateway protocol?
+	 CALL GGPPRC		;#252 Yes.  Run it.
+
+	; Run other protocol modules here
+;[hwm]	HRLOI T1,377777		; Next run time unless needed sooner
+	move	t1,todclk	;[hwm]	get "now"
+	addi	t1,^d1000	;[hwm]	increment by one second
+
+ifn	inetn,<			;[hwm]	conditionalize the call
+	CALL INQCHK		; Get min wakeup for user queues
+>	;[hwm]	end ifn inetn
+
+ifn	tcpn,<			;[hwm]	conditionalize the call
+	CALL TCPCHK		; Min against TCP clocks
+>	;[hwm]	end ifn TCPN
+
+ifn	inetn,<			;[hwm]	conditionalize the call
+	CALL GGPCHK		;#252 Min against GGP clocks
+>	;[hwm]	end ifn inetn
+
+	; Check other protocol modules here
+	MOVEM T1,INTTIM		; Set wakup
+	JSP T4,INTBPT		; Run the test at process level
+	 CAIA			; To save overhead of scheduler
+	 RET			; Back to INTBP1
+	MOVEI T1,INTBPT		; Select the activation test
+	MDISMS			; Wait til it is satisifed
+	RET
+	swapcd
+
+; Unexpected interrupt
+
+INTUXI:	INBUG(CHK,<Internet fork: unexpected interrupt>,INTMA1)
+IFKA <	MOVSI T1,(PC%USR)	; Reset UPDL
+	MOVEM T1,FPC
+>
+IFNKA <	SE1ENT>			; Enter section 1
+	MCENTR
+	JRST INTBP1
+
+
+
+
+; INTBPT	Scheduler activation test for Internet fork
+
+;	JSP T4,INTBPT
+;Ret+1:	Internet fork not ready to run
+;Ret+2:	Internet fork runnable
+
+	RESCD
+INTBPT::SKIPE INTFLG		; Forced run?
+	 JRST 1(T4)		; Yes.
+	MOVE T1,TODCLK		; Current millisecond number
+	CAML T1,INTTIM		; After desired wakeup time?
+	 JRST 1(T4)		; Yes.
+	JRST 0(T4)
+	SWAPCD
+
+; Release packet buffers left by PI level (mostly empty output packets)
+
+;INTNFB/List of freed buffers
+;
+;	CALL INTNRB
+;Ret+1:	Always
+
+INTNRB:	SETZ T4,
+	EXCH T4,INTNFB		; Get and clear free list
+INTNR1:	SKIPN T4		; Quit at end of list
+	 RET
+	SETSEC T4,INTSEC	; Make extended address
+	XMOVEI T2,0(T4)		; Pointer to IMPDV part of packet
+	LOAD T4,NBQUE,(T4)	; Pointer to CDR of list
+	CALL INTRBF		; Release on buffer to INT free area
+	JRST INTNR1
+
+
+
+
+; INTRBF		Release an IMPDV-style packet to INT free area
+
+;T2/	(Extended) Pointer to IMPDV portion of packet
+;T4/	MUST BE PRESERVED
+;
+;	CALL INTRBF
+;Ret+1:	Always
+
+INTRBF::PUSH P,T4		; Save this as required.
+	PUSH P,T2
+	MOVE T1,T2
+	CALL INTULK		; Unlock the packet
+	POP P,T2		; Get back IMP style pointer
+	XMOVEI T1,-LCLPKT(T2)	; Compute standard Internet pointer
+	SETZRO PINTL,(T1)	; No longer in use by interrupt level
+	JN PPROG,(T1),INTRBX	; Do RETBLK if REMSEQ won't do it.
+	CALL RETBLK		; Release it (assume not full size)
+INTRBX:	POP P,T4
+	RET
+
+; INTGIB			Get input buffers
+
+; Called to pump up the list of free input buffers used by the
+; input PI routines.  If this is not done often enough, INT messages
+; will be discarded (via special queue logic).
+
+INTGIB:	PUSH P,PKT
+INTGI0:	MOVEI T1,MAXPSZ		; Maximum Internet packet size
+	CALL GETBLK		; Get a block of free storage
+	SKIPN PKT,T1		; Did we get it?
+	 JRST INTGIX		; No.
+	SETZRO PFLGS,(PKT)	; Clear all internal control flags
+	SETONE PFSIZ,(PKT)	; Indicate it is a full size packet
+	CALL RETPKT		; Release it to be free input buffer
+	CAMGE T1,INTNIB		; Have enough yet?
+	 JRST INTGI0		; No.  Get another
+INTGIX:	POP P,PKT
+	RET
+
+; RETPKT(PKT)		Release packet storage
+
+; If a full size packet is being released and we are low on IMP input
+; buffers, the packet will be used as an inut buffer.  Otherwise, it
+; gets released to free storage.  Called from INGWAY, TCPIP, TCPRA
+; and INTGIB above.
+
+;PKT/	(Extended) Pointer to a packet
+;
+;	CALL RETPKT
+;Ret+1:	Always.  Packet pointer invalid.  T1 has # of input buffers q'd.
+
+	RESCD
+RETPKT::JE PFSIZ,(PKT),RETPK1	; Is it a full size packet?
+	MOVE T1,INTNFI		; Yes.  Get number currently around
+	CAML T1,INTNIB		; Less than required?
+	 JRST RETPK1		; No.
+	XMOVEI T2,LCLPKT(PKT)	; Get pointer to IMPDV portion
+	MOVEI T3,PACKSZ		; Size of the IMPDV portion
+	STOR T3,NBBSZ,(T2)	; Make look like a good IMPDV pkt buffer
+	SETZRO NBQUE,(T2)
+	CALL INTLKB		; Lock down ends of the packet
+	MOVE T1,T2		; (INTLKB preserves T2)
+	PIOFF
+	EXCH T2,INTFRI		; Add to list of free input buffers
+	STOR T2,NBQUE,(T1)	; Old list is successor of this buf
+	AOS T1,INTNFI		; Bump the count to match
+	PION
+	RET			; Value is number queued
+
+	SWAPCD
+RETPK1:	MOVE T1,PKT		; What to return
+	CALL RETBLK		; Give it to free storage area
+	MOVE T1,INTNFI		; Value is number queued
+	RET
+
+; INTINI		Internet Grand Initialization
+
+
+;	CALL INTINI
+;Ret+1:	Always.
+
+; N.B. System startup code clears all resident variables.
+; In particular all queues to/from interrupt level are "empty".
+
+INTINI:	MOVEI T1,NINTIB		; Number of input buffers to keep q'd
+	MOVEM T1,INTNIB		; for interrupt level.
+	CALL GATINI		; Initialize the gateway
+	NOSKED
+	CALL WTBINI		; Initialize Wait Bits
+	CALL FREINI		; Initialize Free Storage
+	CALL TCPINI		; Initialize TCP
+	; Initialize other protocol modules here
+	OKSKED
+	CALL INQINI		; Initialize User Queues
+	CALL GGPINI		;#252 Initialize Gateway-Gateway Protocol
+	SETOM INTON		;#253 Say internet initialized
+	RET
+
+	TNXEND
+	END
+

@@ -1,0 +1,328 @@
+;Conditionialize DMOVEM's if KA, KI or F3.
+;HWM, 18-May-82
+;
+	SEARCH	INPAR,TCPPAR,PROLOG
+	TTITLE	TCPBFR
+	SUBTTL	TCP Buffer handling routines, Wm. W. Plummer, 15MAR77
+	SWAPCD
+	DEFAC (FX,Q3)		; Must agree with PROLOG, PAGEM
+IFKA <	DEFSTR FKUPT,FKPGS(FX),17,18>	; SPT index of user mode page table
+
+COMMENT	!
+
+	These are routines for mapping, reading, and writing buffers.
+	Buffers are actually in the address space of the fork executing
+	a SEND or RECV, but are manipuated by the TCP fork.  Data is
+	copied only once, directly from (or to) the buffer into a packet
+	(or vice versa).  This allows easy expansion to the Version 4
+	TCP where the byte address is a direct function of the data
+	sequence number and is not confused by the presence of
+	control information.
+
+	Since the TCP fork must guard against the page(s) containing
+	the buffer disappearing (unmapped, fork killed, etc), it
+	increments the share count on the SPT slot containing the
+	calling fork's UPT.  This prevent the map from going away.
+	Subsequent access checking will discover that the
+	page is missing and approriate errors returned.
+
+	SEND and RECV buffers are actually formed by the MAKBFR
+	routine in TCPJS.  They are queued on TCBSBQ or TCBRBQ for
+	action by the Packetizer or Reassembler.
+
+* SETTUM ...  2 ...... Set TCP fork's user map
+* USTTUM ...  2 ...... Unset the above
+* RSTBFR ...  3 ...... Reset buffer variables to virgin state
+* XFRDAT ...  4 ...... Transfer data between user buf and pkt
+* TBFINI ...  5 ...... TCP buffer initialization
+
+	!
+
+IFKA <EXTERN BLTMU,BLTUM,DWNSHR,FKPGS,FORKX,SETPPG,TCPUS0,UPSHR> ;|
+
+; SETTUM(BFR)		Set TCP fork's user map to be that of the buffer
+
+; This routine is called by the Packetizer and Reassembler to get the
+; current page of a buffer mapped so it can reference the data in it.
+
+;BFR/	(Extended) Pointer to the current buffer descriptor block
+;
+;	CALL SETTUM
+;Ret+1:	Always. NOSKED
+
+SETTUM::PUSH P,FX
+	NOSKED			; Prevent user from changing access
+	LOAD FX,BFRKX,(BFR)	; Get the fork which owns the buffer
+IFKA <	MOVE T1,FORKX		; Internet fork runs TCP
+	MOVE T1,FKPGS(T1)	; Pick up UPT,,PSB
+	MOVEM T1,TCPUS0		; Save that for later
+	LOAD T1,FKUPT		; Get SPT index of page table
+	CALL UPSHR		; Keep it from going away
+	LOAD T1,FKUPT		; Get SPT index of page table
+	MOVE FX,FORKX		; Now talk about this fork
+	STOR T1,FKUPT		; Set user space as our user space
+	DPB T1,[POINT 13,PSB+UPTPG,26]	; Store in our monitor mode map
+	CALL SETPPG		; Set up the pager
+	JSP T1,[TXZ T1,PC%CFM	; Clear call from monitor flag
+		JRSTF (T1)]
+>
+IFNKA <	MOVE T1,USECTB+0	; TCP's user section 0
+	MOVEM T1,TCPUS0		; Save that for later
+	LOAD T1,FKUPT		; Get SPT index of page table
+	CALL UPSHR		; Keep it from going away
+	LOAD T1,FKUPT		; Get SPT index of page table
+	MOVE T2,SHRPTR		; Prototype share pointer
+	STOR T1,SPTX,T2		; To that SPT slot
+	MOVEM T2,USECTB+0	; Place in process table
+	DATAI PAG,T1		; Get current pager status (UBA)
+	TXZ T1,PGLACB+PGLPCS	; Be sure these control bits are off
+	TXO T1,PGLUBR		; Say we want to load the UBA
+	DATAO PAG,T1		; Which invalidates stale info in map
+
+
+  IFSM <JSP T1,[TXO T1,PCU	; Turn on previous context user bit
+		JRSTF (T1)]
+  >
+  IFKL <JSP T2,[XSFM T1		; Store processor flags
+		TXO T1,PCU	; Previous context user bit
+		XJRSTF T1]	; Return with PCU set so XCTU works
+  >
+>
+	POP P,FX
+	RET
+
+
+; USTTUM(BFR)		Unmap user space
+
+;BFR/	(Extended) pointer to buffer descriptor block
+;
+;	CALL USTTUM
+;Ret+1:	Always.
+
+USTTUM::PUSH P,FX		; Used by FKUPT
+	MOVE T1,TCPUS0		; The TCP's actual user secton 0
+IFKA <	MOVE FX,FORKX		; Get our own fork number
+	MOVEM T1,FKPGS(FX)	; Restore our user mode map
+	LOAD T1,FKUPT		; Get the UPT
+	DPB T1,[POINT 13,PSB+UPTPG,26]	; Change our map
+	CALL SETPPG		; Gunch the pager
+	LOAD FX,BFRKX,(BFR)	; Get the owning fork
+	LOAD T1,FKUPT		; Get SPT index of that fork's map
+	CALL DWNSHR
+	JSP T1,[TXO T1,PC%CFM	; Turn on previous context monitor bit
+		JRSTF (T1)]
+>
+IFNKA <	MOVEM T1,USECTB+0	; Put back in process table
+	DATAI PAG,T1
+	TXZ T1,PGLACB+PGLPCS
+	TXO T1,PGLUBR
+	DATAO PAG,T1		; Cause pager to look again
+	LOAD FX,BFRKX,(BFR)	; Get the owning fork
+	LOAD T1,FKUPT		; Get SPT index of that fork's map
+	CALL DWNSHR
+>
+  IFSM <JSP T1,[TXZ T1,PCU	; Turn on previous context user bit
+		JRSTF (T1)]
+  >
+  IFKL <JSP T2,[XSFM T1		; Get flags
+		TXZ T1,PCU	; Turn off PCU bit
+		XJRSTF T1]
+  >
+	OKSKED
+	POP P,FX
+	RET
+
+; RSTBFR(BFR)			Reset a buffer (descriptor block)
+
+;BFR/	(Extended) Pointer to the buffer descriptor
+;
+;	CALL RSTBFR
+;Ret+1:	Always.
+
+RSTBFR::LOAD T1,BICNT,(BFR)	; Initial byte/word cnt set by SEND, etc
+	STOR T1,BCNT,(BFR)	; Set as the working countdown
+	LOAD T1,BDADR,(BFR)	; Data address in user space
+	STOR T1,BPTRA,(BFR)	; Set buffer byte pointer address
+	MOVEI T1,^D36
+	STOR T1,BPTRP,(BFR)	; Set position field
+	RET
+
+; XFRDAT	Transfer data between user buffer and a packet
+
+;T1/	Source pointer (may index by TPKT)
+;T2/	Dest pointer (may index by TPKT)
+;T3/	Number of 8-bit bytes to transfer
+;T4/	Non-0 says User-to-monitor transfer (Send direction)
+;
+;	CALL XFRDAT
+;Ret+1:	Always.  T1, T2, T3 updated
+
+;This is a cutdown version of BYTBLT which assumes 8-bit bytes and is
+;able to cope with the source or destination pointers
+;indexing by TPKT which is required to get extended addressing.
+
+XFRDAT::LOCAL <SRC,DEST,CNT,CNT2>
+	PUSH P,FR
+	MOVE FR,T4		; Save the Send flag
+	SKIPG CNT,T3		; Move count and test for early done
+	 JRST XFRDAZ		; Zero byte move
+	ife	kaflg!kiflg!f3flg,<	;[hwm]
+	DMOVEM T1,SRC		; T1 to SRC and T2 to DEST
+>
+	ifn	kaflg!kiflg!f3flg,<	;[hwm]
+	MOVEM	T1,SRC		;[HWM]
+	MOVEM	T2,DEST		;[HWM]
+>
+	CAIG CNT,20		; Short transfer? (must be ge 10!)
+	 JRST XFRDA1		; Yes
+	XOR T1,T2		; Set to compare
+	TLC T2,(10B11)		; Flip the byte size
+	TLNN T1,(77B11)		; Byte sizes agree?
+	TLNE T2,(77B11)		; And both are 8?
+	CAIA			; Something is fishy
+	 JRST XFRDA3		; Go do it word-at-a-time
+	TCPBUG (CHK,<XFRDAT: Byte size screwed up>,TCPMSX)
+
+; Byte-at-a-time mover.  Use Extended Instruction Set if present.
+
+XFRDA1:	REPEAT 0,<	; This doesn't work on the 2020.  (Why?)
+	IFNKA <
+	CAIG CNT,4		; Is setup for MOVSLJ worth it?
+	 JRST XFRDA2		; No.
+	PUSH P,FR		; Save send flag
+	MOVE FR,CNT		; Set source count
+	MOVE T1,SRC		; Source ptr (local ptr, T2 not used)
+	MOVE T3,CNT		; Set dest count
+	MOVE T4,DEST		; Dst pointer (local ptr, T4+1 not used)
+	SKIPN 0(P)		; Skip if send direction
+	 JRST XFRD11
+	XCT 2,[	EXTEND [MOVSLJ]]
+XFRD10:	 TCPBUG (CHK,<XFRDAT: MOVSLJ failure>,TCPMSY)
+	JRST XFRD12
+
+XFRD11:	XCT 1,[	EXTEND [MOVSLJ]]
+	 JRST XFRD10
+XFRD12:	POP P,FR		; Recover flag
+	MOVE SRC,T1		; Get updated source pointer
+	MOVE DEST,T4		; Get updated dst pointer
+	JRST XFRDAX		; and get out
+	>
+>
+
+; Here for byte-at-a-time move when EIS not on the machine.  Also
+; used to finish up after other move routines.
+
+XFRDA2:	JUMPE FR,XFRD21		; Jump if receive direction
+XFRD20:	XCTBU [	ILDB T1,SRC]	; Get a source byte
+	IDPB T1,DEST		; Put it where it belongs
+	SOJG CNT,XFRD20		; Loop til done
+	JRST XFRDAX		; Return to caller
+
+XFRD21:	ILDB T1,SRC
+	XCTBU [	IDPB T1,DEST]
+	SOJG CNT,XFRD21
+	JRST XFRDAX
+
+; Word-at-a-time movers.  Use BLT if no offset in positions.
+
+XFRDA3:	TLNN DEST,(7B2)		; Not up to a word boundary yet?
+	TLNE SRC,(1B0)		; Or SRC is a 4410XX style pointer?
+	CAIA			; Yes.  Bump both pointers.
+	 JRST XFRDA4		; No
+	JUMPE FR,XFRD31		; Jump if receive direction
+	XCTBU [ILDB T1,SRC]		; No. Move a few bytes til so
+	IDPB T1,DEST
+	SOJA CNT,XFRDA3		; Note CNT starts ge 10
+
+XFRD31:	ILDB T1,SRC		; No. Move a few bytes til so
+	XCTBU [IDPB T1,DEST]
+	SOJA CNT,XFRDA3		; Note CNT starts ge 10
+
+XFRDA4:	PUSH P,SRC		; Save pointers so left half can be
+	PUSH P,DEST		; restored after using as local indirect
+	LDB T1,[POINT 3,SRC,2]	; Position will be 04, 14, 24, or 34
+	TXZ SRC,-1B12		; Clear reserved bits
+	TXZ DEST,-1B12
+	TXO SRC,IFIW		; Form local indirect pointers
+	TXO DEST,IFIW
+	IDIVI CNT,^D<36/8>	; Number of full words to move
+	JUMPE T1,XFRDA8		; No offset in position.  Use BLT
+
+; Offset move
+
+XFRDA5:	ASH T1,3		; Number of bits present in T1
+	MOVNI T3,-^D36(T1)	; Amount of shift required in loop
+	MOVNI T4,-^D32(T3)	; Number left in T2 after 1st LSH
+	SKIPN FR		; Sending?
+	 SKIPA T1,@SRC		; No.  Source is monitor space
+	 UMOVE T1,@SRC		; Get 1st source word
+	ADDI SRC,1		; Bump (extended) pointer
+	LSH T1,-4		; Flush the extra bits
+
+; Main move-shift loop (should be in ACs on KA10)
+
+XFRDA6:	SKIPN FR		; Skip if send-direction
+	 SKIPA T2,@SRC		; Get four more bytes
+	 UMOVE T2,@SRC		; Get four more bytes
+	ADDI SRC,1		; Bump extended indirect word
+	LSHC T1,0(T3)		; Fill out 32 T1 bits and left justify
+	ADDI DEST,1		; Advance destination indirect word
+	SKIPN FR		; Skip if sending
+	 UMOVEM T1,@DEST	; Store away
+	SKIPE FR		; Skip if receiving
+	 MOVEM T1,@DEST		; Store away
+	LSHC T1,0(T4)		; Get rest from T2 and right just. in T1
+	SOJG CNT,XFRDA6		; Loop over all full words
+	POP P,T2		; Original DEST
+	POP P,T1		; Original SRC
+	HLL SRC,T1		; Restore position and size fields
+	HLL DEST,T2		; Index and indirect bits wont change
+	SOJA SRC,XFRDA9		; Undo the last increment
+
+; No offset.  SRC and DEST were 0410xx,,Y-1
+
+
+XFRDA8:	MOVE T1,CNT		; Get count
+	XMOVEI T2,@SRC		; Get source address
+	XMOVEI T3,@DEST		; and Destination
+	ADDI T2,1		; Byte ptrs were at end of previous word
+	ADDI T3,1
+	JUMPN FR,XFRD81		; Jump if receiving
+	HRRZS T3		; Sending.  Dest is user section 0
+	CALL BLTMU		; Move to user
+	JRST XFRD82
+XFRD81:	HRRZS T2		; Source is user section 0
+	CALL BLTUM
+XFRD82:	POP P,DEST		; Original DEST
+	POP P,SRC		; Original SRC
+	ADD SRC,CNT
+	ADD DEST,CNT		; Advance pointers
+
+
+; Exit for word-at-a-time movers.
+
+XFRDA9:	SKIPE CNT,CNT2		; Number left in partial word
+	 JRST XFRDA2		; Go finish them and return
+
+; Common exit
+
+XFRDAX:	DMOVE T1,SRC		; Get updated pointers
+	SETZ T3,		; Return a count of 0
+XFRDAZ:	POP P,FR
+	RESTORE
+	RET
+
+; TBFINI			Buffer initialization code
+
+; Called only at startup
+
+;	CALL TBFINI
+;Ret+1:	Always.
+
+TBFINI::RET			; Nothing to do in this version
+
+
+
+	TNXEND
+	END
+

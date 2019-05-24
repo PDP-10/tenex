@@ -1,0 +1,105 @@
+	SEARCH	INPAR,PROLOG
+	TTITLE	INLOCK
+	SUBTTL	Internet Lock Primitives, William W. Plummer 17JAN77
+	SWAPCD
+
+COMMENT	!
+	These routines are the lowest level lock manipulating
+	functions.  This whole module may be replaced by some
+	other for the purposes of testing as long as the
+	functionality of the individual routines is preserved.
+
+
+* CLRLCK ...  2 ...... Initializes a lock
+* RELLCK ...  2 ...... Release (handle) on a lock
+* SETLCK ...  3 ...... Set a lock
+* UNLCK ....  3 ...... Free a lock
+
+	!
+
+IFKA <EXTERN ASNWTB,CLRWTB,GENCFL,INTBZT> ;|
+IFKA <EXTERN PROC,RELWTB,SETWTB> ;|
+
+; CLRLCK	Initialize a lock
+
+;T1/	(Extended) Pointer to lock
+;
+;	CALL CLRLCK
+;Ret+1:	always
+
+CLRLCK::LOCAL <LOCKPT>
+	MOVEM T1,LOCKPT
+	CALL ASNWTB		; Assign a wait bit index
+	STOR T1,LIDX,(LOCKPT)
+	SETONE LWORD,(LOCKPT)
+	SETZRO LLOKR,(LOCKPT)	; Clear last locker
+	SETZRO LCCNT,(LOCKPT)	; Clear conflict count
+	RESTORE
+	RET
+
+
+
+
+
+
+
+;RELLCK		Release a lock handle
+
+;T1/	(Extended) Pointer to lock
+;
+;	CALL RELLCK
+;Ret+1:	always
+
+RELLCK::LOAD T1,LIDX,(T1)	; Wait bit index
+	CALLRET RELWTB		; Release it
+
+; SETLCK		Seize a lock
+
+
+;T1/	(Extended) Pointer to lock
+;
+;	CALL SETLCK
+;Ret+1:	Always.  NOINT, lock set.
+
+SETLCK::LOCAL <LOCKPT>
+	MOVEM T1,LOCKPT
+SETLC0:	NOINT
+	LOAD T1,LIDX,(LOCKPT)	; Get the wait bit index
+	CALL SETWTB		; Set it
+	OPSTR <AOSN >,LWORD,(LOCKPT)	; Attempt to get the lock
+	 JRST SETLC1		; Got it.  Return NOINT.
+	INCR LCCNT,(LOCKPT)		; Increment the conflict count
+	LOAD T2,LLOKR,(LOCKPT)	; Get the current locker
+	STOR T2,LOLKR,(LOCKPT)	; Save as the Old locker
+	MOVE T2,PROC		; Get our own process ID
+	STOR T2,LNLKR,(LOCKPT)	; Save this as the New locker
+	AOS GENCFL		; Count up general conflicts
+	OKINT
+	LOAD T1,LIDX,(LOCKPT)	; Get the wait bit index
+	HRLI T1,INTBZT		; Select the wait bit zero test
+	MOVSS T1
+	MDISMS
+	JRST SETLC0
+
+SETLC1:	MOVE T2,PROC		; ID of this process
+	STOR T2,LLOKR,(LOCKPT)	; Say it is us that has the lock
+	RESTORE
+	RET
+
+
+; UNLCK		Free a lock
+
+;T1/	(Extended) Pointer to lock
+;
+;	CALL UNLCK
+;Ret+1:	always
+
+UNLCK::	SETONE LWORD,(T1)
+	LOAD T1,LIDX,(T1)	; Get the wait bit index
+	CALL CLRWTB		; Indicate not locked
+	OKINT
+	RET
+
+	TNXEND
+	END
+

@@ -1,0 +1,224 @@
+;ISIMON:<ISI.TCP>TCPPP.MAC.3370 15-Sep-81 10:30:54, Edit by CHASE
+;#337 BBN update:
+; Fix: For use in multi-section machines, Beware too many options,
+; Don't compare fake free storage header at LCLPKT
+;ISISRC:<4.TCP>TCPPP.MAC.2510  1-May-81 20:12:34, Edit by CHASE
+;#251 BBN made many edits to this module, so the source file was taken as is
+	SEARCH	INPAR,TCPPAR,PROLOG
+	TTITLE	TCPPP
+	SUBTTL	TCP Packet Printer, William W. Plummer, 23FEB77
+	SWAPCD
+
+COMMENT	!
+
+	PRNPKT is called from the TCP each time it is fondled by some
+	task.  If the current packet is different than the one which
+	is stored in the PPBUF, PPBUF is dumped via the DBGIM (JSYS)
+	code in IMPDV, and the current packet is stored in PPBUF.
+	If the current packet is the same as that in PPBUF, a record
+	is kept regarding what has been done to it and the state of
+	the TCB to which it belongs so that when it is finally dumped,
+	the most recent information is available.  This minimizes the
+	number of printed lines which the usermode program which
+	actually prints the formated script will have to print.
+
+* PPINI ...  3 ...... Initialize the packet printer
+  RSTPPB ..  3 ...... Reset the buffer state
+  DMPBUF ..  3 ...... Dump the current PPBUF
+
+* PRNPKT ..  4 ...... Main routine called from TCP
+  PKTPRN ..  4 ...... Do the work with the PPBLCK set
+
+	!
+
+IFKA <EXTERN CLRLCK,DBGIN,LCKCAL,NXTLBL,PPBLCK,PPBUF,TODCLK,TRACEP,XBLTA> ;|
+
+; PPINI			; Initialize the Packet Printer
+;
+;	CALL PPINI
+;Ret+1:	Always
+
+PPINI::	PUSH P,FR
+	PUSH P,BFR
+	MOVEI BFR,PPBUF
+	CALL RSTPPB		; Reset the buffer
+	SETZM NXTLBL		; Label number for LBLOPT in packets
+	MOVEI T1,PPBLCK		; Lock on buffer accesses
+	CALL CLRLCK		; Reset that
+	POP P,BFR
+	POP P,FR
+	RET
+
+
+
+
+; RSTPPB		; Reset the Packet Printer Buffer state
+
+;FR/	Packet Printer flag word (modified here)
+;BFR/	Pointer to packet printer buffer
+;	CALL RSTPPB
+;Ret+1:	Always.
+
+RSTPPB:	MOVSI FR,(PP%MT)	; Mark buffer as empty, clear all others
+	STOR FR,DFLAG,(BFR)	; Store in PPB Flag word
+	RET
+
+
+
+; DMPBUF		; Dump what's in PPBUF through IMPDV
+
+;FR/	Packet Printer flag word
+;BFR/	Pointer to packet printer buffer
+;	CALL DMPBUF
+;Ret+1:	Always
+
+DMPBUF:	STOR FR,DFLAG,(BFR)	; Update display flags before output
+	MOVEI T1,PPBWDS		; Number of words in the buffer
+	HRRZM T1,PPBUF		; Fake an NCP buffer header
+	MOVEI T1,PPBUF		; This looks like an NCP Packet buffer
+	CALLRET DBGIN
+
+; PRNPKT	Main Routine, called from all over the TCP
+
+;TCB/	0 or pointer to Locked connection block
+;PKT/	0 or pointer to packet to print
+;T1/	Small number saying where the call is from
+;
+;	CALL PRNPKT
+;Ret+1:	Always
+
+PRNPKT::SKIPN TRACEP		; Tracing packets right now?
+	 RET			; No.
+	MOVE T3,T1		; Setup for call via LCKCAL
+	MOVE T4,TODCLK		; When the report is happening
+	MOVEI T1,PPBLCK		; Lock to set (section 0)
+	XMOVEI T2,PKTPRN	;#337 (Extended) Function to call
+	CALLRET LCKCAL		; Lock the lock and call the function
+
+
+
+; PKTPRN	; Action routine
+
+;TCB/	0 or pointer to locked connection block
+;PKT/	0 or pointer to packet
+;T1/	Where report is coming from
+;T2/	When report is happening (milliseconds)
+;
+;	Call PKTPRN
+;Ret+1:	Always.
+
+
+PKTPRN::LOCAL <WHERE,WHEN,COUNT,STATE>
+	PUSH P,BFR		; BFR pointer for caller
+	PUSH P,FR		; Save flag register
+	MOVEI BFR,PPBUF		; Set pointer to buffer
+	LOAD FR,DFLAG,(BFR)	; Get local copy of PPB flags
+	MOVEM T1,WHERE		; Save args in safe places
+	MOVEM T2,WHEN
+
+	JUMPN PKT,PKTPR1	; Jump unless it is BG flushing buffer
+	TLNE FR,(PP%MT)		; Is the buffer empty?
+	 JRST PKTPRX		; Yes. Nothing to do.
+	CALL DMPBUF		; Dump the buffer via IMPDV
+	CALL RSTPPB		; Reset buffer state
+	JRST PKTPRX		; Return
+
+PKTPR1:	TLNE FR,(PP%MT)		; PPB empty?
+	 JRST PKTPR4		; Yes.  Just dump in this one
+	LOAD T1,PIDO,(PKT)	; Internet Data Offset
+	MOVE T2,PKT		;#337 Locate TCP header
+	ADD T2,T1		;#337
+	LOAD T2,PTDO,(T2)	; TCP Data Offset
+	ADD T1,T2		; Total number of Header words
+	CAILE T1,<PPBFSZ+LCLPKT-PKTELI> ;#337 Beware too many options
+	  MOVEI T1,<PPBFSZ+LCLPKT-PKTELI> ;#337 Clamp at PPBUF limit
+	SOS T1			;#337 Skip first word
+	MOVEM T1,COUNT		; Number of words to compare
+
+	CAIN WHERE,8		; Retransmitter calling?
+	 JRST PKTPR3		;#337 Yes.  Force printing
+
+	MOVN T1,COUNT		; Number of full header words
+	HRLZS T1		; Make AOBJN pointer
+	XMOVEI T2,PKTELI+1(PKT)	;#337 Beginning of corresponding part of hdr
+PKTPR2:	MOVE T3,0(T2)		; Get a header word from packet
+	CAME T3,PPBUF+PKTELI+1-LCLPKT(T1) ;#337 Same as header in the buffer?
+	 JRST PKTPR3		; No.  Dump the buffer
+	ADDI T2,1		; Bump the packet pointer
+	AOBJN T1,PKTPR2		; Loop over the buffer
+	JRST PKTPR4
+
+PKTPR3:	CALL DMPBUF		; Dump the buffer
+	CALL RSTPPB		; Reset it
+
+PKTPR4:	TLZN FR,(PP%MT)		; Is the buffer empty?
+	 JRST PKTPR5		; No.  Just update state
+
+	MOVEI T1,PPBFSZ-1	;#337 Skip first word (fake header)
+	XMOVEI T2,LCLPKT+1(PKT)	;#337 Beginning of real header info(+1)
+	MOVEI T3,PPBUF+1	;#337 Corresponding place in buffer
+	CALL XBLTA		;#337 Copy the header into the buf
+	STOR WHEN,DTIME,(BFR)	; Save the report time
+	JFCL ;STOR PKT,DPKTP,(BFR) ;#337 Save buffer address
+
+PKTPR5:	SKIPE STATE,TCB		; Use 0 for state if no TCB
+	 LOAD STATE,TSTAT,(TCB)	; Else get the actual state
+	TLZ FR,(PP%DUN)
+	CAILE WHERE,0
+	CAILE WHERE,8		; Good value for where?
+	 TLOA FR,(PP%DUN)	; Say we are done with this packet
+	  XCT WHRTAB-1(WHERE)	;#337
+	TCPBUG(CHK,<Bad arg to PRNPKT>,TCPPP1)
+	JRST PKTPR6
+
+WHRTAB:	JRST WHR1		;#337
+	JRST WHR2		;#337
+	JRST WHR3		;#337
+	JRST WHR4		;#337
+	JRST WHR5		;#337
+	JRST WHR6		;#337
+	JRST WHR7		;#337
+	JRST WHR8		;#337
+
+WHR1:	TLO FR,(PP%PZ!PP%GSS!PP%SK); PZ reporting
+	STOR STATE,DSS,(BFR)	; Store source state
+	JRST PKTPR6
+
+WHR2:	TLO FR,(PP%GSS)		; OP reporting
+	STOR STATE,DSS,(BFR)
+
+WHR7:	TLO FR,(PP%SNT!PP%SK)	; IP faking OP
+	JRST PKTPR6
+
+WHR3:	TLO FR,(PP%RCV!PP%GDS!PP%DK); IP, normal
+	STOR STATE,DDS,(BFR)	; Store destination state
+	JRST PKTPR6
+
+WHR4:	TLO FR,(PP%RA!PP%DK!PP%GDS!PP%DUN) ; RA
+	STOR STATE,DDS,(BFR)
+	JRST PKTPR6
+
+WHR8:	TLO FR,(PP%REX!PP%GSS!PP%SK)	; RX
+	STOR STATE,DSS,(BFR)
+	JRST PKTPR6
+
+WHR6:	TLO FR,(PP%GDS)		; IP, flushed
+	STOR STATE,DDS,(BFR)
+
+WHR5:	TLO FR,(PP%DK!PP%DUN)	; IP, flushed
+
+
+PKTPR6:	TLNN FR,(PP%DUN)	; Has pkt reached the end of the line?
+	 JRST PKTPRX		; No.
+	CALL DMPBUF		; Yes.  Dump it now
+	CALL RSTPPB		; Reset the buffer
+
+PKTPRX:	STOR FR,DFLAG,(BFR)	; Save the PPB flags
+	POP P,FR
+	POP P,BFR
+	RESTORE
+	RET
+
+	TNXEND
+	END
+

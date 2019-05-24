@@ -1,0 +1,597 @@
+;Conditionialize DMOVEM's if KA, KI or F3.
+;HWM, 18-May-82
+;
+;ISIMON:<ISI.TCP>TCPMSC.MAC.3420 22-Sep-81 11:43:39, Edit by CHASE
+;#342 Avoid bug in CHKADD discovered after post #337 exercise
+;ISIMON:<ISI.TCP>TCPMSC.MAC.3370 15-Sep-81 10:24:12, Edit by CHASE
+;#337 BBN update:
+; Fix: Matching TCB check at CHKAD9, No memory return in TCBINI,
+; No space for new TCB in NEWTCB
+
+	SEARCH	INPAR,TCPPAR,PROLOG
+	TTITLE	TCPMSC
+	SUBTTL	TCP Miscellaneous routines.  William W. Plummer, 14Jan77
+	SWAPCD
+
+COMMENT !
+
+* CHKWND ...  3 ...... Check if a sequence number is within a window
+* OVRLAP ...  4 ...... Check if two segments overlap
+
+* ONLCLT ...  5 ...... Check if source of packet is using our clock
+* GETISN ...  5 ...... Get current value of Initial Sequence Number
+
+* PKTEND ...  6 ...... Returns sequence number of end of packet plus one
+* NULPKT ...  6 ...... Test a packet for containing something to be ACKd
+* TRMPKT ...  7 ...... Trim storage required by a packet
+* CLRBLK ...  8 ...... Clear a block before stuffing it
+
+* LCKCAL ...  9 ...... Lock a lock and call a funtion
+* CHKADD ... 10 ...... Lookup a connection and maybe create new one
+* TCBINI ... 13 ...... Initialize the TCB Hash Table
+* NEWTCB ... 14 ...... Initialize a new connection block
+* FILHDR ... 16 ...... Fill in common header information
+	!
+
+IFKA <EXTERN ASNWTB,CLRLCK,CLRWTB,DISE,GETBLK,INETID> ;|
+IFKA <EXTERN INITQ,INTNFI,INTNIB,NQ,NXTLBL,RELWTB> ;|
+IFKA <EXTERN RETBLK,RETJCN,RETPKT,SETLAB,SETLCK,TCBCNT,TCBH> ;|
+IFKA <EXTERN TCBHLK,TCBHUC,TCPSID,TODCLK,TRACEP,UNLCK,XBLTA> ;|
+
+; CheckWindow(Left, Sequence, Right)
+
+; Test "Sequence" to see if it is between "Left" (inclusive) and "Right"
+; (not incl.).  Sequence numbers are  modulo MAXSEQ and are always
+; positive when represented in a 36-bit word.
+
+;T1/	Left
+;T2/	Sequence
+;T3/	Right
+;
+;	CALL CHKWND
+;Ret+1:	always.  T1 has -1 if Sequence is in the window
+
+CHKWND::TEMP <VAL,SEQ,RIGHT,LEFT>
+	MOVEM T1,LEFT		; Make T1 available for value
+	SETZ VAL,		; Init value
+	CAMG LEFT,RIGHT		; Crosses 0?
+	 SOSA VAL		; No. Get a -1 to return
+	 EXCH LEFT,RIGHT	; Yes.  Reverse Left and Right.
+	CAMGE SEQ,RIGHT
+	CAMGE SEQ,LEFT
+	 SETCA VAL,		; Out of window.  Complement initial guess
+	RESTORE
+	RET
+
+; Test to see if two sequence number segments one or more common
+; points.  The two segments are semi-open on the right, similar
+; to CHKWND.
+
+;T1/	Left1
+;T2/	Right1
+;T3/	Left2
+;T4/	Right2
+;
+;	CALL OVRLAP
+;Ret+1	always, T1 non-zero if overlap exists
+
+OVRLAP::LOCAL <LEFT1,LEFT2,RIGHT2>
+	MOVEM T1,LEFT1
+	ife	kaflg!kiflg!f3flg,<	;[hwm]
+	DMOVEM T3,LEFT2		; T3,T4 to LEFT2,RIGHT2
+>
+	ifn	kaflg!kiflg!f3flg,<	;[hwm]
+	MOVEM	T3,LEFT2		;[HWM]
+	MOVEM	T4,RIGHT2		;[HWM]
+>
+	EXCH T2,T3
+	CALL CHKWND
+	JUMPN T1,OVRLAX
+	MOVE T1,LEFT2
+	MOVE T2,LEFT1
+	MOVE T3,RIGHT2
+	CALL CHKWND
+OVRLAX:	RESTORE
+	RET
+
+; Test to see if the current packet was sent by a host which
+; is using the same timebase as this host.  So that we will know
+; if the time stamp is valid
+
+
+;PKT/	(Extended) Pointer to the packet under consideration
+;
+;	CALL ONLCLT
+;Ret+1:	always, T1 non-0 if packet has a useable timestamp
+
+ONLCLT::LOAD T1,PISH,(PKT)	; Get the 32-bit source address
+IFN MNET,<			;#337 If multiple address'
+	CALL LCLHST		;#337 Is it me?
+	 SETZ T1,		;#337 No, clear T1
+>				;#337
+IFE MNET,<			;#337
+	CAME T1,INETID		; Is it me?
+	 TDZA T1,T1		; No, clear it
+	  SETO T1,		; Else -1
+>				;#337
+	RET
+
+
+
+; Get the current value of the Initial Sequence Number curve.  This
+; curve is a straight line which starts at 0 and goes through the
+; maximum sequence number minus 1 every cycle time of the network.
+; It steps once a second.
+
+;	CALL GETISN
+;Ret+1:	always, ISN in T1
+
+GETISN::
+IFKA <	GTAD			; Day,,Sec
+	HRRZS T1		; Save second number within day
+	DIVI T1,^D<24*60*60>	; Get binary fraction of day
+>
+IFNKA <	CALL LGTAD		; Day,,tick
+	HRRZS T1		; Save tick with day
+	LSH T1,^D17		; Make into binary fraction of day
+>
+	MUL T1,[^D<<MAXSEQ/8>*<<24*60*60>/<8*CYCTIM>>>]	; Get sequence number
+	RET
+
+; PKTEND(PKT) returns the sequence number following the packet
+
+;PKT/	(Extended) Packet pointer
+;TPKT/	(Extended) pointer to TCP part of packet
+;
+;	CALL PKTEND
+;Ret+1:	always.  End of packet plus one in T1
+
+PKTEND::LOAD T1,PSEQ,(TPKT)	; Get the start of the packet
+	LOAD T2,PCTL,(TPKT)	; Get word containing control flags
+	TXNE T2,<PSYN>		; Count one for SYN
+	 ADDI T1,1
+	TXNE T2,<PFIN>		; Another if FIN
+	 ADDI T1,1
+	LOAD T2,PIPL,(PKT)	; Length of whole packet in bytes
+	LOAD T3,PIDO,(PKT)	; Number of words in Internet part
+	LOAD T4,PTDO,(TPKT)	; Number of words in TCP header
+	ADD T3,T4		; Total header word count
+	ASH T3,2		; Byte count
+	SUB T2,T3		; Difference is # bytes in data part
+	ADD T1,T2		; Each data byte is one sequence slot
+	MODSEQ T1		; Take MOD field size
+	RET
+
+
+; NULPKT(PKT)	Tells if packet contains anything ACK-able
+;
+;PKT/	(Extended) Packet pointer
+;TPKT/	(Extended) pointer to TCP part of packet
+;
+;	CALL NULPKT
+;Ret+1:	Always.  T1 non-0  if packet is null
+
+NULPKT::SETZ T1,		; Assume answer is false
+	LOAD T2,PIPL,(PKT)	; Total packet length
+	LOAD T3,PIDO,(PKT)	; Offset to Internet data in words
+	LOAD T4,PTDO,(TPKT)	; Offset to TCP data in words
+	ADD T3,T4		; Number of header words, total
+	LSH T3,2		; Number of header bytes, total
+	CAMLE T2,T3		; Anything in TCP data part?
+	 JRST NULPKX		; Yes.  Packet is not null
+	LOAD T2,PCTL,(TPKT)	; Get word of control flags
+	TXNN T2,<PSYN!PFIN>
+	 SETO T1,		; No data, no control.  Pkt is null.
+NULPKX:	RET
+
+; TRMPKT(PKT)		Return excess storage not used in packet block
+
+;PKT/	(Extended) Packet pointer
+;TPKT/	(Extended) pointer to TCP part of packet
+;
+;	CALL TRMPKT
+;Ret+1:	Always.  PKT may come back 0 if storage unavailable.
+; Copy the little piece into a new block.
+; Return all of the whole (big) packet.
+
+TRMPKT::JE PFSIZ,(PKT),TRMPKX	; Only full-size packets can be trimmed
+	MOVE T1,INTNFI		; Number of free input buffer right now
+	CAML T1,INTNIB		; Number desired
+	 EXIT TRMPKX		; No reason to trim.  Space not tight.
+	LOAD T1,PIPL,(PKT)	; Internet Packet Length in bytes
+	ADDI T1,<4*PKTELI>+3	; Total length, set to round up
+	ASH T1,-2		; Number of words in packet
+	CAIL T1,MAXPSZ/2	; Too big.  Wont leave a useful tail.
+	 EXIT TRMPKX		; or lengths smashed on input packet? 
+	PUSH P,T1		; Save the new size
+	CALL GETBLK		; And get a new little chunk
+	POP P,T2		; Get back size
+	JUMPE T1,TRMPK9		; Don't copy into non-X packet
+	PUSH P,T1		; Save for later
+	XMOVEI T3,PKTSII(T1)	; Destination
+	MOVEI T1,-PKTSII(T2)	; Number of words to copy
+	XMOVEI T2,PKTSII(PKT)	; Source
+	CALL XBLTA		; Do a BLT
+	POP P,T1		; Restore destination pkt ptr
+	SETZM PKTQ(T1)		; Indicate not queued
+	SETZRO PFLGS,(T1)	; Clear all internal flags
+TRMPK9:	PUSH P,T1		; Save pointer to the new packet
+	MOVE T2,TPKT		; Parallel pointer to TCP portion
+	SUB T2,PKT		; Compute offset
+	PUSH P,T2		; Save it
+	CALL RETPKT		; Return be big piece
+	POP P,TPKT		; Get back offset
+	POP P,PKT		; Here's the replacement
+	ADD TPKT,PKT		; Reconstruct pointer
+TRMPKX:	RET
+
+; CLRBLK		Clear a block to be sure unstuffed fields are 0
+
+;T1/	(Extended) pointer to block
+;T2/	Size of block
+;
+;	CALL CLRBLK
+;Ret+1:	Always.
+
+CLRBLK::EXCH T1,T2		; Size to T1, Source to T2
+	SUBI T1,1		; Number of transfers is 1 less
+	XMOVEI T3,1(T2)		; Destination
+	SETZM 0(T2)		; Clear a word.
+	CALLRET XBLTA		; Clear the rest
+
+; LCKCAL(Lock, Fn, Arg1, Arg2)
+
+; Call Fn(Arg1, Arg2) with Lock set
+
+;T1/	(Extended) Lock pointer
+;T2/	(Extended) Function address
+;T3/	Arg1
+;T4/	Arg2
+;
+;	CALL LCKCAL
+;Ret+1:	always.  T1 has value of Fn(Arg1, Arg2)
+; Can be used for cross-section calls
+
+LCKCAL::PUSH P,T1
+	MOVE T1,-1(P)		; Get return address
+	HRRI T1,LCKCA3		; Fake return for callee in caller's sec
+	PUSH P,T1
+	PUSH P,T2
+	PUSH P,T3
+	PUSH P,T4
+LCKCA1:	MOVE T1,-4(P)		; Get pointer to the lock
+	CALL SETLCK		; Test and set the lock
+	POP P,T2		; Put args in standard place for a call
+	POP P,T1
+	POPJ P,			; Go to the routine, return to LCKCA3
+LCKCA3:	EXCH T1,0(P)		; Save the value while we unlock...
+	CALL UNLCK
+	POP P,T1
+	RET
+
+; CHKADD  Lookup up a connection and maybe create a new one
+
+; If the desired (possibly wild) connection is found, the argument
+;  function is called with the TCB locked.  If no TCB is found,
+;  the value of CHKADD is -1,,errorcode.  Otherwise the value is
+;  that of the function called, which may also be an error value.
+
+; T1/	(Extended) Pointer to argument block:
+;	Word-0:	Local port
+;	Word-1:	Foreign host
+;	Word-2:	Foreign port
+;	Word-3:	0 or a JCN
+;	Word-4:	WildOK flag
+;	Word-5: (Extended) Function address
+;	Word-6:	Arg1 for function
+;	Word-7:	Arg2 for function
+;
+;	CALL CHKADD
+;Ret+1:	always.  Value in T1, TCB set up.
+
+CHKADD::STACKL <WILD1>
+	LOCAL <PARAMS,TCBX,TCB.FH,TCB.FP>
+	DEFINE LP<0(PARAMS)>
+	DEFINE FH<1(PARAMS)>
+	DEFINE FP<2(PARAMS)>
+	DEFINE JCN<3(PARAMS)>
+	DEFINE WILDOK<4(PARAMS)>
+	DEFINE FN<5(PARAMS)>
+	DEFINE ARG1<6(PARAMS)>
+	DEFINE ARG2<7(PARAMS)>
+	MOVEM T1,PARAMS		; Save pointer to parameters
+	HRROI T1,ELP+^D13	; "Illegal port"
+	SKIPN LP
+	 EXIT CHKADX		; Should never have to lookup wild LP
+	HRROI T1,ELP+5
+	SKIPE FP		; Wild FP and/or FH ok only if "listen"
+	SKIPN FH
+	SKIPE JCN		; Called from a JSYS?
+	CAIA
+	 EXIT CHKADX		; Bad packet from network
+
+; Get unique access to the TCB Hash table.  This means having it locked
+;  with the TCBH Use Count = 0.
+
+CHKAD1:	MOVEI T1,TCBHLK		; Pointer to the TCBH Lock
+	CALL SETLCK		; Test and set the lock
+	SKIPG TCBHUC		; TCBH Use Count.  Any readers?
+	 JRST CHKAD3		; OK.  We have sole access.
+	MOVEI T1,TCBHLK		; Pointer to the lock
+	CALL UNLCK		; Unlock it.
+	MOVEI T1,TCBHUC		; Pointer to the use count
+	CALL DISE		; Wait for it to go to zero
+	JRST CHKAD1		; and try again.
+
+; Get hash index to the TCB Hash table
+
+CHKAD3:	MOVE T1,LP		; Local port is what is hashed on
+	LSH T1,-3
+	ADDI T1,^D23		; Hash LP into a TCBH index
+	IMUL T1,LP
+	IDIVI T1,TCBHSZ		; Size of the hash table
+	ADD T2,TCBH		; Location within TCBH
+	MOVEM T2,TCBX		; Save the index
+
+; Scan the TCB queue which has its head in the slot at TCBX
+
+	MOVE TCB,TCBX		; Initize the scan pointer
+	SETZM WILD1		; No Wild match found yet
+CHKAD4:	LOAD TCB,QNEXT,(TCB)	; Get next (first) thing on queue
+	SETSEC TCB,INTSEC	; Make extended address
+	CAMN TCB,TCBX		; Points back to head?
+	 JRST CHKAD6		; Yes.  Scan done.
+	LOAD T1,TOWNR,(TCB)	; Get Job number which owns this tcb
+	SKIPE JCN		; Any job ok if called from net side
+	CAMN T1,JOBNO		; Must stay in this job
+	CAIA			; OK to think about this TCB
+	 JRST CHKAD4		; Skip it and try next
+	LOAD T1,TLP,(TCB)	; Get the Local Port from this TCB
+	CAME T1,LP		; Does it match what we are looking for?
+	 JRST CHKAD4		; No.  Try next TCB
+	LOAD TCB.FH,TFH,(TCB)	; Get foreign host
+	LOAD TCB.FP,TFP,(TCB)	; and foreign port
+	CAMN TCB.FH,FH		; Compare these with what
+	CAME TCB.FP,FP		; is being sought
+	 JRST CHKAD5		; Not an exact match.  Maybe OK for wild
+
+; TCB points to an exact match.  If CHKADD was called from the JSYS
+;  side, it means the user is trying to say more about the connection.
+
+	SKIPE JCN		; Called from a JSYS?
+	 JRST CHKAD6		; Yes.  Go use this exact match.
+	LOAD T1,TRSYN,(TCB)	; Get state of Receive synchronization
+	LOAD T2,TSSYN,(TCB)	; and state of Send synch.
+	CAIN T1,NOTSYN		; Recv side still open?
+	CAIE T2,NOTSYN		; Send side still open?
+	 JRST CHKAD6		; Yes.  Reuse this TCB.
+	JRST CHKAD4		; Both closed. Pkt cannot reactivate
+				; conn.  Look for another incarnation.
+
+; See if this TCB should be remembered for use as a wild one.
+
+CHKAD5:	SKIPN WILD1		; Continue scan if already have a wild match
+	SKIPN WILDOK		; Caller says OK to use wild TCB?
+	 JRST CHKAD4		; No.  Keep looking for exact match.
+	JUMPE TCB.FH,.+3	; TCB has wild foreign host
+	CAME TCB.FH,FH		; or exact match means ok.
+	 JRST CHKAD4		; No. Resume scan.
+	JUMPE TCB.FP,.+3	; Wild foreign port in TCB?
+	CAME TCB.FP,FP		; or exact match?
+	 JRST CHKAD4		; No good.
+	MOVEM TCB,WILD1		; Save the location of the wild TCB
+	JRST CHKAD4		; Continue looking for exact match.
+
+; TCB has the TCB to use or points at queue head if none found.
+; WILD1 is 0 or pointer to a wild TCB.
+
+CHKAD6:	CAME TCB,TCBX		; Found an exact match?
+	 JRST CHKAD9		; Yes.  Go use it.
+	SKIPN WILD1		; Have a wild match?
+	 JRST CHKAD7		; No.
+
+; Bind a wild match.
+
+	MOVE T1,FH		; Get the desired foreign host
+	MOVE T2,FP		; and foreign port
+	MOVE TCB,WILD1		; This is the TCB to work with
+	STOR T1,TFH,(TCB)	; Store in the wild TCB
+	STOR T2,TFP,(TCB)
+	JRST CHKAD9		; Do it.
+
+; No wild match and no exact match.  Create the connection.
+
+CHKAD7:	CAMN TCB,TCBX		; Have a TCB?
+	SKIPN JCN		; Called from a JSYS?
+	 JRST CHKAD9		; No.  Don't create a TCB
+	MOVE T1,LP		; Local Port
+	MOVE T2,FH		; Foreign Host
+	MOVE T3,FP		; Foreign Port
+	MOVE T4,TCBX		; Where to enqueue the new TCB
+	CALL NEWTCB		; Create it and initialize it.
+	JUMPN TCB,CHKAD9	; Go use the new TCB
+	MOVEI T1,TCBHLK		; Ran out of free storage.
+	CALL UNLCK		; Unlock TCBH
+	HRROI T1,ELT+4		; "No room for another connection"
+	EXIT CHKADX		; Report the error to the caller
+
+; TCB has the TCB to use or is equal to TCBX if not.
+
+CHKAD9:	JRST CHKA10		;#342 TEMP until bug in the following is found
+	CAME TCB,TCBX		;#337 Found a TCB?
+	SKIPN JCN		; And called from the JSYS side?
+	 JRST CHKA10		; No.
+	LOAD T1,TJCN,(TCB)	; Get original JCN of TCB
+	JUMPE T1,CHKA10		;#337 None.  Use the new one.
+	EXCH T1,JCN		; Use the original JCN
+	CAME T1,JCN		; If temporary one is different,
+	 CALL RETJCN		; Return it (RH of JCNTCB is 0)
+
+; If a TCB was found/created, lock it and call the argument function.
+
+CHKA10:	AOS TCBHUC		; Indicate TCBH has a reader
+	MOVEI T1,TCBHLK		; Pointer to the TCBH lock
+	CALL UNLCK		; Unlock TCBH with use count gt 0
+	HRROI T1,EFP+7		; "No such TCB"
+	CAMN TCB,TCBX		; Did we locate a TCB?
+	 JRST CHKA11		; No. Report the error
+	XMOVEI T1,TCBLCK(TCB)	; Pointer to the TCB Lock
+	MOVE T2,FN		; Function to be called
+	MOVE T3,JCN		; Argument for the function
+	MOVE T4,ARG1		; The argument passed through
+	CALL LCKCAL		; Lock the lock and call the function
+CHKA11:	SOS TCBHUC		; Indicate TCBH may change now
+
+CHKADX:	PURGE LP,FH,FP,JCN,WILDOK,FN,ARG1,ARG2
+	RESTORE
+	RET
+
+
+
+
+; TCBINI		Initialize the TCB Hash Table
+
+;	CALL TCBINI
+;Ret+1:	Always
+
+TCBINI::LOCAL <TCBX>
+	MOVEI T1,TCBHSZ*QSZ	; Size of the TCB Hash table
+	CALL GETBLK		; Qs must point to things in same section!
+	 JUMPE T1,TCBINX	;#337 No space
+	MOVEM T1,TCBH		; Loc of hash table.
+	MOVSI TCBX,-TCBHSZ	; Set to scan TCBH (assumes QSZ==1)
+TCBIN1:	HRRZ T1,TCBX		; Index within TCBH table
+	ADD T1,TCBH		; Pointer to table base
+	CALL INITQ		; Initialize as a queue
+	AOBJN TCBX,TCBIN1	; Loop over all slots
+	SETZM TCBHUC		; Clear the use count
+	MOVEI T1,TCBHLK		; Pointer to the lock on TCBH
+	CALL CLRLCK		; Initialize it
+TCBINX:	RESTORE			;#337
+	RET
+
+; NEWTCB(LP, FH, FP, TCBX)	Initialize a new connection block
+
+;T1/	LP	; Local port
+;T2/	FH	; Foreign host
+;T3/	FP	; Foreign port
+;T4/	TCBX	; Index into the TCB Hash table
+;
+;	CALL NEWTCB
+;Ret+1:	always.  TCB points to the TCB or is 0 if no space, etc.
+
+NEWTCB::
+	LOCAL <LP,FH,FP,TCBX>
+	ife	kaflg!kiflg!f3flg,<	;[hwm]
+	DMOVEM T1,LP		; T1,T2 to LP,FH
+	DMOVEM T3,FP		; T3,T4 to FP,TCBX
+>				;[hwm]
+	ifn	kaflg!kiflg!f3flg,<	;[hwm]
+	MOVEM	T1,LP		;[HWM]
+	MOVEM	T2,FH		;[HWM]
+	MOVEM	T3,FP		;[HWM]
+	MOVEM	T4,TCBX		;[HWM]
+>
+;#337	MOVEI T1,0		; Anticipate a fail return
+	MOVE T2,TCBCNT		; Current number of connections
+	CAIL T2,MAXTCB		; Test against max we support at once
+	 JRST NEWTCE		;#337 No room for another.
+	MOVEI T1,TCBSIZ		; Size of a connection block
+	CALL GETBLK		; Get a block of free storage
+	JUMPE T1,NEWTCE		;#337 None available.  Fail.
+	MOVEM T1,TCB		; Put in standard place
+	MOVEI T2,TCBSIZ		; Size again for CLRBLK
+	CALL CLRBLK
+
+	STOR LP,TLP,(TCB)	; Set the local port
+	STOR FH,TFH,(TCB)	; Set the foreign host
+	STOR FP,TFP,(TCB)	; Set the foreign port
+	TXNE FH,<TFHN>		; Wild foreign net?
+	 JRST NEWTC1		; No.
+	SETONE TWLDN,(TCB)	; Yes.  Remember for RSTADR
+NEWTC1:	TXNE FH,<TFHT>		; Wild foreign TCP?
+	 JRST NEWTC2		; No.
+	SETONE TWLDT,(TCB)	; Yes.
+NEWTC2:	JUMPN FP,NEWTC3		; Wild foreign port?
+	SETONE TWLDP,(TCB)	; Yes.
+
+NEWTC3:	XMOVEI T1,TCBSBQ(TCB)	; TCB Send buffer queue
+	CALL INITQ		; Initialize it.
+	XMOVEI T1,TCBRXQ(TCB)	; TCB Retransmission queue
+	CALL INITQ		; Initialize it.
+	XMOVEI T1,TCBRBQ(TCB)	; TCB Receive buffer queue
+	CALL INITQ		; Initialize it.
+	XMOVEI T1,TCBRPQ(TCB)	; TCB Receive packet queue
+	CALL INITQ		; Initialize it.
+
+	CALL ASNWTB		; Assign a wait bit index for open/close
+	JUMPL T1,NEWTC9		; Jump if we didn't get the bit.
+	STOR T1,TOPNF,(TCB)	; Set into TCB
+	CALL CLRWTB		; Initialize to zero state (closed)
+	CALL ASNWTB		; Get another bit for error events
+	JUMPL T1,NEWTC8		; Jump if that failed
+	STOR T1,TERRF,(TCB)	; Set into TCB
+	CALL CLRWTB		; Clear it.  (No error yet)
+	XMOVEI T1,TCBQ(TCB)	; Pointer to the TCB just initialized
+	MOVE T2,TCBX		; Index to the TCB Hash table (of Q's)
+	CALL NQ			; Place it on the right queue
+	AOS TCBCNT		; Count as another connection
+	XMOVEI T1,TCBLCK(TCB)	; Pointer to the TCB lock
+	CALL CLRLCK		; Clear it.
+	EXIT NEWTCX
+
+NEWTC8:	LOAD T1,TOPNF,(TCB)	; Oh well.  Have to back out.
+	CALL RELWTB		; Release the open/close wait bit
+NEWTC9:	MOVE T1,TCB		; Pointer to the connection block
+	CALL RETBLK		; Give back that storage
+NEWTCE:	SETZ TCB,		;#337 Tell caller the bad news.
+NEWTCX:	RESTORE
+	RET
+
+; FILHDR(PKT, DestinationHost, DestinationPort, SourcePort)
+
+; Fills in all of the common header information for a new packet
+
+;TCB/	(Extended) Locked connection block
+;PKT/	(Extended) Packet pointer
+;TPKT/	(Extended) pointer to TCP part of packet
+; T1/	DestHost
+; T2/	DestPort
+; T3/	SrcPort
+; T4/	SrcHost
+;
+;	CALL FILHDR
+;Ret+1:	always.
+
+FILHDR::STOR T1,PIDH,(PKT)	; Store the destination host
+	STOR T2,PDP,(TPKT)	; Store the destination port
+	STOR T3,PSP,(TPKT)	; Store the source port
+	STOR T4,PISH,(PKT)	; Store the source host
+
+	MOVEI T1,.INTVR
+	STOR T1,PIVER,(PKT)	; Store protocol version number
+	MOVEI T1,<<MINTHS+3>/4>	; Minimum TCP header size
+	STOR T1,PTDO,(TPKT)	; Set into TCP data offset field
+	LOAD T2,PIDO,(PKT)	; Current Internet data offset
+	ADD T1,T2		; current header length
+	ASH T1,2		; As number of bytes
+	STOR T1,PIPL,(PKT)	; Set Internet packet length
+	LOAD T1,TTOS,(TCB)	; Type of service spec'd by user
+	STOR T1,PITOS,(PKT)	; Put in Internet header
+	AOS T2,TCPSID		; Get the next segment ID
+	STOR T2,PISID,(PKT)
+	SETZRO PIFO,(PKT)	; This is fragment offset 0
+	SETONE PITTL,(PKT)	; Max. time to live
+	MOVEI T3,.TCPFM		; TCP format
+	STOR T3,PIPRO,(PKT)	; Set into protocol field
+
+	AOS T1,NXTLBL		; Get next packet label
+	SKIPE TRACEP		; Tracing packets?
+	  CALL SETLAB		; Store in packet (LBLOPT)
+	MOVE T1,TODCLK		; Current millisecond number
+	STOR T1,PTS,(PKT)	; Store as timestamp
+	RET
+
+	TNXEND
+	END
+

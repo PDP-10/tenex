@@ -1,0 +1,128 @@
+	SEARCH	INPAR,TCPPAR,PROLOG
+	TTITLE	TCPSTS
+	SUBTTL	TCP Statitics Routines, William W. Plummer, 5FEB77
+
+	SWAPCD
+
+COMMENT	!
+
+	These routines handle time accounting, timestamping and
+	histogram making.
+
+* STSINI ...  2 ...... Initialize the statistics cells
+
+* TSTAMP ...  3 ...... Process a packet timestamp
+  DOHIST ...  3 ...... Do the histogram function
+
+* TIMCAL ...  4 ...... Time a subroutine call
+
+*** N. B.  All statitics cells are in the normal NRVAR area
+	and not in the INTSEC.
+
+	!
+
+IFKA <EXTERN JOBRTT,OHUSE,STAT0,STATZZ,TIMPTR,TODCLK> ;|
+
+; STSINI	Initialize Statistics
+
+;	CALL STSINI
+;Ret+1:	Always
+
+STSINI::MOVEI T1,STAT0		; First cell to clear
+STSIN1:	SETZM 0(T1)		; Clear the first word
+	CAIGE T1,STATZZ		; Cleared the last yet?
+	 AOJA T1,STSIN1		; Ready to clear the next one.
+	MOVEI T1,OHUSE		; Overhead time accumulator
+	MOVEM T1,TIMPTR		; Select that as the timer
+	RET
+
+; TSTAMP	Process a packet time stamp
+
+;T1/	(Extended) Histogram pointer
+;PKT/	(Extended) Packet
+;
+;	CALL TSTAMP
+;Ret+1:	Always.
+
+TSTAMP::TEMP <HIST,NOW,TIMSTP>
+	LOAD TIMSTP,PTS,(PKT)	; Get the timestamp from packet
+	MOVE NOW,TODCLK
+	STOR NOW,PTS,(PKT)	; Set the new timestamp
+	SUB NOW,TIMSTP		; Compute Difference
+	CALL DOHIST		; Do the histogram
+	RESTORE
+	RET
+
+
+
+; DOHIST	Do the histogram functions
+
+;T1/	(Extended) Histogram pointer
+;T2/	Sample
+;
+;	CALL DOHIST
+;Ret+1:	Always
+
+DOHIST::TEMP <HIST,SAMPLE,BINNUM>
+	IFN <SAMPLE+1-BINNUM>,<PRINTS ?DOHIST: ACs not properly defined>
+	SKIPGE BINNUM,SAMPLE	; Good sample?
+	 MOVEI BINNUM,^D36-NHBINS ; No. Put in Garbare Bin.
+	JUMPL SAMPLE,DOHIS1	; Don't accumulate bad samples
+	OPSTR <ADDM SAMPLE,>,HTOTL,(HIST); Accumulate total
+	INCR HSMPL,(HIST)	; Count samples
+	JFFO SAMPLE,.+2		; Take the LOG
+	MOVEI BINNUM,^D36
+	CAIL BINNUM,^D36-NHBINS+1 ; Super big ones go in last bin
+DOHIS1:	SUBI BINNUM,^D36
+	MOVNS BINNUM
+	IHBIN HIST,BINNUM	; Count in that bin
+	RESTORE
+	RET
+
+; TIMCAL	Time a call to a subroutine
+
+;T1/	(Extended) Address to charge time to
+;T2/	(Extended) Function to call
+;T3/	Arg1 for function
+;T4/	Arg2 for function
+;TIMPTR/ (Extended) Pointer to current time accumulator
+
+TIMCAL::PUSH P,TIMPTR		; Save old timer
+	MOVEM T1,TIMPTR		; Set new timer
+	PUSH P,T3		; Save ARG1
+	PUSH P,T4		; Save ARG2
+	PUSH P,T2		; Save routine
+IFNKA <	CALL GETFRT>		; Get fork's runtime til now
+IFKA <	NOSKED
+	MOVE T1,JOBRTT		; Use since this process activated
+	ADD T1,FKRT		; Use before that time
+	OKSKED
+>
+	POP P,T4		; Get the routine address
+	POP P,T2		; Get Arg2
+	EXCH T1,0(P)		; Save start time and get Arg1
+	CALL 0(T4)		; Call the function
+IFKA <	POP P,T4		; Get start time
+	NOSKED
+	SUB T4,FKRT		; Compute negative useage
+	SUB T4,JOBRTT
+	OKSKED
+>
+IFNKA <	PUSH P,T1		; Save result of the function
+	CALL GETFRT		; Get the runtime now, after the funcal
+	MOVE T3,T1		; Put in a safe place for a second
+	POP P,T1		; Restore the result
+	POP P,T4		; Get starting usage
+	SUB T4,T3		; Compute negative usage
+>
+	MOVN T3,T4		; Positive useage
+	MOVE T2,TIMPTR		; Get current time accumulator
+	ADDM T3,0(T2)		; Charge to the current timer cell
+	POP P,T3		; Restore previous timer
+	MOVEM T3,TIMPTR
+	ADDM T4,(T3)		; Avoid double charges
+	RET
+
+	TNXEND
+	END
+

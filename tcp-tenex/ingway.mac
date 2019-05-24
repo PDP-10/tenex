@@ -1,0 +1,636 @@
+;Hack the code at SNDARP+5 to use two STOR's on the network
+;address instead of one, to fix an apparent FOONLY bug that
+;was scrambling the Host-to-IMP header.
+;HWM, 10-Jun-82
+;
+;| Update for Tenex compatability
+;ISIMON:<ISI.TCP>INGWAY.MAC.3370 15-Sep-81 10:24:46, Edit by CHASE
+;#337 BBN update: Fix: HTY%HP in SNDAR2
+;ISISRC:<4.TCP>INGWAY.MAC.2520  1-May-81 20:05:11, Edit by CHASE
+;#252 BBN made many edits to this module, so the source file was taken as
+;#252	is, except for the extra edit indicated below
+;ISISRC:<4.BBNC-TCP>INGWAY.MAC.42080 20-Apr-81 17:31:26, Edit by CHASE
+;#251 Add minimal source routing (used only from user q's)
+	SEARCH	INPAR,TCPPAR,IMPPAR,PROLOG
+	TTITLE	INGWAY
+	SUBTTL	Internet Gateway, William W. Plummer, 28Feb79
+	SWAPCD
+
+COMMENT	!
+	These routines link all Internet protocol modules wit
+	with interface drivers such ash IMPDV and IMPPHY.
+	This is a "full gateway".  All interfaces (ie, network inputs),
+	queue messages on INTIBx.  When RCVGAT is called it looks
+	to see if the input message is addressed to this host,
+	and if so, returns it to the gateway for processing.  If not,
+	it calls SNDGAT to get the message forwarded to the
+	appropriate host or gateway.
+
+	It may be that the gateway function is imlemented in a box
+	connected to this machine using a BBN 1822 interface.
+	If so, packets with no local headers will be sent over the
+	RPI (Raw Packet Interface) if INTSCR is non-0.  If this device
+	is present and being used, packets cannot be forwarded in RCVGAT
+
+
+* GATINI ...  3 ...... Initialize the gateway
+
+* SNDGAT ...  5 ...... Send a packet into the network
+  SNDLCL ...  6 ...... Send a packet over internal bypas
+  SNDARP ...  9 ...... Send a packet into the ARPANET
+  SNDRCC ...  9 ...... Send a packet into the BBN RCC Net
+  SNDPRN ... 11 ...... Send a packet into the Packet Radio Network
+  SNDRPI ... 12 ...... Send a packet out via the Raw Packet Interface
+* RCVGAT ... 13 ...... Recv a packet from the network(s)
+* INTLKB ... 15 ...... Lock both ends of an Internet packet
+* INTULK ... 16 ...... Unlock both ends of an Internet packet
+	!
+
+
+IFKA <EXTERN BADPCT,DISGE,GETBLK,INETID,INETLB,INTCKS> ;|
+IFKA <EXTERN INTFLG,INTFRI,INTIBI,INTIBO,INTNFI,INTQOB,INTSCR> ;|
+IFKA <EXTERN MAXWPM,MLKMA,NLHOST,RPIQOB,XBLTA,MULKMP,PRNPKT,RETPKT> ;|
+
+	rescd
+INTBYP::0		; -1 to allow the interface bypass to be used
+ANT3EN::0		; -1 if NCC has enable subtype 3 messages
+	swapcd
+
+; Macro to make a 24-bit host ID for ARPANET-like nets:
+
+DEFINE ARPAID(HOST,SUBNET,IMP)<<HOST_^D16>+<SUBNET_8>+<IMP>>
+DEFINE RCCID(HOST,SUBNET,IMP)<ARPAID(HOST,SUBNET,IMP)>
+DEFINE PRNID(UNUSED,DEVICE,NUMBER)<<<DEVICE&17>_^D12>+<NUMBER&7777>>
+;...
+
+; Initialize the gateway
+
+; This routine serves to find out which interfaces on this machine are
+; up and to insert their addresses in LCLHID(net).  It also defines
+; the internet name for this host.  Typically this will be the address
+; of the ARPANET Interface, but it could be completely unrelated.  Using
+; ARPANET Interface address as our name does not mean that interface
+; must be up (or even exist) in order to have Internet communications.
+
+GATINI::SETOM LCLHID		; Fill table with -1 (not connected)
+	MOVE T1,[LCLHID,,LCLHID+1]	; Set to do rest of table
+	BLT T1,LCLHID+MAXNET-1		; Fill it
+	MOVX T1,<BYTE (4) 0 (8) 0,0,-1,0>	; Bits which may be used
+	MOVEM T1,INETLB		; As logical host bits (should be parameter)
+	MOVEI T1,NLHOST		; 32-bit Address of ARPANET interface
+	CALL DISGE		; Wait for it to be defined
+	MOVE T1,NLHOST		; Get the address
+	TDNE T1,INETLB		; Must not have any logical host bits on
+	 INBUG(CHK,<NLHOST conflicts with logical hosts>,INTLHC)
+	MOVEM T1,INETID		; Set our name
+	LSH T1,-^D24		; Flush the network relative part
+	CAIGE T1,MAXNET		; Too big for our tables?
+	 JRST GATIN1		; No. Proceed.
+	INBUG(CHK,<NLHOST screwy>,INTGW0)
+	WAIT			; Hang the gateway
+
+; Fill in LCLHID(NET) with the address of each interface on NET.
+; Currently we assume only one interface on each network.
+
+
+GATIN1:	MOVEI T1,^D5000		; A modest delay
+	DISMS			; Give all nets a chance to come up
+	MOVSI T2,-%NETS		; AOBJN ctr over Host table
+GATIN2:	MOVE T3,NLHOST(T2)	; Get an interface address
+	MOVE T4,T3		; And a copy there of
+	STOR T2,INTNUM,T3	; Insert interface number
+	LSH T4,-^D24		; Extract network field
+	CAIGE T4,MAXNET		; Within taday's table size
+	 MOVEM T3,LCLHID(T4)	; Yes.  Insert in table
+	AOBJN T2,GATIN2		; Do the rest of the ARPA-style nets
+	; Now do PRNet, ...
+
+	RET
+
+;  LCLHID(Net)  is the local host interface address of this host on each
+; network that we have interfaces on.  LCLHID is mainly used to prevent
+; looping of packets which have as their destination the address
+; of one of our	interfaces, but not our actual Internet Name.  These
+; packet are really misaddressed.  If they were forwarded, they would
+; come back and get forwarded again, ...  LCLHID(Net) also give
+; the interface number.
+
+
+
+NR(LCLHID,MAXNET)
+
+
+; Per-interface tables:
+
+
+;INTFAC(N)	Is the address of the routine to be called in order
+;		to get the message queued for output.  Eventually
+;		the maximum packet size will be included to permit
+
+;NETSIZ(N)	Gives the maximum packet size for the network on
+;		interface N.  This is in multiples of MF, the
+;		minimum fragment size.  Other parameters in LH.
+
+;NETGWA(N)	Points to a table of gateways to each net via
+;		this interface.
+
+
+DEFINE IFACE(NET,SIZE<1>,PARAMS<0>,ROUTINE)<
+  IFDEF NET,<
+	IFGE NET-%NETS,<PRINTX ? INGW: %NETS TOO SMALL>
+	%PC==.
+	.ORG NETSIZ+NET
+	PARAMS,,SIZE
+	.ORG %PC
+	.ORG INTFAC+NET
+	MSEC1,,ROUTINE
+	.ORG %PC
+  >
+>
+
+INTFAC:	BLOCK %NETS
+NETSIZ:	BLOCK %NETS
+	RS NETGWA,%NETS
+	IFACE(ARPA,8,,SNDARP)
+	IFACE(BBNRCC,8,,SNDRCC)
+	IFACE(BOSPRN,4,,SNDPRN)
+	;... other interfaces here
+
+; SNDGAT(PKT)		; Send a packet into the Network
+
+; Send the packet to some host on a local net which is
+; either the destination or a gateway known to be capable of getting
+; the packet closer to the destination.  If INTBYP is on, and the packet
+; is destined for this host, a copy will be queued without even using
+; the IMP at all.
+
+;PKT/	Packet to be sent
+;
+;	CALL SNDGAT
+;Ret+2:	Always.  Pkt may not be sent. RX or timeout should handle this.
+
+SNDGAT::SETZRO PICKS,(PKT)	; Clear Internet checksum field
+	CALL INTCKS		; Compute Internet checksum
+	STOR T1,PICKS,(PKT)	; Enter in header
+	LOAD T1,PIPL,(PKT)	; Packet length in bytes
+	ADDI T1,3+4*<PKTELI-IMP96L> ; Length of IMPPHY portion
+	ASH T1,-2		; Convert to words, round up
+	STOR T1,NBBSZ,+IMP96L(PKT) ; Put in pkt for use elsewhere
+	JE PSCR,(PKT),SNDGA0	; Jump if not a pkt on a secure conn.
+	SKIPN INTSCR		; Is the raw packet interface on?
+	 JRST SNDGA9		; Make like interface code refused it
+	MOVEI T3,0		; Interface class 0
+	JRST SNDGA7		; Send over the Raw packet interface
+
+; Normal, non-secure packet.  Use this gateway rather than remote one.
+
+SNDGA0:	JN PNLCL,(PKT),SNDG0B	; Special addressing?
+	LOAD T1,PIDHN,(PKT)	; Get destination Net
+	LOAD T2,PIDHT,(PKT)	; and destination host
+	LOAD T3,PIDH,(PKT)	; Get 32-bit Net.Host
+	ANDCM T2,INETLB		; Clear logical host bits
+	ANDCM T3,INETLB
+	CAMN T3,INETID		; Addressed to us?
+	 JRST SNDLCL		; Yes.  Send locally.
+	JE PSROU,(PKT),SNDG0A	;#251 If we do routing
+	UMOVE T2,3		;#251 Get gateway address user wanted
+	MOVE T1,T2		;#251 Get address
+	LSH T1,-^D24		;#251 Shift over for net number
+	SKIPL LCLHID(T1)	;#251 Have we an interface on that net?
+	 JRST SNDGA2		;#251 Yes, send to that gateway
+	JRST SNDGA9		;#251 Bad address, drop packet
+
+SNDG0A:	CAIL T1,1		; Reasonable Network number
+	CAIL T1,MAXNET
+	 JRST SNDGA9		; No.  Flush it.
+	XOR T3,LCLHID(T1)	; Is destination one of our interfaces?
+	TXZ T3,<FLD -1,INTNUM>	; Flush interface bits
+	JUMPE T3,SNDGA9		; Packet is misaddressed!
+	SKIPL LCLHID(T1)	; For host on net we are connected to?
+	 JRST SNDGA2		; Yes.  Send directly to that host.
+	JRST SNDGA3		; No. Send to a gateway.
+
+; Here for a packet which must be forced out to tne net to the SOURCE.
+; This is typically an ECHO-REPLY made by GGP on this host but faked up
+; to make it look like it came from remote gateway which, because it is dumb,
+; can only forward the packet back to us.
+
+SNDG0B:	LOAD T1,PISHN,(PKT)	; Get from source address
+	LOAD T2,PISHT,(PKT)	; and host
+	LOAD T3,PISH,(PKT)	; Entire 32-bit gateway address
+	ANDCM T2,INETLB		; Flush logical host bits
+	ANDCM T3,INETLB		; From here too
+	JRST SNDG0A
+
+; Try to send as directly as possible.
+
+SNDLCL:	SKIPN INTBYP		; Allowed to use the bypass?
+	 JRST SNDGA2		; No.  Send out over an interface.
+	LOAD T3,PIPRO,(PKT)	; Internet format
+	CAIN T3,.SCRFM		; Secure TCP format
+	 JRST SNDGA2		; Cannot be for this host.
+	XMOVEI T2,IMP96L(PKT)	; Pointer to IMPDV part of packet
+	JE PPROG,(PKT),SNDLC3	; No need to copy if no ACK expected
+
+; Attempt to send the packet via the "bypass".  Since it is known
+; that a copy of the packet must be made, try a few places to get
+; the storage.  First, try to get a real, full-size IMP input buffer.
+; If that fails, go through the overhead of getting the space from
+; free storage.  If that fails, give it to the IMP anyway.
+
+
+	LOAD T1,PIPL,(PKT)	; Header length in bytes Packet length
+	ADDI T1,3+PKTELI*4	; Packet size in bytes, rounded up
+	ASH T1,-2		; Packet size in full words
+	JRST SNDLC0		; Off to resident code
+
+	RESCD			; Prevent page fault while PIOFF
+SNDLC0:	PIOFF			; Get unique access to IMP buffers
+	SKIPG INTNFI		; Is there an IMP buffer available?
+	 JRST SNDLC1		; No.  Try something else
+	SOSL INTNFI		; Count down number left
+	SKIPN T4,INTFRI		; Grab the first one
+	 INBUG(HLT,<INTLC0: INT buffer list fouled.>,INTGW2)
+	LOAD T3,NBQUE,(T4)	; Get next one after that
+	SETSEC T3,INTSEC	; Make extended address
+	MOVEM T3,INTFRI		; Make that the new head of the list
+	SETZRO NBQUE,(T4)	; Dequeue it from others
+	PION			; Free list is stable now
+	PUSH P,.NBHDR(T4)	; Save IMPDV free storage word
+	PUSH P,T4		; Save IMP-style pkt ptr
+	XMOVEI T3,-IMP96L(T4)	; Setup for XBLTA
+	XMOVEI T2,0(PKT)	; Source pointer. T1 has word count.
+	CALL XBLTA		; Do the appropriate BLT
+	POP P,T2		; Get back IMPDV-style pointer
+	POP P,.NBHDR(T2)	; Restore buffer size
+	JRST SNDLC4		; Go queue for receive side
+
+SNDLC1:	PION			; Not going to fiddle with IMP queue
+	PUSH P,T1		; Save size around call
+	CALL GETBLK		; Get a block of free storage
+	POP P,T3		; Number of words in the block
+	JUMPE T1,SNDGA1		; Couldn't.  Send thru interface anyway
+	SETZRO PFLGS,(T1)	; Clear all internal flags
+	CAIE T3,MAXPSZ		; Is this a max sized packet?
+	 JRST SNDLC2		; No
+	SETONE PFSIZ,(T1)	; Yes.  Remember it can be an in buffer.
+SNDLC2:	EXCH T1,T3		; Size to T1, new pkt to T3
+	PUSH P,PKTFLG(T3)	; Save PFSIZ bit from the BLT
+	PUSH P,T3		; Save pkt ptr
+	XMOVEI T2,0(PKT)	; First source word
+	CALL XBLTA		; Do the appropriate BLT
+	POP P,T2		; Get back pkt ptr
+	POP P,PKTFLG(T2)	; Restore the PFSIZ bit
+	ADDI T2,IMP96L		; Compute pointer to ARPA leader start
+
+SNDLC3:	CALL INTLKB		; Lock down so RCVGAT can unlock it.
+	SETZRO NBQUE,(T2)	; Clear pointer
+
+
+; Place the packet on the gateway input queue for the dispatcher
+
+SNDLC4:	PIOFF			; Turn off IMP interrupts and scheduling
+	MOVE T3,INTIBI		; Get 0 or current list
+	JUMPN T3,SNDLC5		; Jump if queue not empty
+	MOVEM T2,INTIBO		; Was MT.  This is only item now.
+	SKIPA			; Go set input pointer too.
+SNDLC5:	STOR T2,NBQUE,(T3)	; Set queue pointer in packet too
+	MOVEM T2,INTIBI		; Set new input pointer
+	AOS INTFLG		; Cause gateway to run (more)
+	PION
+	EXIT SNDGAX
+	SWAPCD
+
+; Here when packet must be sent out over an interface, say when local
+; delivery attempt failed due to lack of buffers, etx.  Note that
+; any interface will do.
+
+SNDGA1:	LOAD T1,PIDHN,(PKT)	; Get destination Net
+	LOAD T2,PIDHT,(PKT)	; Get destination host
+	ANDCM T2,INETLB		; Clear Internet logical host
+
+
+; Send a packet out to a host on a connected net.  We should use
+; the one-hop path if that net is up.  Otherwise we will have
+; to use a different path and send via a gateway.
+;	T1 has net number.   T2 has host number.
+
+SNDGA2:	LOAD T3,INTNUM,LCLHID(T1) ; Get interface number
+	MOVEM T2,T1		; Move to good places
+	JRST SNDGA6
+
+; Send a packet to a gateway on a connected net.  T1 has dest. net.
+
+SNDGA3:	MOVE T2,T1		; Move the net number
+	MOVSI T3,-%NETS		; AOBJN over interface tables
+SNDG3A:	MOVE T4,NETGWA(T3)	; Get base of gateway table
+	ADD T4,T2		; Pointer to net slot in that table
+	SKIPGE T1,0(T4)		; Get address of gateway to that net
+	AOBJN T3,SNDG3A		; Keep trying to find a net
+	JUMPGE T3,SNDGA9	; Unknown. Let timeout kill connection.
+
+
+; Send the packet.  T1 has local address, T3 has interface number.
+
+SNDGA6:	SKIPA T2,INTFAC(T3)	; Get interface routine
+SNDGA7:	XMOVEI T2,SNDRPI	; Send to gateway in connected machine
+	PUSH P,T3		; Save the interface number
+	PUSH P,T2		; Save the routine
+	PUSH P,T1		; Save the host
+	XMOVEI T2,IMP96L(PKT)	; Pointer to interrupt level part
+	CALL INTLKB		; Lock down the packet
+	SETONE PINTL,(PKT)	; Say it has been given to int. level
+	POP P,T1		; Restore the host
+	POP P,T2		; Restore the routine
+	POP P,T3		; Restore interface number
+	CALL 0(T2)		; Call interface driver
+	JUMPN T1,SNDGAX		; Lower level code will return storage
+	XMOVEI T1,IMP96L(PKT)	; Pointer to IMPDV portion
+	CALL INTULK		; Unlock since not queued for PI level
+	SETZRO PINTL,(PKT)	; Indicate interface didn't take it.
+SNDGA9:	JN PPROG,(PKT),SNDGAX	; Pkt should be retransmitted. Save it.
+	CALL RETPKT
+SNDGAX:	RET
+
+; Send through an ARPANET interface
+
+;T1/	Local Host number of Gateway in low 24 bits
+;T3/	IMP Interface number (if MIMPDV)
+;PKT/	Pointer to Internet packet
+;
+;	CALL SNDARP or SNDRCC
+;Ret+1:	Always.  T1 non-0 if Pkt space will be release at lower level
+
+
+SNDRCC:
+SNDARP:	LOCAL <IMPNUM>
+	MOVEM T3,IMPNUM		; Save away the interface number
+	SETZM IMP96L+.NBLD0(PKT); Zero things not set explicitly
+	SETZM IMP96L+.NBLD1(PKT)
+	SETZM IMP96L+.NBLD2(PKT)
+	STOR T1,IHADR,<+IMP96L(PKT)>; Set host and IMP
+;[hwm]	andi	t1,177777	;[hwm]	save IMP information
+;[hwm]	stor	t1,ihimp,<+imp96l(pkt)>	;[hwm]	store
+	MOVEI T1,INTLNK		; Link number to use
+	STOR T1,IHLNK,<+IMP96L(PKT)>; Set Link
+	MOVEI T1,STY%UC		; Uncontrolled flow
+	JE PISVD,(PKT),SNDAR2	; Use Subtype 3 only for datagram
+	JN PIREL,(PKT),SNDAR2	; But not if any kind of reliability
+	SKIPE ANT3EN		; needed.  Check if NCC enabled this
+	 STOR T1,IHSTY,<+IMP96L(PKT)> ; Set Message Subtype
+SNDAR2:	LOAD T3,PIPRI,(PKT)	; Get priority field
+	LOAD T4,PISPD,(PKT)	; Get speed spec.
+	CAIE T3,3		; Max speed
+	CAIN T4,3		; or max priority
+	CAIA
+	 JRST SNDAR3		; No.
+	MOVEI T1,HTY%HP		;#337
+	STOR T1,IHHTY,<+IMP96L(PKT)>	; Set IMP High priority
+SNDAR3:	MOVEI T2,ITY%LL		; Set new format indicator
+	STOR T2,IHFTY,<+IMP96L(PKT)> ; Set format type
+	XMOVEI T2,IMP96L(PKT)	; Pointer to IMPDV portion of pkt
+
+SNDAR5:	LOAD T3,NBQUE,(PKT)	; Get the IMPPHY size
+	ASH T3,2+3		; Convert into bits
+	IDIVI T3,^D1008		; Number of Packets
+	STOR T3,IHHTY,<+IMP96L(PKT)>	; PKT and T2 are parallel
+IFDEF IIN,<IFN IIN-IMPNUM,<PRINTX ?IMPNUM in SNDARP must equal IIN in  MIMPDV>>
+	CALL INTQOB		; Get it queued for output
+	 TDZA T1,T1		; Tell caller to dispose of the PKT
+	 SETO T1,		; Lower level will worry about it.
+	RESTORE
+	RET
+
+IFDEF BOSPRN,<	Packet Radio Interface code not yet tried ....
+
+; Define fields in Packet Radio Net header:
+
+DEFSTR(PRHL,0,7,4)		; Header Length in 16-bit bytes
+DEFSTR(PRPL,0,15,8)		; Packet Length in 16-bit bytes
+DEFSTR(PRSD,0,31,16)		; Source Device
+  ; Overlays for the above:
+  DEFSTR(PRSH,0,28,13)		; Source Host
+  DEFSTR(PRSU,0,31,03)		; Source Use
+
+DEFSTR(PRDD,1,15,16)		; Destination Device
+  ; Overlays for the above:
+  DEFSTR(PRDH,1,12,13)		; Destination Host
+  DEFSTR(PRDU,1,15,03)		; Destination Use
+
+DEFSTR(PRSN,1,28,3)		; Sequence number
+DEFSTR(PRRC,1,13,13)		; Retransmission count
+DEFSTR(PRTYP,2,2,3)		; Packet type
+DEFSTR(PRACK,2,3,1)		; Acknowledgement
+DEFSTR(PRDIR,2,4,1)		; Direction
+DEFSTR(PRFCN,2,7,3)		; Function
+DEFSTR(PRART,2,8,1)		; Alternate routed
+DEFSTR(PRARQ,2,9,1)		; Acknowledgement required
+DEFSTR(PRAIP,2,10,1)		; Alt. route in progress
+DEFSTR(PRACT,2,11,1)		; Active Ack
+DEFSTR(PRHP,2,15,4)		; Hop pointer
+
+; 16 bits used by PR
+
+DEFSTR(PRWD0,3,15,16)		; Route word 0
+
+.PRHHL==7			; Where host-host leader goes
+
+; SNDPRN	Send a packet into the packet radio net
+
+;T1/	Local host number in PRN
+;T3/	(Interface number)
+;PKT/	Pointer to Internet packet
+;
+;	CALL SNDPRN
+;Ret+1:	Always.  T1 non-0 if Pkt actually q'd for output.
+
+SNDPRN:	SETZM PRNHDR+0(PKT)	; Clear local leader area in pkt
+	SETZM PRNHDR+1(PKT)
+	SETZM PRNHDR+2(PKT)
+	SETZM PRNHDR+3(PKT)
+	SETZM PRNHDR+4(PKT)
+	MOVEI T3,.PRHHL*2	; PRN header length in 16-bit bytes
+	STOR T3,PRHL,+PRNDR(PKT); Store in packet
+	LOAD T4,PIPL,(PKT)	; Internet packet length in bytes
+	ADDI T4,1+<4*.PRHHL>	; Total number bytes in PRN packet
+	ASH T4,-1		; Count in 16-bit bytes (note round up)
+	STOR T4,PRPL,+PRNHDR(PKT); Store in PRN packet
+	STOR T1,PRDH,+PRNHDR(PKT); Set destination in PRN
+	MOVE T2,PRNHID		; Our ID on the PR Net
+	STOR T2,PRSH,+PRNHDR(PKT); Set the source host
+	AOS T3,PRSEQN		; Packet sequence number
+	STOR T3,PRSN,+PRNHDR(PKT); Sequence number
+	MOVEI T3,PRT%IN		; Info type packet
+	STOR T3,PRTYP,+PRNHDR(PKT) ; Set into packet type field
+	SETONE PRRW0,+PRNHDR(PKT); All one's in route word 0
+	CALL PRNQOB		; Queue for output on PRN interface
+	 TDZA T1,T1		; Indicate failure to caller
+	 SETO T1,		; Indicate winnage to caller
+	RET
+> ; End IFDEF BOSPRN
+
+; Send to gateway in machine connected to the RPI.  No local header
+; is needed as this will be supplied by this other gateway.
+; However space is left for an ARPANET leader for convenience.
+;  This will be changed in the future.
+
+;PKT/	Pointer to Internet packet
+;T3/	(BCR number)
+;
+;	CALL SNDRPI
+;Ret+1:	Always.  T1 non-0 if Pkt space will be released by INTNRB
+
+SNDRPI:	XMOVEI T2,IMP96L(PKT)	; Handle like ARPANET pkt due to INTRBF
+	CALL RPIQOB		; Get it sent to the other gateway
+	 TDZA T1,T1		; Convert into standard value
+	 SETO T1,
+	RET
+
+; Receive a packet from all networks
+
+;	CALL RCVGAT
+;Ret+1:	Always.  PKT has pointer to packet or 0 if none available
+
+	RESCD
+; Top of loop ...
+RCVGAT::PIOFF
+	MOVE PKT,INTIBO		; Get input queue output pointer
+	JUMPE PKT,RCVGAY	; No packets queued
+	LOAD T1,NBQUE,(PKT)	; Get successor, if any.
+	JUMPN T1,RCVGAA		; Queue not about to run dry
+	SETZM INTIBI		; Make empty queue
+	JRST RCVGAB
+RCVGAA:	SETSEC T1,INTSEC	; Make extended address
+RCVGAB:	MOVEM T1,INTIBO		; Set new output pointer
+	PION
+	JRST RCVGA0
+	SWAPCD
+
+RCVGA0:	SETSEC PKT,INTSEC	; Make extended address
+	SETZRO NBQUE,(PKT)
+	LOAD T2,NBBSZ,(PKT)
+	CAMLE T2,MAXWPM
+	 INBUG(HLT,<Internet input pkt smashed>,INTGW1)
+	PUSH P,T2		; Save packet size
+	JE PFSIZ,<-IMP96L>(PKT),RCVG00 ; Not full size means came on bypass
+	MOVEI T2,PACKSZ		; Reset local length to "full size"
+	STOR T2,NBBSZ,(PKT)	; Which is right for input buffer
+RCVG00:	MOVE T1,PKT		; Pointer to the buffer again
+	CALL INTULK		; Unlock packet
+	POP P,T2		; Get back number or words in packet
+	SUBI PKT,IMP96L		; Return standard Internet PKT pointer
+	SETZM PKTQ(PKT)		; Indicate that PKT is not queued
+	; Fall through with length in T2
+
+; Check to see that all of the packet has been received.
+
+	LOAD T1,PIPL,(PKT)	; Internet total length in bytes
+	ADDI T1,3		; Round up
+	ASH T1,-2		; Number of words required
+	CAMLE T1,T2		; Got it all?
+	 JRST RCVGA9		; No.  Flush it.
+
+; Check to see if it is ok to look at the Internet leader:
+
+RCVGA1:	LOAD T1,PIVER,(PKT)	; Internet Version
+	CAIE T1,.INTVR		; Right Internet Version?
+	 JRST RCVGA9		; No.  Flush it.
+	CALL INTCKS		; Compute the checksum
+	JUMPN T1,RCVGA9		; Jump if it is bad
+
+; See if the packet is destined for (some logical host on) this host
+
+	LOAD T1,PIDH,(PKT)	; Get destination network and host
+	ANDCM T1,INETLB		; Flush logical host bits
+	CAMN T1,INETID		; Addr is name of this host?
+	 EXIT RCVGAX		; Let dispatcher have this pkt
+
+
+; The packet is not to be processed on this host.  Forward it.
+
+RCVGAF:	SKIPE INTSCR
+	 JRST RCVGA9		; Only the other GW can do the fwd-ing
+	SETZRO PPROG,(PKT)	; Packet storage not to saved for ACK
+	LOAD T1,PITTL,(PKT)	; Time to live
+	SUBI T1,1		; Reduce by processing "time"
+	STOR T1,PITTL,(PKT)	; Store new time to live
+	JUMPLE T1,RCVGA9	; Flush if packet now dead
+	CALL SNDGAT		; Send out to appropriate gateway.
+	JRST RCVGAT		; Go get a good packet
+
+
+; Something bad about this packet.  Flush it.
+
+RCVGA9:	AOS BADPCT		; Count bad packets received
+	MOVEI T1,5		; Code for "Flushed by IP"
+	CALL PRNPKT
+	CALL RETPKT		; Return space to free storage
+	JRST RCVGAT		; Hope for better luck on next packet
+
+	RESCD
+RCVGAY:	PION
+RCVGAX:	RET
+
+; INTLKB		Lock both ends of an Internet packet
+;			so interrupt level will not get a page fault
+
+;T2/	Extended pointer to the IMP-style packet
+;
+;	CALL INTLKB
+;Ret+1:	Always.  T2 preserved.
+
+INTLKB::LOCAL <IMPPKT,PKTLIM>
+	MOVEM T2,IMPPKT		; Save pointer to IMP packet
+	LOAD PKTLIM,NBBSZ,(IMPPKT) ; Get size field
+	CAMLE PKTLIM,MAXWPM	; OK?
+	 INBUG(HLT,<INTLKB: Pkt size smashed>,INTMS1)
+	ADD PKTLIM,IMPPKT	; First location following packet
+	IORI PKTLIM,PGSIZ-1	; Round up to top of page
+	MOVE T1,IMPPKT		; Where to start locking
+INTLK1:	PUSH P,T1		; Save core address
+	PUSH P,5		; TENEX PAGEM might crash these
+	PUSH P,6		; depending on whether page has to be
+	PUSH P,7		; swapped in.
+	PUSH P,10
+	CALL MLKMA		; Lock monitor address in core
+	POP P,10
+	POP P,7
+	POP P,6
+	POP P,5
+	POP P,T1
+	ADDI T1,PGSIZ		; Move on to next page
+	CAMG T1,PKTLIM		; Done all of packet?
+	 JRST INTLK1		; No.
+	MOVE T2,IMPPKT		; Restore T2 as required
+	RESTORE
+	RET
+
+; INTULK		Unlock both ends of an Internet packet
+
+;T1/	Pointer to IMP-style part of packet
+;
+;	CALL INTULK
+;Ret+1:	Always.  T1 preserved.
+
+	RESCD
+INTULK::LOCAL <IMPPKT,PKTLIM>
+	MOVEM T1,IMPPKT		; Save pointer to IMP packet
+	LOAD PKTLIM,NBBSZ,(IMPPKT) ; Get size field
+	CAMLE PKTLIM,MAXWPM	; OK?
+	 INBUG(HLT,<INTULK: Pkt size smashed>,INTUBF)
+	ADD PKTLIM,IMPPKT	; First location following packet
+	IORI PKTLIM,PGSIZ-1	; Round up to top of page
+INTUL1:	PUSH P,T1		; Save core address
+IFNKA	<CALL MULKSP>		;| Unlock monitor address
+IFKA	<CALL MULKMP>		;| Unlock monitor address
+	POP P,T1
+	ADDI T1,PGSIZ		; Move on to next page
+	CAMG T1,PKTLIM		; Done all of packet?
+	 JRST INTUL1		; No.
+	MOVE T1,IMPPKT		; Restore T1 as required
+	RESTORE
+	RET
+
+	TNXEND
+	END
+

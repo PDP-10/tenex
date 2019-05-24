@@ -1,0 +1,312 @@
+;ISIMON:<ISI.TCP>TCPBG.MAC.3440 22-Sep-81 16:00:25, Edit by CHASE
+;#344 Don't release TCBs until tty data has its TCB pointer cleared out.
+;ISIMON:<ISI.TCP>TCPBG.MAC.3370 15-Sep-81 10:08:11, Edit by CHASE
+;#337 BBN update: Remove call to INIT from BGINI
+;ISISRC:<4.TCP>TCPBG.MAC.2510  1-May-81 20:16:07, Edit by CHASE
+;#251 Add check for GETBLK failure in SCAN
+	SEARCH	INPAR,TCPPAR,PROLOG
+	TTITLE	TCPBG
+	SUBTTL	TCP Background Routines, William W. Plummer, 16FEB77
+	SWAPCD
+
+COMMENT	!
+
+	Routines in this file run periodically at a low rate to
+	check for things such as dead (closed) TCBs and connections
+	which need to be poked in order that they resynchronized.
+
+
+* BACKG ....  3 ...... Background
+  SCAN .....  4 ...... Scan all TCB's
+  FUNCS ....  5 ...... Apply functions to a TCB
+  REMBFS ...  5 ...... Remove buffers from done queue
+  UPDATE ...  6 ...... Update retransmission variables
+  DEADP ....  7 ...... Flush dead TCBs
+  SCAVNG ...  8 ...... Scavenge all non-essential storage
+* BGINI ....  9 ...... Initialize RX process block
+
+	!
+
+IFNKA <IFNDEF %%REL4,<
+	PRINTX % %%REL4 NOT SET IN PROLOG0.MAC.  ASSUMED TRUE.
+	%%REL4==1
+>>
+
+IFKA <EXTERN BG,BGRNCT,BGUSE,CLRLCK,DISE,DQ> ;|
+IFKA <EXTERN GETBLK,INITQ,INSKED,INTSVC,INTSVR,LCKCAL,NQ,PRNPKT> ;|
+IFKA <EXTERN RELLCK,RELWTB,RETBLK,RETJCN,RETPKT,STADYN,TCBCNT>	;|
+IFKA <EXTERN TCBH,TCBHLK,TCBHUC,TCPBDQ,TODCLK,TVTCSO> ;|
+
+; BACKG		Top level of background
+
+;	CALL BACKG
+;Ret+1:	Always
+
+BACKG::	PUSH P,PKT
+	PUSH P,TPKT
+	MOVEI T1,TCBHLK		; Which lock to set
+	XMOVEI T2,SCAN		; Function to run
+	CALL LCKCAL		; Lock the lock and run the function
+	SKIPE INTSVR		; Was a scavenge requested?
+	 AOS INTSVC		; Yes.  Count it as having been done
+	SETZM INTSVR		; Cancel scavenge request
+	MOVEI PKT,0		; Indicate no packet
+	CALL PRNPKT		; Flush out the packet printer buffer
+	MOVEI T1,^D30000	; Run again in 30 seconds
+	ADD T1,TODCLK
+	MOVEI T2,BG		; Pointer to Background process block
+	MOVEM T1,PRCWAK(T2)	; BG has no input queue.
+IFNKA <IFN %%REL4,<NOSKD1>>
+	CALL TVTCSO		; Force scan of TVT for output
+	POP P,TPKT
+	POP P,PKT
+	RET
+
+; SCAN		Scan through all TCBs and apply the functions to each
+
+;	CALL SCAN
+;Ret+1:	Always
+
+SCAN:	LOCAL <TCBHX,NXTTCB,Q,DEADQ>
+	PUSH P,TCB
+	MOVEI T1,QSZ		; Size of a queue head
+	CALL GETBLK		; Head must in same section as items
+	 JUMPE T1,SCANXX	;#251 Give up for now if can't get one
+	MOVEM T1,DEADQ		; Save pointer to the queue
+	CALL INITQ		; Initialize the dead queue
+	MOVEI T1,TCBHUC		; Pointer to TCBH Use Count
+	SKIPE TCBHUC		; Is it 0 as required?
+	 CALL DISE		; No.  Wait for that.
+
+	MOVSI TCBHX,-TCBHSZ	; Set to loop through all of TCBH
+SCAN1:	HRRZ Q,TCBHX		; Index into TCBH table
+	ADD Q,TCBH		; Plus pointer to table base
+	LOAD NXTTCB,QNEXT,(Q)	; Pointer to first thing on this queue
+	SETSEC NXTTCB,INTSEC	; Make extended address
+SCAN2:	MOVE TCB,NXTTCB		; Set current TCB
+	CAMN TCB,Q		; Back to head of queue?
+	 JRST SCAN3		; Yes.  On to next queue
+
+	LOAD NXTTCB,QNEXT,(TCB)	; Setup for next time
+	SETSEC NXTTCB,INTSEC	; Make extended address
+	XMOVEI T1,TCBLCK(TCB)	; Pointer to lock
+	XMOVEI T2,FUNCS		; Routine to apply functions
+	MOVE T3,DEADQ		; Arg for DEADP
+	CALL LCKCAL		; Lock the TCB and do the functions
+	JRST SCAN2		; Go to next TCB on this queue
+SCAN3:	AOBJN TCBHX,SCAN1	; On to next queue
+
+	MOVE Q,DEADQ		; Queue of dead TCBs
+	LOAD NXTTCB,QNEXT,(Q)	; First thing on the queue
+	SETSEC NXTTCB,INTSEC	; Make extended address
+SCAN4:	MOVE TCB,NXTTCB		; Advance down the queue
+	LOAD NXTTCB,QNEXT,(TCB)	; Set for next time
+	SETSEC NXTTCB,INTSEC	; Make extended address
+	CAMN TCB,Q		; Back to head?
+	 JRST SCAN9		; Yes.  Done.
+	CALL REMBFS		; Remove all buffers from TCPDBQ
+	LOAD T1,TOPNF,(TCB)	; Get open/close wait bit index
+	CALL RELWTB		; Release it
+	LOAD T1,TERRF,(TCB)	; Get error wait flag number
+	CALL RELWTB		; Release it
+	XMOVEI T1,TCBLCK(TCB)	; Pointer to the lock
+	CALL RELLCK		; Delete that
+	MOVE T1,TCB
+	CALL DQ			; Dequeue from dead queue
+	CALL RETBLK		; Return the storage
+	SOS TCBCNT		; Now one less connection
+	JRST SCAN4
+
+SCAN9:	MOVE T1,DEADQ		; Pointer to the temporary queue
+	CALL RETBLK
+SCANXX:	POP P,TCB		;#251
+	RESTORE
+	RET
+
+; FUNCS		Apply a list of functions to a TCB
+
+;TCB/	(Extended) Locked connection block
+;T1/	(Extended) Pointer to queue head for dead TCBs
+;
+;	CALL FUNCS
+;Ret+1:	Always
+
+FUNCS:	PUSH P,T1		; Arg is pointer to dead queue head
+	SKIPE INTSVR		; Scavenge free storage requested?
+	 CALL SCAVNG		; Yes.  Do it to this TCB.
+	CALL UPDATE		; Update Retransmission variables
+	POP P,T1		; Get back arg for DEADP
+	CALLRET DEADP		; Check for completely closed
+
+
+
+; REMBFS(TCB, TCPBDQ)		Remove buffers owned by dead TCB
+
+;TCB/	(Extended) Pointer to dead TCB
+;TCPBDL/Locked
+;
+;	CALL REMBFS
+;Ret+1:	Always
+
+REMBFS:	LOCAL <NEXT>
+	PUSH P,BFR
+	MOVE BFR,TCPBDQ		; Get pointer to queue head
+	LOAD NEXT,QNEXT,(BFR)	; Get first thing on queue
+REMBF1:	SETSEC NEXT,INTSEC	; Make extended address
+	MOVE BFR,NEXT
+	CAMN BFR,TCPBDQ		; Points at head...
+	 JRST REMBFX		; means we are done
+	LOAD NEXT,QNEXT,(BFR)	; Get next item on queue
+	LOAD T1,BTCB,(BFR)	; Get owning TCB
+	SETSEC T1,INTSEC	; Make extended address
+	CAME T1,TCB		; Is it the one under consideration?
+	 JRST REMBF1		; No.  Try next.
+	MOVE T1,BFR		; What to dequeue
+	CALL DQ			; Do it.
+	CALL RETBLK		; And return the storage
+	JRST REMBF1		; Scan some more
+
+REMBFX:	POP P,BFR
+	RESTORE
+	RET
+
+; UPDATE		Update retransmitter control variables
+
+;TCB/	(Extended) Locked Connection Block
+;
+;	CALL UPDATE
+;Ret+1:	Always
+
+UPDATE:	LOAD T1,TMXRT,(TCB)	; Maximum round trip time (millisec.)
+	LOAD T2,TMNRT,(TCB)	; Minimum
+	MOVE T3,T1
+	SUB T3,T2		; Delta
+	IDIVI T3,2		; Decay 50% towards min.
+	SUB T1,T3
+	STOR T1,TMXRT,(TCB)	; Set new max.
+	IDIVI T3,5
+	ADD T2,T3		; Expand by 10% towards max.
+	STOR T2,TMNRT,(TCB)	; Set new min.
+	ADD T1,T2		; 2 times new average
+	ADDI T1,^D1000		; Arrange for a half second above average
+	ASH T1,-1
+	STOR T1,TRXI,(TCB)	; Is the new retransmit interval
+	RET
+
+; DEADP		Collect dead (closed) TCBs on a queue
+
+;T1/	(Extended) Pointer to head of DEAD Queue
+;TCB/	(Extended) Locked connection block to be examined
+;
+;	CALL DEADP
+;Ret+1:	Always. TCB placed on dead queue if appropriate
+
+DEADP:	LOCAL <DEADQ>
+	MOVEM T1,DEADQ
+	JN TSUOP,(TCB),DEADPX	; Keep if no CLOSE from user yet
+	JE TTVT,(TCB),DEADP1	; Jump if not a TVT
+	SETZ T1,		;#344 Assume no tcb pointer
+	LOAD T2,TVTL,(TCB)	;#344 Get tvt line number, if any
+	JUMPE T2,DEADP2		;#344 Jump if no line number
+	NOSKD1			;#344 Don't let tty data change under us
+	CALL STADYN		;#344 Get tty datablock, if any
+	 TRNA			;#344 Skip load if line not active
+	LOAD T1,PTVT,(T2)	;#344 Get tcb pointer, if any
+	OKSKD1			;#344
+	JUMPN T1,DEADPX		;#344 Keep if tty datablock points to it
+DEADP2:	JN TERR,(TCB),DEADP0	;#344 Jump if error
+	LOAD T1,TRSYN,(TCB)	; Receive state
+	LOAD T2,TSSYN,(TCB)	; Send state
+	CAIN T1,NOTSYN		; Dead?
+	CAIE T2,NOTSYN
+	 JRST DEADP1		; Jump if not dead state (closed)
+DEADP0:	LOAD T1,TJCN,(TCB)	; Get the JCN (owned by INTFRK)
+	JUMPE T1,DEADP1		; Jump if USREVT already released it
+	CALL RETJCN
+DEADP1:	JN TJCN,(TCB),DEADPX	; Keep if user can still reference this
+	LOAD T1,TSSYN,(TCB)	; Send state
+	LOAD T2,TRSYN,(TCB)	; Recv state
+	CAIN T1,NOTSYN
+	CAIE T2,NOTSYN
+	 JRST DEADPX		; Keep unless FINd on both sides
+	LOAD T1,QNEXT,<+TCBRXQ(TCB)>
+	CAIE T1,TCBRXQ(TCB)	; Compare as if in sec. 0
+	 JRST DEADPX		; Keep if retransmit queue non-empty
+	LOAD T1,QNEXT,<+TCBSBQ(TCB)>
+	CAIE T1,TCBSBQ(TCB)
+	 JRST DEADPX		; Keep if stuff waiting to be sent
+	JN TSCB,(TCB),DEADPX	; Which might be a current SEND buffer
+
+	LOAD T1,QNEXT,<+TCBRPQ(TCB)>
+	CAIE T1,TCBRPQ(TCB)
+	 JRST DEADPX		; Keep if packets waiting for RA
+	LOAD T1,QNEXT,<+TCBRBQ(TCB)>
+	CAIE T1,TCBRBQ(TCB)
+	 JRST DEADPX		; Keep if RECV buffers waiting
+	JN TRCB,(TCB),DEADPX	; or if there is a current RECV buffer
+
+	SKIPN TCBQRA(TCB)	; Must not be queued for RA
+	SKIPE TCBQPZ(TCB)	; Or PZ
+	 JRST DEADPX
+	SKIPN TCBQRX(TCB)	; Or RX
+	SKIPE TCBQDG(TCB)	; Or DG
+	 JRST DEADPX
+
+	MOVE T1,TCB
+	CALL DQ			; Dequeue the buffer from the TCBH queue
+	MOVE T2,DEADQ
+	CALL NQ			; And put on the Dead queue
+
+DEADPX:	RESTORE
+	RET
+
+; Scavenge free storage from connection blocks.
+
+; All packets on the reassembly queue are released to permit the TCP
+; to continue functioning.  Retransmissions will replace them.
+
+;TCB/	(Extended) Locked Connection block
+;
+;	CALL SCAVNG
+;Ret+1:	Always
+
+SCAVNG:	PUSH P,PKT		; Save so it can be clobbered
+SCAVN1:	LOAD PKT,QNEXT,<+TCBRPQ(TCB)>	; Get first thing on RA queue
+	CAIN PKT,TCBRPQ(TCB)	; Empty if that is the head itself
+	 JRST SCAVNX		; No more to get from this connection
+	SETSEC PKT,INTSEC	; Make extended address
+	MOVE T1,PKT		; What to dequeue
+	CALL DQ			; Take it off the receive packet queue
+	CALL RETPKT
+	JRST SCAVN1
+
+SCAVNX:	POP P,PKT
+	RET
+
+; BGINI			Initialize BG process block
+
+;	CALL BGINI
+;Ret+1:	ALways
+
+BGINI::	LOCAL <PRC>
+	MOVEI PRC,BG		; Pointer to the Process block for BG
+	SETZM PRCQ(PRC)		; Input queue
+;	CALL INITQ		;#337 Initialize it (not used)
+	XMOVEI T1,PRCLCK(PRC)	; Lock
+	CALL CLRLCK		; Initilize it
+	XMOVEI T1,BACKG		; Background function
+	MOVEM T1,PRCROU(PRC)	; Routine address
+	MOVE T1,TODCLK		; Now
+	ADDI T1,^D30000		; Plus thirty seconds
+	MOVEM T1,PRCWAK(PRC)	; Start BG for the first time
+	SETZM PRCWOF(PRC)	; Store in process block
+	MOVEI T1,BGRNCT		; Pointer to run counter via section 0
+	MOVEM T1,PRCRNC(PRC)	; Put in standard place
+	MOVEI T1,BGUSE		; Pointer to CPU use meter
+	MOVEM T1,PRCTMR(PRC)	; Put in standard place
+	RESTORE
+	RET
+
+	TNXEND
+	END
+

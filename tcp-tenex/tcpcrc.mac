@@ -1,0 +1,376 @@
+	SEARCH	INPAR,TCPPAR,PROLOG
+	TTITLE	TCPCRC
+	SUBTTL	TCP Cyclic Redundancy Check Routines. W. Plummer, 8Aug78
+	SWAPCD
+
+COMMENT !
+
+These routines implement the checksumming function for the Internet
+header and for the TCP.   Two versions are provided: a "one's
+complement sum" and a CRC.  The runtime cell CRCF may be
+used to select CRC if it is set non-zero.
+
+The prototype CRC routines were supplied by Dave Reed at MIT-ML.
+
+	*********************************************
+	ACs PTR, CNT, and SUM are used globally
+	within this file.  They are assigned from
+	the local ACs area so the will be saved
+	by called routines.  They are preserved
+	for callers.  SUM must be T4+1 .
+	*********************************************
+	N.B.  These routines are highly dependent on
+	the PACKET definition in TCPDEF.MAC.
+	*********************************************
+
+* INTCKS ...  3 ...... Returns checksum for Internet header
+  INTCRC ...  3 ...... Internet CRC function
+  INTADD ...  3 ...... Internet additive function
+* TCPCKS ...  4 ...... Returns checksum for TCP packet
+  TCPCRC ...  4 ..... TCP CRC function
+  TCPADD ...  5 ...... TCP additive function
+
+  CRC32  ...  6 ...... Add N 32-bit bytes into the CRC
+  CRC24  ...  6 ...... Add 1 24-bit byte into the CRC
+  CRC16  ...  7 ...... Add N 16-bit bytes into the CRC
+  CRC8   ...  7 ...... Add N 8-bit bytes into the CRC
+
+  ADDSUM ...  9 ...... 1's complement checksum
+  ADD8 .....  9 ...... Add N 8-bit bytes
+  FIXSUM ... 10 ...... Reduce sum to 16 bits
+	!
+
+%CRC==0		; Set non-zero to assemble in the CRC code
+IFN %CRC,<CRCF:	0>		; Set non-zero to use CRC
+
+IF1 <
+; AC redefinitions:
+
+SUM=1+T4		; Holds CRC or ordinary sum
+PTR=1+NTEMPS+NLOCLS-1	; Holds byte pointer into packet during CRC
+CNT=1+NTEMPS+NLOCLS-2	; Holds byte count during CRC
+NTEMPS==NTEMPS+1	; Start assigning locals one higher due to SUM
+NLOCLS==NLOCLS-3		; Reduce number of local ACs available
+>
+
+; Macro to contruct a byte pointer to a structure field:
+
+DEFINE .POINT(STR,Y)<
+	..STR0(...PT,,STR,Y)
+>
+	DEFINE ...PT(AC,LOC,MSK)<
+		POINTR(LOC,MSK)
+	>
+
+
+; Symbol which is all ones in a right justified field which is the
+;  width of the checksum field
+
+CKSMSK==PICKS_-<^D35-POS(PICKS)>
+
+IFN WID(PTCKS)-WID(PICKS),<PRINTX ? Code assumes PTCKS and PICKS are the same width>
+
+; INTCKS(PKT)		; Compute Value for Internet Checksum Field
+
+;PKT/	(Extended) Pointer to Internet Packet
+;
+;	CALL INTCKS
+;Ret+1:	Always.  T1 has the checksum for the Internet header
+
+
+INTCKS::PUSH P,PTR		; Save ACs we will use as globals
+	PUSH P,CNT
+	PUSH P,SUM
+IFN %CRC,<
+	SKIPN CRCF		; Use CRC or Old 1's comp?
+	 JRST INTADD		; Use additive function
+
+; Compute CRC for Internet header
+
+INTCRC:	MOVX SUM,-1B<WID(PICKS)-1>	; Init sum to all 1's
+	MOVE PTR,[POINT 32,PKTELI(PKT)]	; Start at beginning of IN part
+	LOAD CNT,PIDO,(PKT)	; Number of 32-bit words to do
+	CALL CRC32		; Process that many 32-bit bytes
+	MOVE T1,SUM		; Get left-justified result
+	LSH T1,-<^D36-WID(PICKS)>; Right justify it
+	JRST INTCKX
+>
+
+
+; 1's complement additive checksum calculation for Internet header
+
+INTADD:	MOVEI SUM,0		; Init the sume
+	MOVE PTR,[POINT 32,PKTELI(PKT)]	; Point to IN hdr
+	LOAD CNT,PIDO,(PKT)	; Number of 32-bit words to do
+	CALL ADDSUM		; Add those in
+	CALL FIXSUM		; Handle extra carries
+	CAIE SUM,0		; Avoid complementing a +0
+	XORI SUM,CKSMSK		; Return complement of the sum
+
+INTCKX:	MOVE T1,SUM		; Return value
+	POP P,SUM		; Restore caller's ACs
+	POP P,CNT
+	POP P,PTR
+	RET
+
+; TCPCKS(PKT,TPKT)		; Returns number for TCP checksum
+
+;PKT/	(Extended) pointer to packet
+;TPKT/	(Extended) pointer to TCP portion of packet
+;
+;	CALL TCPCKS
+;Ret+1:	Always.  Number for TCP header checksum field in T1
+
+TCPCKS::PUSH P,PTR		; Save ACs which will be used globally
+	PUSH P,CNT
+	PUSH P,SUM
+IFN %CRC,<
+	SKIPN CRCF		; Supposed to use CRC?
+	JRST TCPADD		; No.  1's comp.
+TCPCRC:	MOVX SUM,-1B<WID(PCHKS)-1>	; Init CRC to all one's
+	MOVX PTR,[<.POINT PIDST,(PKT)>-<WID(PIDST)>B5]	; Destination
+	MOVEI CNT,2		; and source
+	CALL CRC32		; Do those.
+	MOVE PTR,[POINT 8,[0]]	; Pseudo header has a 0 byte next
+	MOVEI CNT,1
+	CALL CRC8		; Do it
+	MOVX PTR,[<.POINT PIPRO,(PKT)>-<WID(PIPRO)>B5]; Ptr to Protocol
+	MOVEI CNT,1		; One byte
+	CALL CRC8		; Do it.
+	LOAD T1,PIPL,(PKT)	; Get total length
+	PUSH P,T1		; Save so it can be restored
+	LOAD T2,PIDO,(PKT)	; Get data offset
+	ASH T2,2		; Convert to byte count
+	SUB T1,T2		; Get length of TCP portion
+	STOR T1,PIPL,(PKT)	; Smash into packet for CRC calculation
+	MOVX PTR,[<.POINT PIPL,(PKT)>-<WID(PIPL)>B5]	; Get ptr to it
+	MOVEI CNT,1		; Do one 16-bit byte
+	CALL CRC16		; TCP packet length
+	POP P,T1
+	STOR T1,PIPL,(PKT)	; Restore the packet
+	LOAD T2,PIDO,(PKT)	; Number of words in Internet part
+	ASH T2,2		; Number of bytes there
+	SUB T1,T2		; Number of bytes in TCP portion
+	IDIVI T1,^D<36/8>	; Number of full words and extra bytes
+	PUSH P,T2		; Save number of bytes in partial word
+	MOVSI PTR,(<POINT 32,0(TPKT)>	; Skip over internet options
+	SKIPN CNT,T1
+	CALL CRC32
+	MOVSI PTR,(<POINT 8,0(TPKT)>)	; Switch to 8-bits for tail
+	POP P,CNT		; Recover number of bytes in last word
+	SKIPE CNT
+	 CALL CRC8		; Do them
+	MOVE T1,SUM		; Get the result
+	LSH T1,-<^D36-WID(PTCKS)>; Right-justify
+	JRST TCPCKX
+>
+
+; 1's complement function for TCP packet
+
+TCPADD:	LOAD SUM,PISH,(PKT)	; Start with "pseudo header"
+	LOAD T1,PIDH,(PKT)	; Source and destination hosts, and protocol
+	ADD SUM,T1		; Are constants and part of "addr info"
+	LOAD T1,PIPRO,(PKT)	; Internet protocol (TCP, XNET, etc)
+	ADD SUM,T1
+	LOAD T1,PIPL,(PKT)	; Packet length in bytes
+	LOAD T2,PIDO,(PKT)	; Internet data offset
+	ASH T2,2		; Convert to bytes
+	SUB T1,T2		; Compute length of TCP portion
+	ADD SUM,T1		; Add in to checksum
+	IDIVI T1,^D<36/8>	; Number of full words
+	PUSH P,T2		; Number of bytes in last word
+	MOVE PTR,[POINT 32,0(TPKT)]	; Pointer to TCP portion
+	SKIPE CNT,T1		; Set count of 32-bit words
+	 CALL ADDSUM		; Add in the data
+	POP P,CNT		; Recover number of bytes at end
+	TLC PTR,(<POINT 32,>^!<POINT 8,>)	; Back to 8-bit mode
+	SKIPLE CNT		; Get out if none
+	 CALL ADD8
+	CALL FIXSUM		; Fold into 16 bits
+	CAIE SUM,0		; Avoid complementing plus zero
+	XORI SUM,CKSMSK		; Do one's complement
+TCPCKX:	MOVE T1,SUM
+	POP P,SUM
+	POP P,CNT
+	POP P,PTR
+	RET
+
+IFN %CRC,<
+; CRC32(PKT,PTR,CNT,SUM)	; Add 32-bit bytes into the SUM
+
+;PKT/	(Extended) pointer to packet
+;TPKT/	(Extended) pointer to TCP part of packet
+;PTR/	Pointer into packet where to begin (may index by PKT or TPKT)
+;CNT/	Number of 32-bit bytes to do
+;SUM/	Current sum
+;
+;	CALL CRC32
+;Ret+1:	Always. PTR, CNT, SUM updated to reflect processing done.
+
+CRC32:	ILDB T1,PTR		; Get next 32-bit byte
+	LSH T1,^D<36-32>	; Left justify
+	XOR T1,SUM		; Start CRCing
+	SETZ SUM,
+	LSHC T1,-^D<36-8>	; Get left most 8-bit byte
+	XOR T2,CRCTAB(T1)
+	LSHC T2,-^D<36-8>	; Get next 8-bit byte
+	XOR T3,CRCTAB(T2)
+	LSHC T3,-^D<36-8>
+	XOR T4,CRCTAB(T3)
+	LSHC T4,-^D<36-8>	; N.B. some bits go into SUM
+	XOR SUM,CRCTAB(T4)
+	SOJG CNT,CRC32
+	RET
+
+
+
+
+; CRC24(PKT,PTR,SUM)		; Add one 24-bit byte into the SUM
+
+;PKT/	(Extended) pointer to packet
+;TPKT/	(Extended) pointer to TCP part of packet
+;PTR/	Pointer into packet where to begin (may index by PKT or TPKT)
+;SUM/	Current sum
+;
+;	CALL CRC24
+;Ret+1:	Always. PTR, SUM updated to reflect processing done.
+
+CRC24:	ILDB T2,PTR
+	LSH T2,^D<36-24>
+	XOR R2,SUM
+	SETZ SUM,
+	LSHC T2,-^D<36-8>
+	XOR T3,CRCTAB(T2)
+	LSHC T3,-^D<36-8>
+	XOR T4,CRCTAB(T3)
+	LSHC T4,-^D<36-8>	; N.B. some bits go into SUM
+	XOR SUM,CRCTAB(T4)
+	RET
+
+; CRC16(PKT,PTR,CNT,SUM)	; Add 16-bit bytes into the SUM
+
+;PKT/	(Extended) pointer to packet
+;TPKT/	(Extended) pointer to TCP part of packet
+;PTR/	Pointer into packet where to begin (may index by PKT or TPKT)
+;CNT/	Number of 16-bit bytes to do
+;SUM/	Current sum
+;
+;	CALL CRC16
+;Ret+1:	Always. PTR, CNT, SUM updated to reflect processing done.
+
+CRC16:	ILDB T3,PTR
+	LSH T3,^D<36-16>
+	XOR T3,SUM
+	SETZ SUM,
+	LSHC T3,-^D<36-8>
+	XOR T4,CRCTAB(T3)
+	LSHC T4,-^D<36-8>	; N.B. some bits go into SUM
+	XOR SUM,CRCTAB(T4)
+	SOJG CNT,CRC16
+	RET
+
+
+
+; CRC8(PKT,PTR,CNT,SUM)		; Add 8-bit bytes into the SUM
+
+;PKT/	(Extended) pointer to packet
+;TPKT/	(Extended) pointer to TCP part of packet
+;PTR/	Pointer into packet where to begin (may index by PKT or TPKT)
+;CNT/	Number of 8-bit bytes to do
+;SUM/	Current sum
+;
+;	CALL CRC8
+;Ret+1:	Always. PTR, CNT, SUM updated to reflect processing done.
+
+CRC8:	ILDB T4,PTR
+	LSH T4,^D<36-8>
+	XOR T4,SUM
+	SETZ SUM,
+	LSHC T4,-^D<36-8>	; N.B. some bits go into SUM
+	XOR SUM,CRCTAB(T4)
+	SOJG CNT,CRC8
+	RET
+
+; Macros to build the table used in the CRC calculations
+
+DEFINE BLDTAB(COEFS)<
+	$WORD==0
+	IRP COEFS,<$WORD==$WORD!1B<^D35-COEFS>>
+	POLY==$WORD_^L<$WORD>	;; High order coefficient to sign bit
+	CRCA==^D255
+	REPEAT ^D256,<	CRCB==CRCA_^D24
+			REPEAT 8,<
+			IFL CRCB,<CRCB==CRCB^!POLY>
+			CRCB==CRCB_1
+			>
+	.NCONC (\CRCB)
+	CRCA==CRCA-1
+	>
+>
+
+	DEFINE .TAB(X,Y)<X
+Y>				; Init the table macro
+	DEFINE .NCONC(Z)<.TAB(<DEFINE .TAB(X,Y)><X
+Z,Y>)>				; Macro to add to the table
+	BLDTAB(<16,15,2,0>)	; Build the table in .TAB
+				; for X**16+X**15+X**2+1
+CRCTAB:	.TAB			; Assemble the table
+
+>; end of IFN %CRC several pages back
+
+; ADDSUM(PKT, PTR, CNT, SUM)	; Adds N 32 or 16 bit bytes into the SUM
+
+;PKT/	(Extended) pointer to packet
+;TPKT/	(Extended) pointer to TCP part of packet
+;PTR/	Pointer into packet where to begin (may index by PKT or TPKT)
+;CNT/	Number of bytes to do
+;SUM/	Current sum
+;
+;	CALL ADDSUM
+;Ret+1:	Always. PTR, CNT, SUM updated to reflect processing done.
+
+ADDSUM:	ILDB T1,PTR		; Get a byte
+	ADD SUM,T1		; Add it in
+	SKIPGE SUM		; Too many carries?
+	 CALL FIXSUM		; Yes.  Worry about that
+	SOJG CNT,ADDSUM		; Loop over all
+	RET
+
+
+; ADD8(SUM, PKT, PTR, CNT)	Adds in 8-bit bytes
+
+;PKT/	(Extended) pointer to packet
+;TPKT/	(Extended) pointer to TCP part of packet
+;PTR/	Pointer into packet where to begin (may index by PKT or TPKT)
+;CNT/	Number of bytes to do
+;SUM/	Current sum
+;
+;	CALL ADDSUM
+;Ret+1:	Always. PTR, CNT, SUM updated to reflect processing done.
+
+ADD8:	ILDB T1,PTR
+	TLNE PTR,(1B2)		; See if left/right of 16 bit word
+	 LSH T1,8		; Left half
+	ADD SUM,T1		; Add into sum
+	SKIPGE SUM		; Too many carries?
+	 CALL FIXSUM		; Yes.  Fold them into low bits
+	SOJG CNT,ADD8		; Do more
+	RET
+
+;FIXSUM(SUM)		; Folds SUM so it fits in one 16-bit field
+
+;SUM/	current checksum, computed using 32-bit arithmetic
+;
+;	CALL FIXSUM
+;Ret+1:	Always.  All carries added in (1's complement) to low 16
+
+FIXSUM:	TXNN SUM,<^-CKSMSK>	; Any bits outside the mask?
+	 RET			; No.  We're done
+	LDB T1,[POINTR SUM,<^-CKSMSK>]	; Get carries
+	ANDX SUM,CKSMSK		; Remove them from sum
+	ADD SUM,T1		; Add in to low end
+	JRST FIXSUM		; Must stop soon.
+
+	TNXEND
+	END
+

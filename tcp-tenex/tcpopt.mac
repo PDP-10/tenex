@@ -1,0 +1,468 @@
+;Conditionialize DMOVEM's if KA, KI or F3.
+;HWM, 18-May-82
+;
+	SEARCH	INPAR,TCPPAR,PROLOG
+	TTITLE	TCPOPT
+	SUBTTL	TCP Option Routines, William W. Plummer, 5FEB77
+	SWAPCD
+
+COMMENT	!
+	These routines perform various functions associated with
+	TCP and Internet Options.  Options are stored in packets
+	after the header and before the data.  The format is
+	described in TCPDEF.
+
+	All Internet options must be inserted before FILHDR is
+	called since FILHDR must know where the TCP portion of
+	the packet is and this is a function of the amount of
+	Internet Option space used.
+
+	Likewise, all TCP options must be inserted (or space
+	reserved) before SNDDAT is called since the location of
+	the data is determined by the amount of TCP option
+	space used.
+
+* SNDSOP ...  2 ...... Send Secure Open (Internet)
+* SNDSCL ...  2 ...... Send Secure Close (Internet)
+
+* SETLAB ...  3 ...... Set debugging label (TCP)
+* GETLAB ...  3 ...... Get debugging label (TCP)
+
+* RSVTSO ...  4 ...... Reserve space for a local timestamp option (TCP)
+* SETTSO ...  4 ...... Set the value field of local timestamp (TCP)
+* GETTSO ...  4 ...... Get the value field from local timestamp (TCP)
+
+* SETRBS ...  5 ...... Set receive buffer size option (TCP)
+* GETRBS ...  5 ...... Get receive buffer size (TCP)
+  GET4 .....  6 ...... Get a 4-byte value
+  SET4 .....  6 ...... Set a 4-byte value
+
+  INOPTR ...  7 ...... Get byte pointer for adding an Internet option
+  TCOPTR ...  7 ...... Get byte pointer for adding a TCP option
+  FNINOP ...  8 ...... Get byte pointer for reading an Internet opton
+  FNTCOP ...  8 ...... Get byte pointer for reading a TCP opton
+  SCANOP ...  9 ...... Lookup an option
+
+	!
+
+; SNDSOP	Send a Secure Open Option (Internet)
+
+;TCB/	(Extended) Locked connection block
+;PKT/	(Extended) Packet
+;
+;	CALL SNDSOP
+;Ret+1:	always.
+
+
+SNDSOP::TEMP <PTR>
+	MOVEI T1,SOPLEN		; Length of option
+	CALL INOPTR		; Get byte pointer to it
+	JUMPE PTR,SNDSOX	; No room for it
+	MOVEI T2,SOPOPT		; Option kind
+	IDPB T2,PTR		; Store in packet
+	MOVEI T2,SOPLEN		; Length
+	IDPB T2,PTR
+	LOAD T2,TSLVN,(TCB)	; Get next security level
+	ROT T2,-8		; Do 2 bytes
+	IDPB T2,PTR		; Store the high byte
+	ROT T2,8
+	IDPB T2,PTR		; and the low byte
+SNDSOX:	RESTORE
+	RET
+
+
+; SNDSCL	Send a Secure Close Option (Internet)
+
+;PKT/	(Extended) Packet
+;
+;	CALL SNDSCL
+;Ret+1:	always
+
+SNDSCL::TEMP <PTR>
+	MOVEI T1,SCLLEN		; Length of option
+	CALL INOPTR		; Get a pointer to it
+	JUMPE PTR,SNDSCX	; No space
+	MOVEI T2,SCLOPT		; Kind
+	IDPB T2,PTR
+	MOVEI T2,SCLLEN		; Length
+	IDPB T2,PTR
+SNDSCX:	RESTORE
+	RET
+
+; SETLAB	Set debugging label (TCP)
+
+;T1/	Number
+;PKT/	(Extended) Packet
+;TPKT/	(Extended) TCP packet pointer
+;
+;	CALL SETLAB
+;Ret+1:	always
+
+SETLAB::TEMP <PTR,LBL>
+	PUSH P,T1		; Save the number for awhile
+	MOVEI T1,LBLLEN		; Length of option
+	CALL TCOPTR		; Get byte pointer to it
+	POP P,LBL		; Get back the argument
+	JUMPE PTR,SETLBX	; No space for it
+	MOVEI T3,LBLOPT
+	IDPB T3,PTR
+	MOVEI T3,LBLLEN		; Length
+	IDPB T3,PTR
+	ROT LBL,-8		; Get high byte
+	IDPB LBL,PTR
+	ROT LBL,8
+	IDPB LBL,PTR
+SETLBX:	RESTORE
+	RET
+
+
+
+; GETLAB	Get debugging label from packet (TCP)
+
+;PKT/	(Extended) Packet
+;TPKT/	(Extended) TCP packet pointer
+;
+;	CALL GETLAB
+;Ret+1:	always, T1 having -1 or the label contents
+
+GETLAB::TEMP <VAL,PTR,LB>
+	MOVEI T1,LBLOPT		; What to look for in packet
+	MOVEI T2,LBLLEN		; Expected length
+	CALL FNTCOP		; Find the option
+	JUMPE T1,GETLBM		; Couldn't find it.  Return -1
+	MOVEM T1,PTR
+	ILDB VAL,PTR		; Get high byte
+	LSH VAL,8		; Position it
+	ILDB LB,PTR		; Get low byte
+	TROA VAL,0(LB)		; Merge the two
+GETLBM:	SETO VAL,
+	RESTORE
+	RET
+
+; RSVTSO(PKT)	Reserver space in packet for later use to hold timestamp
+
+;PKT/	(Extended) Packet
+;TPKT/	(Extended) TCP packet pointer
+;
+;	CALL RSVTSO
+;Ret+1:	Always.  No failure indication.
+
+RSVTSO::TEMP <PTR>
+	MOVEI T1,LTSLEN		; 6 byte option length
+	CALL TCOPTR		; Get the space reserved
+	JUMPE PTR,RSVTSX	; None available.
+	MOVEI T2,LTSOPT		; Local timestamp option
+	IDPB T2,PTR		; The length
+	MOVEI T2,LTSLEN
+	IDPB T2,PTR		; The kind
+RSVTSX:	RESTORE
+	RET
+
+
+
+; SETTSO(PKT, WHEN)	Set the value of the timestamp option (TCP)
+
+;T1/	When (milliseconds)
+;PKT/	(Extended) Packet
+;TPKT/	(Extended) TCP packet pointer
+;
+;	CALL SETTSO
+;Ret+1:	always.
+
+SETTSO::TEMP <PTR,WHEN>
+	PUSH P,T1
+	MOVEI T1,LTSOPT		; Local timestamp option
+	MOVEI T2,LTSLEN		; Expected length thereof
+	CALL FNTCOP		; Find that (previously reserved) option
+	POP P,WHEN
+	SKIPE PTR		; Must have been no space for it.
+	 CALL SET4		; Set a 4-byte number into packet
+	RESTORE
+	RET
+
+
+; GETTSO(PKT)	Get the value stored in the timestamp option (TCP)
+
+;PKT/	(Extended) Packet
+;TPKT/	(Extended) TCP packet pointer
+;
+;	CALL GETTSO
+;Ret+1:	Qlways.  T1 .LT. 0 if no timestamp, or has the 32-bit timestamp
+
+GETTSO::MOVEI T1,LTSOPT		; The option to look for
+	MOVEI T2,LTSLEN		; The length we expect for it
+	CALL FNTCOP		; Find the option
+	SKIPN T1		; Skip if successful
+	 SOSA T1		; Else return -1
+	 CALL GET4		; Read a 4-byte word
+	RET
+
+; Receive Buffer Size option (TCP)
+
+;T1/	Our buffer size (lt 2**16)
+;PKT/	(Extended) pointer to packet
+;TPKT/	(Extended) pointer to TCP portion of packet
+;
+;	CALL SETRBS
+;Ret+1:	Always.
+
+SETRBS::TEMP <PTR,SIZ>
+	PUSH P,T1		; Save the size for awhile
+	MOVEI T1,RBSLEN		; Length of the option
+	CALL TCOPTR		; Get the space
+	POP P,SIZ		; Unsave the arg
+	JUMPE PTR,SETRBX	; See if we got the space
+	MOVEI T3,RBSOPT		; The option number
+	IDPB T3,PTR		; Store in packet
+	MOVEI T3,RBSLEN		; Option length
+	IDPB T3,PTR		; Insert in packet
+	ROT SIZ,-8		; High byte of arg
+	IDPB SIZ,PTR		; Insert it
+	ROT SIZ,8		; Low byte
+	IDPB SIZ,PTR		; Store it
+SETRBX:	RESTORE
+	RET
+
+
+
+;PKT/	(Extended) pointer to packet
+;TPKT/	(Extended) pointer to TCP portion of packet
+
+;
+;	CALL GETRBS
+;Ret+1:	Always.  T1 has the buffer size or -1 if option not present
+
+GETRBS::TEMP <SIZ,PTR,LB>
+	MOVEI T1,RBSOPT		; What to look for
+	MOVEI T2,RBSLEN		; How long it should be
+	CALL FNTCOP		; Look in TCP option list
+	JUMPE T1,GETRBM		; Jump if not there
+	MOVEM T1,PTR		; Stash the pointer
+	ILDB SIZ,PTR		; Get the high byte
+	LSH SIZ,8		; To right place
+	ILDB LB,PTR		; Get the low byte
+	TROA SIZ,0(LB)		; Combine the two
+GETRBM:	SETO SIZ,		; Say not present
+	RESTORE
+	RET
+
+; SET4(PTR, DATA, PKT)		Set a 4-byte option into a packet
+
+;T1/	Byte pointer into packet (Indexes by PKT or TPKT)
+;T2/	32-bit right justified number to be entered
+;PKT/	(Extended) Packet pointer
+;TPKT/	(Extended) TCP packet pointer
+;
+;	CALL SET4
+;Ret+1:	Always
+
+SET4:	TEMP <PTR,DATA,CNT>
+	LSH DATA,4		; Left justify in word
+	MOVEI CNT,4		; How many bytes
+SET41:	ROT DATA,8		; Put next byte in low 8 bits
+	IDPB DATA,PTR		; Store into packet
+	SOJG CNT,SET41		; Loop over all bytes
+	RESTORE
+	RET
+
+
+
+; GET4(PTR, PKT)		Read out a 4-byte option value
+
+;T1/	Byte pointer into packet (Indexes by PKT or TPKT)
+;PKT/	(Extended) Packet pointer
+;TPKT/	(Extended) TCP packet pointer
+;
+;	CALL GET4
+;Ret+1:	Always.  Number in T1.
+
+GET4:	TEMP <VAL,PTR,BYT,CNT>
+	MOVEI CNT,4		; How many bytes to do
+	MOVEI VAL,0
+GET41:	ILDB BYT,PTR
+	LSH VAL,8
+	IOR VAL,BYT
+	SOJG CNT,GET41		; Loop over all bytes
+	RESTORE
+	RET
+
+;INOPTR	Get pointer for adding a Internet option
+
+;T1/	Length of the option
+;PKT/	(Extended) pointer to the packet
+;TPKT/	(Extended) pointer to the TCP portion of the packet
+;
+;	CALL INOPTR
+;Ret+1:	Always.  T1 has pointer or 0 if no space.
+
+INOPTR:	LOAD T2,PIDO,(PKT)	; Get current data offset
+	ASH T2,2		; As a number of bytes
+	CAIG T2,MINIHS		; Any options yet?
+	 JRST INOPT1		; No.
+	PUSH P,T1		; Save the length
+	MOVEI T2,0		; Say to look for end of options
+	EXCH T1,T2		; Put args in right place
+	CALL FNINOP		; Find the end in the Internet list
+	POP P,T3		; Get back the desired length
+	SKIPE T1		; Found the end?
+	CAMGE T2,T3		; Yes.  Nuff space left?
+	 TCPBUG(CHK,<INOPTR: Insufficient Internet option space>,TCPOP1)
+	LOAD T2,PIDO,(PKT)	; # words IN hdr and options
+	SUBI T2,<MINIHS+3>/4	; Compute number of words of options
+	ASH T2,2		; Number of bytes in the options area
+	LDB T4,[POINT 3,T1,2]	; # empty bytes in last word
+	SUB T2,T4		; Current # bytes in options area
+	ADDI T2,3(T3)		; Include this new option
+	ASH T2,-2		; Round up, wordwise
+	STOR T2,PIDO,(PKT)	; Set as new data offset
+	EXIT INOPTX
+
+INOPT1:	ADDI T1,3		; Set to round up
+	ASH T1,-2		; Convert to words
+	LOAD T2,PIDO,(PKT)	; Get data offset
+	ADD T1,T2
+	STOR T1,PIDO,(PKT)	; Make data offset include this option
+	HRLI T1,(<POINT 8,.-.(PKT)>)	; Construct pointer
+INOPTX:	RET
+
+; TCOPTR	Get pointer for adding a TCP option
+
+;T1/	Length of the the option
+;PKT/	(Extended) pointer to the packet
+;TPKT/	(Extended) pointer to the TCP portion of the packet
+;
+;	CALL TCOPTR
+;Ret+1:	Always.  T1 has pointer or 0 if no space.
+
+TCOPTR:	LOAD T2,PTDO,(TPKT)	; Get current TCP data offset
+	ASH T2,2		; In terms of bytes
+	CAIG T2,MINTHS		; Any options present?
+	 JRST TCOPT1		; No.
+	PUSH P,T1		; Save the length
+	MOVEI T2,0		; Say to look for end of options
+	EXCH T1,T2		; Put args in right place
+	CALL FNTCOP		; Find the end in the TCP list
+	POP P,T3		; Get back the desired length
+	SKIPE T1		; Found the end?
+	CAMGE T2,T3		; Yes.  Nuff space available?
+	 TCPBUG(CHK,<TCOPTR: Insufficient TCP option space>,TCPOP2)
+	LOAD T2,PTDO,(TPKT)	; # words TCP hdr and options
+	SUBI T2,<MINTHS+3>/4	; Compute number of words of options
+	ASH T2,2		; Number of bytes in the options area
+	LDB T4,[POINT 3,T1,2]	; # empty bytes in last word
+	SUB T2,T4		; Current # bytes in options area
+	ADDI T2,3(T3)		; Include this new option
+	ASH T2,-2		; Round up, wordwise
+	STOR T2,PTDO,(TPKT)	; Set as new TCP data offset
+	EXIT TCOPTX
+
+TCOPT1:	ADDI T1,3		; Set to round up
+	ASH T1,-2		; Number of words needed
+	LOAD T2,PTDO,(TPKT)	; Data offset in words
+	ADD T1,T2		; Make it include this option
+	STOR T1,PTDO,(TPKT)	; Set into pkt
+	HRLI T1,(<POINT 8,.-.(TPKT)>)	; Construct pointer
+TCOPTX:	RET
+
+; FNINOP	Return byte pointer for reading an Internet option
+
+;T1/	Kind to look for
+;T2/	Expected length of the option or 0 for don't care
+;PKT/	(Extended) Packet
+;TPKT/	(Extended) TCP packet pointer
+;
+;	CALL FNINOP
+;Ret+1:	Always.  T1 has pointer to option if present, or 0 if not.
+;		T2 has option length or space left if looking for end.
+
+FNINOP:	MOVE T3,[POINT 8,<<MINIHS+3>/4>-1(PKT),31]; Pointer to options
+	LOAD T4,PIDO,(PKT)	; Current Internet data offset
+	ASH T4,2		; As a byte count
+	SUBI T4,MINIHS		; Max size of option space
+	CALLRET SCANOP		; Scan for that option.  Ret PTR in T1.
+
+
+
+
+; FNTCOP	Return byte pointer for reading an TCP option
+
+;T1/	Kind to look for
+;T2/	Expected length of the option or 0 for don't care
+;PKT/	(Extended) Packet
+;TPKT/	(Extended) TCP packet pointer
+;
+;	CALL FNTCOP
+;Ret+1:	Always.  T1 has pointer to option if present, or 0 if not.
+;		T2 has option length or space left if looking for end.
+
+FNTCOP:	MOVE T3,[POINT 8,<<MINTHS+3>/4>-1(TPKT),31]; Pointer to options
+	LOAD T4,PTDO,(TPKT)	; Current TCP data offset
+	ASH T4,2		; As a byte count
+	SUBI T4,MINTHS		; Max size of option space
+	CALLRET SCANOP		; Scan for that option.  Ret PTR in T1.
+
+; SCANOP	Return byte pointer for reading an option
+
+;T1/	Kind to look for
+;T2/	Expected length of the option
+;T3/	(Extended) pointer where to start
+;T4/	Maximum number of bytes to scan
+;PKT/	(Extended) Packet
+;TPKT/	(Extended) TCP packet pointer
+;
+;	CALL SCANOP
+;Ret+1:	Always.  T1 has pointer to option data, or 0 if not found.
+;		 T2 has length of option or space left if scanning
+;			for end option.  In this case T1 is set to
+;			overwrite the end option.
+
+
+SCANOP:
+	LOCAL <KIND,EXPLEN,OPTLEN>
+	ife	kaflg!kiflg!f3flg,<	;[hwm]
+	DMOVEM T1,KIND		; T1 to KIND, T2 to EXPLEN
+>
+	ifn	kaflg!kiflg!f3flg,<	;[hwm]
+	MOVEM	T1,KIND		;[HWM]
+	MOVEM	T2,EXPLEN	;[HWM]
+>				;[HWM]
+SCANO1:	JUMPLE T4,SCANO6	; Fail if entire area scanned
+	MOVE T1,T3		; T1 has ptr to start of this option
+	ILDB OPTLEN,T3		; Get the kind byte
+	JUMPN OPTLEN,SCANO2	; Jump if not end mark
+	JUMPN KIND,SCANO6	; Fail if not looking for end
+	MOVE T2,T4		; Set to return space left in T2
+	JRST SCANO7		; T1 has pointer to end option
+
+SCANO2:	CAIE OPTLEN,NOPOPT	; NOP option?
+	 JRST SCANO3		; No.
+	CAIE KIND,NOPOPT	; Looking for padding?
+	 SOJA T4,SCANO1		; No.  Reduce space left and continue.
+	JRST SCANO7		; Return pointer in T1
+
+SCANO3:	CAME OPTLEN,KIND	; Found what we are looking for?
+	 JRST SCANO4		; No.  Check next one.
+	ILDB OPTLEN,T3		; Get the length for real
+	JUMPE EXPLEN,SCANO5	; Don't care what length is?
+	CAMN OPTLEN,EXPLEN	; Or length matches?
+	 JRST SCANO5		; Yes.  Go check kind.
+
+SCANO4:	SUB T4,OPTLEN		; Advance to next option
+IFNKA <	ADJBP OPTLEN,T1		; Bump pointer
+	MOVE T3,OPTLEN		; And put it in standard place
+>
+IFKA <	IBP T1
+	SOJG OPTLEN,.-1
+	MOVE T3,T1
+>
+	JRST SCANO1		; Try next option.
+
+SCANO5:	MOVE T1,T3		; Yes.  Get pointer to data part.
+	SKIPA T2,OPTLEN		; Set to return length.
+SCANO6:	SETZ T1,		; Failure indication
+SCANO7:	RESTORE
+	RET
+
+	TNXEND
+	END
+
