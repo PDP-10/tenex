@@ -1,0 +1,435 @@
+	.title	EFTP memory dump - version 1. July 31, 1981. by Bill.
+; patch 11-4-81	  Don't look for real memory past 28K
+; patch 10-21-81  wait 5 secs before retransmitting, and
+;		  receive set up for RESTART everything.
+; patch 10-22-81  Restart on receiving any ERROR pup, or ABORT pup
+;		  ALSO, use source info. in startup PUP as dest
+;		  for the EFTP.
+; for net #55, or whomever is using board 0.
+VeizBD=1					; 1 if Nick's board.
+prom = 0					; 1 if for PROM version
+withTT=1					; =1 if TTY messages
+OWC = 160000					; output word count
+OBL = OWC+2					; output buffer location
+OCS = OWC+4					; output control and status
+ODE = OWC+6					; output delay.
+IWC = OWC+10					; input word count
+IBL = OWC+12					; input buffer location
+ICS = OWC+14					; input control and status
+RHA = OWC+16					; read HOST address.
+
+; Packet types  et. al.
+EFTPsn = 20
+EFTPda = 30
+EFTPak = 31
+EFTPen = 32
+EFTPab = 33
+ERROR  = 4
+ABORT = 11			; This one will manually restart this
+				; server from ANY host that knows the
+				; format of the PUP. A genl. bailout.
+encap = 0
+esHost= 0
+edHost= 1
+pup   = 2
+pupl  = 4
+type  = 6
+id1   = 10
+id2   = 12
+dPort = 14
+dpHost= 14
+dpNet = 15
+dpSoc1= 16
+dpSoc2= 20
+sPort = 22
+spHost= 22
+spNet = 23
+spSoc1= 24
+spSoc2= 26
+Odata = 30
+dHost = 377				; NON-host: host setup from start PUP
+.IF EQ <prom>
+boot = 165576
+tmpStk = 2000				; This location doesn't matter since
+.ENDC					; We run from PROM, and replace it.
+
+.IF NE <prom>
+tmpStk = 1000				; This location doesn't matter since
+.ENDC					; We run from PROM, and replace it.
+
+.IF NE <VeizBD>
+
+inRWE = 4		;	2		  Ram write ENABLE
+inRWV = 10		;       3		  Ram write value
+inRCR = 20		;	4		  Receiver reset.
+
+outIOR = 4		;	2		  IO reset
+outMER = 10		;	3		  Memory error reset
+outTRR = 20		;	4		  transmiter reset
+Omask=174000				; 11 bit output word count
+delay=-1				
+maxWin=30.				; max. words input(interrupts on
+					; Word count overflow. So we can
+					; use a smaller input buffer.
+.ENDC
+
+.IF EQ <VeizBD>
+Omask=176000				; 10 bit output word count
+delay=1
+maxWin=280.				; max. words input(Inputs until 
+					; carrier drops, so need max PAK)
+outIOR = 0		;	0 values for resets on XEROX board.
+outMER = 0		;	
+outTRR = 0		;	
+inRCR  = 0		;
+.ENDC
+maxBin=maxWin*2				; max. input EFTP packet in bytes. 
+
+trap4 = 4
+; some sizes.
+esize =2				; words of encapsulation.
+ovHead=22.				; PUP header + checksum.
+MNPBLN=6.				; minimum PDP10 words for ACK
+ndata =64.				; max data for output PUP.
+mxBout=ovHead+<<esize+ndata>*2>		; largest output packet.
+
+.IF NE <withTT>
+ttyOs= 177564
+ttyOb= ttyOs+2
+esc=33
+eol=15
+lf=12
+clrTTY:	.asciz <esc>/H/<esc>/JDumping Memory/<eol><lf>
+	.EVEN
+.ENDC
+expire= 2.				; EACH unit is about 1.4 seconds.
+;
+;	All register including interface board(s) must be saved in some
+;	memory location before WE are booted. We don't save it for you.
+;
+;	After loading the boot address, then put the 
+;	the boot file number of the program you want loaded in the switches 
+;	before pressing start.
+;
+;	We will boot that program when done.
+;
+;		REGISTER usage:
+;		r0	points to beginning of the memory we use
+;		r1	points to input buffer 
+;		r2-r3	general usage
+;		r4	core pointer for dump.
+;		r5	bit 15 set if reached end of mem. 
+;			byte 0 used for state maintenance.
+	.globl	EFTPmd
+EFTPmd:
+.IF EQ <prom>
+	HALT				; for debugging purposes.
+.ENDC
+.IF NE <withTT>
+;	clear tty
+	mov	#clrTTY,r0
+clear:	
+	tstb	@#ttyOs
+	bge	clear
+	 movb	(r0)+,@#ttyOb
+	 bne	clear
+.ENDC	
+;	load our HOST address.
+	movb	@#RHA,r5
+	bic	#177400,r5
+.IF EQ <VeizBD>
+	comb	r5			; use r5 temporarily
+	mov	r5,@#RHA		; set up RAM
+	mov	#inRWE+inRWV,@#ICS	; hear us.
+.ENDC
+;	Find last core location:
+	mov	@#tmpStk-2,r0
+	mov	@#tmpStk-4,r1		; save these two words
+	mov	#tmpStk,sp		; temporarily
+	clr	r2
+	mov	@#trap4,r3		; save old vector
+	mov	pc,@#trap4
+	add	#gotMem-.+2,@#trap4	; PIC vector location.
+	
+1$:
+	tst	(r2)+
+	cmp	r2,#157776		; end of possible core?
+	bne	1$ 			; no, loop until trap/branch
+
+gotMem:
+	mov	r0,@#tmpStk-2		; restore memory.
+	mov	r1,@#tmpStk-4
+	mov	r3,@#trap4		; restore old vector
+	sub	#4,r2			; last good address.
+	mov	r2,r0			; start here.
+
+;	use end of memory for buffers:
+	sub	#maxBin,r0		; minus length
+	mov	r0,r1			; f
+	sub	#mxBout+2,r0		; and now output-2
+	mov	r2,(r0)			; save last core address.
+	mov	r0,Sp			; a stack in case for jsr pc,
+; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+;
+;	Wait for special start up PUP
+;
+;
+; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+;	Now wait for type 205 with id 323,,4676 
+heracl:
+	mov	#inRCR,@#ICS		; clear receiver
+herald:
+	mov	r1,@#IBL
+	mov	#-maxWin,@#IWC
+	mov	#1,@#ICS
+hWait:
+	tstb	@#ICS			; an arrival?
+	bge	hWait			; No on branch
+	 tst	@#ICS			;  got here intact?
+	 blt	heraCL			;  No on branch - INPUT error.
+
+;	Got a packet...the one?
+	cmpb	#205,type(r1)
+	bne	herald
+
+	cmp	#152357,id1(r1)		; our magic id! 152357
+	bne	herald
+
+; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+;
+;	Set up SOURCE(US) And DESTINATION (THEM) addresses
+;	ID2		destination  socket0
+;	destination PORT of 205 pup is as follows:
+;	Net,,Host	US
+;	Socket 0        dNET,,dHOST	8 bits each
+;	Socket 1	destination  socket1.
+;
+; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+;	away we go!
+;	output encapsulation, and fixed defaults...
+	mov	pc,r2
+	add	#header-.,r2		; where the header is.
+	mov	#hlen,r3
+	mov	r0,r4			; for addressing output buffer
+	tst	(r4)+			; + 2 to buffer.
+1$:
+	mov	(r2)+,(r4)+
+	dec	r3
+	bgt	1$
+
+;	Now set up source(US) Host.
+	movb	r5,esHost+2(r0)		; ENCAPsulation source Host
+	movb	dpSoc1(r1),edHost+2(r0) ; ENCAPsulation destination Host
+	movb	r5,spHost+2(r0)		; source host.
+
+	clrb	dpNet+2(r0)  		; destination net - use default 0
+	movb	dpSoc1(r1),dpHost+2(r0) ; destination Host
+	mov	id2(r1),dpSoc1+2(r0)	; socket 0
+	mov	dpSoc2(r1),dpSoc2+2(r0) ; socket 1
+; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+;
+;	Now dump the memory:
+;
+; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+;	Initialize "state" machine.
+	clr	r4			; core pointer 0 (r0).
+	clr	r5			; <0 for end of data.
+build:
+;	build output packet
+	inc	id2+2(r0)		; Next packet-initially -1.
+	mov	#ovHead,pupl+2(r0)	; length start.
+
+;	set up the type.
+	mov	#EFTPda,type+2(r0)	; Type data
+	cmpb	r5,#2			; state check
+	blt	1$			; still data
+	 mov	#EFTPen,type+2(r0)	;  termination packet
+	 mov	#-1,Odata+2(r0)		;  check sum
+	 br	resend			;  No data, send it.
+1$:
+;	Now move the data
+	mov	r0,r3
+	add	#Odata+2,r3		; data starts there.
+	mov	#ndata,r2		; max words to send...
+2$:	
+	mov	(r4)+,(r3)+		; nxt word from memory.
+	add	#2,pupl+2(r0)		; increase length.
+	cmp	r4,(r0)			; reached last location?
+	blos	3$			; No, so continue(unsigned please!)
+	 bis	#100000,r5		;  END of data..
+	 br	chkSum
+3$:
+        dec	r2			; one word less.
+        bgt	2$			; done on ZERO!!
+chkSum:
+	mov	#-1,(r3)		; No checksumming done.
+; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+;
+;	Send the packet
+;
+; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+resend:
+;	Do error clears each time just to save some prom.
+	mov	@#outIOR+outMER+outTRR,@#OCS	; clear transmitter
+	mov	@#inRCR,@#ICS			; clear receiver.
+Psend: 
+;	start input if NOT in state 3 = resending EFTPend.
+	cmpb	r5,#3
+	beq	1$			; No input here.
+	 mov	r1,@#IBL		; input buffer location
+	 mov	#-maxWin,@#IWC		; input size.
+	 mov	#1,@#ICS		; started...
+
+;	 send the fellow.
+1$:
+;	Set up word count.
+	mov	PUPL+2(r0),r3		; PUP length in bytes.
+	asr	r3			; now in words
+	add	#esize,r3		; + encapsulation.
+	neg	r3			; 2's compliment.
+	bic	#Omask,r3		; 10 bits only.
+	mov	r3,@#OWC		; word count.
+	mov	#delay,@#ODE		; delay...don't be greedy.
+	mov	r0,r3			; buffer location-2
+	add	#2,r3			; out buffer location.
+	mov	r3,@#OBL		;
+	mov	#1,@#OCS		; Go...
+2$:
+	tstb	@#OCS			; Is output finished?
+	bge	2$			; Not yet...If errored INPUT will
+					; TIME OUT. Error stuff taken care
+					; of THEN...
+	cmpb	r5,#3			; all done(state = 3).
+	bne	3$			; No, so send again.
+	.IF NE <prom>
+	 .globl	LOADA
+	 jmp	LOADA
+	.ENDC
+	.IF EQ <prom>
+	 jmp  @#boot			;  boot whoever was switched in.
+	.ENDC
+3$:
+; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+; 
+;	Now wait for a PUP
+;
+; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+;	See if input done...
+	clr	r2			; our time out counter... 
+	mov	#expire.,r3		; wait A BIT...
+inning:					; OR AROUND 1.3 x expire seconds.
+	tstb	@#ICS			; have we received anything?
+	blt	someIn			; Yes..
+;	 check time out...
+	 dec	r2			; about .5 seconds worth...
+	 bne	inning			; No, so wait...
+	  dec	r3			;  second counter.(r2 = 0)
+	  bgt	inning			;  Timed OUT..Count down done?
+	  br	reSend			;   Yes, time out try again.
+someIn:
+;	Yes, is it errored?
+	tst	@#ICS
+	blt	pWAIT			; Yes, start over.
+; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+;
+;	Analyze received PUP
+;
+; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+	tstb	edHost(r1)		; broadcast?
+	beq	pWAIT			; Yes, so ignore.
+
+	cmp	#1000,pup(r1)		; is it a pup?
+	bne	pWAIT
+
+;	This packet can be used to manually ABORT the process.
+;	From Any Host if NOT broadcast.
+	cmpb	#ABORT,type(r1)		; is it an a ABORT
+	beq	MDabort			;  yes, start over
+
+
+;	Is it FROM the dHost? (destination HOST dependencies)
+	cmpb	edHost+2(r0),esHost(r1)	; sHost = the dest. we intended?
+	bne	pWAIT			; reject
+
+;	check socket - output PAK source soc = input PAK dest socket.
+	cmp	spSoc1+2(r0),dpSoc1(r1)
+	bne	pWAIT
+	 cmp	spSoc2+2(r0),dpSoc2(r1)	;  how about the second?
+	 bne	pWAIT			;  wrong socket...
+
+	cmpb	#ERROR,type(r1)		; is it an ERROR pup
+	beq	MDabort			;  yes, start over
+
+;	An EFTP abort packet?
+	cmpb	#EFTPab,type(r1)
+	bne	NOquit
+MDabort:
+	jmp	EFTPmd
+NOquit:
+;	Is it an EFTPak
+	cmpb	#EFTPak,type(r1)
+	bne	pWAIT			; Nope, so forget it.
+
+;	So here we are...Is it for correct ID?
+	cmp	id2+2(r0),id2(r1)	; should be equal.
+	bne	pWAIT			; Nope..
+
+; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+;
+;	Got an EFTP acknowledge with correct sequence number:
+;
+;
+; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+	.IF NE <withTT>
+doType:
+	 tstb	@#ttyOs			; can we type?
+	 bge	doType			; Not done yet.
+	  mov	id2(r1),r3
+	  bic	#177760,r3		;  mod 16
+	  bne	noType
+	   movb	#"!x,@#ttyOb		;  once every 16 packets.
+noType:
+	.ENDC
+
+;	Got our ACK...so, see what state we are in...
+	tstb	r5			; state = 0? [just sent pak 0]
+	bne	1$			; NO...
+	 incb	r5			;  state = 1 [host responded]
+1$:
+	tst	r5			; End of data on last send?
+	bge	2$			; No.
+	 incb	r5			;  state = 2. [termination EFTPend]
+	 bic	#100000,r5		;  reset flag.
+	 jmp	build			;  build EFTP end packet...
+2$:
+;	Got an Ack for state 2?
+	cmpb	r5,#2			; In state 2?
+	bne	3$			; No, state = 1, send more data.
+	 incb	r5			;  Yes,state = 3. send one more END.
+3$:
+       	jmp	build
+pWAIT:
+      	mov	#expire,r3		; wait A BIT... 1.3 * 2 = 2.6 secs.
+       	clr	r2
+1$:    	dec	r2
+	bne	1$			; wrap around
+	 dec	r3			; r2 = 0 here.
+	 bgt	1$			; ON 0, resend the packet...
+2$:	jmp	resend			
+
+;	data area:
+;  default header for output packet
+header:	.byte	0,dHost			; encap dhost,,0
+	.word	1000			; type pup
+	.word	0			; pup length
+	.word	0			; transport and type
+	.word	0,-1			; id1 and id2
+	.byte	0,0			; dnet and dhost supplied by starter
+	.word	0,0			; socket supplies by starter
+hsport:	.word	0			; source net and host
+	.word	0,23			; From "MEFTP" socket.
+hlen = <.-header>/2
+	.end	eftpmd
+

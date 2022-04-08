@@ -1,0 +1,441 @@
+	.title	hack PDP11-RT11 C support WITH fixed point arith. emulation
+
+;	stack frame format
+;
+;	sp->	local variables
+;		and temps
+;		...
+;	r5->	return pc
+;		old r4 (arg ptr)
+;		old r5
+;
+
+;	calling sequence
+;
+;		<code to store args in local frame>
+;		jsr r5,routine
+;		<offset of args in local frame>
+;		<number of arguments>
+;	NOTE:
+;	$PUTC, $GETC assume that CALLER will handle all echoing, etc.
+; 	These simply pipeline chars to and from the TTY untouched.
+;
+;	$PUTS, $GETS handle echoing, crlf, DEL (0177) locally.
+
+	.globl	$main,start
+	.globl  prolog
+	.globl  epilog
+	.globl  $nargs
+r0=%0
+r1=%1
+r2=%2
+r3=%3
+r4=%4
+r5=%5
+sp=%6
+pc=%7
+	.macro	.exit
+		halt
+		br .-2
+	.endm
+	.macro	rentry 	name
+		.list  	meb
+		.globl	name
+	name:
+		jsr	R0,prolog
+		0.
+		.nlist	meb
+	.endm
+ 	.macro	.ttyin
+ 	jsr	pc,ttyin
+ 	.endm
+
+ 	.macro	.ttyout
+ 	jsr	pc,ttyout
+ 	.endm
+	.sbttl	start up stuff...
+psw = 177776
+STACK = 1000				; USE 1000 FOR PUPSCH STUFF.
+pri3 = 140				; run NON interrupt stuff at pri3
+pri4 = 200				; for TTY.
+pri6 = 300				; for emulation entry.
+start:
+	mov	#pri3,@#PSW		; set us to priority 4.
+	mov	#STACK,sp		; set up stack pointer.
+	mov	#0,-(sp)		; two dummies for return via epilog
+	mov	#0,-(sp)
+
+	jsr	pc,TRAPfx		; steal trap vectors.
+	jsr	pc,TTinit		; init tty vectors
+
+	mov	@#PSW,r0		; old PSW
+	mov	#340,@#PSW		; pri 7
+	bic	#100,@#177546		; clock off
+	mov	r0,@#PSW		; restore priority.
+	jsr	r5,$main		; start the program.
+	0
+	2
+	jsr	pc,TTEXIT		; fix up TT stuff.
+	.exit
+
+prolog:
+	mov	r4,(sp)
+	mov	sp,r4
+	add	(r5)+,r4
+	add	#4,r4
+	tst	(r5)+
+	mov	r5,-(sp)
+	mov	sp,r5
+	sub	(r0)+,sp
+	mov	r0,pc
+
+epilog:
+	mov	r5,sp
+	mov	(sp)+,r5
+	mov	(sp)+,r4
+	rts	r5
+
+$nargs:
+	mov	(sp),r0		; pointer to old frame
+	mov	(r0),r0		; old old pc
+	mov	-2(r0),r0	; old old nargs
+	cmp	(r5)+,(r5)+	; skip past junk
+	rts	r5		; return
+
+	.sbttl	TRAP vector stuff
+t4  = 000004
+t10 = 000010
+t34 = 000034
+TRAPfx:
+	MOV	#TR04,@#t4
+	MOV	#TR10,@#t10
+	MOV	#TRAP34,@#t34		; emulation trap
+	MOV	#pri6,@#t34+2
+	rts	pc
+TR04:
+	jsr	PC,REGsav
+	halt
+	4
+TR10:
+	jsr	PC,REGsav
+	halt
+	10
+REGsav:
+;	stack is as follows
+;	(SP)	oldPC from call to here
+;      2(SP)	PC at trap
+;      4(SP)	PSW from trap
+;      6(SP)    stack when trap happened
+	mov	R0,$REGS
+	mov	R1,$REGS+2
+	mov	R2,$REGS+4
+	mov	R3,$REGS+6
+	mov	R4,$REGS+10
+	mov	R5,$REGS+12
+	mov	SP,$REGS+14
+	add	#6,$REGS+14		; (SP) + 6
+	mov	2(SP),$REGS+16		; PC
+	mov	4(SP),$PSW		; PSW...
+	rts	PC
+	.globl  $REGS,$PSW
+$REGS:	.BLKW	8.
+$PSW:	.WORD   0
+	.sbttl	software MUL DIV MOD  for archaic machines - nothing fancy.
+TRAP34:
+;	Run as same priority as from where we trapped
+	mov	2(sp),@#psw		; pri7 ==> priX
+	mov	(sp),-(sp)		; return pc (addr of trap ins. + 2)
+	sub	#2,(sp)			; now addr of trap ins.
+	movb	@(sp),(sp)		; 0, 2, or 4 (MUL, DIV, or MOD)
+	bic	#177400,(sp)		; clear high order bits.
+	add	#Opcode,(sp)		; base + offset 
+	jmp	@(sp)+			; so, do it.
+Opcode:
+	br	MUL
+	br	DIV
+	br	MOD
+	.sbttl	MUL emulation
+MUL:
+;	check for sign
+	clr	-(sp)			; 0 for plus
+	tst	r0
+	bge	1$			
+	 inc	(sp)			; 1 minus
+	 neg	r0			; +
+1$:
+	tst	r1		
+	bge	2$
+	 inc	(sp)			; 1 minus, 2  plus
+	 neg	r1
+2$:
+	mov	r0,-(sp)		; loop counter
+	cmp	r0,r1			; use smallest
+	ble	3$			; r0 =< r1
+	 mov	r1,(sp)			;  use r1
+	 mov	r0,r1			;  and accum. r0.
+3$:
+	clr	r0			; for return.
+4$:	
+;	Add and shift....algorithm.
+	tst	(sp)			; are we done?
+	beq	6$			; yes
+	 bit	#1,(sp)			; bit 0 on?
+	 beq	5$			; No, just shift
+	  add	r1,r0			; accumulate
+5$:
+	 asr	(sp)			; next binary place, multiplier.
+	 asl	r1			; next binary place, multiplicand.
+	 br	4$			; and, continue...
+6$:
+	tst	(sp)+			; clear stack.
+;	see if negative
+	bit	#1,(sp)+		; test and clear stack
+	beq	7$			; + on EVEN
+	 neg	r0			; 2's compliment.
+7$:
+	RTI
+	.sbttl	DIV emulation
+DIV:
+	jsr	pc,DOdiv
+	mov	r1,r0		; get quotient into return register.
+	RTI
+
+	.sbttl	MOD emulation
+MOD:
+	jsr	pc,DOdiv	; do divide, get remainder in r0
+	RTI
+	.sbttl	the divide routine - subtract away...
+DOdiv:
+;	Do r0/r1	return quotient in R1, remainder in r0
+;	Check sign
+	clr	-(sp)		; for sign change.
+	tst	r1		; 
+	beq	DIVext		; Do nothing for 0 divide
+	bgt	1$		; +
+	 inc	(sp)		;  1 means neg quotient
+	 neg	r1		;
+1$:
+	clr	-(sp)		; for quotient
+	tst	r0		; 
+	beq	6$		; 0 quotient
+	bgt	2$
+	 inc   2(sp)		; 1 for -, 2 for -- = +
+	 neg	r0
+2$:
+	cmp	r0,r1		; r0 < r1, then r0 = 0*r1 + r0.
+	blt	6$		; Yes, so nothing to do.
+
+;	Division by 1?
+	cmp	#1,r1		; 
+	bne	20$		; NOT that trivial
+	 mov	r0,(sp)		; r0 = r0*r1 + 0
+	 clr	r0		; remainder
+	 br	6$		; Won't waste our time!
+20$:
+;	Now align Most Significant Bit in R1 with MSB R0.
+	mov	r1,-(sp)	; save original R1.
+	mov	#1,-(sp)	; for bit setting quotient.
+	mov	#40000,-(sp)	; mask
+21$:
+	bit	(sp),r0		; this the one?
+	bne	22$		; Yes
+	 asr	(sp)		; try again
+	 br	21$
+22$:
+	bit	(sp),r1		; MSB? 
+	bne	23$		; Yes, they're aligned.
+	 asl	r1		; shift left divisor.
+	 asl	2(sp)		; shift bitsetter.
+	 br	22$
+23$:
+	tst	(sp)+		; clear mask
+				; (sp) = shifter, 2(sp) = org r1, 4(sp) = q
+;	They are now aligned
+;	Let's go!
+30$:
+	cmp	r1,r0		; Can We subtract?
+	ble	31$		; Yes.
+	 asr	r1		;  Not yet.
+	 asr	(sp)		;  one place right.
+	 br 	30$	
+31$:
+;	Subtract away until r0 < original r1 = (sp).  Quotient 2(sp).
+	bis	(sp),4(sp)	; set bit in quotient.
+	sub	r1,r0		; r0 - r1
+	cmp	r0,2(sp)	; r0 < original r1?
+	blt	5$		; Yes.
+	 br	30$		;  try again.
+5$:
+;	Done, so clean up and xit.
+	tst	(sp)+		; clear shifter
+	tst	(sp)+		; clear original r1 from stack.
+6$:
+;	set up quotient and remainder
+	mov	(sp)+,r1	; r1 quotient, remainder in r0.
+DIVext:
+	bit	#1,(sp)+	; check for < (odd)
+	beq	1$
+	 neg	r1		; < 0
+1$:
+	rts	pc
+	.sbttl	TTY interrupt service 
+ttysta = 177560
+ttybuf = ttysta + 2
+ringL = 256.
+ring:	.BLKB	ringL
+nxtCHR:	0
+TTINT1:
+	mov	r0,-(sp)
+
+	; check for wrap around -
+	mov	nxtCHR,r0
+	inc	r0
+	cmp	r0,#ringL
+	blt	1$
+	 clr	r0
+1$:
+	cmp 	r0,nxtIN		; = on overflow.
+	bne	2$			; no branch, then forget char.
+	 movb	@#ttybuf,r0		; clear char
+	 br	TTINT2			; exit
+2$:
+	mov	#ring,r0
+	add	nxtCHR,r0
+	movb	@#ttybuf,(r0)
+	inc	nxtCHR
+	cmp	nxtCHR,#ringL
+	blt	TTINT2
+	 clr	nxtCHR
+TTINT2:
+	mov	(sp)+,r0
+	RTI
+
+	.sbttl	TTY char input from ring buffer.
+lf=12
+cr=15
+nxtIN:	0
+TTYIN:
+	mov	nxtCHR,r0		; put in register to fix value.
+	cmp	nxtIN,r0		
+	beq	TTYIN			; wait for a character
+
+	mov 	#ring,r0
+	add	nxtIN,r0
+	movb	(r0),r0
+	bic	#177600,r0		; 7 bit ascii only.
+	inc	nxtIN
+	cmp	nxtIN,#ringL
+	blt	TTYxit
+	 clr	nxtIN
+TTYxit:
+	rts	pc
+	
+	.sbttl	ttyout char stuff.
+ttouts = 177564
+ttoutb = ttouts + 2
+TTYOUT:
+;	R0 has char
+	TSTB	@#ttouts		; done bit on?
+	bge	TTYOUT			; no, if branch.
+	 movb	r0,@#ttoutb
+	 rts	pc
+invec =	60
+TTOVEC: 0
+TTOSTA: 0
+TTINIT:
+;	 set up vector 
+	bic	#100,@#ttysta		; turn off for a second.
+	mov	@#invec,TTOVEC		; save old vector.
+	mov	#TTINT1,@#invec		;
+	mov	#pri4,@#invec+2		; priority BR4.
+	mov	@#ttouts,TTOSTA
+	bic	#100,@#ttouts		; turn off output interrupt
+	bis	#100,@#ttysta		; turn on input interrupt
+	rts	pc
+TTEXIT:
+	mov	TTOVEC,@#invec		; restore vector
+	mov	TTOSTA,@#ttouts		; and old output status.
+	rts	pc
+
+	.sbttl	Some library routines.
+rentry $cputc			; caller pipeline to TTY.
+	movb	(r4),r0
+	bic	#177600,r0
+	.ttyout
+	jmp	epilog
+
+rentry $puts
+;	called with (R4) = address of address of buffer
+	mov	(r4),r4
+1$:	
+	movb	(r4)+,r0	; next character
+	beq	2$		; NULL terminates
+	.ttyout
+	cmp	r0,#lf
+	bne	1$
+	 mov	#cr,r0
+	 .ttyout		; tag on carraige-return with \n
+	 br	1$		; full string.
+
+2$:
+	jmp	epilog
+
+rentry $cgetc
+	.ttyin			; caller MUST ECHO-pipe to caller!
+	jmp 	epilog		; char in r0
+
+bell = 7
+DEL = 177
+rentry $gets
+;	called with (r4) = address of address of input buffer
+;	    R3 used as buffer pointer
+;	    R2 used as delete flag
+;	C protects registers...so no sweat here.
+	mov	(R4),R3
+	clr	R2
+1$:	
+	.ttyin			; get a character.
+	cmpb	r0,#DEL		; delete previous char?
+	bne	4$		; No
+	 CMP	R3,(R4)		; begining of buffer?
+	 BNE	2$
+	  mov	#bell,R0	; beep!
+	  .ttyout		;
+	  br	1$		; get next char.
+2$:
+	 dec	R3		; to previous char.
+	 tst	R2		; "[" yet ?
+	 bne	3$		; yes
+	  movb	#"[J,R0
+	  .ttyout
+	  INC	R2		; [ done.
+3$:
+	 movb	(R3),R0		; prev. char
+	 .ttyout
+	 br	1$		; try again
+4$:
+	tst	R2		; done with DEL?
+	beq	5$		; for sure.
+	 mov	r0,R2		; save char
+	 movb	#"]J,r0		; ...[...]
+	 .ttyout
+	 mov	R2,r0
+	 clr	R2
+5$:
+	.ttyout			; ECHO character just typed.
+	cmpb	r0,#cr		; get char until #cr.
+	bne	6$
+	 mov	#lf,R0		; line-feed out.
+	 .ttyout
+	 clr	r0		; terminate with NULL
+6$:
+	movb	r0,(r3)+	;  into buffer.
+	tst	r0		;  all done?
+	bne	1$		;  No,  if branch.
+	 jmp	epilog		;   tell the tail end of this story too!
+; end of program...
+	.end	start
+
+
+
+

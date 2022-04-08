@@ -1,0 +1,521 @@
+# include "version.h"
+/****************************************************************************
+	1. Jan. 22, 1980	Added Quick CheckSum for One word change.
+	2. July 81 Add new module: PUPMSR  "miscellaneous services"
+	3. 10-Nov-81	Fixed routing table bug(Unew, Update)
+			The "old" int *p; p -= x; (Wanted x and NOT 2*x)
+	4. 22-Dec-81	Add initialization of a process, l0_BreathLife ()
+
+	PUP gateway package:
+	  g_GateWay ()
+	  g_Rinsert (key, NDB, gateNet, gateHost, hops)
+	  *g_probe (Key, ForRoute)
+
+	THIS version is for NO gateway-used with tip
+****************************************************************************/
+# define g_Esize  4
+# define _TabEntry struct g_TabEntry  /* overlays the data in RIF PUP */
+# ifndef PDP11
+_TabEntry {char target, gwNet, gwHost, Hops;};
+# endif
+
+# ifdef PDP11  /* then need to reverse byte order for RIF data */
+_TabEntry {char gwNET, target, Hops, gwHOST;};
+# endif
+
+# define gIrequest 0200
+# define gIreply 0201
+# define shortTime  90
+# define longTime 180
+# define MAXhops 15
+# define Wnum 1			/* Word number of Transport,,Type in PUP */
+# ifndef PDP11
+# define MaxInfoData  532
+# endif
+
+# ifdef PDP11
+# define MaxInfoData  266
+# endif
+
+# define gs1 0
+# define gs2 2
+extern int l1_rPTRs[];
+extern char l1_rFree[];
+
+# ifdef PDP11
+extern int TODCLK, TODlow;
+# endif
+
+int g_unknownNET;
+int g_Entries {0};
+
+l1_Port g_P[1];
+l1_Port *g_Port {g_P};
+l1_Sock *g_Soc;
+
+# ifdef debug
+int *ptype ();
+# endif
+
+extern int *l1_gateQ;			/* pointer to gateway Q */
+int *g_probe ();				
+int g_XsocQ ();
+
+/****************************************************************************
+
+	g_GateWay ()	Initilizes some processes, and does routing.
+
+****************************************************************************/
+int g_GateWay () 
+	{/* Initialize some stuff first. */
+	/* open socket 2 */
+	int i;
+	g_Port->Net = 0; g_Port->Host = 0; 
+	g_Port->Sock1 = 0; g_Port->Sock2 = 2;
+	g_Soc = p_OpenSocket (g_Port, g_Port, 0, DontWantOwnBroadcasts);
+	/* init process to listen on socket 2 */
+	s_mdpinit(g_xsocq,1,1,3);
+	/********************************/
+	/* Our job is to route packets. */
+	/********************************/
+	while (1) 
+	    {g_XgateQ ();		/* check gateway Q */
+	    s_suspend ();		/* and give up for a while. */
+	    }
+	}
+
+/****************************************************************************
+
+	g_XsocQ ()	Opens socket 2, and Waits for some action.
+
+****************************************************************************/
+int g_XsocQ (N)	int N;
+  { while (1)		  /* there is a socket */
+      { /* so process it  */
+	l2_PUP *PUP; char *p;
+	p = p_ReceivePUP (g_soc, 1, 0); /* wait on socket for PUP */
+	PUP = p;
+	/* check type */
+	if (PUP->PUPtype == GIreply)
+	  /* update our routine table - if FROM gateway */
+	  if (PUP->sSoc1 == 0 && PUP->sSoc2 == 2) g_updateTable (PUP);
+	p_PUPdispose (PUP);		/* and free up the space */
+      }
+  }
+
+/****************************************************************************
+
+	g_XgateQ ()	Manages gateway queue, ie, does routing foreigners.
+
+****************************************************************************/
+int g_XgateQ ()
+  { l0_Q *gQ;
+    l0_smlPak *Pak; 
+    gQ = l1_gateQ;			/* set up Q structure */
+    if (gQ->Qhead)			/* one in the queue for us? */
+      {
+        Pak = p_Dequeue (gQ);		/* So, get this one, and process */
+	/* Routing will only be done if we are a gateway */
+	Pak->socPTR = 0;			/* NO socket to charge */
+	/* MAKE SURE input bit on SO it goes back into */
+	/* FREEQ when done - it will be OUTPUT!*/
+	PAK->intent = input;			
+	p_DisposePak (Pak);
+      }
+  }
+
+/****************************************************************************
+
+	g_QkCk ()	
+
+****************************************************************************/
+# ifdef WeAreGateway
+int g_QkCk (Pak, OldWord, Num) l0_smlPak *Pak; short int OldWord, Num;
+	{short int diff, n, Len, *p, *csPTR;
+# ifdef PDP11
+	char *cs, *p1;
+# endif
+	Len = Pak->PakLEN;			/* N 16bit words */
+	csPTR = &Pak->PakLEN;			/* get address of cs */
+# ifdef PDP11
+	cs = (char *)csPTR;
+	cs += Len << 1;				/* x 2 (not MULT on 1105 */
+	csPTR = (int *)cs;
+# endif
+# ifndef PDP11
+	csPTR += Len;				
+# endif
+	If (*csPTR == -1) return;		/* Nada to do */
+	p = &Pak->PUPlen;			/* start of PUP */
+# ifdef PDP11
+	p1 = (char *)p;
+	p1 += Num << 1;				/* x 2 */
+	p = (int *)p1;
+# endif
+# ifndef PDP11
+	p += Num;				/* to word that is changed */
+# endif
+	diff = *p - OldWord;			/* New value - Old value */
+	n = (Len - (Num + 1)) & 017;		/* Number of words from */
+						/* changed to CS MOD 16 */
+	/* rotate the difference n times */
+	for (Len = 0; Len < n; Len++)
+	    {int ON;
+	    ON = diff & 0100000;		/* high order bit */
+	    diff <<= 1;				/* Left shift */
+# ifdef TENEX
+	    diff &= 0177777;			/* for debugging */
+# endif
+	    if (ON) ++diff;			/* rotated bit */
+	    }
+	*csPTR = l_1CO (*csPTR, diff);		/* 1's compliment add */
+	}
+# ifdef TENEX
+int l_1CO (v1, v2) int v1, v2;
+    {// dummy 1's complement addition
+    v1 += v2;
+    if (v1 & 0200000) ++v1;
+    return(v1 & 0177777);
+    }
+# endif
+# endif
+/****************************************************************************
+
+	g_updateTable		update routing table with info PUP.
+
+****************************************************************************/
+
+int g_updateTable (PUP) l2_PUP *PUP;
+	{_TabEntry *TP; l1_route *Tab; l0_smlPak *Pak; 
+	int nZapped, nEntries, *s0, *s1, inline, gwNet, gwHost, upDate;
+	int p, sNet, sHost;
+	nEntries = (PUP->PUPlen - PUPoverhead)/g_Esize;
+	TP = PUP->data;
+	p = (int *)PUP; Pak = (l0_smlPak *)(p - PAKoverhead); 
+	inline = 0;
+	while (nEntries-- > 0)
+	    {/* break out a routing entry, and check it out */
+	    int Thops;
+
+	    Tab = g_Probe (TP->target, 0);
+	    Thops = TP->hops;			/* make int:char is signed */
+	    if (Thops >= (MaxHops - 1)) {++TP; continue;} /* too many! */
+	    if (!Tab)	/* then, NEW entry */
+		{g_Unew (PUP, TP, &s0, &s1, &inline); ++TP; continue;}
+	    if (!Tab->Hops) {++TP; continue;} /* DC so we don't update */
+	    /* have an entry - so update if necessary */
+	    gwNet = Tab->gwNet; gwHost = Tab->gwHost;
+	    sNet = PUP->sNet; sHost = PUP->sHost;
+	    update = 0;
+	    /* NEW information for gateway thru which this target is */
+	    /* already being routed ? */
+	    if (gwNET == sNET && gwHost == sHost) update = 1;
+	    /* shortTime timer expired ? */
+	    if (!update)
+	        if (g_Texpired (Tab, shortTime)) update = 1;
+	    /* a better route ? */
+	    if (!update)
+	        if (Thops < (Tab->Hops - 1)) update = 1;
+	    if (upDate)
+		g_Rinsert (TP->target, PAK->NDBptr, sNet, sHost, Thops+1);
+	    ++TP;				/* next chunk */
+	    s_suspend ();			/* come back in a second */
+	    }
+	/* Now purge any OLD (now 3 minutes with no updates)  entries */
+	nZapped = g_PurgeOld ();
+	/* If we have some in line, and opened some vacancies, enter */
+	/* as many as we have room for. */
+	if (inline > 0)				/* Then see if vacancy */
+	    {if (nZapped > 0) 			/* Then n vacancies */
+	        {int N;
+	        N = (int)Pak->ndbPTR;		/* arrival Net NDB pointer */
+	        while (nZapped--)     		/* Only while an opening...*/
+		    {TP = *s1++;		/* saved pointer */
+		    g_Rinsert (TP->target, N, sNet, sHost, TP->hops+1);
+		    if (--inline == 0) break;	/* if the line is empty. */
+		    }
+		}
+	    l1_RELmem (s0);			/* give MEM back */
+	    }
+	}
+
+/****************************************************************************
+
+	g_180secTim		Checks routing table for dry rot each
+				three minutes.
+
+****************************************************************************/
+
+int g_180secTim ()
+	{while (1)
+	    {g_PurgeOld ();			/* get rid of dry rot */
+	    s_Tdisms (-1, longTime * h_Tics);	/* and go away */
+	    }
+	}
+
+int g_PurgeOld ()
+	{/* purge routing table of any moldy entries */
+	 /* So, run through the routing table, and look for any */
+	 /* entries older than longTime in secs (currently 180). */
+	 /* do NOT purge those with hops = 0, ie, DC */
+	l1_route *p; int n, i, m;
+	n = 0; m = 0;
+	for (i=0; i < routeEntries; i++)
+	    if (!l1_rFree[i]) 		/* then we have an entry */
+		{p = l1_rPTRs[i]; ++m;
+		if (!p->Hops) continue; /* DC, so skip */
+		if (g_Texpired (p, longTime))
+		    {/* time up, so purge */
+		    ++n;			/* number PURGED */
+		    l1_rFree[i] = -1;		/* mark empty */
+		    }
+		if (m == g_entries) break;	/* then, no more entries */
+		}
+	g_Entries -= n;				/* subtract PURGED */
+	return(n);
+	}
+
+
+/*********************************************************************
+
+
+	g_Texpired  	see if time is up for a routing entry.
+
+
+*********************************************************************/
+g_Texpired (Old, secs) l1_route *Old; int secs;
+	{/* see if entry has timed out */
+	 /* ie, oldtime + delta T <= current time */
+# ifdef PDP11
+	int OldH, OldL;
+	OldH = Old->timer; OldL = Old->timer1;
+	l_longAdd (&OldH, &OldL, 0, h_tics * secs); /* old+dt */
+	/* Need unsigned comparison */
+	if (l_ULE (OldH, OldL, TODCLK, TODLOW)) return (1);
+	return(0);
+# endif
+
+# ifndef PDP11
+	if (s_gtime () > (Old->timer + secs * h_tics)) return(1);
+	return(0);
+# endif
+	}
+
+/****************************************************************************
+
+	g_Unew			See if there is room in routing table
+				for a New entry. If so insert it, otherwise
+				save a pointer to it. We will try to insert
+				it AFTER any old entries have been purged.
+
+		{g_Unew (PUP, TP, s0, s1, &inline); ++TP; continue;}
+****************************************************************************/
+
+g_Unew (PUP, TP, mem0, mem1, cnt) 
+	l2_PUP *PUP; _TabEntry *TP; int *(*mem0), *(*mem1), *cnt;
+	{int room, *N; l0_smlPak *p; 
+	room = PUP; 
+	p = (l0_smlPak *)(room - PAKoverhead); 
+	N = (int *)p->ndbPTR;
+	room = g_Rinsert (TP->target, N, PUP->sNet, PUP->sHost, TP->hops+1);
+	if (!room) 			/* NO vacancy, save ptr, */
+	    {if (!(*cnt))		/* try later - possible purge */
+	        {*mem0 = l1_GetMEM (routeSize/2);
+		if (!(*mem0)) return;	/* NO space left! */
+		*mem1 = *mem0;	       	/* save address */
+		}
+	    if (*cnt < routeSize/2) 	/* then, some xtra space left */
+		{*cnt = *cnt + 1; 
+	        *(*mem1) = TP; 
+		++mem1;			/* and next address. */
+		}
+	    }
+	}
+
+# ifdef WeAreGateway
+int g_bInfoPUP (N) int N;
+	{/* called every 30 seconds to broadcast a gateway info PUP */
+	 /* and dismiss ourself again */
+	while (g_soc)			/* as long as there is a socket */
+	    {s_toHIGH ();		/* Do this wth MAX priority */
+	    g_SendInfoPUP (0);		/* Port = 0 -> broadcast */
+	    s_toLOW ();			/* back to idle at LOW priority */
+	    s_Tdisms (-1, 30 * h_tics);
+	    }
+	/* socket gone - so bye */
+	g_gPro[N] = -1;
+	s_Kill (-1);
+	}
+# endif  /* END we are gateway */
+# ifdef WeAreGateway
+int *g_SendInfoPUP (dPort) l1_Port *dPort;
+	{int dWds, totalE;
+	l2_PUP *PUP; 
+	if (!g_Entries) return;			/* table empty */
+	dWds = (g_Esize * g_Entries) >> (sizeof(dWds) - 1);
+	totalE = g_Entries;
+	while (totalE)
+	    {int nWords, nbytes, prev; _TabEntry *p;
+	    if (dWds <= MaxinfoData) nWords = dWds; 
+	    else
+	        {int m;
+		/* number of WORDS per entry */
+		m = (g_Esize + sizeof(m) - 1) >> (sizeof(m) - 1);	
+		nWords = MaxinfoData/m;
+		nWords *= m; 	/* nWords = m[MaxinfoData/m], or the  */
+				/* greatest multiple of g_Esize(words) */
+				/* <= MaxinfoData */
+		}
+	    PUP = p_allocatePUP (g_soc, nWords, 0);
+	    if (!PUP) return;		       /* non-available, try later */
+	    PUP->PUPtype = GIreply;
+	    PUP->PUPlen = PUPoverhead + nWords * sizeof(dWds);
+	    PUP->dSoc1 = gs1; PUP->dSoc2 = gs2;
+	    PUP->sSoc1 = gs1; PUP->sSoc2 = gs2;
+	    nbytes = nWords << (sizeof(nWords) - 1);
+	    p = PUP->data; prev = 0;	      /* PUP data field */
+	    while (nbytes)	/* store the data */
+	        {char *rstar; l1_route *r;
+	        r = g_NxtEntry (prev);  prev = r;
+	        if (!r) /* something amok - so send what we have */ 
+		    {totalE = 0; break;}
+	        rstar = &r->targetNet;	      /* routing table pointer */
+		p->Target = *rstar++;	      /* Use overlay for backward */
+		p->gwNet = *rstar++;	      /* bytes on 11-like machines */
+		p->gwHost = *rstar++;
+		p->Hops = *rstar++;
+		nbytes -= g_Esize;		
+		++p;			      /* Next data area */
+		--totalE;		      /* 1 less entry to send */
+		 }   
+	    /* broadcast this PUP - and toss it out */
+	    if (!dPort) p_SendPUP (PUP, broadCast);
+	    else  /* have a destinatio Port - send it */
+	        {PUP->dNet = dPort->Net; PUP->dHost = dPort->Host;
+		PUP->dSoc1 = dPort->Sock1; PUP->dSoc2 = dPort->Sock2;
+		p_SendPUP (PUP, 0);
+		}
+	    /* fix dWds remaining */
+	    dWds =- MaxinfoData;
+	    }
+	}
+# endif		/* END for gateway */
+# ifdef WeAreGateway
+int *g_NxtEntry (prev) int prev;
+	{/* return next entry pointer */
+	int i, r;
+	if (!prev) /* then find first entry */
+	    {for (i=0; i < routeEntries; i++) 
+		if (!l1_rFree[i]) return(l1_rPTRs[i]);
+	    return (0);
+	    }
+	/* scan to prev, and then return next one */
+	for (i = 0; i < routeEntries; i++) 
+	    if (prev == l1_rPTRs[i]) break;
+	++i;
+	for (r = i; r < routeEntries; r++) 
+		if (!l1_rFree[r]) return(l1_rPTRs[r]);
+	return(0);		/* if this happens something amok */
+	}
+# endif  /* END we are gateway */
+
+/****************************************************************************
+
+	g_Rinsert		Insert new entry into routing table.
+				or update OLD entry.
+****************************************************************************/
+
+
+int g_Rinsert (key, NDB, gateNet, gateHost, hops)
+	       int key, *NDB, gateNet, gateHost, hops;
+	{/* insert NEW, or update OLD entry . NDB = 0 OK for update */
+	int New, i; l1_Route *p; 
+	int vacancy, rCount;
+        if (!key) return(1);			/* no entry for net 0 */
+	New = 1;
+	vacancy = -1;
+	rCount = 0;
+	for (i=0; i < routeEntries; i++)	/* search the pointers */
+	    {if (!l1_rFree[i]) 			/* then, someone here */
+	        {p = l1_rPTRs[i];
+		if (p->targetNet == key) 	/* update? */
+		    {New = 0; break;}
+		++rCount;			/* count of route entries */
+		}
+	    else  /* free entry */
+	        if (vacancy == -1) vacancy = i; /* save index */
+	    /* checked all entries for update, and have a vacancy? */
+	    if (rCount >= g_Entries && vacancy >= 0) break;	
+	    }
+	/* see if any room */
+	if (New) 				/* New? */
+	    {if (vacancy == -1) return(0);	/* no vacancies! */
+	    l1_rFree[vacancy] = 0; 		/* Mark as taken! */
+	    p = l1_rPTRs[vacancy];
+	    ++g_Entries;			/* Up count. */
+	    }
+	/* Now update or initialize entry */
+	if (NDB) p->NDB = NDB;
+	p->targetNet = key;
+	p->gwNet = gateNet;
+	p->gwHost = gateHost;
+	if (key == gateNet) hops = 0;		/* it's the local net */
+	p->Hops = hops;
+# ifdef PDP11
+	p->timer = TODCLK;
+	p->timer1 = TODlow;
+# endif
+# ifndef PDP11
+	p->timer = s_gtime();
+	p->timer1 = 0;
+# endif
+	return(1);
+	}
+
+/****************************************************************************
+
+	g_probe ()	
+
+ 		g_probe	returns pointer to matching entry or 0 
+		if ForRoute is true, we percolate the queue    
+
+****************************************************************************/
+# define FREE -1
+# define notFREE 0
+int *g_probe (key, ForRoute) int key, ForRoute;	
+	{int i, rCount, *rP; l1_route *p;
+	rCount = 0; 
+	rP = (int *)l1_rPTRs;	/* use ptr because better code gen. */
+	for (i=0; i < routeEntries; i++)
+	    {if (l1_rFree[i]) {++rP; continue;}		/* nothing here */
+	    p = *(l1_route *)rP; 
+	    if (p->targetNet == key) 			/* got a hit!   */    
+		{if (ForRoute && i > 0)			/* percolate? */
+		    {int k, *nrP, temp;			/* exchange pred,i */
+		    nrP = rP;
+		    k = g_Pred (i, &nrP); 		/* index of pred */
+		    if (k==0)				/* then 1st entry*/
+		        if (l1_rFree[0]) /* then it is a free table entry */
+			    /* NO predecessor, so fix Free Slot flags too */
+			    {l1_rFree[0] = notFREE; l1_rFree[i] = FREE;}
+		    /* Now swap table pointers */
+		    temp = *nrP;
+		    *nrP = p;
+		    *rP = temp;
+		    }
+	        return(p);
+		}
+	    if (++rCount >= g_Entries) return(0);	/* that's all */
+	    ++rP;
+	    }
+	return(0);
+	}
+int g_Pred (i, p) int i, **p;
+    {/* find first predecessor of i - there may be *NONE* */
+    while (1)
+        {--i; --(*p); 
+	if (!l1_rFree[i] || i==0) break;
+	}
+    return (i);
+    }
+

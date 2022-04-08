@@ -1,0 +1,175 @@
+# include "version.h"
+extern int p_Xsocket ();
+
+/****************************************************************************
+
+	Patches:
+		1. p_receivePUP		will return(-1) if requesting
+					socket in NOT valid.
+
+		2. p2_Odone (PUP)	Checks to see if output is done
+					for PUP. Added 8-Jan-82
+
+		3. p_SendPUP (PUP)	Bug fixed for ptr adjustment if
+					routing failure.
+
+		4. p2_returnOK(value)	Checks error returns from allocate.
+
+****************************************************************************/
+
+/****************************************************************************
+
+	p2_returnOK(value)		checks error return from allocatepup
+
+****************************************************************************/
+
+p2_returnOK(value) int value;
+  { 
+    if (value == 0 || value == -1 || value == -2) return(0);  /* error */
+    return(1);						      /* OK */
+  }
+
+/****************************************************************************
+
+
+	p2_Odone (PupPTR) 	Returns TRUE if output is DONE else FALSE.
+
+
+****************************************************************************/
+int p2_Odone (PupPTR) char *PupPTR;
+	{/* adjust address to Packet and dipose it */
+	l0_smlPak *Pak;
+	int status;
+	Pak = (l0_smlPak *)(PupPTR - PakOverHead);
+	status = Pak->intent;
+	if (status & OutputCOMPLETE || !(status & OutputPENDING)) return (1);
+	return (0);
+	}
+
+/****************************************************************************
+
+     p_allocatePUP 
+
+****************************************************************************/
+int *p_allocatePUP (soc, nData, Wait) int *soc, nData, Wait;
+	{/* return pointer to a PUP of length nWords */
+	char *addr; int nWords, Err;
+	if (nData < 0) return(0);		/* check screwups */
+	if (nData > maxData) return(0);
+	nWords = nData + minPAK;
+	Err = 1;				/* Error flag */
+	addr = p_ObtainPak (soc, nWords, Wait, &Err) + PakOverHead;
+	if (Err <= 0) return(0);
+	return(addr);
+	}
+
+/****************************************************************************
+
+     p_PUPdispose 
+
+****************************************************************************/
+int p_PUPdispose (PupPTR) char *PupPTR;
+	{/* adjust address to Packet and dipose it */
+	PupPTR =- PakOverHead;
+	p_DisposePak (PupPTR);   /* free up the space */
+	}
+
+/****************************************************************************
+
+     p_FixSnet		put source net from NDB into PUP.
+
+****************************************************************************/
+int p_FixSnet (PUP) char *PUP;
+	{l0_smlpak *PAK;
+	PUP -= PakOverHead;
+	PAK = PUP;
+	PAK->sNet = (PAK->ndbPTR)->localNet;
+	}
+/****************************************************************************
+
+     p_SendPUP
+
+****************************************************************************/
+int p_SendPUP (PUP, statusBits) char *PUP; int statusBits;
+	{/* ship out the PUP, and set intent. */
+	 /*   StatusBits:  KeepPUP = 32  BroadCast = 1 */
+	 /*   See PUPL1X.H for all definitions. X = 0, 1 */
+	l0_smlpak *PAK; int i, Errored;
+	PUP -= PakOverHead;			/* make packet pointer */
+	PAK = PUP;
+	i = PAK->PUPlen;
+	PAK->intent &= ~keepPUP;	/* Maybe was kept, and isn't now */
+	PAK->intent |= statusBits;	/* Whatever is desired */
+	if (i < minPUP || i > maxPUP) /* bad length */
+	    Errored = 0;
+	Else 
+	    Errored = p_PakOut (PAK);
+	if (Errored == -1 || Errored == 0 ) /* Some Sort of Error */
+	    if (!(PAK->intent & KeepPUP))     /* That I can handle */
+		p_disposePAK (PAK); /* couldn't route */
+	Return (Errored);
+	}
+
+/****************************************************************************
+
+     l2_ValidCS
+
+****************************************************************************/
+int l2_ValidCS (PUP) char *PUP;
+    {PUP -= PakOverHead; 		/* point to packet */
+    return(p_ValidCS (PUP));		/* do checksum */
+    }
+
+/****************************************************************************
+
+     p_ReceivePUP 
+
+****************************************************************************/
+int *p_ReceivePUP (soc, Wait, dT) l1_sock *soc; int Wait, dT;
+	{/* check socket for PUP : */
+	 /*   Wait = 0	Return immediately */
+	 /*   Wait !=0  dT = 0  indefinite Wait until PUP comes */
+	 /*   Wait !=0  dT != 0 Wait at MOST dT tics for PUP */
+	char *p;
+	if (!soc || !q_socAlive (soc)) return(-1); /* bad socket */
+	while (1)
+	    {p = p_getPAK (soc);
+	    if (p) return(p + PakOverHead);	/* got packet */
+	    if (!Wait) return(0);		/* nada! */
+	    if (!dt)  				/* Wait on...timer? */   
+	        {s_Edisms (-1, p_Xsocket, 1, soc); continue;}
+	    p_SleepySocket (soc, dT);		/* snooze and check */
+	    Wait = 0;				/* force return */
+	    }
+	}
+
+/****************************************************************************
+
+     l1_SwapPorts 	swaps the source and destination ports.
+
+****************************************************************************/
+# define l2_PUmask struct PUmask
+# ifdef PDP11
+l2_PUmask {int len, trty, id[2], fPort[3], lPort[3], d;};
+# endif
+# ifdef TENEX
+l2_PUmask {int len, tr, ty, id[2], fPort[4], lPort[4], d;};
+# endif
+int p_SwapPorts (PUP) l2_PUP *PUP;
+    {/* swap source and dest ports. Fix up NEW source HOST if == 0 */
+    l1_Port P[1], *PP; l2_PUmask *PU;
+    PP = P; PU = PUP;				/* for temporary */
+    l_fmove (&PU->fPort[0], PP, PortSize);	/* foreign->temp */
+    l_fmove (&PU->lPort[0], &PU->fPort[0], PortSize);	/* local->foreign */
+    l_fmove (PP, &PU->lPort[0], PortSize);	/* temp->local */
+    /* check out new source Host - may have been broadcast with OLD */
+    /* dest Host == 0 . 0 Source Host is illegal . */
+    if (PUP->sHost == 0)	/* then set to default local host */
+        {char *l; l0_NDB *NDB; l0_smlPak *Pk;
+        l = PUP; l -= PakOverHead;  		/* points to packet */
+        Pk = l; NDB = Pk->ndbPTR;		/* Net on which arrived */
+	PUP->sHost = NDB->localHost;		/* HOST# of that net */
+	}
+    }
+
+

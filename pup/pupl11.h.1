@@ -1,0 +1,288 @@
+        /*****      PDP11 definitions ONLY     *****/
+	/***** 	    MC6800 definition ALSO  April 3, 1981 WJY */
+/* pup level 1 definitions  -+-  Bill -+- Sept. 22, 1980  */
+/* NOTE: space allocations are commented out, and included for clarity */
+/*********************************************************************
+
+ Each DIRECTLY CONNECTED network is virtually described with a Network
+ Data Block.  Each input and output packet has a pointer to its 
+ associated NDB so that it can be incapsulated and routed correctly.
+	June 18, changes:					
+		1. change SUMEX net# to 055
+		2. allow for MJH net3 050
+*********************************************************************/
+/* some errors we know */
+# define UnknownDest 1	
+# define UnknownPort 2
+# define checkSumErr 3
+# define Socketfull 4
+# define tooManyHops 5
+# define ZeroShost 6
+# define unwanted 7
+# define h_tics 60			/* 60 cycle clock */
+# define Sumex 055			/* local default Net#  */
+# define SumexAim 0123
+# define PDP11ERP 032			/* 11 error report socket */
+# define ERPnet Sumex
+# define ERPhost SumexAim
+
+# ifdef Veizades
+# define Omask 0174000			/* 11 bits output word count */
+# endif
+# ifndef Veizades
+# define Omask 0176000			/* 10 bits output word count */
+# endif
+
+/* MJACKS is taken care of in version.h */
+# ifndef MJACKS				/* Then dummy second Net# */
+# define ALTO 056			
+# define NET2 ALTO
+# endif
+
+# ifdef MJACKS				/* The real thing! */
+# define MJH 050
+# define NET2 MJH
+# endif
+
+# define TypePUP 01000			/* for encapsulation   */
+
+# define l0_smlpak struct smlpacket
+# define l0_pak l0_smlpak
+# define l0_Q  struct queue
+# define l0_NDB struct NDB
+# define MaxPUPs 10			/* Maximum per net (nNets=1) */
+
+l0_NDB {/* Network Data Block:n BYTEs  11 68000 */
+	l0_NDB	*Link;		    /*  0  0 link to next NDB in queue */
+	short int localHost;	    /*  2  4 local Host (us) */
+	short int localNet;	    /*  4  6 local Network (ours) */
+	int	(*encap)();	    /*  6 10 encapsulation routine */
+	int	(*l0trans)();	    /*  8 14 level0 transmit routine */
+	int	(*l0sInput)();	    /* 10 18 level0 INput starter */
+	int	(*l0sOutput)();	    /* 12 22 level0 OUTput starter */
+	int	l0stats;	    /* 14 26 for statistics	   */
+	short int ICount;	    /* 16 28 input server word count     */
+	int	*ICaddr;	    /* 18 32 input server buffer address */
+	short int ICstatus;	    /* 20 34 status bits	       */
+	l0_pak	*pakin;		    /* 22 38 pointer to packet just input */
+					/* 0 if input idle - out of     */
+					/* biggies                      */
+	short int OCount;	    /* 24 40 output server word count     */
+	int	*OCaddr;	    /* 26 44 output server buffer address */
+	short int OCstatus;	    /* 28 46 status bits	       */
+	short int OCload;	    /* 30 48 output delay time.	*/
+	int	n_Collisions;	    /* 32 52 number of collisions for    */
+					  /* current output attempt.     */
+	int 	xmitTimer, xmit1;   /* 34, 36 [56, 60] timer for output */
+					/* Set at interrupt level, and    */
+					/* checked by l0_feedether ()     */
+	l0_pak	*pakout;	    /* 38  64 Packet currently being sent. */
+					/* Cleared when output is done.   */
+	int	*OQhead, *OQtail;   /* 40, 42 [68, 72] pointer to queue of */
+					/* packets */
+					/* scheduled for output associated*/
+					/* network.			  */
+	/* keep Ether - Net or analogous device register addresses here */
+	short int *ETHOWC;	    /* 44 76 address of output word count */
+	short int *ETHOBL;	    /* 46 80 output buffer location */
+	short int *ETHOCS;	    /* 48 84 control and status */
+# ifdef Veizades		    /* FOR SUMEX Veizades board */
+	int	*ETHOSD;	    /* 50 88 delay: 16 bits - 2's compl.*/
+# endif
+# ifndef Veizades		    /* for XEROX booard */
+	char	*ETHOSD;	    /* 50 88 delay: 8 bits only(low order) */
+# endif
+	short int *ETHIWC;	    /* 52 92 address of input word count */
+	short int *ETHIBL;	    /* 54 96 input buffer location */
+	short int *ETHICS;	    /* 56 100 "   control and status */
+	short int *ETHRDA;	    /* 58 104 read device address */
+	short int OCrandom;	    /* 60 106 random number germ */
+	short int *BitMap;	    /* 62 108 bit map of seen Hosts */
+	short int spare;	    /* 64 110 an extra */
+	};
+# ifdef PDP11
+# define NDBsize 33 		    /* size in 16BIT words */
+# endif
+
+# ifdef MC68000
+# define NDBsize 57		    /* size in 16BIT words */
+# endif
+# define BitMapSize 16		    /* 16 x 16 possible hosts */
+/* size in 16 bit words */
+# ifdef PDP11
+# define Qsize   2
+# endif
+
+# ifdef MC68000
+# define Qsize 4
+# endif
+
+# define l1_Q l0_Q
+l0_Q	{/* queue structure */
+	int	*Qhead;			/* head of queue */
+	int	*Qtail;			/* tail of queue */
+	};
+# define l1_nPQs 4;			/* Number of Qs */
+# define l1_Port struct Port
+l1_Port {/* Port structure */
+	char	Host;			/* Host    */
+	char	Net;			/* Network */
+	short int Sock1, Sock2;		/* Socket id */
+	};
+# define PortSize 3			/* size of port in words */
+# define l1_Sock struct Socket
+l1_Sock	{/* level 1 socket structure */
+	l1_Sock	*link;			/* pointer to next socket */
+	short int PaksAllowed;		/* number of packets allowed */
+	short int PaksAllocated;	/* number allocated */
+	short int inAllowed;		/* # input packets allowed */
+	short int inAllocated;		/* # input packets allocated */
+	short int outAllowed;		/* # output packets allowed */
+	short int outAllocated;		/* # output packets allocated */
+	char	lHost, lNet;
+	short int Sock1, Sock2;
+	char	fHost, fNet;		/* foreign port stuff */
+	short int fSock1, fSock2;
+	int	*inQhead, *inQtail;	/* head and tail of its input Q */
+	short int status;		/* various stuff for this sock */
+	int	*OutQhead, *OutQtail;   /* pointer to allocated out paks */
+	};
+# ifdef PDP11
+# define SockSize 18
+# endif
+
+# ifdef MC68000
+# define SockSize 23
+# endif
+
+# ifdef PDP11
+# define tagSize 3
+# endif
+
+# ifdef MC68000
+# define tagSize 5
+# endif
+
+# define l1_Otag struct _Otag
+l1_Otag {int *link; short INT status; int *addr;};
+
+# define l1_Route struct Route
+# ifdef PDP11
+# define routeSize 10   		/* in 8Bit bytes */
+# endif
+
+# ifdef MC68000
+# define routeSize 16
+# endif
+
+l1_Route {/* routing table */
+	l0_NDB	*NDB;			/* pointer to associated NDB */
+	char	targetNet;		/* target network for this entry */
+	char	gwNet;			/* Net of associated gateway     */
+	char	gwHost;			/* Host of associate gateway     */
+	char	Hops;			/* Hop count */
+	int 	timer,timer1;		/* time out for obsolesence (-1) */
+	};
+
+# define routeEntries 10		/* 10 for normal stuff. */
+# define MaxHops 15			/* maximum hop count */
+# define MaxData  266
+# define nDataBytes 2*Maxdata
+# define PakExtra 5
+
+# define l0_BIGpak struct BIGpacket
+l0_BIGpak {/* BIG Packet structure definition */
+	int	*Link;			/* link to next packet */
+# ifdef PDP11
+	short int head[16];
+# endif
+# ifdef MC68000
+	short int head[18];
+# endif
+	char	data[nDatabytes]; 	/* maximum of 266 words. 532 */
+	short int CS;			/* this is Check sum in    2 */
+	short int spare[PakExtra];	/* a little room for error? */
+	};					  /* PUP size    554 */
+						  /* Packet size 558 */
+l0_smlpak {/* small Packet structure definition */
+	l0_smlpak *Link;		/* link to next packet */
+	l1_Sock	*SocPTR;		/* pointer to socket   */
+	l0_NDB	*ndbPTR;		/* pointer to network data block */
+	short int intent;		/* broadcast and/or big, small,etc */
+	short int PAKlen;		/* total length in words */
+
+	short int Encap1;		/* encapsulation */
+	short int Encap2;		/* head length */
+	short int PUPlen;		/* length in 8 bit bytes   2 */
+	char	PUPtype;		/* PUP type		   1 */
+	char	transport;		/* hopcount goes here      1 */
+	short int ID1;			/* PUP ident. 1.	   2 */	
+	short int ID2;			/* PUP ident. 2.	   2 */	
+	char	dHOST, dNET;		/* ULTIMATE dest.	   2 */
+	short int dSoc1, dSoc2;		/* dest. socket   ID       4 */
+	char	sHOST, sNET;		/* PRIMARY source	   2 */
+	short int sSoc1, sSoc2;		/* source. socket ID	   4 */
+	char	data[2];		/* Used to address data      */
+	};					  
+# ifdef MC68000
+# define Hex 3	     /*  Head excess for 3 32bit pointers */
+# endif
+
+# ifdef PDP11
+# define Hex 0	     /*  Head excess for 3 32bit pointers */
+# endif
+		     /*  header data CS   in FULL words*/
+# define minPak  18+Hex	/* 17 +   0 + 1     20 + ... for MC68000 */
+# define maxPak	284+Hex	/* 17 + 266 + 1 */
+# define PakMemSize (maxPak+PakExtra)
+
+# define maxRawPUP 279  /* 12 + 266 + 1    . 2 words ENCAP */
+# define minPUP 22
+# define maxPUP 554			/* doesn't include ENCAP or CRC */
+
+# define sizePakHead 34+2*Hex		/* offsets in bytes */
+# define PakOverHead 14+2*Hex
+# define PAKxtra 10+2*Hex		/* pre-header stuff */
+
+# define PUPoverHead 22			/* 8 bit bytes includes check sum */
+# define l2_PUP struct PUP
+l2_PUP {/* pup definition for any debugging */
+	short int PUPlen;		/* length in 8 bit bytes   2 */
+	char	PUPtype;		/* PUP type		   1 */
+	char	transport;		/* hopcount goes here      1 */
+	short int ID1;			/* PUP ident. 1.	   2 */	
+	short int ID2;			/* PUP ident. 2.	   2 */	
+	char	dHOST, dNET;		/* ULTIMATE dest.	   2 */
+	short int dSoc1, dSoc2;		/* dest. socket   ID       4 */
+	char	sHOST, sNET;		/* PRIMARY source	   2 */
+	short int sSoc1, sSoc2;		/* source. socket ID	   4 */
+	char	data[2];		/* Used to address data      */
+	};					  
+# define pupOffset   14+2*Hex		/* offset to start of PUP from top */
+
+/* possible intentions */
+# define BroadCast 01		/* PUP is being broadcast */
+# define Input 02		/* PUP is an input PUP */
+# define output 04		/* PUP is an output PUP */
+# define outputCOMPLETE 010	/* PUP has been "sent" at lowest level */
+# define NOcheckSum 020		/* Don't checksum on the socket */
+# define KeepPUP 040		/* Don't dispose after output   */
+# define NOtag 0100		/* Packet is NOT tagged for output in sock */
+# define OutputPENDING 0200	/* Set when Output is still pending */
+# define forward 0400		/* Set if PUP forwarded. Leave Source net */
+				/* and host alone. A psuedo routing. */
+# define DontWantOwnBroadcasts 01000 /* so that sockets need not absorb own*/
+				/* broadcast PUPs */
+# define asleep 02000		/* A socket status can be set to asleep. */
+				/* In this case all input is discarded. */
+/* some input packet tracing definitions */
+# define OnRawQ       01000	/* server put on raw input Q */
+# define SleepDispose 02000	/* To sleep disposed of packet */
+# define disposed     04000	/* packet disposed of at level 1 */
+# define delivered   010000	/* Sent to deliverPak */
+# define intoSocket  020000	/* queued in socket */
+# define pupErrored  040000	/* pupErrored on delivery */
+# define socDequeue 0100000	/* getPAK dequeued it */
+/* memory allocation routines */
+int *l1_GetMem (), l1_RelMem (), l1_FreeSpaceInit ();
+

@@ -1,0 +1,1321 @@
+   .nlist	bex
+	.title	INPUT only test : host 111 XEROX board
+	.sbttl	definitions
+	.sbttl	vector addresses and registers.
+clock=1						; For timer.
+baud=1200					; =1200 slows tty output
+BRD2 = 0
+.IF EQ <BRD2>		;	For board1
+E0OWC = 160000					; output word count
+E0OCV = 400					; Output complete vector
+.ENDC
+.IF NE <BRD2>		;	For board2
+E0OWC = 160020					; output word count
+E0OCV = 500					; Output complete vector
+.ENDC
+
+E0ICV = E0OCV+4					; Input  complete vector
+E0OEV = E0OCV+10				; Output ERROR vector
+E0OBL = E0OWC+2					; output buffer location
+E0OCS = E0OWC+4					; output control and status
+E0ODE = E0OWC+6					; output delay.
+E0IWC = E0OWC+10				; input word count
+E0IBL = E0OWC+12				; input buffer location
+E0ICS = E0OWC+14				; input control and status
+E0RHA = E0OWC+16				; HOST address.
+
+	.sbttl	input cs bits
+; INPUT control status register  (16xx14)
+; Some bit definitions:	      bit
+inGO  = 1		;	0		  Input GO bit
+inENA = 100		;	6		  enable
+inDON = 200		;	7		  input DONE
+
+	; ERROR BITS FOLLOW 
+inERR = 100000		;      15		  ERROR bit(See 11 - 14)
+
+	.sbttl	output CS bits.
+; OUTPUT control status register  (16xx04)
+; Some bit definitions:	      bit
+outGO  = 1		;	0		  output GO - active/idle
+outENA = 100		;	6		  enable
+outDON = 200		;	7		  output DONE
+	
+	;  ERROR BITS FOLLOW
+outERB = 100000		;      15		  ERROR bit (See 8 - 14)
+
+	.sbttl	local host and destination host
+	.sbttl	macros
+	.MACRO 	dADD	oper
+	add	#1,oper+2
+	adc	oper
+	.ENDM
+
+	.MACRO	dCLR	oper
+	clr	oper
+	clr	oper+2
+	.ENDM
+
+	.sbttl	DATA area.
+	jmp	mini	;	For boots to 1000.
+	.globl	difCnt,Ochang,datDIF,WDcnt,delay
+hosts:	.byte 0,0		; 	ENCAP word. hosts+1 set up in minini
+WDSout: 0			;	Word count for output
+WDSerr:	0			;	Words out NE word count.
+WDcnt:	10.
+delay:	100			; 	output delay.
+done:	0
+bound:	-1			;	a spare.
+
+difCNT:	0			;	 counts number of times input buffer
+				;	 is different than output buffer.
+pdatDIF: 0			;	 previous count of datDIF
+datDIF:	0			;	 Number of data words that are
+				;	 different.
+ERRED:	0
+Ochang:	0			;	 counts number of times output
+				;	 buffer has changed.
+
+nGOES:	0
+nOINT:	0
+nIGOE:	0
+nIINT:	0
+nOERR:	0
+nIERR:	0
+nTIO:	0			;	output time out counter
+nTII:	0			;	input time out counter
+oNOT:	0			;	output tme
+iNOT:	0
+oSUM:	0			;	Output goes + time outs
+iSUM:	0			;	Input      "
+xERR:	0			; 	set whenever there is an error.
+nTO:	0			;	number of time outs.
+xIN:	0			;	extra input interrupts
+xOUT:	0			;	extra output interrupts
+
+;	Some double word counters...
+TotGO:	0,0
+TotIE:	0,0			;	output interrupt counter
+TotII:	0,0			;	input interrupt counter
+TotTO:	0,0			;	double word time out counter
+TotXI:	0,0			;	xtra input interrupts.
+TotXO:	0,0			;	xtra output interrupts.
+TotIT:	0			;	input time out counter
+TotOT:	0			;	output time out counter
+INP1st:	0			; 	increment if input beats output.
+;	3 ring buffers: Each entry is as follows:
+;		Qinx		index into first entry
+;		Entry(0)	E0ICS
+;		Entry(1)	E0IWC
+;		Entry(2)	PSW
+;		Entry(3)	Current Hi order time
+;		Entry(4)	Current Low order time
+;		Entry(5)	Expired Hi order time
+;		Entry(6)	Expired Low order time
+;		Entry(7)	Valid flag,=0 if NO entry.
+nRing=8.			;	n words per entry
+valid=<nRing-1>*2
+Rmax=7.				;	Max entry.
+Esize=nRing*2.			;	n x 2 bytes...
+wrap=Esize*Rmax			;	Wrap around byte count.
+
+;  For buffer ring-special case.
+bbRing=11.
+BEsize=bbRing*2
+Bvalid=<bbRing-1>*2
+bMax=10.
+bWrap=BEsize*bMax
+
+Rstart:
+Binx:	0			;	0 to Rmax-1
+Bring:
+.rept	Rmax
+	.rept	nRing
+	.word	0
+	.endr
+.endr
+
+Ainx:	0
+Aring:
+.rept	Rmax
+	.rept	nRing
+	.word	0
+	.endr
+.endr
+Winx:	0
+Wring:
+.rept	Rmax
+	.rept	nRing
+	.word	0
+	.endr
+.endr
+Iinx:	0
+Iring:
+.rept	Rmax
+	.rept	nRing
+	.word	0
+	.endr
+.endr
+Jinx:	0
+Jring:
+.rept	Rmax
+	.rept	nRing
+	.word	0
+	.endr
+.endr
+Kinx:	0
+Kring:
+.rept	bmax
+	.rept	bbRing
+	.word	0
+	.endr
+.endr
+rFinis:	-1
+K$ring:	0			;	counts errors for Kring.
+	.macro	Ring	inx,Rbuff
+	mov	r0,-(Sp)
+	mov	r1,-(Sp)
+	mov	#inx,r0
+	mov	#Rbuff,r1
+	jsr	pc,RingIT
+	mov	(Sp)+,r1
+	mov	(Sp)+,r0
+	.endm
+minCNT:	-1			;	time out counters...(unsigned)
+minTOC:	0
+maxCNT:	0			;	
+recCNT:	0
+timCNT:	0
+minWC:	0
+maxWC:	0
+recWC:	0
+timWC:	0
+curCNT:	0			;	and current counter...
+late:	0			;
+softy:	4000.			;	for software time out...
+eol=15
+.IF EQ <BRD2>
+ourHI:	.ASCIZ	<eol>/INPUT XEROX board test-Version (160000-400)/<eol><eol>
+.ENDC
+.IF NE <BRD2>
+ourHI:	.ASCIZ	<eol>/PDP11 XEROX board test-Version (160020-500)/<eol><eol>
+.ENDC
+	.EVEN
+secret="JY
+varWC=1
+Wboxes=0			;	1 if we want the boxes.
+useBox:	10.			;	MAX box used.
+Fpak:	10.			;	start with box 10.
+Mcycle=10.			;	N times per box.
+cycles:	0			;	counts tries / word count.
+cDown:	0			;	countdown for Processor too long.
+Record:	0			;	=1 if recorded Processor weird.
+before:	0			; 	counts before weirdness.
+iNEo:	0			;	counts words in NE words out.
+tiNEo:	0			;	TRUE-counts words in NE words out.
+fiNEo:	0			;	Artifact-counts words in NE words out
+OVRrun:	0
+retry:	0
+collid:	0
+IOerr:	0			;	Set if IOerr inhibits buff. compare.
+Idoner:	0
+Odoner:	0			;	OUTput interrupt. NO done bit set.
+	.sbttl	The lesser of 2 evils!
+	.globl	mini
+;
+;	bit 0 SET on console causes a halt at end of pass.
+;	bit 1 SET on console, and ALL other bits cleared generates
+;	      a report on next errored buffer.
+;      bits 1&2 SET generate SHORT report
+;	bit 3 SET generates 15 second NEWS report .
+;	bit 4 SET generates BOX dump.
+;	bit 5 SET skips buffer init and compare.
+;	bit 6 SET skips move to HIGH priority after time out.
+;	bit 7 SET forces 5 minute report.
+;	bit 8 SET forces dump of the Rings...
+;	bit 9 SET forces current buffer pattern message.
+
+NEWtim = 15.*60.			; 15 sec timer...
+newLNG = 5*60.*60.			; 5 minute timer...
+console=177570
+psw=177776
+tics=60					; about 50.00 milliseconds...
+mini:
+	HALT				; to get 10 going.
+	mov	#1000,SP		; set up the stack
+	clr	@#psw			; we run at 0.
+	jsr	pc,MINini		; initialize interface, etc...
+
+	mov	#ourHI,r0
+	jsr	pc,linOUT		; herald to 10
+
+;	Processing loop below
+Process:
+;	Do some top of the loop stuff...
+	jsr	pc,etcEtc
+
+;	Now start another i/o pass.
+	jsr	pc,setup		; for next try.
+
+
+;	Here we WAIT until input AND output are DONE.
+Owait:	
+	cmp	#2,done
+	bne	chkPro			; NOT done on branch.
+	 jsr	pc,bufCMP		;  ALL is done. Check for differences.
+	 bcc	process			;  No error
+	  inc	K$ring			;  count em...
+	  jsr	pc,Kringe		;  The K ring stuff....
+	  br 	process			;  and continue
+chkPro:
+;	time out check
+	inc	curCNT			;  OUR counter...
+	mov	#chkHI,r0
+	mov	#chkLOW,r1
+	jsr	pc,TIMout		; Time out ?
+	bcc	Owait			; NO.
+	 mov	#pri5,@#psw		;  NOW-no interrupt allowed
+	 Ring	Ainx,Aring		;  Update AFTER ring buffer.
+	 cmp	#3,done			;  finished WHILE timing out?
+	 bne	3$			;  NO
+	   inc	late			;   Yes, came late...
+	   br	2$			;   So, don't count as time out.
+3$:
+	 inc	nTO
+	 dADD	TotTO
+	 tst	iNOT
+	 bne	2$			;  yes	
+	  inc	nTII
+	  inc	TotIT
+2$:
+	 jsr	pc,RESETi		; reset interface
+	 clr	@#psw			;  back to priorty 0!
+	 br	process			;  Yes, do again.
+etcEtc:
+;	check some counters...and other top of the loop jazz...
+	mov	curCNT,recCNT		; SAVE most recent
+	mov	WDcnt,recWC		; And word count.
+	clr	curCNT			; And clear it...
+	clr	Record			; clear Ring record.
+	mov	#4,cDown		; count downer...
+;	Set up output and input
+	NOP
+	clr	done
+	bit	#1,@#177570		; Shall we halt?
+	beq	1$			; NOTset.
+	 halt				;  HALT on 1
+1$:
+	bit	#177771,@#177570	; compliment of 6 set
+	bne	2$			; at least one is
+	bit	#6,@#177570		; generate report?(bit 4 or 2)
+	beq	2$			; NO.	
+	 tst	xERR			; error on i/o?
+	 bne	2$			; Yes, no reporting
+	  jsr	pc,report
+2$:
+	clr	xERR			; for reports.
+
+	jsr	pc,news			; see if time for 15 sec report...
+	.IF NE <varWC*Wboxes>
+	jsr	pc,BOXrep		; show the boxes...
+	.ENDC
+	jsr	pc,ShoPat		; current buffer pattern message.
+	rts	pc
+RESETi:
+	clr	@#E0ICS				; reset receiver.
+	clr	@#E0OCS   			; reset transmitter
+	rts	pc
+.IF NE <clock>
+	.sbttl 	timer stuff here.
+chkHI:	0
+chkLOW:	0	; TIMER double word for process loop
+
+repHI:	0
+repLOW:	0	; TIMER double word for 15 second report.
+
+newHI:	0,0	; Timer for 5 minute report.
+
+timHI:	0
+timLOW: 0	; CURRENT time double word.
+
+	.globl	TIMout,chkLOW,chkHI
+;	Compare timer to current time, and return true (sec)
+;	if timer LEQ current time. Double word UNsigned compares...
+;	(r0) = high order, (r1) = low order
+TIMout:
+	NOP
+	cmp	(r0),timHI		; HIGH ORDER compare
+	blo	TIMup			; timer(H) < current(H). Times UP.
+	bhi	NOTup			; timer(H) > current(H).
+	cmp	(r1),timLOW		; high =, check LOW ORDER
+	bhi	NOTup			; timer(L) > current(L)
+TIMup:
+;	[T(H),T(L)] LEQ [C(H),C(L)]
+	sec
+	rts	pc
+NOTup:
+	clc
+	rts	pc
+
+
+;	16 2/3 milliseconds timer
+	.globl	setTIM
+;	(r0) = high order time word, (r1) = low order, r2 = time tics
+pri7=340
+setTIM:
+	mov	@#psw,-(SP)		; save old PSW
+	mov	#pri7,@#psw		; NO int. here.
+
+	mov	timHI,(r0)
+	mov	timLOW,(r1)
+	add	r2,(r1)
+	adc	(r0)
+
+	mov	(SP)+,@#psw		; OLD psw back.
+	rts	pc
+
+	.sbttl	timer interrupt server-stuff.
+	.globl	timINT,timHI,timLOW
+timINT:
+	add	#1,timLOW
+	adc	timHI
+	RTI
+.ENDC
+	.sbttl	little interrupt routines.
+	.sbttl	input-mini OK
+RedWC:	0
+inINT1:
+	mov	(Sp),RedWC		; return pc.
+	tst	iNOT			; an extra interrupt?
+	beq	10$			; NO
+	 inc	xIN			;  record it.
+	 dADD	TotXI
+10$:
+	inc	iNOT
+	tst	@#E0ICS			; input error?
+	bge	1$			; No...
+	 NOP
+	 inc	nIERR			;  count them.
+	 dADD	TotIE			;  CRC ERROR...check buffers.
+	 mov	#1,xERR			;  An error.
+	 clr	@#E0ICS
+	 br	18$
+1$:
+	inc	nIINT			; interrupt counter
+	dADD	TotII
+	tstb	INbuff+1		; For unwanted broadcast.
+	bne	17$
+	 inc	retry			; Our counter
+	 inc	IOerr			; Stop buf. comparison.
+	 br	18$			; And quit.
+17$:
+	tstB	@#E0ICS			; see if done one.
+	blt	18$			; yes
+	 inc	Idoner
+	 inc	IOerr
+18$:
+	mov	#2,done			; INPUT done
+	RTI
+	.globl	setup
+tsize=601				; size for catching bug. I before O.
+setup:
+;	Some error stuff:
+	clr	iNOT
+	clr	oNOT			;  clear these flags
+
+;	Set up io on interface:
+	bit	#40,@#console		; Don't init on bit 5.
+	bne	1$
+	 jsr	pc,bufINI		; reinitialize buffers.
+1$:
+	clr	IOerr			; for buffer compares...
+	mov	Fpak,WDcnt
+
+;	Set up input (We will be doing loopback, so don't start output yet)
+;
+	mov	#-tsize,@#E0IWC		; for catching bug.
+	mov	#INbuff,@#E0IBL		; input buffer location
+	NOP
+	dADD	TotGO			;
+	INC	nGOES			; output go counter
+	bne	minext			; zero?
+	 jsr	pc,CLRerr		; clear error stuff.
+	 mov	#1,nGOEs		; we're really at 1 go.
+minext:
+;	GO + enable : INPUT
+	mov	#inGO+inENA,@#E0ICS
+	NOP
+	.IF NE <clock>
+	mov	#chkHI,r0		; timer double word.
+	mov	#chkLOW,r1
+	mov	#tics,r2		; n-tics...
+	jsr	pc,setTIM		; set timer for time out
+	.ENDC
+	NOP
+	rts	pc
+TRAP4:
+	halt
+	br	TRAP4
+	4
+TRAP10:
+	halt
+	br	TRAP10
+	10
+CLRerr:
+	clr	nGOES
+	clr	nOINT
+	clr	nIGOE
+	clr	nIINT
+	clr	nIERR
+	clr	nOERR
+	clr	nTIO
+	clr	nTII
+	clr	oNOT
+	clr	iNOT
+	clr	oSUM
+	clr	iSUM
+	clr	curCNT
+	clr	maxCNT
+	clr	recCNT
+	clr	minWC
+	clr	maxWC
+	clr	recWC
+	clr	xIN
+	clr	xOUT
+	mov	#-1,minCNT		;
+
+	rts	pc
+	.sbttl	MINI - initialization routine.
+	.globl	MINini
+pri5=240			; Do these at pri. 5
+MINini:
+	jsr	pc,Cringe		; clear ring buffers...
+	jsr	pc,CLRerr		; clear some error counters.
+	clr	late			; 	clear these on init ONLY.
+	dCLR	TotGO
+	dCLR	TotIE
+	dCLR	TotII
+	dCLR	TotTO
+	dCLR	TotXO
+	dCLR	TotXI
+	clr	Idoner
+	clr	Odoner
+	clr	K$ring
+	clr	TotIT
+	clr	TotOT
+	clr	INP1st
+	clr	iNEo
+	clr	fiNEo
+	clr	tiNEo
+	clr	WDSerr
+	clr	pdatDIF
+	clr	datDIF
+	clr	Ochang
+	clr	difCNT			; number of buffer errors.
+	clr	nTO			; number of time outs.
+	clr	OVRrun			; number of Buffer over  runs.
+	clr	collid
+	clr	retry
+;	Initialize clock
+	clr	timHI
+	clr	timLOW
+	mov	#timINT,@#100		; vector for clock
+	mov	#300,@#102		; pri 6.
+ 	MOV	#100,@#177546		; turn on interrupt
+	mov	#repHI,r0
+	mov	#repLOW,r1
+	mov	#NEWtim,r2		; set timer...for 15 sec. report.
+	jsr	pc,SETTIM
+	mov	#newHI,r0
+	mov	#newHI+2,r1
+	mov	#newLNG,r2
+	jsr	pc,SETTIM
+
+	jsr	pc,BufINI		; initialize buffers:
+;	Initialize interface, and vector
+;	First output
+	clr	@#E0OCS			; clear it.
+;	input...							
+	clr	@#E0ICS			; reset receiver
+;	local HOST
+	mov	@#E0RHA,r0		; host address.
+	comb	r0			; 1's compliment.
+	movb	r0,HOSTs+1		; send to our-self.
+	clrb	HOSTs			; don't know the source.
+
+;	Now intialize input vector.
+	mov	#inINT1,@#E0ICV		; vector location
+	mov	#pri5,@#E0ICV+2		; and priority.
+
+;	For trap to 4-10
+	mov	#TRAP4,@#4
+	mov	#340,@#6
+	mov	#TRAP10,@#10
+	mov	#340,@#12
+
+;	For tty
+	clr	@#ttyICS		; interrupts off.
+	clr	@#ttyOCS
+
+	rts	pc
+	.list	meb
+	.MACRO	XOR05 r,s		;	XOR for pdp11-05
+	mov	r,-(SP)
+	bic	s,(SP)			; 	r-s
+	bic	r,s			;	s-r
+	bis	(SP)+,s			; 	r-s U s-r
+	.ENDM
+
+	.MACRO	LSR 	r,N,?b,?c	; 	logical shift right.
+	mov	N,-(SP)			;	The count
+b:	
+	tst	(SP)			;	Done?
+	ble	c			;	Yes on branch.
+	 clc				;	Don't want carry
+	 ror	r			;	rotate
+	 dec	(SP)			;	one less
+	 br	b			;	continue
+c:	
+	tst	(SP)+			;	stack back.
+	.ENDM
+
+Masks:	077777,107777,170777,177077,177707,177770
+;	OCTAL out. puts word in r0 into array (r1), converting to ASCII
+OCTout:
+	mov	r2,-(SP)		;
+	mov	r3,-(SP)		;
+	mov	r0,-(SP)		; need this again
+	mov	#Masks,r2		; for our octades
+	mov	#15.,r3			; for shifting.
+	NOP
+convrt:
+	mov	(SP),r0			; original r0
+	bic	(r2)+,r0		; zap unused bits.
+
+	LSR	r0,r3			; shift into position
+
+	add	#60,r0			; to ASCII
+	movB	r0,(r1)+		; into array
+	sub	#3,r3			; our shifter
+	NOP
+	bge	convrt			; 15,12,9,6,3,0 DONE
+
+	mov	(SP)+,r0
+	mov	(SP)+,r3
+	mov	(SP)+,r2		; got-em back.
+	NOP
+	rts	pc
+
+makLIN:
+;	From (r0)+ to (r1)+ . Done on NULL
+1$:
+	tstb	(r0)		; DONE
+	beq	2$		; Yes
+	 movb	(r0)+,(r1)+	;  NEXT into buffer.
+	 br	1$
+2$:
+	rts	pc
+
+Cringe:
+	clr	Before
+	mov	#rStart,r0		;	start of data area
+1$:
+	clr	(r0)+
+	cmp	#rFinis,r0		;	End of data area?
+	bne	1$			;	NO on branch.
+
+	rts	pc
+
+Kringe:	; a slight variation for buffer dump. MAX 10 words...
+	mov	r0,-(Sp)
+	mov	r1,-(Sp)
+	mov	Kinx,r0
+	add	#Kring,r0		;	base + offset:
+;	Now 	4 words from each buffer, and current time, WDcnt.
+
+	mov	#OUTbuf,r1		;	OUTput buffer...
+	mov	(r1)+,(r0)+		;	4 words
+	mov	(r1)+,(r0)+		;	4 words
+	mov	(r1)+,(r0)+
+	mov	(r1)+,(r0)+
+	mov	(r1)+,(r0)+
+
+	mov	#INbuff,r1		;	And input buffer
+	mov	(r1)+,(r0)+		;	4 words
+	mov	(r1)+,(r0)+		;	4 words
+	mov	(r1)+,(r0)+
+	mov	(r1)+,(r0)+
+	mov	(r1)+,(r0)+
+	
+	inc	(r0)+			;	THE 11th word!
+
+	add	#BEsize,Kinx		;	up the ring
+	cmp	Kinx,#Bwrap
+	blt	1$
+	 clr	Kinx
+1$:
+	mov	(Sp)+,r1
+	mov	(Sp)+,r0
+	rts	pc
+RingIT:	
+	add	(r0),r1
+	mov	@#E0ICS,(r1)+
+	mov	@#E0IWC,(r1)+
+	mov	RedWC,(r1)+
+	mov	timHI,(r1)+
+	mov	timLOW,(r1)+
+	mov	chkHI,(r1)+
+	mov	chkLOW,(r1)+
+	inc	(r1)			;	a valid entry.
+	add	#Esize,(r0)		;	increment for next time.
+	NOP
+	cmp	(r0),#wrap		;	wrap around?
+	blt	1$			;	NO.
+	 clr	(r0)			;	start over...
+1$:
+	rts	pc
+maxSLT:	0
+MaxWRD=100.
+;	Here we dump the most recent errored buffer:
+;	Format is:
+;
+; oooooo xxxxxx  oooooo xxxxxx  oooooo xxxxxx  oooooo xxxxxx  oooooo xxxxxx
+
+; Where oooooo = output buffer word, xxxxxx = that word XOR input buffer.
+; For now we dump a maximum of 100 words or 20 lines of 5 pairs.
+wcntr:	0
+wpline:	0
+MAXpr:	0
+line:	.BLKB	100.
+EOB:	0
+rHead:	.ASCIZ	<eol>/Format: OOOOOO EEEEEE, O input buf, E errored bits:/<eol>
+TnSNT:	.ASCIZ /  Total SENT: /
+TnERR:	.ASCIZ 	/, N errors: /
+	.EVEN
+report:
+;	All registers are free here.
+	tst	ERRED		;	most recent errored?
+	bne	1$		;	Yes
+	 rts	pc		;	 NO, wait a little longer.
+1$:
+;	So we have to output WDcnt pairs from the input buffer,
+;	5 per line. 11-05s don't have / or *...So,...
+	cmp	#6,@#177570	;	counts only?
+	beq	10$		;	Yes on 6.
+
+	mov	#rHead,r0
+	jsr	pc,linOUT	;	Header out
+10$:
+	mov	#TnSNT,r0	;	Number sent
+	mov	#line,r1	;	
+	jsr	pc,makLIN	;	into (r1)
+	mov	nGOES,r0	;	now the GO count
+	NOP
+	jsr	pc,OCTout	;	into buffer
+
+	mov	#TnERR,r0	;	number errored
+	jsr	pc,makLIN	;	into (r1)
+	mov	difCNT,r0	;	now the GO count
+	NOP
+	jsr	pc,OCTout	;	into buffer
+	movb	#eol,(R1)+	;	eol, eol...
+	movb	#eol,(R1)+	;
+	movb	#0,(R1)+	;	NULL terminator
+
+	mov	#line,r0	;	NOW, send it to TTY.
+	jsr	pc,linOUT	;	"Total SENT: nnnnnn, N errs: nnnnnn"
+	cmp	#6,@#177570	;	numbers only?
+	bne	ron		;	NO.
+	 jmp	rExit		;	YEP.
+ron:
+;	Here we do the actual work...
+	clr	wcntr		;	word counter
+	clr	wpline		;	words/line
+;	we only output MAXwrd pairs .
+	mov	WDcnt,MAXpr
+	cmp	MAXpr,#MAXwrd	;	our MAX
+	ble	11$
+	 mov	#MAXwrd,MAXpr	;	Use our MAX.
+11$:
+;	This is all done when (r0)=WDcnt.
+	mov	#inBUFF,r2	;	input buffer
+	mov	#outBUF,r3	;	output buffer
+
+2$:	; start a new line
+	mov	#line,r4	;	line byte pointer.
+3$:
+	mov	(r2)+,r0	;	next buffer words
+	mov	r4,r1		;	line pointer.
+	NOP
+	jsr	pc,OCTout	;	to octal..."oooooo"
+	NOP
+	mov	r1,r4		;	updated byte pointer
+	movB	#" X,(r4)+	;	"oooooo "
+	mov	(r3)+,r1	;	output buffer word.
+
+	XOR05	r1,r0		; 	XORS the two. result in r0
+
+	mov	r4,r1		;	line pointer
+	NOP
+	jsr	pc,OCTout	;	octal
+	NOP
+	mov	r1,r4		;	updated byte pointer
+	movB	#" X,(r4)+
+	movB	#" X,(r4)+	;	"oooooo xxxxxx  " a pair
+
+;	check our end conditions...
+;	1. END of data
+	clr	r5		;	a temp flag
+	inc	wcntr		;	our word count...
+	cmp	wcntr,MAXpr	;	That's all?
+	blt	4$		;	nope
+	 inc	r5		;	ALL done after EOL
+	 br	5$
+4$:
+	inc	wpline		;	next word-pair.
+	cmp	wpline,#5	;	The 5th word?
+	blt	3$		;	NOPE, try another pair.
+
+5$:	;EOL here
+	NOP
+	movB	#eol,(r4)+	;	eol for SUMEX
+	movB	#0,(r4)+	;	NULL for lineout terminator(ASCIZ)
+	mov	#line,r0	;	line byte pointer. 
+	jsr	pc,linOUT	;	send the line
+	clr	wpline		;	here we go again...
+	tst	r5		;	end of data?
+	beq	2$		;	NO, so start a new line.
+rExit:
+	 jsr	pc,RESETi	;	reset interface.
+	 rts	pc		;	Yes, so zap on out.
+banner:	.ASCIZ	<eol>/*** local status report-/
+longb:	.ASCIZ	/running totals/<eol>
+	.IF NE <clock>
+timban: .ASCIZ	/33.33 millisecond time out/<EOL>
+	.ENDC
+header:	.ASCIZ	/N-GOES  I-sum CRC-ER n-Itim n-Iint n-TimO buf-Err/<eol>
+;		 123456x123456x123456x123456x123456x123456x123456x123456
+.IF NE <clock>
+numH:	.ASCIZ	<eol>/xtr-II late-t OV-run/<eol>
+	.EVEN
+numTAB:	xIN,late,OVRrun
+nNums=3.
+.ENDC
+items: nGOES,Isum,nIERR,nTII,nIINT,nTO,difCNT
+nitems=7.
+
+longH:	.ASCIZ	/  Total-GOES  Total-Inp-Int Total-TimOuts late-I OV-run Rcvd-B/<eol>
+;		 123456 123456 123456 123456 123456 123456 123456 123456		  
+longH1:	.ASCIZ 	<eol>/T-X-II I-NOdb Tot-IT buf-Er Collid  CRC-ERRORS/<eol>
+	.EVEN						;123456 123456
+longL:	TotGO,TotGO+2,TotII,TotII+2,TotTO,TotTO+2,late,OVRrun,retry
+longL1:	TotXI+2,Idoner,TotIT,difCNT,collid,TOTIE,TOTIE+2
+nLong=9.
+nLong1=7.
+fcons:	0
+RingB:	.ASCIZ	<eol>/          * RING buffer dump-/
+Tail1:	.ASCIZ 	%DONE BIT SET w/o interrupt *%<eol>
+Tail2:	.ASCIZ	/time out */<eol>
+Tail3:	.ASCIZ	/Input BEFORE output interrupt/<eol>
+Tail4:	.ASCIZ	/Words input error & 'IN wins'/<eol>
+Tail5:	.ASCIZ 	/TRUE Words input error/<eol>
+RingH:	.ASCIZ	/I-Stat I-WrdC Ret-PC  Current-Time  Expire-Time /<eol>
+;		 123456 123456 123456 123456 123456 123456 123456 123456 123456
+Khead:	.ASCIZ	<eol>/SENT-0 SENT-1 SENT-2 SENT-3 SENT-4 INP-W0 INP-W1 INP-W2 INP-W3 INP-W4/<eol>
+nada:	.ASCIZ	<eol>/** The rings are NULL/<eol>
+	.EVEN
+dCons:	0
+Hring:
+;	Header out...
+	mov	r1,-(Sp)
+	mov	#RingB,r0		; Lead header.
+	mov	#line,r1
+	jsr	pc,MAKlin
+
+	mov	r5,r0
+	jsr	pc,MAKlin
+	movb	#0,(R1)+
+	mov	#line,r0
+	jsr	pc,linOUT		; type.
+	mov	#RingH,r0		; explanation.
+	jsr	pc,linOUT
+	mov	(Sp)+,r1
+	rts	pc
+valid=<nRing-1>*2
+dcnt:	0
+During:
+;	dump ring....(r5)--start of ring...Rmax=nlines, nRing-entries. 
+	mov	r1,-(sp)
+	mov	r2,-(sp)
+	mov	r3,-(sp)
+	mov	r4,-(sp)
+	mov	#rMax,r4		; loop deeloop-number of entries.
+d1:
+	dec	r4			; Another line left?
+	bge	1$			; Yes...
+	 mov	(Sp)+,r4
+	 mov	(Sp)+,r3
+	 mov	(Sp)+,r2
+	 mov	(Sp)+,r1
+	 rts	pc			;  no, we are done.
+1$:
+	tst	valid(r5)		; This entry valid?
+	bne	2$			; YES
+	 add	#Esize,r5		;  Next entry.
+	 br	d1
+2$:
+	mov	#nring-1,r3		; inner loop-words/entry
+	mov	#line,r1		; buffer
+d2:
+	mov	(r5)+,r0		;
+	jsr	pc,OCTout		; value into buffer
+	movB	#" x,(r1)+		; "vvvvvv "
+	dec	r3			; line counter
+	bgt	d2
+
+	tst	(r5)+			; Skip the flag.
+
+	movB	#eol,(r1)+
+	movB	#0,(r1)			; null terminator
+	mov	#line,r0
+	jsr	pc,linOUT
+	br	d1
+Bufing:
+;	dump ring....(r5)--start of ring...Rmax=nlines, nRing-entries. 
+	mov	r1,-(sp)
+	mov	r2,-(sp)
+	mov	r3,-(sp)
+	mov	r4,-(sp)
+	mov	#bMax,r4		; loop deeloop-number of entries.
+dd1:
+	dec	r4			; Another line left?
+	bge	1$			; Yes...
+	 mov	(Sp)+,r4
+	 mov	(Sp)+,r3
+	 mov	(Sp)+,r2
+	 mov	(Sp)+,r1
+	 rts	pc			;  no, we are done.
+1$:
+	tst	Bvalid(r5)		; This entry valid?
+	bne	2$			; YES
+	 add	#BEsize,r5		;  Next entry.
+	 br	dd1
+2$:
+	mov	#bbring-1,r3		; inner loop-words/entry
+	mov	#line,r1		; buffer
+dd2:
+	mov	(r5)+,r0		;
+	jsr	pc,OCTout		; value into buffer
+	movB	#" x,(r1)+		; "vvvvvv "
+	dec	r3			; line counter
+	bgt	dd2
+
+	tst	(r5)+			; Skip the flag.
+
+	movB	#eol,(r1)+
+	movB	#0,(r1)			; null terminator
+	mov	#line,r0
+	jsr	pc,linOUT
+	br	dd1
+;	Some data for the rings.
+tails:	tail1,tail2,tail3,tail4,tail5
+rings:	Bring,Aring,Wring,iRing,Jring
+rfs:	before,TotTO+2,INP1st,fiNEo,tiNEo
+nRings=5.
+dRings:
+	bit	#400,@#consol		; Our turn?
+	bne	1$
+	 clr	dCons			; clear consecutiveness.
+	 rts	pc
+1$:
+	tst	dCons			; In a row...
+	beq	2$			; NO
+	 rts	pc			;  Yes, so spit...until toggle
+2$:
+	inc	dCons			; THE flag...
+	clr	dCnt			; N dumped.
+;	dump the rings..
+	mov	#tails,r1
+	mov	#rings,r2
+	mov	#rfs,r3
+	mov	#nRings,r4
+deTail:
+	tst	@(r3)+			; any at all?
+	bne	3$			; Yes..
+	 tst	(r1)+			; Next header.
+	 tst	(r2)+			; Next Ring.
+	 inc	dCnt
+	 br	Rend
+3$:
+	mov	(r1)+,r5
+	jsr	pc,Hring		; Header
+;	dump it...
+	mov	(r2)+,r5		; The ring
+	jsr	pc,During		;
+Rend:
+	dec	r4
+	bgt	deTail
+
+;	The special K-ring now folks...
+	tst	K$ring			; Is it there ol photo pal?
+	bne	2$			; Yes - beyond the J.
+	 inc	dCnt
+	 br	3$
+2$:
+	mov	#Khead,r0
+	jsr	pc,linOUT		; Header.
+	mov	#Kring,r5		; This ring.
+	jsr	pc,BUFing		; dump it...
+	rts	pc
+3$:
+	cmp	#nRings+1,dCnt		; did nothing
+	bne	1$			; NO
+	 mov	#nada,r0
+	 jsr	pc,linOUT		; tell outsiders..
+1$:
+	rts	pc
+LONGrep:
+	jsr	pc,dRings		; Check for ring dump...
+	mov	#newHI,r0
+	mov	#newHI+2,r1
+	jsr	pc,TIMout		; Time out ?
+	bcs	LONGon			; YES.
+	 bit	#200,@#consol		; force report?
+	 beq	2$			; NO.
+	  tst	fcons			;  forced consecutively?
+	  bne	3$			;  Yes, so skip until reset bit.
+	   inc	fcons			;   NO. but don't allow consec.
+	   br	forceL			;   and do report.
+2$:
+	 clr	fcons			;  clear consecutive flag
+3$:
+	 rts	pc			;  NO, return.
+LONGon:
+	mov	#newLNG,r2
+	jsr	pc,SETTIM		; Set for next time:
+
+forceL:	mov	#banner,r0
+	mov	#line,r1
+	jsr	pc,MAKlin
+	mov	#longb,r0
+	jsr	pc,MAKlin
+	movb	#0,(R1)+
+	mov	#line,r0
+	jsr	pc,linOUT		; banner out:
+
+	mov	#longH,r0
+	jsr	pc,linOUT
+
+;	build report lines:
+	mov	#line,r1
+	mov	#nlong,r2
+	mov	#longL,r3
+	jsr	pc,newOUT		;	first-OUT
+
+	mov	#longH1,r0
+	jsr	pc,linOUT
+
+;	build report lines:
+	mov	#line,r1
+	mov	#nlong1,r2
+	mov	#longL1,r3
+	jsr	pc,newOUT		;	first-OUT
+	rts	pc
+news:
+;	news report here:
+	NOP
+	jsr	pc,LONGrep		; see if time for long report.
+	mov	#repHI,r0
+	mov	#repLOW,r1
+	jsr	pc,TIMout		; Time out ?
+	bcs	NEWSon			; NO.
+	 rts	pc
+NEWSon:
+;	Some sums for our report...number time outs+number ints+ num errors.
+	mov 	nTIO,Osum
+	add	nOINT,Osum		;  out ints + out time outs
+	add	nOERR,Osum
+	mov 	nTII,Isum
+	add	nIINT,Isum		;  out ints + out time outs
+	add 	nIERR,Isum
+
+	mov	#NEWtim,r2		; set again...
+	jsr	pc,SETTIM
+;	require bit 3 set on console
+	bit	#10,@#console
+	bne	newsGO
+	 rts	pc
+newsGO:
+;	output banner and list...
+	mov	#banner,r0
+	mov	#line,r1
+	jsr	pc,MAKlin
+	mov	#timban,r0
+	jsr	pc,MAKlin
+	movb	#0,(R1)+
+	mov	#line,r0
+	jsr	pc,linOUT
+
+	mov	#header,r0
+	jsr	pc,linOUT
+
+;	build report lines:
+	mov	#line,r1
+	mov	#nitems,r2
+	mov	#items,r3
+	jsr	pc,newOUT		;	first-OUT
+
+	mov	#numH,r0		;	header out
+	jsr	pc,linOUT
+
+	mov	#line,r1
+	mov	#nNums,r2
+	mov	#numTAB,r3
+	jsr	pc,newOUT		;	second out...
+
+	rts	pc			;	AND, exit...
+
+newOUT:
+	mov	@(r3)+,r0		;	item value.
+	jsr	pc,OCTout		;	into line
+	movb	#" X,(r1)+		;	"oooooo "
+	dec	r2
+	bgt	newOUT
+
+	jsr	pc,EndSnd		;	end and send
+	rts	pc
+
+EndSnd:
+	movb	#eol,(r1)+		;
+	movb	#0,(r1)+		; 	NULL terminator
+	mov	#line,r0
+	jsr	pc,linOUT		;
+	rts	pc
+.IF NE <baud>
+	.globl	wait
+wait:	2000.
+slowIT:
+;	A wait loop between chars - ABOUT 4 milliseconds.
+	mov	r0,-(SP)
+	mov	wait,r0		;      	     time - differs with mem.
+
+1$:	tst	wait		;	about 1.0 us
+	dec	r0		;	about  .5 us
+	bge	1$		;	about  .8 us
+				;	total 2.3 * 2000 = 4600 us
+	mov	(SP)+,r0
+	rts	pc
+.ENDC
+
+;	Here we just put one line to the TTY...simple stuff.
+ttyICS=177560
+ttyIDA=ttyICS+2
+ttyOCS=ttyICS+4
+ttyODA=ttyICS+6
+;	(r0)= address of line to be output at entry.
+linOUT:
+	mov	r1,-(SP)
+	clr	r1		;	line terminator...just in case.
+	mov	#100.,WAIT	;	for slowit...
+1$:	tstB	@#ttyOCS	;	ready?
+	bge	1$		;	NO.
+	 tstB	(r0)		;	NULL?
+	 beq	2$		;	eol.
+	  cmp	r1,#80.		;	maxline?
+	  beq	2$		;	one line only here...
+	   movB	(r0)+,@#ttyODA	;	char out
+	   inc	r1		;	prevent run aways...
+	   .IF NE <baud>
+	   jsr	pc,SlowIT	;	make 2400 baud close to 1200.
+	   .ENDC
+	   br	1$		;	NO, so loop.
+;	A line is done...
+2$:
+	mov	(SP)+,r1
+	NOP
+	rts	pc
+	.sbttl	compare buffers
+OVRerr:	0
+bufCMP:
+	tst	IOerr		;	NO compare on IOerr
+	beq	DObc
+	 clc
+	 rts	pc
+DObc:
+	mov	#OUTbuf,r0
+	mov	#INbuff,r1
+	mov	INbuff,OUTbuf	;	ENCAP not checked. Dont know source.
+	clr	ERRED		;	set if this one in err.
+	clr	OVRerr		;	overRUN.
+	clr	datDIF		;		"
+	clr	r2
+1$:
+	cmp	(r0)+,(r1)+
+	beq	2$		;	The same--
+	 inc	datDIF		;	Keep a running count of differences.
+2$:
+	inc	r2		;	Word counter. WDcnt times.
+				;	0,1,...,WDcnt-1
+	cmp	r2,WDcnt	;	all done?
+	blt	1$		;	No on branch.
+
+;	See if any change
+	tst	datDIF		;	no data errors?
+	beq	22$		;	Yes.
+	 inc	difCNT		;	 NO. So, buffer has changed again.
+	 inc	ERRED		;	for RPG.
+	 NOP
+22$:
+	cmp	(r1),#secret	;	The secret pattern
+	beq	23$
+	 inc	OVRrun		;	An overrun.
+	 inc	OVRerr		;	The error
+23$:
+	mov	datDIF,pdatDIF	;	data differences the same again.
+	add	OVRerr,pdatDIF
+	bne	bear		;	yes
+	 clc			;	NO arrow into the interface.
+	 rts	pc
+bear:
+	sec			;	Arrow-return
+	rts	pc
+zeer:	0
+Gzero:
+	clr	r1
+	rts	pc
+my1:	-1
+Gminus:
+	mov	my1,r1
+	rts	pc
+
+Guup:	"UU
+GUU:	
+	mov	Guup,r1
+	rts	pc
+Gssp:	"**
+Gstar:
+	mov	Gssp,r1
+	rts	pc
+slide1:	1
+Gslid1:
+	mov	slide1,r1
+	asl	slide1
+	tst	slide1
+	bne	1$		;	ALL the way yet?
+	 inc	slide1		;	 Yes, so set to 1.
+1$:
+	rts	pc
+slide0:	177776
+Gslid0:
+	mov	slide0,r1
+	tst	slide0
+	bgt	1$		;	Sign bit set?
+	 sec			;	 Yes, so set carry.
+	 br	2$
+1$:
+	clc			; 	NO sign, clear carry.
+2$:
+	rol	slide0
+	rts	pc
+Gval:	0
+Gincr:
+	mov	Gval,r1
+	inc	Gval
+	rts	pc
+Gseed:	0
+Grand:
+;	(2**9 + 2**2 + 1)X(n) + 13849 = X(n+1)
+	mov	Gseed,r1
+	mov	#9.,-(sp)
+1$:
+	asl	r1		;	X(n)*2**9
+	dec	(sp)
+	bgt	1$
+
+	mov	Gseed,(sp)
+	asl	(sp)		;	X(n)*2
+	asl	(sp)		;	X(n)*2**2
+	add	(sp),r1		;	X(n)*2**9 + X(n)*2**2
+	add	Gseed,r1	;	... + X(n)
+	add	#13489.,r1
+	mov	r1,Gseed	;	X(n+1)
+
+	tst	(sp)+
+	rts	pc
+	.sbttl	buffer patterns.
+patInx:	0			;	index into pattern table
+nPats=8.
+cPatt:	zeer,my1,GUUP,GssP,slide1,slide0,Gval,Gseed
+GETpat:	Gzero,Gminus,GUU,Gstar,Gslid1,Gslid0,Gincr,Grand
+	.sbttl	initialize buffers.
+bufINI:
+;	JUST INIT INPUT BUFFER
+;	ALSO, "Clear" input buffer:
+	mov	#INbuff,r2
+	clr	r3
+1$:
+	mov	#secret,(r2)+		; store 0,...,WDcnt-1
+	inc	r3
+	cmp	r3,WDcnt
+	blt	1$
+
+	mov	#secret,(r2)		; ONE extra word for overrun check.
+
+	rts	pc
+legend:	.ASCIZ	<eol>/* The current buffer pattern = '/
+weirdo:	.ASCIZ	<eol>/* i NE o - words out compare errors = '/
+	.EVEN
+pcons:	0
+ShoPat:
+	bit	#1000,@#consol		; We're on?
+	bne	1$			; Yes.
+	 clr	pcons			;  Nope...
+	 rts	pc
+1$:
+	 tst	pcons			;  consecutive try?
+	 beq	2$			;  NO.
+	  rts	pc			;   Yes. So relax.
+2$:
+	 inc	pcons			;  Only once.
+;	And now the message.
+	mov	#legend,r0
+	mov	#line,r1
+	jsr	pc,makLin		;  (r0)+ -> (r1)+
+	
+;	Now the value:
+	mov	PatInx,r0		;  indexes the pattern
+	dec	r0
+	bge	3$
+	 mov	#nPats-1,r0		;  wrap around.
+3$:
+	asl	r0			;  ...by bytes
+	add	#cPatt,r0		;  base+offset 
+	mov	@(r0),r0		;  the value.
+	jsr	pc,OCTout		;  r0 -> (r1)+ in ascii(8)
+	jsr	pc,EndSnd
+
+	mov	#weirdo,r0
+	mov	#line,r1
+	jsr	pc,makLin		;  (r0)+ -> (r1)+
+	mov	WDSerr,r0
+	jsr	pc,OCTout		;  r0 -> (r1)+ in ascii(8)
+	jsr	pc,EndSnd
+	rts	pc
+	.nlist	meb
+	.sbttl	buffer areas.
+	.globl	OUTBUF,inBUFF
+Ndata = 12.
+excess = 266.-Ndata
+bSize = 280.
+OUTBUF:
+ENCAP:	.WORD	0			; Source, and dest HOST(lHOST..)
+OUTdat: .REPT	141.
+	.WORD 	0,-1
+	.ENDR
+; Data buffer area:
+INbuff:	.WORD 0
+PAKsiz: .REPT	bSize+1
+	.WORD	0
+	.ENDR
+	.end	mini
+

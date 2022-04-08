@@ -1,0 +1,126 @@
+; Copyright Xerox Corporation 1979
+	.TITLE	QUEUE
+
+	.CSECT	GLOBAL
+G=.
+.=G+115.+115.
+	.WORD	NQUEUE
+	.WORD	DQUEUE
+.=G+119.+119.
+	.WORD	UQUEUE
+
+	.CSECT
+;
+;QUEUE STRUCTURE
+;
+HEAD=0
+TAIL=2
+;
+;ITEM STRUCTURE
+;
+LINK=0
+;
+;SUBROUTINE ENQUEUE(QUEUE,ITEM)
+;
+NQUEUE::
+      ASL      R1
+      MOV      R3,-(SP)         ;PUSH R3
+      MOV      R4,-(SP)         ;PUSH R4
+      MOV      R2,R3
+      ASL      R3
+      CLR      LINK(R3)         ;LINK OF NEW TAIL = 0
+      MFPS     R3               ;SAVE PRIORITY
+      MTPS     #240             ;SET TO PRIORITY 5
+      TST      HEAD(R1)         ;IS QUEUE EMPTY?
+      BNE      QUSED            ;NO, BRANCH
+      MOV      R2,HEAD(R1)      ;YES, UPDATE HEAD POINTER
+      BR       NOTAIL           ;
+QUSED:
+      MOV      TAIL(R1),R4      ;UPDATE LINK OF PREVIOUS TAIL
+      ASL      R4		;
+      MOV      R2,@R4		;
+NOTAIL:
+      MOV      R2,TAIL(R1)      ;UPDATE TAIL POINTER
+      MTPS     R3               ;RESTORE PRIORITY
+      MOV      (SP)+,R4         ;POP R4
+      MOV      (SP)+,R3         ;POP R3
+      ADD      #2,0(SP)         ;
+      RTS      PC               ;RETURN
+      .PAGE
+;
+;SUBROUTINE DEQUEUE(QUEUE) = ITEM
+;
+DQUEUE::
+      ASL      R1
+      MOV      R2,-(SP)         ;PUSH R2
+      MOV      R3,-(SP)         ;PUSH R3
+      MOV      R4,-(SP)         ;PUSH R4
+      MFPS     R2               ;SAVE PRIORITY
+      MTPS     #240             ;SET TO PRIORITY 5
+      MOV      HEAD(R1),R3      ;RETURN ITEM ADDR TO CALLER
+      BEQ      NOQUE            ;
+      MOV      HEAD(R1),R4
+      ASL      R4
+      MOV      @R4,HEAD(R1)	;HEAD = NEXT ITEM
+      TST      HEAD(R1)         ;TEST NEXT ITEM
+      BNE      TAILOK           ;BRANCH IF QUEUE NOT EMPTY
+      CLR      TAIL(R1)         ;QUEUE EMPTY, TAIL = 0
+NOQUE:                          ;
+TAILOK:                         ;
+      MTPS     R2               ;RESTORE PRIORITY
+      MOV      R3,R1            ;R1 = ITEM ADDRESS
+      MOV      (SP)+,R4         ;POP R4
+      MOV      (SP)+,R3         ;POP R3
+      MOV      (SP)+,R2         ;POP R2
+      ADD      #2,0(SP)         ;
+      RTS      PC               ;RETURN
+	.PAGE
+;
+;SUBROUTINE UNQUEUE(QUEUE,ITEM) = TRUE/FALSE
+;
+UQUEUE::
+	MOV	R3,-(SP)	;PUSH R3
+	MOV	R4,-(SP)	;PUSH R4
+	MOV	R5,-(SP)	;PUSH R5
+	MFPS	R3		;SAVE PRIORITY
+	MTPS	#240		;SET TO PRIORITY 5
+	ASL	R1
+	MOV	R1,R5		;R5 = PREVIOUS ITEM
+	MOV	HEAD(R1),R4	;GET ADDRESS OF FIRST ITEM
+CMP:
+	BEQ	NOITEM		;BRANCH IF END OF QUEUE
+	CMP	R4,R2		;IS IT REQUESTED ITEM?
+	BEQ	ITEMOK		;YES
+        ASL     R4
+	MOV	R4,R5		;R5 = PREVIOUS ITEM
+	MOV	LINK(R4),R4	;NO, GET NEXT ITEM
+	BR	CMP		;
+ITEMOK:
+	CMP	R5,R1		;IS IT FIRST ITEM?
+	BEQ	DQUE		;YES, DEQUEUE IT
+        ASL     R4
+	MOV	LINK(R4),R4	;NO, GET ADDRESS OF NEXT ITEM
+	MOV	R4,LINK(R5)	;CHAIN IT TO PREVIOUS ITEM
+	BNE	UQDONE		;IS THIS END OF CHAIN?
+        CLC
+        ROR     R5
+	MOV	R5,TAIL(R1)	;YES, UPDATE TAIL
+	BR	UQDONE		;
+NOITEM:
+	CLR	R1		;RESULTIS FALSE
+	BR	UQEXIT		;
+DQUE:
+        CLC
+        ROR     R1
+	JSR	PC,DQUEUE	;DEQUEUE ITEM
+	.WORD	0		;
+UQDONE:
+	MOV	#177777,R1	;RESULTIS TRUE
+UQEXIT:
+	MTPS	R3		;RESTORE PRIORITY
+	MOV	(SP)+,R5	;POP R5
+	MOV	(SP)+,R4	;POP R4
+	MOV	(SP)+,R3	;POP R3
+	ADD	#2,0(SP)	;
+	RTS	PC		;RETURN
+	.END

@@ -1,0 +1,77 @@
+; Copyright Xerox Corporation 1979
+        .TITLE    TIMER
+        .DSABL    GBL
+
+	.CSECT	GLOBAL
+G=.
+.=G+122.+122.
+	.WORD	SETTIM
+	.WORD	TIMHEX
+	.WORD	DISMIS
+
+	.CSECT
+
+BLOCK=G+127.+127.
+BINCLK=G+135.+135.	       ;EACH COUNT = 100 MSEC
+
+;
+;SUBROUTINE SETTIMER(LVTIMER,DELTA)
+;
+SETTIM::
+      ASL      R1
+      ADD      BINCLK,R2        ;ADD BINCLK TO DELTA
+      MOV      R2,@R1           ;STORE RESULT IN LVTIMER
+;
+      ADD      #2,0(SP)         ;
+      RTS      PC               ;RETURN
+      .PAGE
+;
+;SUBROUTINE TIMERHASEXPIRED(LVTIMER) = TRUE/FALSE
+;
+;
+;RETURN IN R1:
+;      TRUE  = EXPIRED
+;      FALSE = NOT EXPIRED
+;
+TIMHEX::
+        ASL     R1
+        CMP     @R1,BINCLK      ;IS IT TIMED OUT?
+        BHI     NOTIM           ;NO, BRANCH
+TIM:
+        MOV     #177777,R1      ;RESULTIS TRUE
+        BR      TIEX
+NOTIM:
+        BVS     TIM
+        CLR     R1              ;RESULTIS FALSE
+TIEX:
+        ADD     #2,0(SP)
+        RTS     PC              ;RETURN
+	.PAGE
+;
+;SUBROUTINE DISMISS(DELTA)
+;
+DISMIS::
+	SUB	@0(SP),R0	;STANDARD
+	MOV	(SP)+,-(R0)	;	ENTRY CODE
+	MOV	R1,R2		;R2 = DELTA
+	TST	-(R0)		;PUSH STACK
+	MOV	R0,R1
+	CLC
+	ROR	R1		;R1 = LV TIMER
+	JSR	PC,SETTIM	;
+	.WORD	0
+DILOOP:
+	JSR	PC,@BLOCK	;BLOCK
+	.WORD	0		;UNTIL
+	MOV	R0,R1		;TIMER
+	CLC			;HAS
+	ROR	R1		;
+	JSR	PC,TIMHEX	;EXPIRED
+	.WORD	0
+	TST	R1		;EXPIRED?
+	BEQ	DILOOP		;NO, TRY AGAIN
+	TST	(R0)+		;POP STACK
+	MOV	(R0)+,R5	;STANDARD EXIT CODE
+	ADD	(R5)+,R0
+	JMP	(R5)
+        .END

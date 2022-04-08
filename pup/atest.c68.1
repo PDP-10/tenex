@@ -1,0 +1,111 @@
+# include <stdio.h>
+# include </ps/s/yeager/version.h>
+extern short int l1_coreleft;
+# define l1_chunk struct chunk
+l1_chunk {/* memory chunk structure */
+	l1_chunk *previous;	/* previous free chunk or 0 */
+	l1_chunk *next;		/* next free or 0	    */
+	short int size;		/* bit 15 = 0 if free, 1 if taken */
+			        /*     14 - 0  size in words	  */
+	};
+# ifndef cc68
+int avail {50};
+# endif
+# ifdef cc68
+int avail=50;
+# endif
+
+int l_firstfree[16000];		/* the space */
+extern l1_chunk *l1_memhead;
+l1_chunk *slots[50];
+
+main ()
+	{char buff[80]; short int i, n, quit;
+	l1_freespaceinit ();
+	quit = 0;
+	for (i = 0; i < 50; i++) slots[i] = (l1_chunk *)-1;
+	while (!quit)
+	    {ttyread ("allocate, release, mem, quit (a, r, m, q)? ", buff);
+	    switch (buff[0])
+		{case 'A':
+		case 'a': 
+	            if (avail == 0)	    
+			{printf (" no slots left!\n"); break;}
+		    i = nexti ();
+		    ttyread ("how many words? ", buff);
+		    n = atoi (buff);
+		    if (n < 0) {printf ("that's too big!\n"); continue;}
+		    slots[i] = (l1_chunk *)l1_getmem (n);
+		    if (!slots[i]) 
+			{slots[i] = (l1_chunk *)-1;
+			printf ("couldn't allocate!\n"); continue;}
+		    avail--;
+		    continue;
+		case 'R':
+		case 'r': 
+		    spillmem ();
+		    ttyread ("which slot? ", buff);
+		    i = atoi (buff);
+		    if (illegal (i)) continue;
+		    l1_relmem (slots[i]); avail++; slots[i] = (l1_chunk *)-1;
+		    continue;
+		case 'M': 
+		case 'm':
+		    spillmem (); continue;
+		case 'q':
+		case 'Q': quit = 1; continue;
+		default: printf("\"%s\" is weird!\n", buff);
+		}
+	    }
+	}
+
+int atoi (b) char *b; {
+    /* ascii string to integer */
+    char c;
+    int i;
+    i = 0;
+    while (c = *b++) i = i*10 + (int)c - '0';
+return (i);
+}
+
+int nexti ()
+	{int j;
+	/* should ALWAYS succeed */
+	for (j = 0; j < 50; j++) if (slots[j] == (l1_chunk *)-1) return(j);
+	}
+# define or ||
+int illegal (i) int i;
+	{if (i < 0 or i > 49 or slots[i] == (l1_chunk *)-1)
+	    {printf ("%d is invalid slot#\n", i); return(1);}
+	return(0);
+	}
+int spillmem ()
+	{/* spill out our memory allocation scheme */
+	l1_chunk *funrun; 
+	funrun = l1_memhead;	/* start of list */
+	printf("..............memory map..............\n");
+	while (1)
+	    {int size, notfree;
+	    printf("address(8): %o", funrun);
+	    size = funrun->size;
+	    notfree = size & 0100000; size &= 077777;
+	    printf("  words: %d", size);
+	    if (notfree) printf (" free:  no ");
+	    else 
+		printf (" free: yes ");
+	    pslot (funrun);        
+	    if (!(funrun->next)) break;
+	    funrun = funrun->next;
+	    }
+	printf("core left: %d\n", l1_coreleft);
+	}
+int pslot (add) int add;
+	{short int i;
+	for (i = 0; i < 50 ;++i) 
+	    if (slots[i] == (l1_chunk *)(add + sizeof(l1_chunk)))
+	        {printf (" slot# %d\n", i); return;}
+	printf (" n/a\n");
+	}
+l_memcount () {return(16000);}
+ttyread (s, buf) char *s, *buf;
+    {printf (s); gets (buf);}

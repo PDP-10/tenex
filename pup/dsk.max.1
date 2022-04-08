@@ -1,0 +1,680 @@
+;<134>DSK.MAC;60    11-JAN-77 17:16:39    EDIT BY TAFT
+; Revise DSKOP checks for memory access based on disk operation
+;<133>DSK.MAC;59    17-JUN-75 12:00:55    EDIT BY FIALA
+; Put wheel check in DSKCV jsys and fixed JSP D,CDSKVA to be CALL CDSKVA.
+;<133>DSK.MAC;58    15-MAY-75 01:04:30    EDIT BY FIALA
+; Do not add bad spot when page 0 is itself the new bad spot.
+;<133>DSK.MAC;57    11-APR-75 10:15:44    EDIT BY FIALA
+; Shorten microcode command no. field to 4 bits--use 1B13 in new mode
+;   to suppress error reporting and page 0 update.
+;<133>DSK.MAC;56     4-JAN-75 19:07:50    EDIT BY TAFT
+; BBN mod to set FDBPRM and FDBUND for DSKBTTBL file when created
+;<132>DSK.MAC;55    21-NOV-74 21:04:23    EDIT BY TAFT
+; Add NOINT at DSKOP5
+;<132>DSK.MAC;54    18-NOV-74 21:43:56    EDIT BY FIALA
+; Put in fail return for call to CONVPK and made APNBS failures
+;   be BUGNTE's because they may occur following aux. pack dismount or
+;   on uninitialized aux. pack and should not crash system.
+;<132>DSK.MAC;53    22-OCT-74 04:18:02    EDIT BY FIALA
+;<132>DSK.MAC;52    14-OCT-74 23:32:54    EDIT BY FIALA
+; Revised DSKOP to handle complete disk controller capability in "new mode."
+;    Added write header capability in old mode.  Fixed apparent bugs
+;    in return of UN and PD to user.  Made CHKBT and DSKBTI non-resident.
+;    Rewrote non-BBN-compatible format of DSKOP commands. (ERF)
+;<132>DSK.MAC;49    27-JUL-74 04:49:20    EDIT BY FIALA
+; Put in 1.32 edits for DSKBTTBL;1;P400000, DSKCV jsys.  Also made
+;    DSKASA, .DSKAS, DSKSP, .GDSKC, .DSKOP, CHKB7, SETBTF, MAPBTF, OPNBTF,
+;    DSKBTR, and APNBS swappable.  E_UNIT, F_IOS. (ERF)
+;<131>DSK.MAC;43    10-MAY-74 13:29:15    EDIT BY FIALA
+; Put in count of calls to disk allocator for statistics. (ERF)
+;<131>DSK.MAC;42    13-MAR-74  2:49:15	EDIT BY TAFT
+; More :: entries.  Put in 1.31 disk free space counting logic.
+;<131>DSK.MAC;39    12-MAR-74 18:12:21	EDIT BY TAFT
+; Add TITLE, SEARCH statements
+
+;9 APR 72, 1356:
+;30 June 73:	Removed multiple sectors per page stuff	E.R.Fiala
+;1 July 73:	Removed Miniexec code reading bad spots from file and
+;		added code reading bad spots from record 0 of each
+;		pack to DSKBTI; changed .DSKOP to use auxiliary page
+;		in monitor then BLT data when either word count #
+;		1000 or starting address doesn't end in 000	E.R.F.
+;18 July 73:	Added code to append bad spot to page 0 list;
+;		shortened routine write enabling/disabling bit
+;		table, took out LOTRK checks		E.R.F.
+;27 August 73:	Changed DSKOP to pass UN and predata to/from caller
+;15 Sept 73:	Changed oscillating scan to cyclic scan; merged free
+;		block counter for each track with bit table to save one
+;		word/track; put in roving pointer.		E.R.F.
+	SEARCH	PROLOG
+	TITLE	DSK
+
+;DEVICE INDEPENDENT DISK RELATED STUFF - D. MURPHY
+
+EXTERN BUGCHK,BUGHLT,BUGNTE
+
+G==7		; AC definition
+
+DEFINE TMSG <PUSHJ P,TMSGQ##>	; Sixbit message typer (SWPMON)
+
+NMINFP==NPGTK/6		; Min free pages for free choice assign.
+DSKABT==10
+LS DBTJFN,1		; JFN of bit table file
+LS KROVPT,1		; Roving pointer used by free choice allocator
+GS DSKFRC,1		; Disk free space count
+
+;ASSIGN PAGE ON DISK
+;IF AC1=0, ASSIGN FROM TRACK WITH .GE. NMINFP FREE PAGES
+;OTHERWISE, TAKE AC1 AS DISK ADDRESS AND ASSIGN FROM SAME TRACK
+;  IF NOT FULL, OR FROM NEAREST TRACK WITH .GE. NMINFP FREE PAGES
+;IN EITHER CASE, IF NO TRACK HAS .GE. NMINFP FREE PAGES, THE TRACK
+;  WITH THE MAX NUMBER OF FREE PAGES WILL BE USED
+
+IFG NPGTK-77,<PRINTX /FIX DISK ALLOCATOR FOR NPGTK .G. 77/>
+DSKASN:: IFDEF DRMCHN,<SKIPN DISKP	;DISK ON SYSTEM?
+	JRST DRMASF>		;NO, USE DRUM
+	CALL DSKLBT		;LOCK BIT TABLE AND WRITE-ENABLE IT
+	JUMPE 1,DSKA1		;FREE CHOICE
+	TLZ 1,DSKMSK		;FLUSH GARBAGE BITS
+	IDIVI 1,NPGTK		;SEPARATE INTO TRACK AND PAGE
+	IMULI A,NBWTK
+	CAIL A,NTRACK*NBWTK	; Reasonable track and unit?
+	JRST DSKA1		;NO, USE FREE CHOICE ALGORITHM
+	MOVEI C,77
+	TDNN C,DSKBTB+NBWTK-1(A) ; Any pages on this track?
+	JRST DSKB1		;SORRY
+DSKA9:	SOS DSKBTB+NBWTK-1(A)	; Assign page this track, reduce count
+	SOS DSKFRC		; Decrement free count
+	MOVEI B,0
+DSKA2:	MOVE C,DSKBTB(A)
+	CAIL B,NPGTK-44		; Last word of bits?
+	ANDCMI C,77		; Yes
+	JUMPN C,DSKA3
+	ADDI 2,^D36		;THAT'S 36 PAGES
+	CAIL 2,NPGTK		;LOOKED AT BITS FOR ALL PAGES?
+	BUG(HLT,<DSK BIT TABLE FOULED, CAN'T FIND FREE PAGE ON TRACK WITH NON-0 COUNT>)
+	AOJA 1,DSKA2		;THERE MUST BE ONE THERE
+
+DSKA3:	JFFO 3,.+1		;FIND FIRST FREE BLOCK
+	MOVE 3,BITS##(4)	;MAKE IT NO LONGER FREE
+	ANDCAM 3,DSKBTB(1)
+	AOS DSKALC##		; Increment count of allocator calls
+	ADDI D,0(B)		;PAGE NUMBER WITHIN THIS TRACK
+	IDIVI A,NBWTK		; Get track
+	IMULI A,NPGTK		; Compute linear address
+	ADDI A,(D)
+	TLO 1,DSKABT		;INDICATE DISK ADDRESS, NEWLY ASSIGNED
+DSKLVD:	SETZM NXTDMP##		; Request swap to disk
+	AOS 0(P)		;SKIP RETURN
+DSKLEV:	MOVSI 3,WRITEB		;CLEAR WRITE BIT ON BITTBL PAGES
+	HRLZI 2,-<NTRACK*NBWTK+777>/1000
+	ANDCAM 3,MMAP+DSKBPG(2)
+	AOBJN 2,.-1
+	SETOM DSKBLK
+	OKSKED
+	RET
+
+;THE SEARCH FOR THE BEST TRACK
+
+DSKA1:	MOVE A,KROVPT		; Start at track used last time
+DSKB1:	MOVEI UNIT,0		; Count at best arm position
+	MOVEI B,(A)		; Save original track
+DSKA6:	LDB C,[POINT 6,DSKBTB+NBWTK-1(A),35]	; Count
+	CAML UNIT,C		; Best so far?
+	JRST DSKA4		; No
+	MOVEI D,(A)		; Yes, remember
+	MOVEI UNIT,(C)
+	CAIL UNIT,NMINFP		; Large enough to stop?
+	JRST DSKA8		;YES
+; Cyclic scan by allocator is appropriate for cyclic scan by driver
+DSKA4:	CAIL A,<NTRACK-1>*NBWTK	; About to wrap around?
+	TDZA A,A
+	MOVEI A,NBWTK(A)
+	CAIE A,(B)		; Looked at all tracks?
+	JRST DSKA6		; No
+	JUMPE 5,DSKAA1		;DISK ENTIRELY FULL!!
+DSKA8:	MOVEI 1,0(4)		;BEST TRACK FOUND
+	CAMN B,KROVPT
+	MOVEM A,KROVPT
+	JRST DSKA9		;GO ASSIGN FROM IT
+
+;LOCK AND WRITE-ENABLE BIT TABLE
+;INVOKED ON ENTRY TO ANY ASSIGNMENT OR DEASSIGNMENT ROUTINE
+
+DSKLBT:	NOSKED
+	AOSE DSKBLK		;TRY TO LOCK TABLE
+	BUG(CHK,<DISK BIT TABLE ALREADY LOCKED AT DSKLBT>)
+	MOVSI 3,WRITEB
+	HRLZI 2,-<NTRACK*NBWTK+777>/1000
+	IORM 3,MMAP+DSKBPG(2)
+	AOBJN 2,.-1
+	RET
+
+;DEASSIGN DISK ADDRESS
+
+DEDSK::	IFDEF DRMCHN,<SKIPN DISKP	;DISK ON SYSTEM?
+	JRST DASDRM>		;NO, MUST BE DRUM
+	CALL DSKGX		;GET INDICES, ETC.
+	JRST DEDSK0		;BAD ADDRESS
+	TDNE C,DSKBTB(B)	;PAGE ASSIGNED?
+	JRST DEDSK1		;NO
+	IORM C,DSKBTB(B)	;UNASSIGN IT
+	AOS DSKBTB+NBWTK-1(A)
+	AOS DSKFRC		; Increment free count
+	SETZM NXTDMP
+	JRST DSKLEV		;RETURN
+
+DEDSK0:	BUG(CHK,<Attempt to deassign bad disk address>)
+	JRST DSKLEV
+
+DEDSK1:	BUG(CHK,<Attempt to deassign unassigned disk address>)
+	JRST DSKLEV
+
+; Compute bit index in B, count index in A, bit mask in C
+DSKGX:	CALL DSKLBT		;LOCK AND WRITE-ENABLE BIT TABLE
+	TLZ 1,DSKMSK		;FLUSH RANDOM BITS
+	IDIVI 1,NPGTK		;SEPARATE INTO TRACK AND SECTOR
+	CAIL 1,NTRACK		;LEGAL TRACK NUMBER?
+	RET			;NO
+	IMULI 1,NBWTK		;INDEX TO FIRST WORD OF BITS
+	IDIVI 2,^D36		;GET INDEX TO BIT WORD WITHIN TRACK
+	MOVE 3,BITS(3)		;GET BIT FOR THIS PAGE
+	ADDI B,(A)
+	AOS 0(P)
+	RET
+
+SWAPCD
+
+;ASSIGN SPECIFIC DISK ADDRESS IN 1
+
+DSKASA:: PUSH P,1		;SAVE IT
+	CALL DSKGX		;GET INDICES, ETC.
+	JRST DSKAA1		;BAD ADDRESS
+	TDNN C,DSKBTB(B)	;PAGE FREE?
+	JRST DSKAA1		;SORRY
+	SOS DSKBTB+NBWTK-1(A)
+	SOS DSKFRC		; Decrement free count
+	ANDCAM C,DSKBTB(B)	;ASSIGN IT
+	AOS DSKALC		; Increment count of allocator calls
+	POP P,1
+	JRST DSKLVD		;RETURN GOOD
+
+DSKAA1:	POP P,1
+	JRST DSKLEV		;RETURN NO-SKIP
+
+; Convert from/to virtual/hardware address
+; Accepts
+;	1	disk address ala DSKOP (Sign = 1 for virtual)
+;	DSKCV
+; Returns +1 always.  Disk address of opposite type in A.
+
+.DSKCV::JSYS MENTR##
+	MOVE 4,CAPENB
+	TRNN 4,WHEEL+OPER	; Requires wheel or operator because of BUGHLT's
+	JRST WHEELX		; in CVDSK and CDSKVA
+	TLZN A,(1B0)		; Hardware address?
+	 JRST DSKCVH		; Yes
+	JSP D,CVDSK		; No, convert to hardware address
+DSKCV1:	UMOVEM A,1		; Return result to user
+	JRST MRETN##
+
+DSKCVH:	CALL CDSKVA		; Convert to linear file address
+	TLO A,(1B0)		; Mark it as a linear address
+	JRST DSKCV1
+
+
+;DISK ASSIGNMENT CONTROL JSYS
+
+; ADR = ASSIGN
+; ADR+1B0 = DEASSIGN
+; ADR+1B1 = ASSIGN FREE
+
+.DSKAS:: JSYS MENTR
+	MOVE 4,CAPENB##		;REQUIRES WHEEL OR OPERATOR
+	TRNN 4,WHEEL+OPER
+	JRST WHEELX##
+	TLZE 1,(1B0)		;DEASSIGN?
+	JRST [	CALL DEDSK	;YES
+		JRST MRETN]
+	MOVEI 2,DSKASA		;DO SPECIFIC ASSIGNMENT
+	TLZE 1,(1B1)		;UNLESS BIT 1,
+	MOVEI 2,DSKASN		;IN WHICH CASE TO FREE ASSMT
+	CALL 0(2)		;DO WHICHEVER
+	JRST MRETN		;BAD RETURN, NO INFORMATION
+	UMOVEM 1,1		;GOOD RETURN, AND VALUE OF AC1
+	AOS 0(P)
+	JRST MRETN
+
+
+; Disk usage statistics
+
+DSKSP::	HRLZI C,-NTRACK
+	MOVEI B,0		; Pages free in B
+	LDB A,[POINT 6,DSKBTB+NBWTK-1(C),35]
+	ADD B,A
+	ADDI C,NBWTK-1
+	AOBJN C,.-3
+	MOVEI A,NTRACK*NPGTK
+	SUB A,B			; Pages used in A
+	RET
+
+
+.GDSKC::MOVE 2,DSKFRC		; Get # pages left
+	MOVEI 1,NTRACK*NPGTK	; Compute # pages used
+	SUB 1,2
+	XCT MJRSTF
+
+;DISK OPERATE JSYS - USER UTILITY DISK HANDLE
+; A/ hardware address with physical unit no. (sign = 0) or linear address (sign=1)
+; B/ 1B12 = new mode (else old mode), B25-35 word count (must be .LE. 1000),
+; In old mode 1B13 = write header (cannot write data at same time),
+;    1B14 = write data and UN, 1B15 = compare class (n. i.)
+; In new mode, B9-11 selects a function type as follows:
+;    0  Regular command (explained below)
+;    1  Return completed 9-word no-wait command to address in D, error
+;	status in A, retry count in B, count of unfinished commands in C
+;	(sign of C is 1 if no finished commands were found).
+;    2  Allocate all bad spots
+;    3-7 Undefined
+; For reg. com. (UCGET, UCRET, NOWAIT, CSAVE, and HIPRI bits in DSKPAK)
+;    B0 = get UN and PD from user's 9-word command block (else use 0)
+;    B1 = return completed command to user's 9-word block (NOWAIT = 0 only),
+;    B2 = return to caller without waiting for command completion,
+;    B4 = save command on KERRQ for pickup later even if no error
+;	(NOWAIT = 1 only),
+;    B5 = make command high priority (else low).
+;    B7 = suppress error retries, reporting and page 0 update
+;    B14-17 microcode command no. (see DSKPAK)
+; C/ virtual address for word 0 of the transfer (ignored for non-data commands).
+; D/ points at 9-word block for command return or UN and predata fetch
+; Returns error code in A:  0 = no error, errors as in DSKPAK UDSKIO
+; Retry count is returned in B in new mode (for NOWAIT=1 B is clobbered).
+
+.DSKOP::JSYS MENTR
+	MOVE IOS,CAPENB
+	TRNN IOS,WHEEL+OPER
+	JRST WHEELX		; Must be wheel or operator
+	TLNE B,(1B12)		; New mode command?
+	JRST DSKOP2		; Yes.
+	TLZ B,777707		; No, convert.  Clear garbage
+	TLO B,HIPRI		; Make high pri.
+	TLNE B,(1B14)		; Write command?
+	JRST DSKOP2		; Yes, command code is 10 in B14-17
+	TLZE B,(1B13)		; Write header?
+	JRST DSKOP2		; Yes, know command code is 0 in B14-17
+	TLO B,4			; No, must be read code 4 in B14-17
+DSKOP2:	TDZ B,[XWD NOUNLK,774000] ; Don't unlock page on completion
+	LDB UNIT,[POINT 3,B,11]	; Get function type
+	CAILE UNIT,2		; Legal value?
+	JRST ILLCOM		; No, give command reject error
+	JRST .+1(UNIT)		; Dispatch to proper routine
+	JRST DSKOP9		; 0 = regular command
+	JRST DSKOPA		; 1 = pick up completed command
+	NOINT			; 2 = allocate bad spots
+	CALL DSKBTR		; Allocate bad spots
+DSKOP6:	OKINT
+	JRST MRETN
+
+DSKOPA:	UMOVES (D)		; Verify write permission for command return
+	UMOVES 10(D)
+	HRR B,D			; Pointer to place for 9-word command
+	NOINT
+	CALL UDSKGF
+	UMOVEM A,A		; Error status
+	UMOVEM C,B		; Retry count
+	UMOVEM D,C		; # unfinished commands, sign=1 if no pickup
+	JRST DSKOP6
+
+; Regular commands here to assign pages.  Note:  must avoid illegal page
+; access traps while utility buffer is allocated or job will crash and
+; allocator storage irretrievably be lost.
+DSKOP9:	TLNN B,UCRET		; Returning command block to user?
+	JRST DSKOPC		; No.
+	UMOVES (D)		; Yes, verify write permission
+	UMOVES 10(D)		; In case page boundary crossed
+DSKOPC:	TLNN B,UCGET		; Getting UN and PD from user?
+	JRST DSKOPD		; No.
+	UMOVE UNIT,(D)		; Verify read permission for UN and PD fetch
+	UMOVE UNIT,10(D)
+DSKOPD:	LDB UNIT,[POINT 4,B,17]	; Get command code
+	CAILE UNIT,11		; Legal?
+	JRST ILLCOM		; No.
+	MOVE UNIT,BITS##(UNIT)	; Set bit corresponding to operation
+	TDNN UNIT,DATOPS	; Main memory data operation?
+	JRST DSKOP5		; No, don't have to verify page access
+
+; Note that no page boundaries will be crossed by disk transfer because
+; BSPG is used in that case, so a single reference suffices to assign the page.
+	TDNE UNIT,RDOPS		; Dirtying main memory?
+	UMOVES (C)		; Yes, verify write permission
+	UMOVE IOS,(C)		; No, verify read permission
+	MOVEI IOS,(B)
+	CAILE IOS,1000		; Legal word count?
+	JRST ILLCOM		; No, give illegal command error
+	NOINT
+	CAIN IOS,1000		; Word count # 1000?
+	TRNE C,777		; Or not start at page boundary?
+	JUMPA DSKOP3		; Yes, use BSPG and BLT data
+	HRRZS A,C		; Main memory address
+	JSP IOS,.+1		; Get PC word
+	TLNN IOS,(1B7)		; Check call-from-monitor bit
+	HRLI A,(1B0)		; Called from user, indicate in address
+	CAIGE C,PPRMA		; Resident monitor address?
+	JUMPGE A,DSKOP8		; Yes, don't lock/unlock page
+	CALL DSKOPS		; No, lock page (int. rout. unlocks)
+	JRST DSKOP6
+
+; Non-data command
+DSKOP5:	NOINT
+	MOVEI A,BSPG		; Random page (will not be used)
+DSKOP8:	TLO B,NOUNLK		; Tell int. rout. not to unlock page
+	LSH A,-11		; Get page no.
+	CALL DSKOP1		; Do it.
+	JRST DSKOP6
+
+OKILLC:	OKINT
+ILLCOM:	MOVEI A,2
+	UMOVEM A,A
+	JRST MRETN
+
+; Not at page boundary or word count # 1000, do it the slow way
+DSKOP3:	TLNE B,(1B12)		; W.C. # 1000 or S.A. # XXX000
+	JRST OKILLC		; illegal in new mode
+	ADDI IOS,(C)		; Terminal address for BLT at DSKOP4
+	AOSE UBSPG		; BSPG available?
+	CALL WBSPG
+	MOVE A,BSPG		; Reference the page to assign it
+	MOVEI A,BSPG
+	HRLI C,BSPG
+	TDNN UNIT,WRTOPS	; Write to disk?
+	JRST DSKOP4		; No.
+; BLT data to BSPG and write it onto disk
+	MOVS C,C		; XWD user's address,BSPG
+;***Rest of BSPG not zeroed??***
+	XCTUM [BLT C,BSPG(B)]	; BLT user's block into BSPG
+	CALL DSKOPS
+	JRST DSKOP7
+
+DSKOP4:	MOVE UNIT,C		; Save BLT pointer for later
+	CALL DSKOPS
+	XCTMU [BLT UNIT,(IOS)]
+DSKOP7:	SETOM UBSPG
+	JRST DSKOP6
+
+; Common subroutine for the three cases of DSKOP
+DSKOPS:	CALL FPTA		; Get PTN.PN for virtual address in A
+	CALL MLKPG##		; Lock the page
+DSKOP1:	PUSH P,A		; Save page no.
+	HRR B,D			; Construct arg for UDSKIO
+	PUSH P,B
+	UMOVE A,A		; Get user's address
+	TLZE A,(1B0)		; Hardware address?
+	JSP D,CVDSK		; No, convert it (clobbers B,C)
+	POP P,B
+	POP P,C
+	LSH C,11		; Convert page no. to address
+	CALL UDSKIO
+	UMOVEM A,A		; Return error bits in A
+	TLNE B,(1B12)		; New mode?
+	UMOVEM C,B		; Yes, return retry count to user
+	POPJ P,
+
+; Wait for BSPG to become free
+WBSPG:	MOVE A,[XWD UBSPG,DISLT##] ; Scheduler .L. test on UBSPG
+	JSYS EDISMS##
+	POP P,A
+	JRST -2(A)
+
+;CHECK CONSISTENCY OF BIT TABLE
+
+CHKBT::	CALL DSKLBT
+	CALL CHKB0		; Do the checking
+	CALL DSKSP		; Compute free space
+	MOVEM 2,DSKFRC		; Remember it
+	RET
+
+CHKB0:	HRLZI G,-NTRACK*NBWTK
+CHKB5:	MOVEI IOS,0		; Count bits this track
+	MOVEI UNIT,44		; Count bits looked at this track
+CHKB1:	MOVE A,DSKBTB(G)
+	CAIL UNIT,NPGTK
+	ANDCMI A,77
+	MOVN B,A		; Count ones in this word
+	TDZE A,B
+	AOJA IOS,.-2
+	ADDI UNIT,44
+	CAIGE UNIT,NPGTK+44
+	AOBJN G,CHKB1		; This should always jump
+
+
+CHKB2:	LDB D,[POINT 6,DSKBTB(G),35]
+	CAIE IOS,(D)		; Count correct as remembered
+	JRST CHKB4		; No
+CHKB6:	AOBJN G,CHKB5
+	JRST DSKLEV		;UNLOCK BIT TABLE AND RETURN
+
+; Report inconsistency
+CHKB4:	DPB IOS,[POINT 6,DSKBTB(G),35] ; Correct the count
+	CALL DSKLEV		;UNLOCK BIT TABLE, ETC.
+	JRST CHKB7
+
+CHKB7:	HRROI 1,[ASCIZ /
+BT INCONSISTENCY
+ TRK CNT BITS
+/]
+	PSOUT
+	MOVEI 1,101
+	MOVEI B,(G)
+	IDIVI B,NBWTK		; Get track no.
+	MOVE 3,[1B2+4B17+10]	;OCTAL NUMBERS IF 4 CHAR FIELD
+	NOUT			;TRACK
+	BUG(HLT,<CHKBT - BAD RETURN FROM NOUT>)
+	MOVE B,(D)		; Old count
+	ANDI 2,777		;IN CASE REALLY FOULED UP
+	NOUT			;OLD COUNT
+	BUG(HLT,<CHKBT - BAD RETURN FROM NOUT>)
+	MOVE B,(D)
+	NOUT			;NEW COUNT
+	BUG(HLT,<CHKBT - BAD RETURN FROM NOUT>)
+	HRROI 1,[ASCIZ / - CORRECTED
+/]
+	PSOUT
+	CALL DSKLBT		;RE-LOCK BIT TABLE
+	JRST CHKB6		;CONTINUE SCAN
+
+;BIT TABLE FILE LOGIC
+
+;PUT BIT TABLE PAGES IN FILE
+
+SETBTF:	MOVEI A,DSKBTB
+	MRPAC			; Read status of bit table page
+	MOVSI 1,(1B17)		;SHORT FORM
+	TLNE 2,(1B10)		; Private?
+	CALL OPNBTF		;OPEN (CREATE) FILE
+	BUG(HLT,<SETBTF:  GTJFN failed on DSKBTTBL>)
+	MOVEI 7,DSKBTB		;ADDRESS OF FIRST PAGE
+	SETZ 6,			;MAP INDEX
+SETBF1:	CAIL 7,DSKBTB+NTRACK*NBWTK	;END OF BIT TABLE?
+	JRST SETBF2		;YES, DONE
+	MOVS 1,DBTJFN
+	HRRI 1,0(6)
+	CALL JFNOFN##		;CONVERT TO OFN
+	BUG(HLT,<SETBTF - JFNOFN ON BIT TABLE FILE FAILED>)
+	MOVE 2,1
+	MOVEI 1,0(7)
+	CALL FPTA##		;CONVERT MON ADDRESS TO PTN.PN
+	MOVSI 3,RWX
+	CALL SETPT##		;PUT PAGE IN FILE
+	ADDI 7,1000
+	AOJA 6,SETBF1
+
+SETBF2:	MOVE 1,DBTJFN
+	CLOSF			;CLOSE FILE
+	JFCL
+	RET
+
+;MAP BIT TABLE FILE INTO MON SPACE
+
+MAPBTF:: MOVSI 1,(1B2+1B17)	;OLD FILE, SHORT FORM
+	CALL OPNBTF		;OPEN THE FILE
+	JUMPA SETBTF		;GTJFN failed
+	MOVEI 7,DSKBTB
+	SETZ 6,
+MAPBF1:	CAIL 7,DSKBTB+NTRACK*NBWTK
+	JRST SETBF2
+	MOVEI 1,0(6)		;FILE PAGE NUMBER
+	HRL 1,DBTJFN
+	CALL JFNOFN
+	BUG(HLT,<MAPBTF - JFNOFN ON BIT TABLE FILE FAILED>)
+	MOVEI 2,0(7)
+	HRLI 2,READB
+	CALL SETMPG##
+	ADDI 7,1000
+	AOJA 6,MAPBF1
+
+;OPEN BIT TABLE FILE
+
+OPNBTF:	HRRI 1,1		;VERSION 1 ALWAYS
+	HRROI 2,BTNAM
+	GTJFN
+	RET
+	MOVEM 1,DBTJFN
+	MOVEI 2,1B19+1B20+1B25	;THAWED READ AND WRITE
+	OPENF
+	BUG(HLT,<FAILED TO OPEN DSK BIT TABLE FILE>)
+	HRLI 1,1		;SET FDBPRM&FDBUND IN THE FILE
+	MOVSI 2,200400
+	MOVSI 3,200400
+	CHFDB
+	AOS 0(P)
+	RET
+
+BTNAM:	ASCIZ /DSK:<SYSTEM>DSKBTTBL;1;P400000/
+
+;INITIALIZE BIT TABLE
+
+NGSP BSPG,1			; Non-resident monitor page
+LS UBSPG,1			; Lock word for BSPG
+DSKBTI:: IFDEF DRMCHN,<SKIPN DISKP	; Disk on system?
+	RET>			; No
+	MOVEI A,<NTRACK/2>*NBWTK
+	MOVEM A,KROVPT
+	MOVEI B,0
+	MOVEI 1,NPGTK
+DSKAI1:	SETOM DSKBTB(2)		; Init one track of bits
+	SUBI 1,^D36
+	CAILE 1,^D36		; Last word?
+	AOJA 2,DSKAI1
+	MOVN 1,BITS-1(1)	; Last word partially full
+	IORI A,NPGTK		; With count in right-most bits
+	MOVEM 1,DSKBTB+1(2)
+	MOVE 1,[XWD DSKBTB,DSKBTB+NBWTK]
+	BLT 1,DSKBTB+NTRACK*NBWTK-1	;REPLICATE FOR ALL TRACKS
+	RET
+
+; Assign bad spots for disk configuration from record 0 of each pack
+DSKBTR:: MOVE G,SYSUN		; Get no. packs - 1
+	AOSE UBSPG
+	CALL WBSPG		; Wait for BSPG to be free
+DSKBS0:	HRLZ A,DRIVTB(G)	; Get physical unit no. corresponding
+	MOVEI B,1000		; to this virtual unit
+	MOVEI C,BSPG
+	DSKOP
+	JUMPE A,.+2
+BBSPG:	  BUG(HLT,<Error reading bad spot page>)
+	MOVE IOS,[POINT 18,BSPG]	; Bad spots are in 18 bit bytes
+	HRLZ A,DRIVTB(G)	; Treat bad spot page as bad spot
+DSKBSL:	CALL ASSHWA		; Assign hardware address
+	ILDB A,IOS
+	JUMPE A,.+3
+	HRL A,DRIVTB(G)
+	JUMPA DSKBSL
+	SOJGE G,DSKBS0
+	SETOM UBSPG
+	RET
+
+; Allocate hardware address in A in appropriate bit table
+ASSHWA:	LDB B,[POINT 9,A,32]	; Get arm position
+	CAIGE B,SWPTRK+NSWPTK	; Above swapping area?
+	CAIGE B,SWPTRK		; Below it?
+	JUMPA ASSFA		; Yes.
+	IFDEF DRMCHN,<SKIPE DRUMP	; Swapping on disk?
+	RET>			; No, ignore.
+	CALL CDSKSA		; Convert to band and sector
+	CALL ASDRMS##		; Assign it
+	BUG(HLT,<Bad return from ASDRMS on bad spot>)
+	RET			; Already assigned
+	RET
+
+; Address in A is in file area or above it.  Assign it.
+ASSFA:	CAIL B,NTRKOP		; Above file area?
+	JUMPA ASSSVA		; Yes
+	CALL CDSKVA		; No, convert to linear file address
+	CALL DSKASA		; Assign it
+	RET			; Already assigned
+	RET
+
+; Address is in save area or above it.  Print message.
+ASSSVA:	CAIL B,NARMS
+	BUG(HLT,<Illegal address in bad spot list>)
+	HRRZ A,(P)
+	CAIE A,DSKOP6		; See message only on DSKOP call
+	RET
+	MOVEI A,[SIXBIT "$BAD SPOT IN SAVE AREA /"]
+	TMSG
+	SUBI B,NARMS-NTRKPA
+	MOVN B,B
+	IDIVI B,NTRKPA
+	MOVEI B,(B)
+	CALL DECCTY##		; Print in decimal on CTY
+	MOVEI A,[SIXBIT " UNIT /"]
+	TMSG
+	HRRZ B,G		; Virtual unit no.
+	JRST DECCTY		; Print in decimal and return
+
+; Append bad spot in A to proper bad spot list (clobbers B,C)
+APNBS::	SETZM NEWBS
+	CALL CONVPK		; Convert pack no. to virt. unit
+	  RET			; Assume auxiliary pack has gone offline
+	HRL A,DRIVTB(C)		; Convert virt. unit in C to phys unit
+	PUSH P,A
+	AOSE UBSPG		; Acquire BSPG
+	CALL WBSPG		; Wait for BSPG to be free
+	HLLZ A,(P)		; Get address 0 on same pack as bad spot
+	CAMN A,(P)
+	JUMPA APBSRE		; Don't append bad spot if page 0 is itself
+				; the bad spot.
+	MOVEI B,1000
+	MOVEI C,BSPG
+	DSKOP
+	JUMPN A,APBSRE		; Error reading bad spot page
+	HRRZ A,(P)		; Get new bad spot
+	MOVE C,[POINT 18,BSPG]
+APNBS1:	ILDB B,C
+	JUMPE B,APNBS3		; End of list?
+	CAME B,A		; Already in list?
+	JUMPA APNBS1		; No, loop
+APNBS2:	SETOM UBSPG
+	POP P,A
+	RET
+
+; Found end of list.  Make checks, then insert.
+APNBS3:	MOVEI B,BSPG+777
+	CAIGE B,(C)		; Overflow bad spot page?
+	JUMPA APNBS4		; Yes
+	DPB A,C			; No, insert
+	HLLZ A,(P)
+	MOVE B,[XWD 10,1000]
+	MOVEI C,BSPG
+	DSKOP
+	JUMPE A,APNBS2
+	BUG(NTE,<Error writing bad spot page>)
+	JUMPA APNBS2		; Ok if aux. pack (assume aux. pack)
+
+APNBS4:	  BUG(CHK,<Bad spot page full>)
+	JUMPA APNBS2
+
+APBSRE:	BUG(NTE,<Error reading bad spot page>)
+	JUMPA APNBS2
+
+RESCD

@@ -1,0 +1,416 @@
+;<PUP>EFTPCM.MAC.2    19-Mar-80 10:51:25    TECO'd by GILMURRAY
+; Search MONSYM, not STENEX
+;<PUP>EFTPCM.MAC;2     2-SEP-79 15:56:01    EDIT BY TAFT
+; Copyright 1979 by Xerox Corporation
+
+	TITLE EFTPCM -- COMMAND PROCESSOR INVOKING EFTP PACKAGE
+	SUBTTL E. A. Taft / October, 1976
+
+	SEARCH MONSYM
+
+
+; Accumulator assignments
+
+	A=1		; General scratch
+	B=2
+	C=3
+	D=4
+
+	S=6		; Pointer to EFTP socket
+	PB=7		; Pointer to packet buffer
+
+	P=17		; Stack
+
+
+STKLEN==^D200
+
+
+; Parameters and byte pointers defining the structure of a Packet Buffer (PB)
+
+PBHEAD==0	; Start of Pup Header
+ PUPLEN: POINT 16,PBHEAD(PB),15	; Pup Length
+ PUPTCB: POINT 8,PBHEAD(PB),23	; Transport Control Byte
+ PUPTYP: POINT 8,PBHEAD(PB),31	; Pup Type
+
+; PBHEAD+1
+ ; B0-31			; Pup ID
+
+; PBHEAD+2
+ PPUPDN: POINT 8,PBHEAD+2(PB),7	; Destination Network
+ PPUPDH: POINT 8,PBHEAD+2(PB),15  ; Destination Host
+ PPUPD0: POINT 16,PBHEAD+2(PB),31  ; High 16 bits of Destination Socket
+
+; PBHEAD+3
+ PPUPD1: POINT 16,PBHEAD+3(PB),15  ; Low 16 bits of Destination Socket
+ PPUPSN: POINT 8,PBHEAD+3(PB),23  ; Source Network
+ PPUPSH: POINT 8,PBHEAD+3(PB),31  ; Source Host
+
+; PBHEAD+4
+ PPUPSS: POINT 32,PBHEAD+4(PB),31  ; Source Socket
+
+PBCONT==PBHEAD+5  ; Start of Pup Contents
+
+MNPLEN==^D22	; Minimum Pup Length (bytes), incl header and checksum
+MXPLEN==^D554	; Maximum Pup Length
+MNPBLN==<MNPLEN+3>/4  ; Minimum size of PB, in words
+MXPBLN==<MXPLEN+3>/4  ; Maximum size of PB, in words
+
+; Start of program
+
+EFTPCM::RESET
+	MOVEI A,400000		; Init interrupt system
+	MOVE B,[LEVTAB,,CHNTAB]
+	SIR
+	EIR
+	MOVE P,[IOWD STKLEN,STACK]  ; Init stack pointer
+
+; Main command loop
+GETCMD:	MOVEI A,"*"		; Prompt
+	PBOUT
+	PUSHJ P,DOPBIN		; Get a character
+	 JRST GETCMD		; Line delete
+	MOVEI B,BADCMD		; Dispatch on command
+	CAIN A,"?"
+	 MOVEI B,HELP
+	ANDCMI A,40		; Convert lower to upper case
+	CAIN A,"S"
+	 MOVEI B,SEND
+	CAIN A,"R"
+	 MOVEI B,RECEIV
+	CAIN A,"Q"
+	 MOVEI B,QUIT
+	PUSHJ P,0(B)
+	JRST GETCMD
+
+; Simple command execution routines
+BADCMD:	HRROI A,[ASCIZ / ?
+/]
+	PSOUT
+	POPJ P,
+
+HELP:	HRROI A,[ASCIZ / Receive, Send, Quit
+/]
+	PSOUT
+	POPJ P,
+
+QUIT:	HRROI A,[ASCIZ /uit
+/]
+	PSOUT
+	HALTF
+	POPJ P,
+
+; Send file
+
+SEND:	HRROI A,[ASCIZ /end file: /]
+	PSOUT
+	MOVSI A,(1B2+1B4+1B16+1B17)  ; GTJFN bits
+	MOVE B,[8B5+1B19]	; OPENF bits
+	PUSHJ P,OPNFIL		; Get filename and open file
+	 POPJ P,		; Failed
+	MOVEM A,FILJFN		; Ok, save JFN
+	HRROI A,[ASCIZ /to host: /]
+	PSOUT
+	PUSHJ P,OPNPRT		; Collect host name and open port
+	 JRST [	MOVE A,FILJFN	; Failed, clean up
+		CLOSF
+		 CAI
+		POPJ P,]
+	MOVEM A,EFTSOC		; Ok, save pointer to socket
+	MOVEM B,PUPJFN
+
+; Main send loop
+SEND1:	MOVE A,FILJFN		; Read next block of data from file
+	MOVE B,[POINT 8,PACKET+PBCONT]  ; Where to put it
+	MOVNI C,^D512		; Number of bytes
+	SIN			; Read block into packet
+	ADDI C,^D512		; Compute number of bytes read
+	JUMPE C,SEND5		; Jump if none (eof)
+	HRRZ A,EFTSOC		; Get pointer to EFTP socket
+	MOVEI B,PACKET		; Pointer to Pup
+	MOVEI D,^D30000		; Time out in 30 seconds
+	PUSHJ P,ESDATA##	; EFTP send data
+	 JRST SEND7		; Failed
+	JRST SEND1		; Succeeded, loop
+
+; Here when reach end of file
+SEND5:	HRRZ A,EFTSOC		; Get pointer to EFTP socket
+	MOVEI D,^D30000		; Time out in 30 seconds
+	PUSHJ P,ESEND##		; EFTP send end
+	 JRST SEND6		; Failed
+	JRST SENDX		; Succeeded, clean up
+
+; Here when EFTP send fails
+SEND6:	SETZ B,			; No abort text if End
+SEND7:	CAIN A,3		; Receiver busy abort?
+	 JRST [	HRROI A,[ASCIZ /Receiver busy, waiting...
+/]
+		PSOUT
+		MOVEI A,^D10000	; Wait 10 seconds
+		DISMS
+		JRST SEND1]	; Try again
+	PUSHJ P,ABTMSG		; Other error, standard handling
+
+; Here to clean up and return
+SENDX:	HRRZ A,EFTSOC		; Get pointer to EFTP socket
+	PUSHJ P,ECLOSE##	; Close the port
+	MOVE A,PUPJFN		; Get Pup JFN
+	CLOSF			; Close it
+	 PUSHJ P,SCREWUP
+	MOVE A,FILJFN		; Get file JFN
+	CLOSF			; Close it
+	 PUSHJ P,SCREWUP
+	POPJ P,			; Done
+
+; Receive file
+
+RECEIV:	HRROI A,[ASCIZ /eceive file: /]
+	PSOUT
+	MOVSI A,(1B0+1B3+1B4+1B16+1B17)  ; GTJFN bits
+	MOVE B,[8B5+1B20]	; OPENF bits
+	PUSHJ P,OPNFIL		; Get filename and open file
+	 POPJ P,		; Failed
+	MOVEM A,FILJFN		; Ok, save jfn
+	HRROI A,[ASCIZ /from host: /]
+	PSOUT
+	PUSHJ P,OPNPRT		; Collect host name and open port
+	 JRST [	MOVE A,FILJFN	; Failed, clean up
+		DELF
+		 MOVE A,FILJFN
+		CLOSF
+		 CAI
+		POPJ P,]
+	MOVEM A,EFTSOC		; Ok, save pointer to socket
+	MOVEM B,PUPJFN
+	HRROI A,[ASCIZ /Listening on socket /]
+	PSOUT
+	HRRZ A,PUPJFN
+	CVSKT
+	 PUSHJ P,SCREWUP
+	MOVEI A,101
+	MOVE B,C
+	MOVEI C,10
+	NOUT
+	 PUSHJ P,SCREWUP
+	HRROI A,[ASCIZ /
+/]
+	PSOUT
+
+; Main receive loop
+RECEV1:	HRRZ A,EFTSOC		; Get pointer to EFTP socket
+	MOVEI B,PACKET		; Pointer to Pup
+	MOVEI D,^D120000	; Time out in 2 minutes
+	PUSHJ P,ERDATA##	; EFTP receive data
+	 JRST RECEV5		; Failed
+	MOVE A,FILJFN		; Write this block of data to file
+	MOVE B,[POINT 8,PACKET+PBCONT]  ; Where to get it from
+	MOVNS C			; Negative of byte counte
+	SOUT			; Write block from packet
+	JRST RECEV1		; Loop for next
+
+; Here when EFTP receive fails
+RECEV5:	CAIN A,-2		; Normal end?
+	 JRST RECEVX		; Yes, done
+	PUSHJ P,ABTMSG		; No, do standard handling
+	MOVE A,FILJFN		; Try to delete local file
+	DELF
+	 CAI
+
+; Here to clean up and return
+RECEVX:	HRRZ A,EFTSOC		; Get pointer to EFTP socket
+	PUSHJ P,ECLOSE##	; Close the port
+	MOVE A,PUPJFN		; Get Pup JFN
+	CLOSF			; Close it
+	 PUSHJ P,SCREWUP
+	MOVE A,FILJFN		; Get file JFN
+	CLOSF			; Close it
+	 PUSH P,SCREWUP
+	POPJ P,			; Done
+
+; Open EFTP port
+; Returns +1:  Unsuccessful
+;	+2:  Successful, A/ pointer to EFTP socket info block
+;			B/ Pup JFN
+
+OPNPRT:	MOVEI A,400000		; Return process capabilities
+	RPCAP
+	MOVEI A,[0		; GTJFN table
+		100,,101
+		0
+		0
+		0
+		0
+		0
+		0]
+	HRROI B,[ASCIZ /PUP:!J./]  ; Main string ptr
+	TRNE C,600000		; Enabled wheel or operator?
+	 HRROI B,[ASCIZ /PUP:20!A./]  ; Yes, use system EFTP socket
+	GTJFN			; Input foreign port string
+	 JRST [	MOVEI A,100	; Failed, see if line delete
+		BKJFN
+		PUSHJ P,DOPBIN
+		 POPJ P,	; Yes, fail
+		PUSHJ P,OOP	; No, complain
+		JRST OPNPRT]	; Try again
+	HRLM A,0(P)		; Ok, save JFN
+	MOVE B,[16B9+1B19+1B20]	; Open port in raw packet mode
+	OPENF
+	 JRST [	PUSHJ P,EROUT	; Failed, say why
+		HLRZ A,0(P)	; Release JFN
+		RLJFN
+		 CAI
+		POPJ P,]	; Fail
+	MOVE B,A		; Ok, copy JFN
+	MOVEI A,EFTBLK		; Where to build EFTP socket
+	MOVNI C,1		; Select any channel
+	PUSHJ P,EOPEN##		; Open EFTP socket
+	 JRST [	HRROI A,[ASCIZ /Failed to open EFTP socket
+/]
+		PSOUT
+		HLRZ A,0(P)	; Release JFN
+		CLOSF
+		 CAI
+		POPJ P,]
+	MOVEI A,EFTBLK		; Ok, return pointer to block
+	HLRZ B,0(P)		; Pup JFN
+	AOS 0(P)
+	POPJ P,
+
+; Print appropriate message given abort code in A and string ptr
+; in B (0 if no string)
+
+ABTMSG:	CAIL A,600000		; Tenex jsys error?
+	CAIL A,700000
+	 CAIA
+	 JRST EROUT		; Yes, print and return
+	TRNE A,400000		; Abort received?
+	 SETZ B,		; No, no message to print
+	CAIN A,-1		; Select message for error
+	 HRROI A,[ASCIZ /Timeout, no response from remote host/]
+	CAIN A,-3
+	 HRROI A,[ASCIZ /Connection reset received, aborting/]
+	CAIN A,-4
+	 HRROI A,[ASCIZ /Sequence error, aborting/]
+	CAIN A,1
+	 HRROI A,[ASCIZ /External sender abort received/]
+	CAIN A,2
+	 HRROI A,[ASCIZ /External receiver abort received/]
+	CAIN A,3
+	 HRROI A,[ASCIZ /Receiver busy abort received/]
+	CAIN A,4
+	 HRROI A,[ASCIZ /Out of sync abort received/]
+	TLNN A,-1		; Default message if none of above
+	 HRROI A,[ASCIZ /Unknown EFTP error/]
+	PSOUT
+	HRROI A,[ASCIZ /
+/]
+	PSOUT
+	JUMPE B,ABTMS1		; Jump if no abort message
+	MOVEI A,101		; Print abort text
+	SOUT
+	HRROI A,[ASCIZ /
+/]
+	PSOUT
+ABTMS1:	POPJ P,
+
+
+; Input filename and open local file
+;	A/ GTJFN bits
+;	B/ OPENF bits
+; Returns +1:  unsuccessful
+;	+2:  successful, A/ JFN
+
+OPNFIL:	MOVE C,A		; Save args
+	MOVE D,B
+OPNFI1:	MOVE A,C		; Get GTJFN bits
+	MOVE B,[100,,101]	; Name from terminal
+	GTJFN
+	 JRST [	MOVEI A,100	; Failed, see if line delete
+		BKJFN
+		 PUSHJ P,SCREWUP
+		PUSHJ P,DOPBIN
+		 POPJ P,	; Yes, just fail
+		PUSHJ P,OOP	; No, compain
+		JRST OPNFI1]	; Give user another chance
+	HRLM A,0(P)		; Ok, save JFN
+	MOVE B,D		; Get OPENF bits
+	OPENF			; Open file
+	 JRST [	PUSHJ P,EROUT	; Failed, say why
+		HLRZ A,0(P)	; Release JFN
+		RLJFN
+		 PUSHJ P,SCREWUP
+		POPJ P,]	; Fail return
+	AOS 0(P)		; Success, return +2
+	POPJ P,
+
+; Print error message for JSYS error number in A
+
+EROUT:	HRRZ B,A
+	HRLI B,400000
+	MOVEI A,101
+	SETZ C,
+	ERSTR
+	 JRST [	HRROI A,[ASCIZ /Undefined JSYS error /]
+		PSOUT
+		MOVEI A,101
+		HRRZS B
+		MOVEI C,10
+		NOUT
+		 PUSHJ P,SCREWUP
+		JRST .+2]
+	 PUSHJ P,SCREWUP
+	HRROI A,[ASCIZ /
+/]
+	PSOUT
+	POPJ P,
+
+
+; Print error message, clear input buffer
+
+OOP:	HRROI A,[ASCIZ / ? /]
+ERROR:	PSOUT
+	MOVEI A,^D500
+	DISMS
+	MOVEI A,100
+	CFIBF
+	POPJ P,
+
+
+; Input character from terminal, check for line delete
+; Returns +1:  line delete typed
+;	+2:  normal return, A/ character
+
+DOPBIN:	PBIN
+	CAIN A,177
+	 JRST [	HRROI A,[ASCIZ /XXX
+/]
+		PSOUT
+		POPJ P,]
+	AOS 0(P)
+	POPJ P,
+
+
+; Routine to call for impossible errors
+
+SCREWUP:PUSH P,A
+	HRROI A,[ASCIZ /An impossible error has occurred!!!/]
+	PSOUT
+	POP P,A
+	HALTF
+	JRST .-1
+
+
+LEVTAB:	LEV1PC
+	LEV2PC
+	LEV3PC
+LEV1PC:	BLOCK 1
+LEV2PC:	BLOCK 1
+LEV3PC:	BLOCK 1
+CHNTAB:	BLOCK ^D36
+STACK:	BLOCK STKLEN
+EFTBLK:	BLOCK ^D20		; Socket info block for EFTP
+EFTSOC:	BLOCK 1			; Pointer to EFTP socket info
+FILJFN:	BLOCK 1			; Local file JFN
+PUPJFN:	BLOCK 1			; Network JFN
+PACKET:	BLOCK MXPBLN		; Packet buffer for EFTP data
+
+	END EFTPCM

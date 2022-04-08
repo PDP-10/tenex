@@ -1,0 +1,477 @@
+;<PUP>EVNTYP.MAC.2,  2-Nov-81 12:55:55, Edit by SCHOEN
+; Don't write infinite file if nothing in the log
+
+	title	evntyp
+	subttl	Interpret Event Report logs
+	search	stenex
+ 
+f=0
+a=1
+b=2
+c=3
+d=4
+e=5
+cnt=10
+p=17
+stksiz==40
+ 
+opdef	call	[pushj	p,0]
+opdef	ret	[popj	p,0]
+
+
+; A simple macro to assemble ASCIZ text
+
+define str (text) <[asciz text]>
+
+
+; Macros to append to and expand lists
+
+define append(list,item) <
+define list(op,more) <
+op list,<item,more>
+>>
+
+define expand(list,value) <
+define opmac(junk,item) <
+irp item <ifnb <item>,<value>>>
+list(opmac)
+purge opmac
+>
+
+define uuo(op,routin) <uuon==uuon+1
+opdef op [<uuon>b8]
+ifb <routin>,<uuos(append,%'op)>
+ifnb <routin>,<uuos(append,routin)>
+>
+append(uuos)	;init dispatch list
+uuon==0		;init uuo numbers
+
+	uuo	(print)
+
+define	type	(mess)	<
+	utype	[asciz \mess\] >
+	uuo	(utype,%type)
+
+define	etype	(mess)	<
+	uetype	[asciz \mess\] >
+	uuo	(uetype,%etype)
+
+define	error	(message,retry<0>)	<
+	uerr	[retry,,[asciz message]] >
+	uuo	(uerr,%err)
+
+
+; Handle a JSYS error
+
+define jerr(ac<1>) <
+	error(%acE)
+>
+
+start:	reset
+	setzm	sclr0
+	move	1,[sclr0,,sclr0+1]
+	blt	1,sclr1
+
+	move	p,[iowd stksiz,stack]
+	movei	1,101
+	movem	1,ttyjfn
+	move	1,[call uuohan]
+	movem	1,41
+rstart:	type	<Event Report Log: >
+	movei	a,erptab
+	setz	b,
+	gtjfn
+	 jrst	[caie a,gjfx34
+		  error	(<%1E%%N>,rstart)
+		 etype < Respond with the name of an event report log.%n>
+		 jrst rstart]
+	movem	a,erpjfn
+	move	b,[10b5+1b19+1b26]	; Open 8 bit read
+	openf
+	 jerr
+	sizef				; Get byte count
+	 jerr
+	movn	c,b
+	skipn	cnt,c
+	 jrst	[move a,erpjfn
+		 closf
+		  jfcl
+		 type <Event report file empty, aborting...>
+		 haltf
+		 jrst start]
+	move	b,[point 8,erpbuf]
+	sin				; Read in the entire file
+	closf				; Close it
+	 jerr
+rs1:	type	<Output to: >		; Get the output file
+	movei	a,outtab
+	gtjfn
+	 jrst	[cain a,gjfx33
+		  jrst	[movei a,101
+			 jrst .+1]
+		 caie a,gjfx34
+		  error	(<%1E%%N>,rs1)
+		 etype < Output file; carriage return for TTY:%n>
+		 jrst rs1]
+	movem	a,ttyjfn
+	move	b,[7b5+1b20]		; Open 7 bit write
+	openf
+	 jerr
+	etype	<%n>
+	move	d,[point 8,erpbuf]	; Pointer to report buffer
+; Top of loop
+erplp:	ildb	a,d
+	lsh	a,^d8
+	ildb	e,d
+	iori	e,(a)			; e now has entry length
+	ildb	a,d			; Get source net
+	hrlm	a,addblk		; store
+	ildb	a,d			; Get source host
+	hrrm	a,addblk		; store
+	move	b,[point 8,addblk+1,3]	; Create pointer to store socket
+repeat 4,<
+	ildb	a,d			; get socket
+	idpb	a,b			; store
+>
+	move	b,[point 8,idword,3]	; Create pointer to store ID
+repeat 4,<
+	ildb	a,d			; store ID
+	idpb	a,b
+>
+	subi	e,^d12			; Update count for header
+	addi	cnt,^d12
+	type	<Event report from >
+	move	1,ttyjfn
+	move	2,[300000,,addblk]
+	pupnm
+	 jerr
+	move	a,idword
+	etype	<, Pup ID: %1o%%n>
+erplp1:	ildb	a,d			; Loop here to print contents
+	print	(a)
+	aoj	cnt,
+	sojn	e,erplp1
+	
+	etype	<%n%%n>
+	skipge	cnt
+	 jrst	erplp
+	move	1,ttyjfn
+	closf
+	 jfcl
+	haltf
+	jrst	start
+ 
+haltt:	reset
+	haltf
+	jrst	start
+ 
+; Support routines
+
+uuohan:	movem	1,uuotmp
+	hlrz	1,40
+	lsh	1,-^D9
+	hrrz	1,uuotbl-1(1)
+	exch	1,uuotmp
+	jrst	@uuotmp
+ 
+uuotbl:	expand(uuos,<exp item>)
+
+%type:	push	p,1
+	push	p,2
+	push	p,3
+	move	1,ttyjfn
+	hrro	2,40
+	setz	3,
+	sout
+	pop	p,3
+	pop	p,2
+	pop	p,1
+	ret
+
+%print:	push	p,2
+	hrrz	2,40
+	call	outchr
+	pop	p,2
+	ret
+
+; print the character in b
+outchr:	push	p,1
+	move	1,ttyjfn
+	bout
+	pop	p,1
+	ret
+ 
+
+; Handle general errors
+
+%err:	skipe	errflg		; Already an error?
+	 jrst  [type	< Error when already in error, aborting >
+		jrst	haltt ]
+	setom	errflg
+	exch	1,(p)
+	tlz	1,-1
+	push	p,40
+	etype	<
+Error at PC %1o: >		; Show error address
+	pop	p,40
+	move	1,@40
+	hlrzm	1,errLH		; Separate the halves of the word loc. 40
+	hrrzm	1,errRH		; points to and save them
+	pop	p,1
+	skipe	errRH		; Any error message?
+	 uetype	@errRH		; Yes, ETYPE it
+	setzm	errflg
+	skipe	errLH		; Retry address given?
+	 jrst	@errLH		; Yes, go there
+	jrst	haltt		; None, fatal error
+
+; Taken from the EXEC (%ETYPE (ETYPE macro, UETYPE UUO))
+;Handler for UUO that types message, interpreting % codes.
+;Special codes are of form %NL%
+;	Where N is an optional octal number specifying an AC
+;	      L is a letter:
+;		D	;contents of ac in decimal
+;		H	;halfwords in octal
+;		O	;contents of specified ac in octal
+;		N	;CRLF
+;		S	;string ac has address of
+ 
+%etype:	push	p,z
+	push	p,1
+	push	p,2
+	push	p,3
+	push	p,4
+etype1:	hrr	1,40
+	hrli	1,(point 7,0)		;form byte ptr from eff addr
+etyp2:	ildb	2,1			;next character
+etyp2a:	jumpe 2,[pop p,4		;null terminates text
+		pop p,3
+		pop p,2
+		pop p,1
+		sub p,[xwd 1,1]		;forget saved z value
+		ret	]
+	caie	2,"%"
+	jrst [	call outchr		;not a %, output it
+		jrst etyp2]
+	setzb	3,4		;c: if no number, use 0
+				;d: init number to 0.
+etyp4:	ildb	2,1		;character after %
+	caig	2,"7"
+	caige	2,"0"
+	jrst	etyp5
+	imuli	4,10
+	addi	4,-"0"(2)	;add new digit to number
+	move	3,4		;compute location to get ac from...
+	caig	3,4		;...ac's 5-9 are preserved,
+	addi	3,-4(p)		;...contents of 0-4 are in pushdown.
+	move	3,(3)		;fetch contents of ac indicated by number so far
+	jrst	etyp4		;go check for additional digit(s)
+etyp5:	push	p,1		;save byte ptr during processing
+	cail	2,"a"
+	caile	2,"z"
+	 jrst	.+2
+	 trz	2,40		;make upper case
+	cail	2,"A"
+	caile	2,"Z"		;highest letter in table
+	call	un%		;not letter, unrecognized % code
+	call	@%lets-"A"(2)	;dispatch with a pushj through letter
+				;table.  at this time c contains 0 or
+				;c(indicated ac).
+ 
+;Done interpreting a % code.  Must follow dispatch pushj!
+ 
+end%:	pop	p,1		;get text pointer back
+	ildb	2,1		;next character
+	caie	2,"%"		;pass following %
+	move	1,1(p)
+	jrst	etyp2		;continue typing
+;%etype...
+ 
+%lets:	un%			;a
+	un%			;b
+	un%			;c
+	un%			;d 
+	%e		;erstr for error code in AC or most recent
+	un%			;f
+	un%			;g
+	%h		;halfwords in octal
+	un%			;i
+	%j		;JFNS for JFN in AC
+	un%			;k
+	un%			;l
+	un%			;m
+	%n			;n
+	%o		;contents of specified ac in octal
+	un%			;p
+	%q		;contents of ac in decimal 
+	un%			;r
+	%s		;string ac has address of
+	un%			;t
+	un%			;u
+	un%			;v
+	un%			;w
+	un%			;x
+	un%			;y
+	un%			;z
+ 
+;unrecognized %-code
+ 
+un%:	sub	p,[xwd 1,1];forget return
+	pop	p,1	;recover text pointer
+	print	"%"	;digit, if any, is lost.
+	jrst	etyp2a	;continue typing, starting with char after %.
+;%etype...
+;routines for letters after %.
+;these routines receive in c: contents of specified AC, or 0 if none.
+;they may clobber ac's 1, 2, 3, and d only.
+
+;CRLF
+%n:	move	1,ttyjfn
+	movei	2,15
+	bout
+	movei	2,12
+	bout
+	ret
+
+; ERSTR for error number in AC or most recent
+
+%e:	move	1,ttyjfn
+	hrli	2,400000
+	skipn	3		; Error code given?
+	 troa	2,-1		; No, use mose recent
+	 hrr	2,3		; Yes, use code given
+	setz	3,		; No limit of bytes to print (ERSTR)
+	erstr
+	 jrst  [type < Undefined error >
+		jrst haltt ]
+	 jrst  [type < Error while already processing error >
+		jrst haltt ]
+	ret
+
+
+;JFNS for JFN in AC
+
+%j:	move	1,ttyjfn
+	move	2,3
+	setz	3,
+	jfns
+	ret
+
+;type asciz string whose addr is in ac
+ 
+%s:	move	1,ttyjfn
+	hrro	2,3
+	setz	3,
+	sout
+	ret
+ 
+;halfwords in octal
+
+%h:	hlrz	2,3		;left half first
+	jumpe	2,%h1		;forget it if 0
+	call	toct
+	movei	2,","
+	call	outchr
+	call	outchr
+%h1:	hrrz	2,3		;then right
+	jrst	toct
+
+;octal number in specified ac.
+ 
+%o:	move	2,3
+
+; output octal number from 2, no leading zeroes or spaces.
+toct:	push	p,1
+	push	p,3
+	move	1,ttyjfn
+	move	3,[1b0!10]	;magnitude flag and radix
+	nout
+	 type	<NOUT error>
+	pop	p,3
+	pop	p,1
+	ret
+ 
+;floating pt or decimal number from ac.		      >	>
+;print as floating if normalized and with exponent 100<e<377
+%q:	move 2,3		;number in 2
+	movm 3,2		;magnitude in 3
+	tlne 3,700000		;exponent .ge. 100?
+	tlnn 3,400		;normalized?
+	jrst %q1		;no, print decimal
+	camge 3,[1.0e5]		;can accommodate fixed point?
+	 jrst %q2		;yes, don't use flout
+	move 3,[1b6+2b29]
+	move 1,ttyjfn
+	flout
+	 jrst  [type <%Q: >	;We don't want ETYPE to try to decode %Q
+		etype %3E
+		jrst .+1]
+	ret
+ 
+;here to do our own floating output rather than calling flout
+%q2:	fmpri 3,(100.0)		;want two digits past decimal point
+	fixr 3,3		;fix and round
+	skipge 2		;correct sign
+	print "-"
+	idivi 3,^d100		;get integer part
+	move 2,3
+	call %q1		;print integer part
+	print "."
+	move 2,4		;and the fraction
+	skipa 3,[1b2+1b3+2b17+^d10]
+%q1:	movei 3,^d10
+	move 1,ttyjfn
+	nout
+	 jrst  [type <%Q: >	;We don't want ETYPE to try to decode %Q
+		etype %3E
+		jrst .+1]
+	ret
+erptab:	120004,,0
+	100,,101
+	0
+	-1,,[asciz/SYSTEM/]
+	0
+	-1,,[asciz/LOG/]
+	0
+	0
+	0
+	3
+	0
+	0
+	-1,,[asciz/Event Report Log: /]
+
+outtab:	420004,,0
+	100,,101
+	0
+	0
+	0
+	0
+	0
+	0
+	0
+	3
+	0
+	0
+	-1,,[asciz/Output to: /]
+
+erpbuf=100000
+
+; Data storage
+ 
+ttyjfn:	block	1		;JFN of the teletype (usually 101)
+debug:	block	1
+
+sclr0==.		;beginning of block to zero at startup
+erpjfn:	block	1
+addblk:	block	2
+idword:	block	1
+uuotmp:	block	1		;Temp. for UUO handler
+errLH:	block	1		;Some temp. vars. for %ERR (ERROR macro)
+errRH:	block	1
+errflg:	block	1		;Non-zero if in an error
+sclr1==.		;end of zeroed block
+
+stack:	block	stksiz
+lits:	lit
+	end	start
+

@@ -1,0 +1,73 @@
+#include "version.h"
+/* ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+ *
+ *	puplip ()	routes ip packets received in l0_ipQ.
+ *
+ * :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::: */
+extern int *l0_ipQ;			/* ip Queue pointer */
+extern int *l0_freeq, l1_cip;
+extern l1_route *g_probe();
+#define ipoffset 16
+#define ipoverhead (ipoffset+pakoverhead) /* n-chars to skip to IP address */
+#define ip_add struct ipaddress		  /* our structure */
+
+#ifdef PDP1105
+ip_add {char subnet, net, enhost, fill;};
+#endif
+
+#ifdef TENEX
+ip_add {char net,subnet,fill,enhost;};
+#endif
+
+#define ipnet 044			/* ip net */
+#define zero_fill 0			/* filler in ip address */
+short int ip_1rcvd,ip_2rcvd,ip_1sent,ip_2sent; /* counters for reporting */
+puplip () 
+    {l0_smlpak *pak; l0_ndb *ndb; ip_add *ip;
+    short snet, dnet, dhost; char *ipak; 
+    ip_1sent = 0; ip_2sent = 0; ip_1rcvd = 0; ip_2rcvd = 0;
+    while (1) {/* check for ip packets in ipQ */
+        s_suspend ();
+	if (*l0_ipQ) {/* queue non-empty */
+	    pak = (l0_smlpak *)p_dequeue(l0_ipQ);	/* the packet */
+	    ipak = pak;	  	/* for lack of typecasting */
+	    ip = (ip_add *)((char *)ipak + ipoverhead); /* the ip add */
+#ifdef debug
+	    cprint ("\n -->Rx ip-pak, ipnet= %O, dnet= %O, dhost= %O\n", 
+		    ip->net, ip->subnet, ip->enhost);
+#endif
+	    ip_incr(&ip_1rcvd, &ip_2rcvd); /* count it */
+	    if (ipnet == ip->net && ip->fill == zero_fill) {
+	        ndb = pak->ndbptr;			/* incoming NDB */
+	        snet = ndb->localnet;			/* incoming  net */
+		dnet = ip->subnet;
+		dhost = ip->enhost;		
+		if (snet != dnet) {l1_route *r;
+		    r = g_probe (dnet, TRUE);
+		    if (r) ndb = r->ndb;
+		    else
+			ndb = (l0_ndb *)0;
+		    }
+		if (ndb) {/* sent this packet */
+		    pak->ndbptr = ndb;
+		    pak->socptr = (l1_sock *)0;
+		    pak->encap1 = (dhost << 8) | ndb->localhost;
+		    pak->encap2 = typeip;		
+		    (*(ndb->l0trans))(pak);
+	    	    ip_incr(&ip_1sent, &ip_2sent);
+		    continue;
+		    }
+		}
+	    /* something strange about this packet - dispose of it */
+	    p_enqueue(l0_freeq, pak);
+	    --l1_cip;					/* 1 less charged */
+	    }
+	}
+    }
+
+/* ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+ *   	ip_incr()	keep multiples of 32767
+ * :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::: */
+ip_incr(h,l) short int *h, *l;
+    {if (++*l == 32767) {*l = 0; ++*h;}}
+

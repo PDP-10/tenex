@@ -1,0 +1,710 @@
+# include "<yeager>version.h"
+
+/****************************************************************************
+
+	Patches: 
+
+	1. Fix opensocket so that a duplicate local port cannot open
+	   a socket twice, ie, so we don't have 2 sockets with the
+	   same local socket#. EG. Two socket #2.
+					Jan. 21, 1981    .WJY.
+
+	2. Broadcast PUP for multiple NDBs waits until outputcomplete
+	   bit is returned from server before trying again with SAME pup.
+					May. 31, 1981     .WJY. "chuckle"
+
+	3. Put "forward" bit in "intent" field of Packet so that we can
+	   propagate broadcast PUPs not FROM us. A "psuedo" routing hack.  
+					Jun. 25, 1981    .WJY.
+
+	4. Fix race condition in CloseSocket...could leave input buffers
+	   hanging around forever...   July 12, 1981  .WJY.
+
+	5. add 2 new routines, p_ToBed (s) and p_Awaken (s). These
+	   will put a socket to sleep and awaken it respectively. If
+	   asleep all input is thrown away.(See p_FindSocket ()),
+	   and NO new pups can be allocated(See p_obtainPAK ()).
+
+					July 12, 1981  .WJY.
+
+****************************************************************************/
+/* for addressing without bytes */
+# define l1_Smask struct Smask
+# ifdef PDP11
+l1_Smask {int head[7], lPort[3], fPort[3], PinQ[2], status, PoutQ[2];};
+# endif
+# ifdef TENEX
+l1_Smask {int head[7], lPort[4], fPort[4], PinQ[2], status, PoutQ[2];};
+# endif
+
+# define l1_PKmask struct PKmask
+# ifdef PDP11
+l1_PKmask {int Head[5], encap[2], len, trty, id[2], fPort[3], lPort[3], d;};
+# endif
+# ifdef TENEX
+l1_PKmask {int Head[5], encap[2]; 
+	  int len, tr, ty, id[2], fPort[4], lPort[4], d;
+	  };
+# endif
+
+/***************************************************************************
+	PUPl1p is the following set of pupl1 procedures:
+	Look at the individual procedure for details ...
+
+	p_DisposePak (pakPTR) 
+	*p_ObtainPak (soc, nWords, Wait) 
+	p_ValidCS (PakPTR)
+	p_updateNets (PakPTR)
+	p_findSocket (PakPTR)
+	*p_OpenSocket (lPort, fPort, Wait, status)
+	p_CloseSocket (Socket)
+	p_getPAK (soc) 
+	p_PakOUT (PUP)
+	p_RoutePAK (PAK) l0_smlPak *PAK;
+	p_CXsumPak (PAK) l0_smlPak *PAK;
+	p_PortDefaults (socPort, port)  l1_Port *port, *socPort;
+	p_0out (PAK) l0_smlPak *PAK;
+	p_BroadCast (PAK)
+	p_ToBed (Socket)
+	p_Awaken (Socket)
+
+------	Dummy these for ten testing: l_s0input (), l_s0output () -----
+
+***************************************************************************/
+extern int *l0_NDBq, *l0_FreeQ;
+extern int MaxAllo, MaxIN, MaxOut;	/* for socket allocation */
+extern int *l1_sQ;
+extern int l0_Discards;			
+extern int l1_coreleft;
+# ifdef PDP11
+extern int TODCLK, TODlow;
+# endif
+
+/****************************************************************************
+
+	p_FindSocket
+
+****************************************************************************/
+int p_findSocket (PakPTR) l0_smlPak *PakPTR;
+	{/* search socket Queue for matching source socket */
+	l1_Sock *soc; l0_Q *sQ;
+	int dSoc1, dSoc2;
+	sQ = l1_sQ;
+	soc = sQ->qHead;
+	dSoc1 = PakPTR->dSoc1; dSoc2 = PakPTR->dSoc2;
+	while (soc)
+	    {if (soc->Sock1 == dSoc1  &&  soc->Sock2 == dSoc2) 
+		/* socket sleeping now? */
+		if (soc->status & asleep) return(0); /* Yes, so... */
+		else /* return pointer */
+		    return(soc);
+	    soc = soc->link;
+	    }
+	return(0);				/* no match found */
+	}
+
+/****************************************************************************
+
+	p_updateNS
+
+****************************************************************************/
+int p_updateNS (PakPTR) l0_smlPak *PakPTR;
+	{/* fill in any zero source or dest net# with default net */
+	l0_NDB *NDB; char net; l1_sock *S;
+	NDB = pakPTR->NDBptr;
+	net = NDB->localNet;
+	if (!pakPTR->dNet) pakPTR->dNET = net;
+	if (!pakPTR->sNet) pakPTR->sNET = net;
+	/* fix up assigned socket if necessary */
+	s = pakPTR->socPTR;
+	/* complete dest socket# if possible AND necessary */
+	if (S->fsock1 == 0 && S->fsock2 == 0) /* then necessary */
+	    {S->fsock1 = pakPTR->sSoc1; S->fsock2 = pakPTR->sSoc2;}
+	}
+
+/****************************************************************************
+
+	p_ValidCS
+
+****************************************************************************/
+int p_ValidCS (PakPTR) l0_smlPak *PakPTR;
+	{/* compute checksum - return(1) if OK, else return(0) */
+	char *cs; int *ics;
+	/* puplen includes data and length of checksum in bytes */
+	cs = pakPTR;
+# ifdef PDP11
+	/* Here (l+1) >> 1 takes care of odd# of data bytes */
+	/* We subtract out sizeof(checksum) from length */
+	cs =+ (((PakPTR->PUPlen - 1) >> 1) << 1) + PakOverHead;
+# endif
+# ifndef PDP11
+	cs =+ PakPTR->PUPlen + PakOverHead - 1;	/* char = word */
+# endif
+	ics = cs;
+	if (*ics == -1) return(1);		/* Not checksummed */
+	if (*ics == l_CSpak (&PakPTR->PUPlen)) return(1);
+	return(0);
+	}
+
+/****************************************************************************
+
+	p_DisposePAK
+
+****************************************************************************/
+int p_DisposePak (pakPTR) l0_smlPak *PakPTR;
+	{/* give back memory space for put packet */
+	 /* Some from free space - some from FreeQ */
+	l1_sock *soc; int inPAK;
+	soc = PakPTR->SocPTR;
+	inPAK = PakPTR->intent & input;
+	if (soc && q_socAlive (soc))		/* has a socket assigned */
+	    {/* up sockets allocations */
+	    if (inPAK) --soc->inAllocated;
+	    else 
+		{--soc->outAllocated;
+		/* don't need to know about this guy any longer */
+		/* return(0) if this packet DOES NOT belong to socket */
+		if (!q_PullTag (&soc->outQhead, PakPTR)) return(0);
+		}
+	    --soc->PaksAllocated;
+	    }
+	/* from free space - so give back */
+	if (!inPAK) l1_relMem (PakPTR);    
+	else   /* else input - back to free Q */
+	    p_Enqueue (l0_FreeQ, PakPTR);    
+	return(1);
+	}
+
+/****************************************************************************
+
+	*p_ObtainPAK
+
+****************************************************************************/
+char *p_ObtainPak (soc, nWords, Wait, Err) 
+		  l1_sock *soc; int nWords, Wait, *Err;
+	{/* Obtain an OUTPUT packet nWords in length */
+	 /* and charge it to the socket.     */
+	/*  returns 0 if none available, and !Wait */
+	l1_Otag *tag;
+	/* the sleeping patch */
+	if (soc->status & asleep) {*Err = -2; return;} /* Asleep */
+	tag = 0;
+	while (!tag)	/* get output socket tag */
+	    {if (!(tag = l1_GetMEM (tagSize)))
+	        if (!Wait) {*Err = 0; return;}
+		else
+		    s_suspend ();
+	    }
+	l_zero (tag, TagSize);
+	while (1)
+	    {if (soc->PaksAllocated < soc->PaksAllowed &&
+	        soc->outAllocated < soc->outAllowed) /* some more? */
+	        {l0_smlPak *addr; 
+	        /* try from free memory */
+	        addr = l1_GetMEM (nWords);    
+	        if (!addr) 			/* Sorry, none left! */
+		    if (Wait) 
+			{s_suspend (); continue;}
+		    else 
+		        {*Err = 0; return;}
+	        l_zero (addr, nWords); 		/* zero the packet */
+	        addr->socPTR = soc; 
+	        p_chargeSocket (soc, output);
+	        addr->intent = (output | Soc->status);
+		/* build tag fields */
+		tag->status = addr->intent;
+		tag->addr = addr;
+		/* Now keep tag around until disposed for CLOSE socket */
+		p_Enqueue (&soc->outQhead, tag);
+	        return(addr);
+	        }
+	    if (!Wait) 
+	        {*Err = 0; l1_relMEM (tag); return;} /* Port full...So... */
+	    s_suspend();
+	    }  /* END while */
+	}
+
+/****************************************************************************
+
+	p_ChargeSocket
+
+****************************************************************************/
+int p_chargeSocket (soc, intent) l1_sock *soc; int intent;
+	{++soc->PaksAllocated;
+	if (intent & output) ++soc->outAllocated;
+	else
+	    ++soc->inAllocated;
+	}
+
+/****************************************************************************
+
+	p_OpenSocket
+
+****************************************************************************/
+int *p_OpenSocket (lPort, fPort, Wait, status)
+		   int *lPort, *fPort, status, Wait;
+	{/* open a socket */
+	 /* if Port info zero, use reasonable defaults */
+	 /*    status:  NOchecksum on OUTPUT = 16      */
+	l1_sock *soc; l0_NDB *NDB; l0_Q *Q; l1_sMask *SM;
+	l1_Port *pt;
+	pt = lport;
+	if (pt->Sock1 != 0 || pt->Sock2 != 0)   /* make sure not duplicate */
+	    {soc = *l1_SQ;
+	    while (soc) 
+		{if (pt->Sock1 == soc->Sock1 && pt->Sock2 == soc->Sock2)
+		    return(0);			/* Error-duplicate soc# */
+		soc = soc->link;
+		}
+	    }
+
+	while (!(soc = l1_getMEM(SockSize))) 	/* get some mem */
+	    if (Wait) {s_suspend (); continue;}
+	    else  return(0);
+
+	/* got the space */
+	l_zero (soc, SockSize);
+	/* assign Ports */
+	SM = soc;
+	if (lPort) l_fMove (lPort, &SM->lPort[0], PortSize);
+	if (fPort) l_fMove (fPort, &SM->fPort[0], PortSize);
+	/* See if we must default net, host stuff */
+	Q = l0_NDBq; NDB = Q->qHead;          /* use NDB "0" for defaults */
+	if (!soc->lNet && !soc->lHost)
+	    {/* both zero - try for default */
+	    soc->lNet = NDB->localNet; soc->lHost = NDB->localHost;
+	    }
+	if (!soc->fNet) soc->fNet = soc->lNet;
+	/* see if we need to specify local Socket */
+	if (!soc->sock1 && !soc->sock2)
+	    {
+# ifdef PDP11
+	    soc->sock1 = TODlow;		/* low order time of day */
+# endif
+# ifndef PDP11
+	    soc->sock1 = s_gtime ();		/* time of day */
+# endif
+	    soc->sock2 = soc;			/* its address		 */
+	    }
+	soc->PaksAllowed = MaxAllo;
+	soc->inAllowed = MaxIn;
+	soc->outAllowed =  MaxOut;
+	soc->status = status;
+	p_Enqueue (l1_sQ, soc);
+	return(soc);
+	}
+
+/****************************************************************************
+
+	p_CloseSocket
+
+****************************************************************************/
+int p_CloseSocket (Socket) l1_sock *Socket;
+	{/* close a socket */
+	l0_smlPak *sml;
+	if (!Socket) return;			/* huh??? */
+
+	p_ToBed (Socket);		/* No more input for this guy */
+	/* Release any Kept - and NOT in use output packets */
+	q_ClearTAG (Socket);
+	/* Block until ALL output packets are sent */
+	while (!q_ClearTAG(Socket)) s_suspend ();
+
+	/* Since, this socket can't receive any more - and we are in its */
+	/* user's context, we can safely toss any input queued by level 1 */
+	/* and if any arrives later, since no socket, no keep */
+	if (sml = Socket->inQhead)	/* make sure some are queued! */
+	    while (sml)
+		{p_Enqueue (l0_FreeQ, sml); /* put back */
+		sml = sml->link; 	/* get next before putting back */
+		}
+	p_UNqueue (l1_sQ, Socket);	/* delete from queue */
+	l1_relMEM (Socket);
+	}
+/****************************************************************************
+
+	p_ToBed (socket)	Puts a socket to sleep.
+	p_Awaken (socket)	Awakens a socket.
+
+****************************************************************************/
+int p_ToBed (s) l1_sock *s;
+	{l0_smlPak *p;
+	s->status |= asleep;
+	/* clear any input now in socket */
+	while (p=p_GetPAK (s)) {p->intent|= SleepDispose; p_disposePAK (p);}
+	}
+
+int p_Awaken (s) l1_sock *s;
+	{s->status &= ~asleep;}
+
+/****************************************************************************
+
+	p_FeedNets
+
+****************************************************************************/
+int p_FeedNets ()
+	{/* restart input and output for each Network if necessary */
+	l0_NDB	*NDB, *NDB0; l0_Q *Q;
+	Q = l0_NDBq;
+	NDB0 = Q->qHead;			/* get qHead */
+	NDB = NDB0;
+	while (1)
+	    {/* start input if nothing being done, and there is a free */
+	    /*  packet for input */
+	    if (!NDB->pakin)			/* then input off */
+		if (NDB->pakin = p_Dequeue (l0_FreeQ)) /* got one? */
+		    (*(NDB->l0sInput)) (NDB);	/* Yes, start up again */
+	    /* check output */
+	    if (NDB->pakOUT && !s_sleeping (NDB->xmitTimer, NDB->xmit1))
+	        {/* Time OUT on transmitter -- clear status, and restart */
+	        *(NDB->ETHOCS) = 0100;	/* turning on INTERUPT bit clears */
+	        p_Enqueue (&NDB->OQhead, NDB->pakOUT); /* re-queue for output */
+	        NDB->pakOUT = 0;
+	        NDB->OCload = 0;
+	        (*(NDB->l0sOutput)) (NDB);	/* start output */
+	        }
+	    else  /* See if output has stopped, and restart if necessary */
+                if (!NDB->pakOut) (*(NDB->l0sOutPut)) (NDB);
+
+	    s_suspend (); 			/* Block ourself */
+	    NDB = NDB->link;			/* were back-Next network */		
+	    if (!NDB) NDB = NDB0;		/* end of the line */
+	    }
+	}
+
+extern int g_unknownNET;
+/****************************************************************************
+
+	p_PakOUT
+
+****************************************************************************/
+int p_PakOut (PAK) l0_smlPak *PAK;
+	{/* output packet */
+	int HasTag;
+	 /* We will try and default any header stuff that */
+	 /* higher level processes may have forgotten!    */
+	 /*  But assume the LENGTH and TYPE have been supplied */
+	/*  See if output is pending, ie, tried to send packet twice */
+	if (PAK->intent & outputPENDING) return(-2);
+	/*  See if this PACKET belongs to the socket (if there is one) */
+	/*  Also, some sockets may output Packets with NO tags, eg, Echo */
+	if (PAK->socPTR) HasTag = !(((PAK->socPTR)->status) & NOtag); 
+	else /* No socket, NO tag */
+	    HasTag = 0;
+	if (PAK->socPTR && HasTag) 
+	    if (!q_TaggedPAK (PAK)) return(-3);
+	PAK->intent |= outputPENDING;	/* output is pending */
+	PAK->intent &= ~outputCOMPLETE;  /* turn that bit off! */
+	if (HasTag)
+	    q_SetTagStat (PAK, Pak->intent); /* set tag status */
+	PAK->transPort = 0;		/* hops zero at source - US */
+	if (PAK->socPTR != 0)		/* error-trace have NO local soc */
+	    {/* set any default port information that may have arrived */
+	    l1_PKmask *PK; l1_sMask *SM;
+	    SM = PAK->socPTR; PK = PAK;
+      	    p_PortDefaults (&SM->fPort[0], &PK->fPort[0]);    
+      	    p_PortDefaults (&SM->lPort[0], &PK->lPort[0]);    
+	    }
+	/* broad cast here.... */
+	if (PAK->intent & broadCast) {p_broadCast (PAK); return(1);}
+	/* Now route the guy */
+	    {l0_NDB *NDB; int dHOST;
+	    dHOST = p_RoutePAK (PAK);	/* Assigns NDB to packet, too */
+	    if (dHOST < 0)		/* No where to go */
+		{/* send routing probe */
+		g_unknownNet = PAK->dNET;
+		PAK->intent -= outputPending;  /* can't send */
+		PAK->intent |= outputCOMPLETE; /* sort of, anyway! */
+		If (HasTag) 
+		    q_setTagStat (PAK, PAK->intent); /* fix tag too */
+		if (!(PAK->intent & KeepPUP)) p_Enqueue (l0_Discards, PAK);
+		return(-1);		/* can't find dest */
+		}
+	    /* send it off */
+	    NDB = PAK->ndbPTR;
+	    if (!(PAK->intent & forward))    /* Then from US, so... 6/25/81*/
+	        {PAK->sNet = NDB->localNet;  /* Insure correct SOURCE info */
+	        PAK->sHost = NDB->localHost; 
+		}
+	    p_CXsumPak (PAK);
+	    (*(NDB->encap)) (PAK, dHOST);
+	    (*(NDB->l0Trans)) (PAK);	/* queues it for output at int lev */
+	    return(1);			/* trying to send it */
+	    }
+	}
+
+/****************************************************************************
+
+	p_BroadCast
+
+****************************************************************************/
+int p_BroadCast (PAK) l0_smlPak *PAK;
+    {/* broad cast to ALL DC nets */
+    l0_NDB *NDB; int kept; l0_Q *Q;
+    Q = l0_NDBq;
+    NDB = Q->qHead; 			/* the head of the queue */
+    /* set intent to KeepPUP if not set, and note for exit */
+    kept = PAK->intent & KeepPUP;
+    if (!kept) PAK->intent |= KeepPUP;
+    while (NDB)
+        {
+	PAK->ndbPTR = NDB;		/* This net data block */
+	PAK->dNet = NDB->localNet;	/* to THIS net */
+	PAK->dHost = 0;			/* ALL hosts   */
+	if (!(PAK->intent & forward))   /* Then from US, so... WJY-6/25/81*/
+	    {PAK->sNet = NDB->localNet;	/* From this net, and Host */
+	    PAK->sHost = NDB->localHost;
+	    }
+	/* and ship it out */
+	p_CXsumPak (PAK);
+	(*(NDB->encap)) (PAK, 0);
+	(*(NDB->l0Trans)) (PAK);
+	/* suspend until output is finished with this one */
+	while (!(PAK->intent & outputCOMPLETE)) s_suspend ();	
+	PAK->intent &= ~outputCOMPLETE;  /* turn that bit off! */
+	NDB = NDB->link;		/* next guy */
+	}
+    if (!kept) {PAK->intent -= KeepPUP; p_DisposePAK (PAK);}
+    else  /* broadCast bit off - 12/31/80 */
+	PAK->intent -= BroadCast;
+    }
+
+/****************************************************************************
+
+	p_defaultPorts
+
+****************************************************************************/
+int p_PortDefaults (socPort, port)  l1_Port *port, *socPort;
+	{/* update any new NET information */
+	 /* that may have arrived since that Packet was built */
+	if (port->Net == 0)
+	    {if (socPort->Net == 0  &&  socPort->Host != 0)
+		{/* addressed to DEFAULT Net */
+		 /* try and update socket    */
+		l0_NDB *NDB; l0_Q *Q;
+		Q = l0_NDBq;			/* NDB [0] is default */
+		NDB = Q->qHead;
+	        if (NDB) socPort->Net = NDB->localNet;
+		}
+	    port->Net = socPort->Net;
+	    }	
+	/* Try and UPDATE host from socket */
+	if (port->Host == 0) port->Host = socPort->Host;
+	/* In case the guy forgot the socket # */
+	if (port->sock1 == 0 && port->sock2 == 0)
+	    {port->sock1 = socPort->sock1;
+	    port->sock2 = socPort->sock2;
+	    }
+	}
+
+/****************************************************************************
+
+	p_CXsumPak
+
+****************************************************************************/
+int p_CXsumPak (PAK) l0_smlPak *PAK;
+	{/* if packet INTENT is to be checksummed, or CS = -1 */
+	 /* do nothing but insure CS = -1;  Otherwise checksum */
+	char *cs; int *ics;
+	/* compute pointer to cs. len has 2 bytes for checksum size */
+	/* offset = ((len - 2 + 1)>>1)*2 + overhead; (in bytes) */
+	cs = PAK;
+# ifdef PDP11
+	/* use char ptr since offsets in "bytes", and int ptrs stuff */
+	/* sometimes like to make boundary work out right, ie, on 11s */
+	/* any offsets are multiplied by 2 */
+	cs =+ (((PAK->PUPlen - 1) >> 1) << 1) + PAKoverHead;
+# endif
+# ifndef PDP11
+	cs =+ PAK->PUPlen + PAKoverHead - 1;
+# endif
+	/* check sum on FULL word boundary - use appropriate pointer */
+	/* since char stuff sometimes clears rest WORD, eg, on 11s */
+	ics = cs;
+	if (*ics == -1 || (PAK->intent & NOcheckSum))
+	    {*ics = -1; return;}
+	/* check sum the packet */
+	*ics = l_CSpak (&PAK->PUPlen);
+	}
+
+/****************************************************************************
+
+	p_RoutePak
+
+****************************************************************************/
+int p_RoutePAK (PAK) l0_smlPak *PAK;
+	{/* return valid destination HOST# or -1 */
+	 /* get destination HOST byte for encapsulation */
+	l1_route *rte;
+	if (!PAK->dNET)			/* still don't know the NET/default*/
+	    /* so return PAK!dHOST if > 0 else -1 */
+	    if (PAK->dHOST) 
+		{l0_Q *Q;
+		Q = l0_NDBq;
+		PAK->ndbPTR = Q->qHead;	/* assign default NDB */
+		return(PAK->dHOST);
+		}
+	    else 
+		return(-1);
+	rte = g_probe (PAK->dNET, TRUE);	/* probe for output */
+	if (!rte)				/* do we know the NET? */
+		return(-1);			/* Nope, so forget it  */
+	/* have an entry - check hop count, etc... */
+	if (rte->Hops > MaxHops) return(-1);   	/* aged entry-will go away */
+
+	PAK->ndbPTR = rte->NDB;			/* assign net data block */
+	if (!rte->Hops) return(PAK->dHOST); 	/* DC so use packet */
+	/* not DC so use routing table entry */
+	return(rte->gwHOST);
+	}
+
+/****************************************************************************
+
+	p_SleepSocket
+
+****************************************************************************/
+int p_SleepySocket (soc, xtics) l1_sock *soc; int xtics;
+	{/* snooze for tics checking for activity on socket */
+	int timeh, timel;
+# ifdef PDP11
+	timeh = TODCLK; timel = TODlow;
+	l_longAdd (&timeh, &timel, 0, xtics);
+# endif
+# ifndef PDP11
+	timeh = s_gtime () + xtics; timel = 0;
+# endif
+	while (1)
+	    {s_suspend ();		/* bye for once around the queue */
+	    if (soc->inQhead) return; 	/* there's one there now */
+	    if (!s_sleeping (timeh, timel)) return; /* time up? */
+	    }
+	}
+
+/****************************************************************************
+
+	p_GetPAK
+
+****************************************************************************/
+int p_getPAK (soc) l1_sock *soc;
+	{/* if there is a packet in the queue, dequeue it */
+	if (soc->inQhead) 
+	    {l0_smlPak *p;
+	    p = p_Dequeue(&soc->inQhead); p->intent |= socDequeue;
+	    return(p);
+	    }
+	else 
+	    return(0);
+	}
+
+/****************************************************************************
+
+	p_Xsocket
+
+****************************************************************************/
+int p_Xsocket (soc) l1_sock *soc;	/* return false if an input pack */
+	{if (soc->inQhead) return(0); else return(1);}
+
+/****************************************************************************
+
+	p_0out
+
+****************************************************************************/
+int p_0out (PAK) l0_smlPak *PAK;
+    {/* queue output packet for the net */
+    l0_NDB *NDB;
+    NDB = PAK->ndbPTR;			/* addr of associated NDB */
+    p_Enqueue (&NDB->OQhead, PAK);	/* put into assoc. NDB outQ */
+    }
+
+/****************************************************************************
+
+	Some PDP10 testing stuff
+
+****************************************************************************/
+# ifndef PDP11
+/* just dummy CS for 10 testing */
+int PB[5 + 133];			/* 138 32BIT words */
+/* equivalent to POINT 16,add,15 */
+int *M16 (add) int add;
+	{return (0242000000000 | add);}
+/* equivalent to POINT 8,add,0 */
+int *M8 (add) int add;
+    {return(0341000000000 | add);}
+# define Phead 13
+char pBytes[13] {2, 1, 1, 2, 2, 1, 1, 2, 2, 1, 1, 2, 2};
+
+int PackPUP (PUP) int PUP[];
+    {/* put wierd C 36 bit words into 32 bit word - 8bit/byte format */
+    int i, *bf;
+    int *cWord, data, j, N, chr, ctr;
+    /* do header packing */
+    l_zero (PB, 138);
+    bf = M16 (PB);			/* start of buffer */
+    ctr = 0; chr = 0;			/* counts 16bits   */
+    for (i = 0; i < Phead; i++)
+	{if (i == 0) data = PUP[i] - PUPoverhead + 22; /* correct weird len*/
+	else
+	    data = PUP[i];
+	data <<= 4;			/* put on 8BIT boundary */
+	cWord = M8 (&data);		/* get next word - make byte ptr */
+        IBP (&cWord);			/* skip 0th byte */
+        IBP (&cWord);			/* skip 1st byte */
+	N = pBytes[i];			/* number of bytes in this word */
+        if (N == 1) IBP (&cWord); 	/* skip 2nd byte */
+	for (j = 0; j < N; j++)
+            {chr |= LDB (cWord);	/* now get the data and store it */
+	    if (ctr == 1) 
+		{DPB (chr, bf);		/* deposit 16BIT byte */
+	        IBP (&bf); 		/* NEXT 16BIT byte */
+		ctr = 0; chr = 0;
+		}
+	    else
+		{++ctr; chr <<= 8;}
+	    IBP (&cWord);	/* Next byte */
+	    }
+        }
+    /* Now check for data bytes to move */
+    N = PUP[0] - PUPoverhead;		/* Number of data bytes */
+    chr = 0; ctr = 0;
+    for (i = 0; i < N; i++)
+        {data = PUP[Phead + i] << 4;
+        cWord = M8 (&data);
+        IBP (&cWord);			/* skip 0th byte */
+        IBP (&cWord);			/* skip 1st byte */
+        IBP (&cWord);			/* skip 2nd byte */
+        chr |= LDB (cWord);
+	if (ctr == 1) {DPB (chr, bf); IBP (&bf); ctr = 0; chr = 0;}
+	else
+	    {++ctr; chr <<= 8;}
+        }
+    if (ctr == 1) DPB (chr, bf);	/* for odd data byte */
+    }
+int PUPOCK (PUPlen) int PUPlen;
+    {int N, i, cs;
+    N = (LDB (PUPlen) - 1) >> 1;	/* number of 16 bit words */
+    cs = 0;
+    for (i = 0; i < N; i++)
+	{cs += LDB (PUPlen);
+	if (cs & 0200000) {cs &= 0177777; ++cs;} /* 1's compl. addition */
+	cs <<= 1;
+	if (cs & 0200000) {cs &= 0177777; ++cs;} /* ROT left 1 */
+	IBP (&PUPlen);
+	}
+    if (cs == 0177777) cs = 0;
+    Return(cs);
+    }
+int l_CSpak (PUPptr) int *PUPptr; 
+	{int *PUPlen, cs1, cs2;
+	PackPUP (PUPptr);		/* make into 32 bit words */
+	PUPlen = M16 (PB);		/* now checksum the packed PUP */
+	cs1 = PUPCHK (PUPlen);
+	cs2 = PUPOCK (PUPlen);
+        if (cs1 != cs2)  cprint ("\n 10cks = %O, 11cks = %O !!\n", cs1, cs2);
+	return (cs1);
+	}
+int l_fMove (s, d, n) int *s, *d, n;
+	{while (n-- > 0) *d++ = *s++;}
+int l_zero (s, n) int *s, n;
+	{while (n-- > 0) *s++ = 0;}
+# endif
+

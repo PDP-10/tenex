@@ -1,0 +1,497 @@
+# include "version.h"
+/* # define pdebug on */			/* for tty printout on pdp10 */
+/*************************************************************************
+   PUPsch is the PUP scheduler which schedules ALL processes
+   associated with PUP service on a system.
+   The process it will ALWAYS schedule is PUP level 1. 
+   Any other process to be scheduled will have to be plugged into
+   the array S_process, and its associated timer into the parallel
+   array S_timers.
+
+   For uniqueness of globals:
+	process		reserved prefix
+
+        PUPsch 		s_
+	level 1		l1_
+	level 0		l0_
+
+    Any machine dependent variables are prefixed s_MD...
+    You must LINK pupl1a into this load module. That is the memory
+    allocation routine.
+
+    We initialize the clock in s_startup ()
+	NOTE: ON 11s  	clock runs at PRI 6
+	      		we run at PRI 3
+			interrupt stuff at PRI 5
+
+    Modifications:
+	1. Now have two priorities...Hi and Low:
+	    The KNOWN processes are initialized at HIGH. All of their
+	    subsidiaries are initialized at LOW.
+
+	2. One can change a processes priority(current process only)
+	   from low to HIGH and conversely using:
+	   s_toLow () and s_toHIGH ().......  March 26, 1981 WJY.
+
+	3. Change INTEGER array indexing to pointer arithmetic for
+	   better code generation on 11's.... Nov. 16, 81 WJY.
+
+*************************************************************************/
+/* forward definitions of processes */
+# define s_nprocs 20			    /* Maximum processes */
+
+# define maxstack 3
+/* four choices */
+int s_stksize[] {256,128,160,192};
+
+# ifndef pdebug
+# define s_nknown 2
+int l1_level1 (), sumex_tip ();
+/* addresses of Known processes */
+int *s_known[s_nknown] {l1_level1, puptst}; 
+int s_pf[s_nknown] {0, 0};		/* parameter present flag */
+int s_pp[s_nknown] {0, 0};		/* The value of that parameter */
+int s_pz[s_nknown] {1, 0};		/* stack size parameters */
+# endif
+
+/********* This stuff for special standalone test - requires tty *********/
+# ifdef pdebug				/* for process debuggin stuff */
+# define s_nknown 1
+int protst ();
+/* addresses of Known processes */
+int *s_known[s_nknown] {protst}; 
+int s_pf[s_nknown] {0};			/* parameter present flag */
+int s_pp[s_nknown] {0};			/* The value of that parameter */
+int s_pz[s_nknown] {0};			/* stack size parameters */
+# endif
+
+# define yespar 1
+# define nopar 0
+# define _sprocess struct s_process
+_sprocess { /* KEEP stack AT TOP! */
+	int *stack;			/* *processes stack */
+	int *savedsp;			/* old stack pointer */
+	int entry_address;		/* address for entry */
+	int first;			/* true on first call */
+	int halted;			/* true if process halted */
+	int killed;			/* true if process dead */
+	int timer, timer1;		/* >0 if set by s_Tdisms */
+	int (*edisms)();		/* != 0 if address of Event */
+					/*   dismiss routine */
+	int pflag;			/* 0 if NO parameter passed, els 1 */
+	int eparm;			/* parameter for above routine */
+	} *s_active[s_nprocs], *s_cur;	/* active processes ptrs */
+int s_cinx;				/* index of current process */
+int s_funeral;				/* set if someone has been killed */
+int s_mrunning;				/* Max running processes */
+_sprocess s_space[s_nknown];		/* RESERVE space for known */
+char s_priority[s_nprocs];		/* Priority of each process */
+# define hipri 1			/* Highest priority */
+# define lopri 0			/* lowest priority */
+int s_nlow {0};				/* Number of low priority pros */
+main ()
+    {int low; 
+    int *hpp, *lpp;			/* process pointers */
+    l1_freespaceinit (); 		/* setup up free space   */
+    /* some initialization */
+    s_startup ();
+    low = -1;
+    lpp = (int *)s_active;		/* pointer indexing for low pri */
+    while (s_existence())
+        {/* run along scheduling */
+	int j;
+        hpp = (int *)s_active;		/* HI pri pointer "indexing" */
+	s_drdeath ();			/* finalization process */
+	/* First process ALL of our HIGH priority processes */
+	for (j = 0; j < s_mrunning; j++)
+	    {if (s_priority[j] == hipri) s_process (hpp, j); 
+	    ++hpp;
+	    }
+	/* Now process the the next LOW priority process */ 
+	while (s_nlow)
+	    {/* check the activity */
+	    if (++low >= s_mrunning) {low = 0; lpp = (int *)s_active;}
+	    if (s_priority[low] == lopri) 
+		{s_process (lpp, low); ++lpp; break;}
+	    ++lpp;
+	    }
+	}
+    }
+
+/*********************************************************************
+	s_Existence calls the whole thing off if all processes have
+	  gone away...doesn't like loneliness I guess!
+*********************************************************************/
+
+int s_existence ()
+	{int i, *pp;
+	pp = (int *)s_active;
+	for (i = 0; i < s_nprocs; i++) if (*pp++) return(1);
+	return(0);
+	}
+
+/*********************************************************************
+
+	s_DrDeath finalizes the pending death of a killed process.
+
+*********************************************************************/
+
+int s_drdeath () 
+	{int i;
+	_sprocess **pp;
+	if (!s_funeral) return;		/* Nothing to bury */
+# ifdef pdebug
+	cprint("\nfuneral time for a process, mrunning=%d", s_mrunning); 
+# endif
+	s_funeral = 0;
+	i = s_mrunning;
+	pp = &(_sprocess *)s_active[i-1];     /* top of list */
+	while (--i >= 0)	/* Mrunning-1,...,0 */
+	    {if (*pp)		/* then active - see it time is up */
+ 	        if ((*pp)->killed) 
+	            {l1_relmem ((*pp)->stack);		/* free stack */
+		    /* Maybe free structure space */
+		    if (i > (s_nknown-1)) l1_relmem (*pp);
+		    *pp = 0; 
+		    if (s_priority[i] == lopri) --s_nlow; /* One less low */
+		    s_priority[i] = -1;
+		    /* See if we prunned END of list */
+		    if ((i+1) == s_mrunning) --s_mrunning;
+		    }
+	    --pp;
+	    }
+# ifdef pdebug
+	cprint("\nfuneral over, party time, mrunning=%d\n", s_mrunning); 
+# endif
+	}
+
+/****************************************************************************
+
+	s_process (p, i)
+		Process process *p. Hmmmm(verbs and nouns?)
+
+****************************************************************************/
+
+int s_process (p, i) _sprocess **p;
+    {int wtime, wtime1;		        /* fake long integer timer for 11s */
+    s_cur = *p;
+    if (!s_cur) return;		    	/* Nothing here */
+    s_cinx = i;
+    if (s_cur->halted) return;		/* Halted, so ignore */
+    if (s_cur->edisms)			/* has event dismiss on */
+        {switch (s_cur->pflag)		/* parameter? */
+	    {case nopar: 
+	        if ((*(s_cur->edisms))()) return; /* still dismissed */
+		break;				  /* Dismiss done */
+	     case yespar:
+	         if ((*(s_cur->edisms))(s_cur->eparm)) return;
+	     }
+	s_cur->edisms = 0;		/* clear Event disms */
+	}
+    wtime = s_cur->timer;		/* time dismiss active? */
+    wtime1 = s_cur->timer1;		/* Wtime1 = 0 if ~PDP11 */
+    if (wtime || wtime1) 
+        if (s_sleeping (wtime, wtime1)) return; /* yawn.... */
+	else
+	    {s_cur->timer = 0; s_cur->timer1 = 0;}
+    s_resume ();	     		/* resume this guy */
+    }
+
+/*********************************************************************
+
+	s_toHIGH (t)  	changes a processes priority to HIGH if 
+			it is LOW - otherwise - does nothing
+
+*********************************************************************/
+
+int s_tohigh ()
+    {if (s_priority[s_cinx] == lopri)
+	{--s_nlow; s_priority[s_cinx] = hipri;}
+    }
+
+/*********************************************************************
+
+	s_toLOW ()  	changes a processes priority to LOW if 
+			it is HIGH - otherwise - does nothing
+
+*********************************************************************/
+
+int s_tolow ()
+    {if (s_priority[s_cinx] == hipri)
+	{++s_nlow; s_priority[s_cinx] = lopri;}
+    }	
+/*********************************************************************
+	s_sleeping (t)  returns TRUE if t > current time.
+			t = wake-up time.
+*********************************************************************/
+extern int todclk;		/*  current time kept here on 11 */
+extern int todlow;		/* double word			 */
+extern int l0_kw11l ();		/* time interrupt server */
+
+int s_sleeping (th, tl) int th, tl;
+	{
+	if (l_ule (th, tl, todclk, todlow)) return(false);
+	return(true);
+	}
+
+/****************************************************************************
+
+	s_startup ()
+
+****************************************************************************/
+int s_startup ()
+	{int i;
+	int *s_reg;
+	int *s_vec;
+	int *s_psw, oldpsw;
+	s_reg = 0177546;
+	s_vec = 0100;
+	s_psw = 0177776;
+	s_nlow = 0;
+	s_funeral = 0;		/* No one even alive yet! */
+	s_mrunning = 0;		/* Max number of processes running */
+	for (i=0; i<s_nprocs; i++) {s_active[i] = 0; s_priority[i] = -1;}
+	for (i=0; i<s_nknown; i++) 
+	    s_hipinit (s_known[i], s_pf[i], s_pp[i], s_pz[i]);
+	oldpsw = *s_psw;	/* processor status word */
+	*s_psw = 0300;		/* priority 6 */
+	*s_vec++ = l0_kw11l;
+	*s_vec = 0300;		/* and pri 6 too */
+	*s_reg =| 0100;		/* turn on interrupt bit */
+	*s_psw = oldpsw;	/* old priority back */
+	}
+
+/*********************************************************************
+
+       s_HIPinit 
+       initialize HI PRIORITY process if a slot is available 
+       and return process 
+       number or 0.
+
+**********************************************************************/
+
+int s_high {0};
+int s_hipinit (padd, pf, pp, smallstack) int padd, pf, pp, smallstack;
+    {/* initilize a high priority process: */
+    int pn;
+    s_high = 1;
+    pn = s_mdpinit (padd, pf, pp, smallstack);
+    s_high = 0;
+    return(pn);
+    }
+
+/*********************************************************************
+
+	s_MDpInit 
+       initialize process if a slot is available and return process 
+       number or 0.
+
+**********************************************************************/
+int s_zero  {0};	/* for 11 stacks */
+int s_mdpinit (padd, pf, pp, smallstack) int padd, pf, pp, smallstack;
+	{int i;
+	_sprocess *sp;
+	/* initiatize process call */
+	/* See if any available slots, ie Sp[i] == 0 */
+	for (i=0; i<s_nprocs; i++)
+	    {sp = s_active[i];
+	    if (sp != 0) continue;
+	    else
+	        {int stksize;
+# ifdef pdebug
+		cprint ("\ninit process, mrunning =%d\n", s_mrunning);
+# endif
+		int *spp;
+		int x;
+		/* determine stack size */
+	        if (smallstack > maxstack) smallstack = maxstack;
+		stksize = s_stksize[smallstack];
+
+		/* set up structure */
+		/* pointer to struc */
+		if (i < s_nknown) sp = &s_space[i]; /* Space reserved */
+		else /* From free memory ... maybe */
+		    {sp = l1_getmem (sizeof(s_space[0])/sizeof(i));
+		    if (!sp) return (-1);	/* NO mem */
+		    }
+		sp->stack = l1_getmem (stksize); /* got some memory? */
+		if (!sp->stack) return(-1);	/* NO mem */
+		if (i == s_mrunning) ++s_mrunning; /* Up MaxList counter */
+/* NOTE: on 11 must add stkSize since push is to lower addresses */
+		x = sp->stack;
+		x = x + (sizeof(i) * (stksize - 1) - 8);
+		sp->savedsp = x;
+		spp = sp->savedsp;	/* entry address - setup in resume */
+		*(++spp) = 0;		/* old R4 */
+		*(++spp) = &s_zero;	/* old R5 */
+		*(++spp) = 0;		/* dummy old local */
+		if (pf) *(++spp) = pp;  /*  Initial parameter */
+		/* address to resume processing process */
+		sp->entry_address = padd; 
+		/* And set first call to true */
+		sp->first = 1;
+		/* This process is not dead yet! */
+		sp->halted = false;
+		sp->killed = false;
+		/* No time outs as of yet */
+		sp->timer = 0;
+		sp->timer1 = 0;
+		/* No event dismis pending */
+		sp->edisms = 0;
+		sp->pflag = 0; sp->eparm = 0;
+		/* Now set active process pointer TO local var*/
+		s_active[i] = sp;
+		if (s_high) s_priority[i] = hipri;
+		else
+		    {s_priority[i] = lopri; ++s_nlow;}
+		return(i);
+		}
+	    }
+	return(-1);
+	}
+
+/*********************************************************************
+
+	s_Edisms (p, Addr, flag, param)
+				Sets up Event Dismis for process p,
+				Addr is address of event dismiss routine.
+				flag != 0 if optional parameter present.
+				param optional parameter.
+	s_Tdisms (p, deltaT)	Sets timer for dismiss of deltaT "clock
+				tics. 
+
+	In both cases, if p refers to the current process,
+	then that process is suspended.
+
+*********************************************************************/
+# define caset 0
+# define casee 1
+int s_edisms (p, addr, flag, param) int p, addr, flag, param;
+	{return(s_disms (p, addr, flag, param, casee));}
+
+int s_tdisms (p, deltat) int p, deltat;
+	{return(s_disms (p, deltat, 0, 0, caset));}
+
+int s_disms (p, dtype, pf, pp, n) int p, pf, pp, dtype, n;
+	{_sprocess *dum; int i, j;
+	if (p>=0) dum = s_active[p];
+	else
+	    dum = s_cur;	
+	if (dum) {/* valid process */
+	    switch (n)
+		{case caset:
+		    i = todclk; j = todlow;
+		    l_longadd(&i, &j, 0, dtype);
+		    dum->timer = i;		/* high 16 bits */
+		    dum->timer1 = j;			/* low 16 bits */
+		    break;
+		case casee:
+	            dum->edisms = dtype;
+		    if (pf) 
+			{dum->pflag = yespar; 
+			dum->eparm = pp;
+			}
+		    else /* no parameter */
+			dum->pflag = nopar;
+		}
+	    if (p < 0) s_suspend ();	/* suspend current process */
+	    return(1);
+	    } /* end valid process */
+	return(0);	/* something weird on this call */
+	}
+
+/*********************************************************************
+	s_HaltP - halts the current process
+		- this must be done IN that process.
+	s_ContP - Continues the process p 
+		- A process must be continued by some OTHER process.
+		- after which it will be resumed by the scheduler.
+*********************************************************************/
+
+int s_haltp ()
+	{s_cur->halted = 1; 
+# ifdef pdebug
+	cprint ("halted current process\n");
+# endif
+	s_suspend();		/* suspend this process */
+	}
+
+int s_contp (p) int p;
+	{if (p>=0)		/* legal process number? */
+	    if (s_active[p]) 	/* active process? */
+	        {s_active[p]->halted = 0;
+		return(1);
+		}
+	return(0);
+	}
+/****************************************************************************
+
+	s_KillP (p) int p;
+
+****************************************************************************/
+
+int s_killp (p) int p;
+	{_sprocess *dum;
+# ifdef pdebug
+	cprint("\nkilling process, p=%d\n", p); 
+# endif
+	if (p>=0) 
+	    {dum = s_active[p];
+	    if (dum) s_active[p]->killed = true;
+	    else /* NON-existent process */
+		return(0);
+	    if (dum == s_cur) s_suspend ();
+	    /* remove non-current processes from the queue NOW */
+	    if ((p+1) == s_mrunning) --s_mrunning;
+# ifdef pdebug
+	    cprint("\n       mrunning=%d\n", s_mrunning); 
+# endif
+	    l1_relmem(s_active[p]->stack);
+	    /* release memory for process structure ... maybe */
+	    if (p >= s_nknown) l1_relmem (s_active[p]);
+	    s_active[p] = 0; 
+	    if (s_priority[p] == lopri) --s_nlow;
+	    s_priority[p] = -1; 
+	    return(1);
+	    }
+	else /* -1 kills current process */
+	    {s_cur->killed = true; s_funeral = 1; s_suspend ();}
+	}
+/*********************************************************************
+   WARNING - DO NOT USE LOCALS IN THE FOLLOWING TWO FUNCTIONS!!!   
+   ALSO - NO PARAMETERS CAN BE PASSED - AVOID INTERNAL USE OF STACK   
+**********************************************************************/
+extern int s_r5;
+int *s_mdx {s_r5};		/* R5 is the relevant pointer */
+
+int *s_temp;
+int s_resume () 
+	{/* resume process pointed to by s_p */
+	l_gr5 ();			/* s_r5 = r5 */
+	s_temp = *s_mdx;		/* save current sp */
+	*s_mdx = s_cur->savedsp;	/* put saved-sp into sp */
+	l_sr5 ();			/* r5 = s_r5 */
+	s_cur->savedsp = s_temp;	/* and Save old sp */
+	if (s_cur->first)		/* See if first call */
+	    {
+	    s_temp = *s_mdx;	/* point sp to return address */
+	    *s_temp = s_cur->entry_address; 
+       	    s_r5 = s_cur->entry_address; /* put into global */	    
+	    l_pr5 ();			 /* put on stack (R5) */
+	    s_cur->first = 0;
+	    }
+	return;				/* return to resumed process */
+	} /* suspend does OUR return for US */
+int s_suspend ()
+	{/* suspend s_Cur process - switch to Scheduler's context */
+	/* Save our stack pointer */
+	l_gr5 ();			/* s_r5 = r5 */
+	s_temp = *s_mdx;		/* our contex sp */
+	*s_mdx = s_cur->savedsp;	/* sp is now old sp */
+	l_sr5 ();			/* r5 = s_r5 */
+	s_cur->savedsp = s_temp;	/* old sp is ours */
+    	return;				/* to Scheduler */
+	}/* resume does OUR return for US */
+
+
+

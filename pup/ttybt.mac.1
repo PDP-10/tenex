@@ -1,0 +1,159 @@
+	.title	GT40 bootstrap
+; This code was shamelessly ripped off from the gt40 bootstrap, using a
+; disassembler for the 11.  Code pertaining to the display functions has
+; been deleted, and symbols have been provided by yours truly. Minor mods
+; made to make it position independent -- which unfortunately I did not
+; quite succeed at, so you have to link it at 170000 any way.... foo
+
+
+rStat = 177560
+rBuff = rstat + 2
+tStat = rstat + 4
+tBuff = rStat + 6
+
+start:	RESET   
+	MOV #7,@#rStat  
+	MOV #7776,SP  
+	INC @#tStat  
+	JSR R3,outTty  
+	.byte 0,0   
+	MOV #4,R3  
+s0100:	MOV PC, R0
+	ADD #<main-.>,r0
+	MOV R0, (R3)+
+	CLR (R3)+  
+s0200:	tst (r3)+		; scan through memory non destructivly
+	tst (r3)+
+	BR s0200
+
+main:	TST -(R3)  
+	MOV R3,SP  
+m0100:	TSTB @#tStat  
+	BPL m0100  
+	CLR @#tStat  
+
+STREST:	BIS #7776,SP  		; reset the stack (come here on major errors)
+st0100:	JSR PC,getTTY  
+	BR St0100
+
+inTty:	TSTB @#rStat  
+	BPL inTty
+	MOVB @#rBuff,R0  
+	MOV #7,@#rStat  
+	BIC #177600,R0  
+	BEQ inTty  
+	RTS PC  
+
+getTTY:	JSR PC,inTty  
+	CMP R0,#175  
+	BNE gtRet
+	JSR PC,inTty  
+	CMP R0,#114  
+	BEQ load
+	CMP R0,#122  
+	BNE gtRet
+badByt:	JMP stRest  
+
+getChk:	JSR PC,getTTY  
+	CMP R0,#40  
+	BLT badRea  
+	CMP R0,#137  
+	BGT badRea  
+gtRet:	RTS PC  
+
+outTty:	MOVB (R3)+,@#tBuff  
+	MOVB (R3)+,@#tBuff  
+	RTS R3  
+
+get8:	JSR PC,getChk  
+	MOV R0,-(SP)  
+	TST (R3)+  
+	JMP tab-2(R3)  
+tab:	BR case1  
+	BR case2
+	BR case3  
+	MOV #2,R3  
+case1:	JSR PC,getChk  
+	MOV R0,R4  
+	ASL R0  
+	ASL R0  
+	ASLB R0  
+	ROLB (SP)  
+	ASLB R0  
+	ROLB (SP)  
+	MOV (SP)+,R0  
+	RTS PC  
+
+case2:	ASL R0  
+	ASL R0  
+	ASLB R0  
+	ROLB R4  
+	ASLB R0  
+	ROLB R4  
+	ASLB R0  
+	ROLB R4  
+	ASLB R0  
+	ROLB R4  
+	MOV R4,R0  
+	MOV (SP)+,R4  
+	RTS PC  
+
+case3:	ROL R0  
+	ROLB R0  
+	ROR R4  
+	RORB R0  
+	ROR R4  
+	RORB R0  
+	TST (SP)+  
+	RTS PC  
+
+load:	CLR R3  
+ld0100:	CLR R5  
+	JSR PC,gtByte  
+	DECB R0  
+	BNE ld0100  
+	JSR PC,gtByte  
+	JSR PC,gtWord  
+	MOV R0,R2  
+	SUB #4,R2  
+	CMP #2,R2  
+	BEQ ld0350  
+	JSR PC,gtWord  
+	MOV R0,R1  
+ld0200:	JSR PC,gtByte  
+	BGE ld0300  
+	TSTB R5  
+	BEQ ld0100  
+
+badRea:	JSR R3,outTty  
+	.byte 175,102
+	BR badByt
+
+ld0300:	MOVB R0,(R1)+  
+	BR ld0200  
+
+gtByte:	JSR PC,get8  
+	ADD R0,R5  
+	DEC R2  
+	RTS PC  
+
+gtWord:	JSR PC,gtByte  
+	MOV R0,-(SP)  
+	JSR PC,gtByte  
+	SWAB R0  
+	BIS (SP)+,R0  
+	RTS PC  
+
+ld0350:	JSR PC,gtWord  
+	MOV R0,-(SP)  
+	JSR PC,gtByte  
+	TSTB R5  
+	BNE badRea  
+	JSR R3,outTty  
+	.byte 175,107
+	BIT #1,(SP)
+	BEQ ld0400  
+	HALT   
+ld0400:	JMP @(SP)+  
+
+	.end	start

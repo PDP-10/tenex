@@ -1,0 +1,93 @@
+//PUP1OC.BPL -- PUP LEVEL 1
+// Copyright Xerox Corporation 1979
+
+GET "LEVEL1.HDR"
+GET "LEVEL0.HDR"
+GET "PUPLIB.HDR"
+
+//----------------------------------------------------------------------------
+LET OPENLEVEL1SOCKET(SOC,LOCPORT,FORPORT) = VALOF
+//----------------------------------------------------------------------------
+//SOC IS A POINTER TO STORAGE OF SIZE LENPUPSOC.
+//LCLPORT AND FRNPORT POINT AT PORT STRUCTURES AND MAY BE OMITTED.
+//IF THE LOCAL NET AND HOST OR LOCAL SOCKET ARE ZERO, THEY
+//ARE DEFAULTED TO REASONABLE VALUES (SOCKET GUARANTEED UNIQUE).
+//IF THE FOREIGN NET IS ZERO, IT IS DEFAULTED TO BE THE SAME AS
+//THE LOCAL NET (WHICH IS ASSUMED TO BE DIRECTLY CONNECTED!).
+[
+ZERO(SOC,LENPUPSOC)
+MOVEBLOCK(LV SOC!PSIB,DPSIB,LENPSIB)
+IF LOCPORT NE 0 THEN MOVEBLOCK(LV SOC!LCLPORT,LOCPORT,LENPORT)
+IF FORPORT NE 0 THEN MOVEBLOCK(LV SOC!FRNPORT,FORPORT,LENPORT)
+IF (SOC!LCLNET & #177400) EQ 0 & (SOC!LCLHOST & #377) EQ 0 THEN
+   [  //NET AND HOST UNSPECIFIED, SELECT REASONABLE DEFAULT
+   LET NDB = NIL
+   NDB := NDBQ!0
+   SOC!LCLPORT := ((NDB!LNET) LSHIFT 8) + NDB!LHOST
+   ]
+IF SOC!(LCLSOCKET+0) EQ 0 & SOC!(LCLSOCKET+1) EQ 0 THEN
+   [  //LOCAL SOCKET UNSPECIFIED, MAKE ONE
+   SETTIMER(LV SOC!(LCLSOCKET+0),0)  //RANDOM WORD
+   SOC!(LCLSOCKET+1) := SOC  //GUARANTEE UNIQUENESS
+   ]
+IF (SOC!FRNNET & #177400) EQ 0 THEN  //FOREIGN NET UNSPECIFIED
+   SOC!FRNNET := (SOC!LCLNET & #177400) + (SOC!FRNNET & #377)
+ENQUEUE(SOCKETQ,SOC)
+]
+
+
+//----------------------------------------------------------------------------
+AND CLOSELEVEL1SOCKET(SOC) BE
+//----------------------------------------------------------------------------
+[
+UNLESS UNQUEUE(SOCKETQ,SOC) DO SYSERR(SOC,ECNOSUCHSOCKET)
+   [
+   FLUSHQUEUE(LV SOC!IQ)
+   BLOCK()
+   ] REPEATUNTIL (SOC!NUMTPBI & #377) EQ ((SOC!MAXTPBI & #177400) RSHIFT 8)
+]
+
+//----------------------------------------------------------------------------
+AND FLUSHQUEUE(Q) BE WHILE Q!0 NE 0 DO RELEASEPBI(DEQUEUE(Q))
+//----------------------------------------------------------------------------
+
+//----------------------------------------------------------------------------
+AND BROADCASTNEXTNET(PBI,ENDB) BE
+//----------------------------------------------------------------------------
+//CALLED FROM PUPLEVEL1 AND COMPLETEPUP FOR A PBI BEING BROADCAST
+//ON ALL DIRECTLY CONNECTED NETWORKS
+[
+WHILE ENDB NE 0 DO
+   [
+   UNLESS ENDB!LNET EQ 0 & (PBI!STATUS & #20000) NE 0 DO
+      [
+      PBI!NDB := ENDB
+      PBI!SPORT := ((ENDB!LNET) LSHIFT 8) + (ENDB!LHOST)
+      PBI!DPORT := ((ENDB!LNET) LSHIFT 8) + (PBI!DNET & #377)
+      SETPUPCHECKSUM(PBI)
+      (ENDB!ENCAPSULATEPUP)(PBI,PBI!DHOST & #377)
+      (ENDB!LEVEL0TRANSMIT)(PBI)
+      RETURN
+      ]
+   ENDB := ENDB!0
+   ]
+RELEASEPBI(PBI)
+]
+
+//----------------------------------------------------------------------------
+AND SETALLOCATION(SOC,TOTAL,INPUT,OUTPUT) BE
+//----------------------------------------------------------------------------
+[
+IF INPUT GR TOTAL | OUTPUT GR TOTAL DO SYSERR(SOC,ECBADALLOCATION)
+SETONEALLOC(LV SOC!MAXTPBI,TOTAL)
+SETONEALLOC(LV SOC!MAXIPBI,INPUT)
+SETONEALLOC(LV SOC!MAXOPBI,OUTPUT)
+]
+
+//----------------------------------------------------------------------------
+AND SETONEALLOC(PTR,VAL) BE
+//----------------------------------------------------------------------------
+[
+LET CHANGE = VAL - ((PTR!0 & #177400) RSHIFT 8)
+PTR!0 := (VAL LSHIFT 8) + (PTR!0 & #377) + CHANGE
+]

@@ -1,0 +1,160 @@
+1/6/81
+T. Rindfleisch
+
+This note documents the procedures for maintaining the files that
+define the PUP network, host, and socket assignments for the various
+systems on our Ethernet (see Xerox IOM from Ed Taft, "The Pup Network
+Directory and the PUPNM JSYS", 7/1/78).  There are two files involved
+in defining the PUP network directory:
+
+<SYSTEM>PUP-NETWORK.TXT		This is a text file that defines
+				symbolic network names in terms of
+				numeric address constants according to
+				the syntax described at the beginning of
+				the file (and appended to the end of
+				this note).
+
+<SYSTEM>PUP-NETWORK.DIRECTORY	This is a binary file that provides a
+				database for looking up symbols and
+				numeric constants via the PUPNM JSYS.
+				It is loaded into the monitor at startup
+				and is updated as appropriate via the
+				OPRFN(PUPDIR) JSYS in TENEX or the
+				SMON(PUPDIR) JSYS in TOPS-20.  The file
+				format is defined in Taft's IOM (and a
+				summary is appended below).
+
+The binary file is created from the text file by the program
+<PUP>MAKDIR.SAV.  MAKDIR asks for an input file name -- <esc> will
+default to <connected dir>PUP-NETWORK.TXT.  If the input is successfully
+parsed, an output (binary) file name is requested -- <esc> will default
+to <connected dir><input file name>.DIRECTORY with a version number
+equal to that of the input .TXT file.  If any errors are encountered in
+processing the input file, they are reported and no output file is
+generated.
+
+The correct procedure for updating the network directory file is:
+
+1)  Copy <SYSTEM>PUP-NETWORK.TXT to a new version.
+
+2)  Edit the changes in the new version with appropriate comments
+
+3)  Run <PUP>MAKDIR.SAV on the new .TXT file while connected to SYSTEM
+    to create a corresponding .DIRECTORY file in SYSTEM with proper
+    version number.  If errors occur, go back to 2) and correct them.
+
+TENEX and TOPS-20 systems on the network periodically check to see if
+a new version of the <SYSTEM>PUP-NETWORK.DIRECTORY file has been created
+and if so loads it into the monitor.  Periodic checks are also made to
+other servers around the network to see if they are running with newer
+versions of the network directory than is installed locally.  If so, an
+attempt is made to transfer the highest numbered remote version to the
+
+local site.  If this is successful, a new version of .DIRECTORY is
+created and loaded into the local monitor.  These processes are
+implemented in the PUPSRV server in the PUPDIR miscellaneous services
+section.
+
+IT IS IMPORTANT TO NOTE:
+
+1)  The version number of the PUP-NETWORK.DIRECTORY output file is
+    encoded inside the file as a consistency check.  Thus new
+    PUP-NETWORK.DIRECTORY files should not be generated and then renamed
+    to different versions.  This will lead to PUPSRV inconsistency
+    errors.  For example, if .TXT is processed in <PUP> to generate a
+    new directory file and on success .DIRECTORY;x is renamed to
+    <SYSTEM> as version .DIRECTORY;y where x .ne. y, a problem will
+    result!
+
+2)  Determination of the "most recent" PUP-NETWORK.DIRECTORY is based on
+    the highest version number.  Thus PUP-NETWORK.DIRECTORY files should
+    be generated with increasing version numbers corresponding to the
+    .TXT file from which it was generated.
+
+
+; INPUT FILE SYNTAX (by Ed Taft):
+
+; Each line may be either an <entry> or a <comment> followed by
+;  a cr/lf.  cr/lf's in an <entry> are ignored if they immediately
+;  follow "=", ",", or ";".  Tabs and spaces are ignored.
+
+; <entry> ::= <name list> = <address list> ; <attribute list>
+; <comment> ::= ; <arbitrary string>
+; <name list> ::= <name> | <name list> , <name>
+; <name> ::= <string composed of alphanumerics, "-", "/">
+; <address list> ::= <address> | <address list> , <address>
+; <address> ::= <expression> | <expression> ( <attribute list> )
+; <expression> ::= <term> | <expression> + <term>
+; <term> ::= <name> | <address constant>
+; <address constant> ::= <element> | <element> # <element> |
+;			 <element> # <element> # <element>
+; <element> ::= <octal number> | empty
+; <attribute list> ::= <attribute> | <attribute list> , <attribute>
+; <attribute> ::= <name> : " <attribute value> "
+; <attribute value> ::= <arbitrary string with any " doubled>
+
+; FORMAT OF NETWORK DIRECTORY (by Ed Taft):
+
+; The directory consists of the highest-numbered version of
+; file <SYSTEM>PUP-NETWORK.DIRECTORY, which is a file written
+; in 16-bit bytes (for the sake of Altos and Novas) and mapped
+; into monitor space starting at NETDIR for the purpose of doing
+; lookups by means of the PUPNM Jsys.  All "pointers" in the
+; directory refer to 16-bit bytes relative to the start of the
+; directory.  All "strings" are BCPL-style, i.e. an 8-bit
+; byte count followed by that number of 8-bit bytes.  All
+; "blocks" and "tables" start at Maxc word boundaries, i.e.
+; "pointers" to them are always even.
+; The last byte of the file is a ones-complement add-and-left-cycle
+; checksum (i.e., the Pup checksum algorithm) over the file's contents.
+
+; Header block (starts at word 0 of the directory):
+;  # of name blocks
+;  Pointer to name lookup table
+;  # of address blocks
+;  Pointer to address lookup table
+;  # words occupied by entry blocks
+;  Pointer to first entry block
+;  Directory version number (= Maxc directory file version)
+
+; Name lookup table (ordered alphabetically by name):
+;  Pointer to name block
+;  Pointer to name block
+;   ...
+;  Pointer to name block
+
+; Address lookup table (ordered by value of <net,host,socket>):
+;  Pointer to address block
+;  Pointer to address block
+;   ...
+;  Pointer to address block
+
+; Entry block:
+;  Pointer to first name block for entry
+;  Pointer to first address block for entry
+;  Number of attributes
+;  Pointer to first attribute name
+;  Pointer to first attribute value
+;   ...
+;  Pointer to last attribute name
+;  Pointer to last attribute value
+
+; Name block:
+;  Pointer to next name block for same entry, or 0
+;  Pointer to owning entry block
+;  Name string
+
+; Address block:
+;  Pointer to next address block for same entry, or 0
+;  Pointer to owning entry block
+;  Net (8 bits), Host (8 bits)
+;  Socket (32 bits)
+;  Number of attributes
+;  Pointer to first attribute name
+;  Pointer to first attribute value
+;   ...
+;  Pointer to last attribute name
+;  Pointer to last attribute value
+
+; Attribute block (name or value):
+;  Attribute string

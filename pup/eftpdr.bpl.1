@@ -1,0 +1,290 @@
+// EFTPDR.BPL -- EFTP DRIVER ROUTINE --
+// Copyright Xerox Corporation 1979
+
+GET "RT11.HDR"
+GET "EFTP.HDR"
+GET "DLIB.HDR"
+
+//
+LET START() BE
+//
+[
+LET ZONE = NIL
+LET REGION = NIL
+LET CTX = NIL
+LET CTXQ = NIL
+LET STKSIZE = 300
+LET ZONESIZE = #14000
+ZONE := GETFIXED(ZONESIZE)
+INITIALIZEZONE(ZONE,ZONESIZE,0)
+CTXQ := ALLOCATE(ZONE,2)
+CTXQ!0 := 0
+INITPUPLEVEL1(ZONE,CTXQ,10,0)
+INITEFTPPACKAGE()
+REGION := ALLOCATE(ZONE,STKSIZE)
+CTX := INITIALIZECONTEXT(REGION,STKSIZE,EFTPDRIVER,2)
+ENQUEUE(CTXQ,CTX)
+CTX!3 := -1
+CTX!4 := ZONE
+CALLCONTEXTLIST(CTXQ!0) REPEATUNTIL CTX!3 EQ 0
+INITETHERIO()
+]
+
+//
+AND EFTPDRIVER(CTX) BE
+//
+[
+LET INSTRING =  VEC 40
+WRITESTRING("EFTP --- ENTER S, R, OR Q")
+GETSTRING(INSTRING)
+BLOCK()
+SWITCHON ((INSTRING!0 & #177400) RSHIFT 8) INTO
+    [
+    CASE 'Q':
+        [
+        CTX!3 := 0
+        BLOCK() REPEAT
+        ]
+    CASE 'R':
+        [
+        LET NETID = NIL
+        LET HOSTID = NIL
+        LET RESULT = NIL
+        LET STATUS = NIL
+        LET CODE = NIL
+        LET CHAN = NIL
+        LET BLKID = 0
+        LET RCVSOC =  VEC LENEFTPSOC
+        LET MYPORT = VEC LENPORT
+        LET RCVPORT = VEC LENPORT
+        LET BUFFER = ALLOCATE(CTX!4,256)
+        WRITESTRING("RECEIVE FILE --- ENTER HOST ID")
+        GETSTRING(INSTRING)
+        RESULT := PARSE(INSTRING,LV NETID,LV HOSTID)
+        TEST NOT RESULT
+          THEN
+            [
+            WRITESTRING("UNABLE TO PARSE HOST ID")
+            ]
+          OR
+            [PARSE
+        WRITESTRING("ENTER FILE NAME")
+        GETSTRING(INSTRING)
+        CHAN := OPEN(0,INSTRING,#40000)
+        SWITCHON CHAN GE 0 INTO
+            [CASEBLOCK
+            CASE FALSE:
+            [FALSE
+            TEST CHAN EQ -2
+                THEN
+                [
+                LET YES = VEC 40
+                WRITESTRING("FILE EXISTS --- OK TO OVERWRITE?")
+                GETSTRING(YES)
+                TEST ((YES!0 & #177400) RSHIFT 8) EQ 'Y'
+                    THEN
+                    [
+                    CHAN := OPEN(1,INSTRING,#40000)
+                    IF CHAN LS 0 THEN
+                        [
+                        WRITESTRING("UNABLE TO OPEN FILE")
+                        ENDCASE
+                        ]
+                    ]
+                    OR
+                    [
+                    WRITESTRING("ABORTED BY OPERATOR")
+                    ENDCASE
+                    ]
+                ]
+                OR
+                [
+                WRITESTRING("UNABLE TO OPEN FILE")
+                ENDCASE
+                ]
+            ]FALSE
+            CASE TRUE:
+            [TRUE
+            MYPORT!0, MYPORT!1, MYPORT!2 := 0,0,SOCKETEFTPRECEIVE
+            RCVPORT!0, RCVPORT!1, RCVPORT!2 := (NETID LSHIFT 8)+HOSTID,0,0
+            BLOCK()
+            OPENEFTPSOC(RCVSOC,MYPORT,RCVPORT)
+                [
+		LET WDCNT = NIL
+                CODE := RECEIVEEFTPBLOCK(RCVSOC,BUFFER,-1)
+                IF CODE LS 0 THEN
+                    [
+                    WRITESTRING("TRANSMISSION ABORTED")
+                    BREAK
+                    ]
+                IF CODE EQ 0 THEN
+                    [
+                    WRITESTRING("FILE RECEIVED SUCCESSFULLY")
+                    BREAK
+                    ]
+		FOR I = 0 TO 255 DO
+		    [
+		    BUFFER!I := ((BUFFER!I & #377) LSHIFT 8) +
+			((BUFFER!I & #177400) RSHIFT 8)
+		    ]
+		WDCNT := (CODE+1) RSHIFT 1
+		IF (CODE & #1) NE 0 THEN
+		    [
+		    BUFFER!(WDCNT-1) := BUFFER!(WDCNT-1) & #377
+		    ]
+                STATUS := WRITEDISK(CHAN,BUFFER,WDCNT,BLKID)
+                IF STATUS NE -1 THEN
+                    [
+                    WRITESTRING("FILE WRITE ERROR")
+                    BREAK
+                    ]
+                BLKID := BLKID+1
+                ] REPEAT
+            CLOSEEFTPSOC(RCVSOC)
+            CLOSE(CHAN)
+            ]TRUE
+            ]CASEBLOCK
+        ]PARSE
+        FREE(CTX!4,BUFFER)
+        ENDCASE
+        ]
+    CASE 'S':
+        [
+        LET NETID = NIL
+        LET HOSTID = NIL
+        LET RESULT = NIL
+        LET STATUS = NIL
+        LET CODE = NIL
+        LET CHAN = NIL
+        LET BLKID = 0
+        LET SNDSOC =  VEC LENEFTPSOC
+        LET SNDPORT = VEC LENPORT
+        LET BUFFER = ALLOCATE(CTX!4,256)
+        WRITESTRING("SEND FILE --- ENTER HOST ID")
+        GETSTRING(INSTRING)
+        RESULT := PARSE(INSTRING,LV NETID,LV HOSTID)
+        TEST NOT RESULT
+          THEN
+            [
+            WRITESTRING("UNABLE TO PARSE HOST ID")
+            ]
+          OR
+            [PARSEOK
+        WRITESTRING("ENTER FILE NAME")
+        GETSTRING(INSTRING)
+        CHAN := OPEN(-1,INSTRING,#40000)
+        TEST CHAN LS 0
+          THEN
+            [
+            WRITESTRING("UNABLE TO OPEN FILE")
+            ]
+          OR
+            [OPENOK
+        SNDPORT!0, SNDPORT!1, SNDPORT!2
+                := (NETID LSHIFT 8)+HOSTID,0,SOCKETEFTPRECEIVE
+        BLOCK()
+        OPENEFTPSOC(SNDSOC,0,SNDPORT)
+            [
+            STATUS := READDISK(CHAN,BUFFER,1,BLKID)
+            IF STATUS NE -1 THEN
+                [
+                TEST STATUS EQ 0
+                    THEN
+                    [
+                    CODE := SENDEFTPEND(SNDSOC,-1)
+                    WRITESTRING("FILE SUCCESSFULLY SENT")
+                    BREAK
+                    ]
+                    OR
+                    [
+                    WRITESTRING("FILE READ ERROR")
+                    BREAK
+                    ]
+                ]
+	    FOR I = 0 TO 255 DO
+		[
+		BUFFER!I := ((BUFFER!I & #377) LSHIFT 8) +
+		    ((BUFFER!I & #177400) RSHIFT 8)
+		]
+            CODE := SENDEFTPBLOCK(SNDSOC,BUFFER,512,-1)
+            IF CODE LE 0 THEN
+                [
+                WRITESTRING("TRANSMISSION ABORTED")
+                BREAK
+                ]
+            BLKID := BLKID+1
+            ] REPEAT
+        CLOSEEFTPSOC(SNDSOC)
+        CLOSE(CHAN)
+            ]OPENOK
+            ]PARSEOK
+        FREE(CTX!4,BUFFER)
+        ENDCASE
+        ]
+    ]
+]
+//
+AND PARSE(INSTRING,LVNETID,LVHOSTID) = VALOF
+//
+[
+LET CHAR = NIL
+LET I = 0
+LET J = 1
+LET NUM = 0
+LET LB = 1
+LET INCNT = INSTRING!0 & #377
+RV LVNETID := 0
+RV LVHOSTID := 0
+    [
+    SWITCHON (J & #1) INTO
+        [
+        CASE 0:
+            [
+            CHAR := INSTRING!I & #377
+            ENDCASE
+            ]
+        CASE 1:
+            [
+            CHAR := (INSTRING!I &#177400) RSHIFT 8
+            I := I+1
+            ENDCASE
+            ]
+        ]
+    SWITCHON CHAR INTO
+        [
+        CASE '#':
+            [
+            IF INCNT EQ J THEN
+                [
+                RV LVHOSTID := NUM
+                RESULTIS TRUE
+                ]
+            TEST LB EQ 1
+                THEN
+                [
+                LB := 2
+                RV LVNETID := NUM
+                NUM := 0
+                J := J+1
+                ]
+                OR
+                [
+                RESULTIS FALSE
+                ]
+            ENDCASE
+            ]
+        CASE '1':CASE '2':CASE '3':CASE '4':
+        CASE '5':CASE '6':CASE '7':CASE '0':
+            [
+            IF INCNT EQ J THEN RESULTIS FALSE
+            NUM := (NUM LSHIFT 3)+(CHAR & #7)
+            J := J+1
+            ENDCASE
+            ]
+        DEFAULT:
+            [
+            RESULTIS FALSE
+            ]
+        ]
+    ] REPEAT
+]

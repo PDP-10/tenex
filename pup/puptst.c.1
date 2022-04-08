@@ -1,0 +1,489 @@
+# include "version.h"
+# define ChunkHead 3			/* size of chunk header    */
+# define l1_chunk struct chunk
+l1_chunk {/* memory chunk structure */
+	l1_chunk *previous;	/* previous free chunk or 0 */
+	l1_chunk *next;		/* next free or 0	    */
+	int size;		/* bit 15 = 0 if free, 1 if taken */
+			        /*     14 - 0  size in words	  */
+	};
+l1_Port p1[1], p2[1], p3[1], p4[1];
+l1_Port *lPort {p1};
+l1_Port *fPort {p2};
+l1_Port *f2Port {p3};
+l1_Port *f3Port {p4};
+extern int *l1_MemHead, g_Entries, l1_rPTRs[], l0_nFreeBufs;
+extern char l1_rFree[];
+
+# ifndef PDP11
+int l_firstFree[16000];
+# endif
+
+# define MaxP 10
+int PUPs[MaxP], PUPsize[MaxP], PUPsoc[MaxP];
+int socs[6];
+int nSocs {0};
+# define maxS 5
+extern int *l0_NDBq;
+# define Maxrec 100
+char record[Maxrec];
+int rcnt {0};
+char *herald {"\nW, F, T, L, P, E, M, G, B, S, O, C, a, r, x, q or ? "};
+char *gstr {"key = %d gateNet = %d gateHost = %d  hops = %d\n"};
+int broad, buff[120];
+int puptst ()
+	{int zaz, i, quit, h; l0_NDB *NDB;
+	zaz = 0;
+	NDB = *l0_NDBq;
+	h = NDB->localHost;
+	p1->Net = sumex; p1->Host = h; p1->Sock1 = 0; p1->Sock2 = 0;
+	p2->Net = sumex; p2->Host = h+1; p2->Sock1 = 0; p2->Sock2 = 0;
+	p3->Net = NET2; p3->Host = 111; p2->Sock1 = 0; p2->Sock2 = 0;
+    	p4->Net = 3; p4->Host = 97; p2->Sock1 = 0; p2->Sock2 = 0;
+	quit = 0;
+	for (i = 0; i <MaxP; i++) {PUPs[i] = -1; PUPsoc[i] = -1;}
+	for (i = 0; i < 6; i++) Socs[i] = -1;
+	broad = 0;
+	while (1)
+	    {int n;
+	    ttyread (herald, buff);
+	    keepTrack (buff[0]);
+	    switch (buff[0])
+		{case '?':
+		        help (); continue;
+		case 'W':
+		case 'w':
+			TOsleepy (1);
+			continue;
+		case 'T':
+		case 't':
+			TOsleep (2);
+			continue;
+		case 'X':
+		case 'x': /* eXamine free Q */
+		        examine (); continue;
+		case 'L':
+		case 'l':
+			while (1)
+			  {ttyread ("C, R, ? ", buff); 
+			  if (list (buff[0])) break;
+			  } 
+			continue;
+		case 'p':
+		case 'P': break;
+		case 'e':
+		case 'E':
+			showSocs ();
+	                if ((i = whichSocket ()) == -1) continue;
+			elaborateSocket (socs[i]); continue;
+		case 'M':
+		case 'm':
+		        spillMem (); continue;
+		case 'b':
+		case 'B': broad = 1;  		/* broad cast pup */
+		case 's':
+		case 'S':
+		        sendit (); break;
+		case 'O':
+		case  'o':  /* open socket */
+			{int *foreign;
+		        if (nsocs == 5)
+			    {cprint ("Sorry, sockets used up!!\n"); break;}
+		        nsocs++; i = newSoc ();
+			foreign = cPort ();
+			socs[i] = p_openSocket (lPort, foreign, 1, gStat ());
+			if (!socs[i])  /* then error - duplicate loc soc# */
+			    {cprint ("Error - duplicate local socket #");
+			    socs[i] = -1; 
+			    lPort->sock1 = 0;
+			    lPort->sock2 = 0;
+			    break;
+			    }
+			cprint ("New Socket #%d at: %d\n", i, 
+				socs[i]-3*sizeof(i));
+			showSocs ();
+			break;
+			}
+		case  'g':  
+		case  'G':  /* get PUP */
+		        {char *PUP;  int secs;
+		        cprint("Get A pup:\n");
+			showSocs ();
+	                if ((i = whichSocket ()) == -1) break;
+			if (confirm ("Wait on timer (Y or N)?  "))
+			    {while(1)
+				{ttyread ("How long in secs? ", buff);
+			        secs = ATOI (buff);
+			    	if (secs > 0) break;
+				cprint ("%d can't wait that long!\n");
+				}
+			    }
+			else secs = 0;
+		        PUP = p_receivePUP (socs[i], 1, h_tics * secs);
+			if (!PUP) 
+			    {cprint("NO pup arrived in the interval!");
+			    break;
+			    }
+			cprint("Got PUP!:\n");
+		        explodePak (PUP - PakOverHead);
+			p_PUPdispose (PUP);
+		        break;
+		        }    
+		case  'f':  
+		case  'F':  /* close socket */
+			{int *PUP;
+			zaz = zaz ^ 01;
+		        PUP = p_receivePUP (zaz, 0, 0);
+			cprint("\nreceive returned %d", PUP);
+			continue;
+			}
+		case  'C':  
+		case  'c':  /* close socket */
+			showSocs ();
+	                if ((i = whichSocket ()) == -1) break;
+			p_closeSocket (socs[i]); nsocs--; socs[i] = -1;
+			clearPUPs (i);
+			showSocs ();
+			break;
+		case 'A':
+		case 'a':   /* allocate PUP */
+			doAll (); continue;
+		case 'R':
+		case 'r':   /* release PUP */
+		        {l1_sock *sock; l0_smlPak *Pak;
+		        if (!showPUPs ()) break;
+			while (1)
+			    {ttyread ("Which PUP? ", buff); n = ATOI (buff);
+			    if (PUPs[n] != -1) break;
+			    cprint ("%d is not valid\n", n);
+			    }
+			Pak = PUPs[n] - PakOverHead; sock = Pak->socPTR;
+			p_PUPdisose (PUPs[n]); PUPs[n] = -1; PUPsize[n] = 0;
+			break;
+			}
+		case 'q': quit = 1;
+			break;
+		default: cprint ("%s doesn't make sense", buff); continue;
+		}
+	    if (!quit) {s_suspend (); continue;}
+	    s_killp (-1);	
+	    }	
+	}
+
+int TOsleep (k) int k;
+	{/* to bed or awaken ? */
+	int i; l1_sock *s;
+    	showSocs ();
+	if ((i = whichSocket ()) == -1) return;
+	s = (l1_sock *)socs[i];
+	switch (k)
+	    {case 1: /* awaken socket */
+	        if (s->status & asleep) p_awaken (s);
+		else 
+		    cprint ("This socket is not sleeping!\n");
+		break;
+	    case 2:  /* to sleep */
+		p_ToBed (s);
+	    default: break;
+	    }
+	}
+int gStat ()
+	{if (confirm ("Duplicate local sock# test?"))
+	    {lport->sock1 = 999; lport->sock2 = 1000;}
+	if (confirm ("CheckSum on this socket? ")) return (0);
+	else
+	    return(NOcheckSum);
+	}
+# define EchoMe 1
+# define EFTPdata 030
+int DOall ()
+	{l2_PUP *PUP; int n, m, i;
+	if ((m = nexti ()) == MaxP) return;
+	ttyread (" How many data bytes? ", buff);
+	n = ATOI (buff); 
+	showSocs ();
+	if ((i = whichSocket ()) == -1) return;
+	PUPsize[m] = n + PUPoverhead;
+	/* ON 10 bytes = words c wise */
+# ifdef PDP11
+	n = (n + 1) >> 1;		/* make words */
+# endif
+	switch (PUPs[m] = p_allocatePUP (socs[i], n, 0))
+	    {case 0: cprint ("Sorry - port full!\n"); break;
+	    case -2: cprint ("Socket sleeping!\n"); break;
+	    case -1:
+		cprint ("%D is TOO many bytes!\n", n); break;
+	    default:
+		PUP = PUPs[m]; PUPsoc[m] = i;
+		PUP->PUPlen = PUPsize[m];
+		PUP->PUPtype = getType ();	/* select from minimal set */
+		/* send to echo listener? */
+		if (PUP->PUPtype == EchoMe)
+	    	    {PUP->dSoc1 = 0; PUP->dSoc2 = 5;} 
+		return;
+	    }
+	PUPs[m] = -1; PUPsize[m] = 0;
+	}
+
+int getType ()
+	{/* give a selection of types... */
+	int t;
+	t = 0;
+	While (t != EchoMe && t!= EFTPdata)
+	    {TTYREAD ("Echo or EFTP data? (1 OR 24) ", buff);
+	    t = ATOI (buff);
+	    }
+	return(t);
+	}
+int clearPUPs (soc) int soc;
+	{int i;
+	/* clear any PUPs associated with soc */
+	for (i = 0; i < MaxP; i++)
+	    if (PUPsoc[i] == soc)
+		{PUPs[i] = -1; PUPsoc[i] = -1;}
+	}
+int sendit ()
+	{int n, flag, keep;
+	if (!showPUPs ()) return;
+	while (1)
+	    {ttyread ("Which PUP? ", buff); n = ATOI (buff);
+	    if (PUPs[n] != -1) break;
+	    cprint ("%d is not valid\n", n);
+	    }
+	keep = -1;
+	while (keep < 0)
+	   {ttyread ("Keep it after output (Y or N): ", buff);
+	   switch (buff[0])
+	       {case 'Y':
+	       case 'y': keep = KeepPUP; break;
+	       case 'N':
+	       case 'n': keep = 0; break;
+	       default: cprint("Huh?? %s", buff);
+	       }
+	    }
+	if (broad) 
+	    {broad = 0; Keep =| broadCast;}
+	switch (flag = p_SendPUP(PUPs[n], Keep))
+	    {case 1:	cprint("Success!\n"); break;
+	    case 0:	cprint("bad length!\n"); break;
+	    case -1:	cprint("NO such foreign NET!\n");break;
+	    default:	cprint("error = %d is weird!\n", flag);
+	    }
+	if (!(keep & KeepPUP)) PUPs[n] = -1;
+	}
+int help ()
+	{
+	cprint(" F    Foney socket\n");
+	cprint(" T    socket to sleep\n");
+	cprint(" W    aWaken socket\n");
+	cprint(" L    list command\n");
+	cprint(" P    proceed\n");
+	cprint(" E    elaborate socket\n");
+	cprint(" M    memory diplay\n");
+	cprint(" G    Get pup\n");
+	cprint(" B    Broad cast PUP\n");
+	cprint(" S    Send PUP\n");
+	cprint(" O    Open socket\n");
+	cprint(" C    Close socket\n a    Allocate PUP\n");
+	cprint(" r    Release PUP\n");
+	cprint(" X    eXamine Free Q\n");
+	cprint(" q    Quit\n");
+	}
+extern int *l0_FreeQ;
+int eXamine ()
+	{int i, *Q; char **p; l0_smlPak *sp;
+	Q = l0_FreeQ;			/* to the FreeQ */
+	cprint ("FreeQ has %d elements!\n", l0_nFreeBufs);
+	if (!(p = *Q)) 
+	    {cprint ("FreeQ empty!\n"); 
+	    Q += 1; 			/* check tail */
+	    if (Q) cprint ("  Error - tail is: %O - NOT zero\n", Q);
+	    return;
+	    }
+	i = 0;
+	while (p)
+	    {cprint ("   Input Buffer# %d at: %O\n", i, p - 3);
+	    i += 1;
+	    sp = p; cprint ("    Intent = %O\n", sp->intent);
+	    p = *p;			/* next link */
+	    }
+	}
+int cPort ()
+	{/* determine foreign port */
+	while (1)
+	    {ttyread (" Which foreign Net(1, 2, or 3)? ", buff);
+	    switch (ATOI (buff))
+		{case 1: return(fport);
+		case 2:  return(f2port);
+		case 3:  return(f3port);
+		default: cprint (" %s NOT available!!\n", buff);
+		}
+	    }
+	}
+extern int *l1_sQ;
+int showSocs ()
+	{int *p ,i, k;
+	p = *l1_sQ;
+	if (!p) {cprint (" socket Q empty!\n"); return;}
+	while (p)
+	    {for (i=0; i < 5; i++) 
+		{k = p; if (socs[i] == k) break;}
+	    if (i < 5) cprint (" socket #%d  at: %d\n", i, p - 3); p = *p;
+	    }
+	}
+int keeptrack (c) int c;
+    {record[rcnt++] = c; if (rcnt == MaxRec) rcnt = 0;}
+int showPUPs ()
+	{int p ,i, k;
+	k = 0;
+	for (i=0; i < MaxP; i++) 
+	    {p = PUPs[i];
+	    if (p != -1)
+	        {int where; where = p - PAKoverhead - 3;
+		cprint (" PUP #%d  at: %o, assigned to soc# %d \n", 
+			i, where, PUPsoc[i]); 
+	        k = 1;
+		}
+	    }
+	if (!k) {cprint (" NO pups around!\n"); return(k);}
+	return(k);
+	}
+int list (c) char c;
+	{char minBuf[2]; int i, N;
+	switch (c)
+	    {case '?':
+	        cprint(" C    list command summary\n");
+		cprint(" R    list routing table\n");
+		return(0);
+	    case 'c':
+	    case 'C':
+	        minBuf[1] = 0;
+		cprint (" The %d commands have been: \n", rcnt);
+		for (i = 0; i < rcnt; i++)
+		    {minBuf[0] = record[i];
+		    cprint("%s  ", minBuf);
+		    if ((i + 1) % 5 == 0) cprint("\n");
+		    }
+		cprint("\n.end list.\n");
+		return(1);
+	    case 'R':
+	    case 'r':
+	        /* list routing table */
+		{l1_route *r; 
+	        r = 0; N = 0;
+		for (i = 0; i < routeEntries; i++)
+		    {if (l1_rFree[i]) continue;
+		    else
+		        {r = l1_rPTRs[i];
+			cprint (gstr, r->targetNet, r->gwNet,
+				       r->gwHost, r->Hops);
+			++N;		/* count em */
+			if (N == g_Entries) break; 
+			} 
+		    }
+		if (!r) cprint (". table empty .\n");
+		return(1);
+		}
+	    }
+	}
+int elaborateSocket (soc) l1_sock *soc;
+	{/* show this socket off! */
+	int k; char *Q;
+	k = soc;
+	cprint (" for socket at address: %o\n", k-3*sizeof(k));
+	cprint ("    link = %d\n", soc->link);
+	cprint ("max Paks = %d\n", soc->PaksAllowed);
+	cprint ("    Paks = %d\n", soc->PaksAllocated);
+	cprint ("  max in = %d\n", soc->inAllowed);
+	cprint ("    # in = %d\n", soc->inAllocated);
+	cprint (" max out = %d\n", soc->outAllowed);
+	cprint ("   # out = %d\n", soc->outAllocated);
+	cprint (" Lnet = %o LHost = %o sock1 = %o sock2 = %o\n",
+		soc->lNet, soc->lHost, soc->sock1, soc->sock2);
+	cprint (" Fnet = %o FHost = %o sock1 = %o sock2 = %o\n",
+		soc->fNet, soc->fHost, soc->fsock1, soc->fsock2);
+	cprint (" status = %o\n", soc->status);
+	Q = soc->inQhead;
+	while (Q)
+	    {l0_smlPak *p;
+	    p = Q;
+	    cprint("  has INPUT packet at: %O\n", Q - 3);
+	    cprint("      INTENT = %O\n", p->intent);
+	    k = *Q; Q = k;
+	    }
+	Q = soc->OutQhead;
+	while (Q)
+	    {l1_Otag *t;
+	    cprint ("  has Output tag at: %O\n", Q);
+	    t = Q;
+	    cprint ("  tag status: %O, packet at: %O\n", t->status, t->addr);
+	    k = *Q; Q = k;
+	    }
+	}
+
+int whichSocket ()
+	{int i;
+	ttyread (" Which socket? ", buff);
+	i = ATOI (buff);
+	if (illegal (i)) 
+	    {cprint ("%d is illegal\n", i); return(-1);}
+	else return(i);
+	}	
+int illegal (i) int i;
+	{if (socs[i] == -1) return(1); else return(0);}
+	
+int newSoc ()
+	{int j;
+	for (j=0; j < 5; j++) if (socs[j] == -1) return(j);
+	cprint("Sockets all taken!\n"); return(-1);
+	}
+extern int l1_CoreLeft;
+int spillMem ()
+	{/* spill out our memory allocation scheme */
+	l1_chunk *funrun;
+	funrun = l1_memHead;	/* start of list */
+	cprint("..............memory map..............\n");
+	while (1)
+	    {int size, NOTfree, puppy, socky;
+	    cprint("address: %O", funrun);
+	    size = funrun->Size;
+	    NOTfree = size & 0100000; size =& 077777;
+	    cprint("  words: %d", size);
+	    if (NOTfree) cprint (" free:  No ");
+	    else cprint (" free: Yes ");
+	    puppy = findSlot (funrun);
+	    if (puppy != -1) cprint (" PUP# %O\n", puppy);
+	    else 
+		{if ((socky = sockx (funrun)) != -1) 
+		    cprint (" SOC# %d\n", socky);
+	        else  
+		    cprint ("    # N/A\n");
+		}
+	    if (!(funrun->next)) break;
+	    funrun = funrun->next;
+	    }
+	cprint ("** core left = %d\n", l1_CoreLeft);
+	}
+int findSlot (addr) int addr;
+	{int i;
+	addr =+ (3 + PakOverHead);	/* pup head */
+	for (i = 0; i <MaxP; i++) if ((addr == PUPs[i])) return (i);
+	return (-1);
+	}
+
+int sockx (addr) int addr;
+	{int i;
+	addr =+ 3;		/* point to socket start */
+	for (i = 0; i <5; i++) if ((addr == socs[i])) return (i);
+	return (-1);
+	}
+int nexti () 
+	{int i; 
+	for (i=0; i < MaxP; i++) if (PUPs[i] == -1) return(i);
+        cprint ("You just ran out of address space!!");
+	return(MaxP);
+	}
+# ifndef PDP11
+int l_memcount () {return(16000);}
+# endif
+

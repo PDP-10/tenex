@@ -1,0 +1,558 @@
+# INCLUDE "VERSION.H"
+
+/* :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+  	The ".C-GW" version only has level1 as an ENTRY tag
+	And is used for a gateway ONLY pup service.
+ * :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::/
+
+/*************************************************************************
+   PUPsch is the PUP scheduler which schedules ALL processes
+   associated with PUP service on a system.
+   The process it will ALWAYS schedule is PUP level 1. 
+   Any other process to be scheduled will have to be plugged into
+   the array S_process, and its associated timer into the parallel
+   array S_timers.
+
+   For uniqueness of globals:
+	process		reserved prefix
+
+        PUPsch 		s_
+	level 1		l1_
+	level 0		l0_
+
+    Any machine dependent variables are prefixed s_MD...
+    You must LINK pupl1a into this load module. That is the memory
+    allocation routine.
+
+    We initialize the clock in s_startup ()
+	NOTE: ON 11s  	clock runs at PRI 6
+	      		we run at PRI 3
+			interrupt stuff at PRI 5
+
+    Modifications:
+	1. Now have two priorities...Hi and Low:
+	    The KNOWN processes are initialized at HIGH. All of their
+	    subsidiaries are initialized at LOW.
+
+	2. One can change a processes priority(current process only)
+	   from low to HIGH and conversely using:
+	   s_toLow () and s_toHIGH ().......  March 26, 1981 WJY.
+
+	3. Change INTEGER array indexing to pointer arithmetic for
+	   better code generation on 11's.... Nov. 16, 81 WJY.
+
+*************************************************************************/
+
+# define s_nProcs 20			    /* Maximum processes */
+
+# define MaxStack 3
+# ifndef PDP1105
+int s_StkSize[] {512,256,288,320};
+# endif
+
+# ifdef PDP1105
+/* four choices */
+int s_StkSize[] {256,128,160,192};
+# endif
+
+# define s_nKnown 1
+int l1_Level1 ();
+/* addresses of Known processes */
+int *s_known[s_nKnown] {l1_Level1}; 
+int s_pf[s_nKnown] {0};			/* parameter present flag */
+int s_pp[s_nKnown] {0};			/* The value of that parameter */
+int s_pz[s_nKnown] {1};			/* stack size parameters */
+
+# define YESpar 1
+# define NOpar 0
+# define _Sprocess struct s_Process
+_Sprocess { /* KEEP stack AT TOP! */
+	int *stack;			/* *processes stack */
+	int *SavedSP;			/* old stack pointer */
+	int entry_Address;		/* address for entry */
+	int first;			/* true on first call */
+	int Halted;			/* true if process halted */
+	int Killed;			/* true if process dead */
+	int timer, timer1;		/* >0 if set by s_Tdisms */
+	int (*Edisms)();		/* != 0 if address of Event */
+					/*   dismiss routine */
+	int Pflag;			/* 0 if NO parameter passed, els 1 */
+	int Eparm;			/* parameter for above routine */
+	} *s_Active[s_nProcs], *s_Cur;	/* active processes ptrs */
+int s_Cinx;				/* index of current process */
+int s_Funeral;				/* set if someone has been killed */
+int s_Mrunning;				/* Max running processes */
+_Sprocess s_space[s_nKnown];		/* RESERVE space for known */
+char s_Priority[s_nProcs];		/* Priority of each process */
+# define HiPri 1			/* Highest priority */
+# define LoPri 0			/* lowest priority */
+int s_nLow {0};				/* Number of low priority pros */
+main ()
+    {int low; 
+    int *hpP, *lpP;			/* process pointers */
+    l1_FreeSpaceInit (); 		/* setup up free space   */
+    /* some initialization */
+    s_startup ();
+    low = -1;
+    lpP = (int *)s_Active;		/* pointer indexing for low pri */
+    while (s_Existence())
+        {/* run along scheduling */
+	int j;
+        hpP = (int *)s_Active;		/* HI pri pointer "indexing" */
+	s_DrDeath (hpP);		/* finalization process */
+	/* First process ALL of our HIGH priority processes */
+	for (j = 0; j < s_Mrunning; j++)
+	    {if (s_Priority[j] == HiPri) s_process (hpP, j); 
+	    ++hpP;
+	    }
+	/* Now process the the next LOW priority process */
+	while (s_nLow)
+	    {/* check the activity */
+	    if (++low >= s_Mrunning) {low = 0; lpP = (int *)s_Active;}
+	    if (s_Priority[low] == LoPri) 
+		{s_process (lpP, low); ++lpP; break;}
+	    ++lpP;
+	    }
+	}
+    }
+
+/*********************************************************************
+	s_Existence calls the whole thing off if all processes have
+	  gone away...doesn't like loneliness I guess!
+*********************************************************************/
+
+int s_Existence ()
+	{int i, *pp;
+	pp = (int *)s_Active;
+	For (i = 0; i < s_nProcs; i++) if (*pp++) return(1);
+	return(0);
+	}
+
+/*********************************************************************
+
+	s_DrDeath finalizes the pending death of a killed process.
+
+*********************************************************************/
+
+int s_DrDeath (pp) _Sprocess **pp;
+	{int i;
+	if (!s_Funeral) return;		/* Nothing to bury */
+	s_Funeral = 0;
+	i = s_Mrunning;
+	pp = &(_Sprocess *)s_Active[i-1];     /* top of list */
+	while (--i >= 0)	/* Mrunning-1,...,0 */
+	    {if (*pp)		/* then active - see it time is up */
+ 	        if ((*pp)->killed) 
+	            {l1_RELmem ((*pp)->stack);		/* free stack */
+		    /* Maybe free structure space */
+		    if (i > (s_nKnown-1)) l1_RELmem (*pp);
+		    *pp = 0; 
+		    if (s_Priority[i] == LoPri) --s_nLow; /* One less low */
+		    s_Priority[i] = -1;
+		    if ((i+1) == s_Mrunning) --s_Mrunning;
+		    }
+	    --pp;		/* and back one more */
+	    }
+	}
+
+/****************************************************************************
+
+	s_process (p, i)
+		Process process *p. Hmmmm(verbs and nouns?)
+
+****************************************************************************/
+
+int s_process (p, i) _Sprocess **p;
+    {int Wtime, Wtime1;		        /* fake long integer timer for 11s */
+    s_Cur = *p;
+    if (!s_Cur) return;		    	/* Nothing here */
+    s_Cinx = i;
+    if (s_Cur->Halted) return;		/* Halted, so ignore */
+    if (s_Cur->Edisms)			/* has event dismiss on */
+        {switch (s_Cur->Pflag)		/* parameter? */
+	    {case NOpar: 
+	        if ((*(s_Cur->Edisms))()) return; /* still dismissed */
+		break;				  /* Dismiss done */
+	     case YESpar:
+	         if ((*(s_Cur->Edisms))(s_Cur->Eparm)) return;
+	     }
+	s_Cur->Edisms = 0;		/* clear Event disms */
+	}
+    Wtime = s_Cur->timer;		/* time dismiss active? */
+    Wtime1 = s_Cur->timer1;		/* Wtime1 = 0 if ~PDP11 */
+    if (Wtime || Wtime1) 
+        if (s_Sleeping (Wtime, Wtime1)) return; /* yawn.... */
+	else
+	    {s_Cur->timer = 0; s_Cur->timer1 = 0;}
+    s_resume ();	     		/* resume this guy */
+    }
+
+/*********************************************************************
+
+	s_toHIGH (t)  	changes a processes priority to HIGH if 
+			it is LOW - otherwise - does nothing
+
+*********************************************************************/
+
+int s_toHIGH ()
+    {If (s_Priority[s_Cinx] == LoPri)
+	{--s_nLow; s_Priority[s_Cinx] = HiPri;}
+    }
+
+/*********************************************************************
+
+	s_toLOW ()  	changes a processes priority to LOW if 
+			it is HIGH - otherwise - does nothing
+
+*********************************************************************/
+
+int s_toLOW ()
+    {If (s_Priority[s_Cinx] == HiPri)
+	{++s_nLow; s_Priority[s_Cinx] = LoPri;}
+    }	
+/*********************************************************************
+	s_sleeping (t)  returns TRUE if t > current time.
+			t = wake-up time.
+*********************************************************************/
+# ifdef PDP11
+extern int TODCLK;		/*  current time kept here on 11 */
+extern int TODlow;		/* double word			 */
+extern int l0_KW11L ();		/* time interrupt server */
+# endif
+
+int s_sleeping (th, tl) int th, tl;
+	{
+# ifdef PDP11
+	if (l_ULE (th, tl, TODCLK, TODLOW)) return(FALSE);
+	return(TRUE);
+# endif
+# ifndef PDP11
+	int dum[];
+	if (th>_TIME(dum)) return(TRUE);
+	return(FALSE);
+# endif
+	}
+
+/****************************************************************************
+
+	s_startup ()
+
+****************************************************************************/
+int s_startup ()
+	{int i;
+# ifdef PDP11
+	int *s_reg;
+	int *s_vec;
+	int *s_psw, oldpsw;
+	s_reg = 0177546;
+	s_vec = 0100;
+	s_psw = 0177776;
+# endif
+	s_nLow = 0;
+	s_Funeral = 0;		/* No one even alive yet! */
+	s_Mrunning = 0;		/* Max number of processes running */
+	For (i=0; i<s_nProcs; i++) {s_Active[i] = 0; s_Priority[i] = -1;}
+	For (i=0; i<s_nKnown; i++) 
+	    s_HIPinit (s_known[i], s_pf[i], s_pp[i], s_pz[i]);
+# ifdef PDP11
+	oldpsw = *s_psw;	/* processor status word */
+	*s_psw = 0300;		/* priority 6 */
+	*s_vec++ = l0_KW11L;
+	*s_vec = 0300;		/* and pri 6 too */
+	*s_reg =| 0100;		/* turn on interrupt bit */
+	*s_psw = oldpsw;	/* old priority back */
+# endif
+	}
+/*********************************************************************
+
+       s_HIPinit 
+       initialize HI PRIORITY process if a slot is available 
+       and return process 
+       number or 0.
+
+**********************************************************************/
+
+int s_HIGH {0};
+int s_HIPinit (pAdd, pf, pp, smallStack) int pAdd, pf, pp, smallStack;
+    {/* initilize a high priority process: */
+    int pn;
+    s_HIGH = 1;
+    pn = s_MDpInit (pAdd, pf, pp, smallStack);
+    s_HIGH = 0;
+    return(pn);
+    }
+
+/*********************************************************************
+
+	s_MDpInit 
+       initialize process if a slot is available and return process 
+       number or 0.
+
+**********************************************************************/
+# ifdef PDP11
+int s_Zero  {0};	/* for 11 stacks */
+# endif
+int s_MDpInit (pAdd, pf, pp, smallStack) int pAdd, pf, pp, smallStack;
+	{int i;
+	_Sprocess *Sp;
+	/* initiatize process call */
+	/* See if any available slots, ie Sp[i] == 0 */
+	For (i=0; i<s_nProcs; i++)
+	    {
+	    Sp = s_Active[i];
+	    if (Sp != 0) Continue;
+	    else
+	        {int stkSize;
+# ifdef PDP11
+		int *Spp;
+		int x;
+# endif
+		/* determine stack size */
+	        if (smallStack > MAXstack) smallStack = MaxStack;
+		stkSize = s_StkSize[smallStack];
+
+		/* set up structure */
+		/* pointer to struc */
+		if (i < s_nKnown) Sp = &s_space[i]; /* Space reserved */
+		else /* From free memory ... maybe */
+		    {Sp = l1_GETmem (sizeof(s_space[0])/sizeof(i));
+		    if (!Sp) return (-1);	/* NO mem */
+		    }
+		Sp->stack = l1_GetMEM (stkSize); /* got some memory? */
+		if (!Sp->stack) return(-1);	/* NO mem */
+		if (i == s_Mrunning) ++s_Mrunning;  /* Up MaxList counter */
+# ifndef PDP11
+		Sp->SavedSP = Sp->stack;
+	        if (pf) 
+		    {*(Sp->SavedSP)++ = pp;	/* The parameter */
+		    *(Sp->SavedSP)++ = 0;	/* a hole for resume () */
+		    }
+# endif
+# ifdef PDP11
+/* NOTE: on 11 must add stkSize since push is to lower addresses */
+		x = Sp->Stack;
+		x = x + (sizeof(i) * (stkSize - 1) - 8);
+		Sp->SavedSP = x;
+		Spp = Sp->SavedSP;	/* entry address - setup in resume */
+		*(++Spp) = 0;		/* old R4 */
+		*(++Spp) = &s_Zero;	/* old R5 */
+		*(++Spp) = 0;		/* dummy old local */
+		if (pf) *(++Spp) = pp;  /*  Initial parameter */
+# endif
+		/* address to resume processing process */
+		Sp->Entry_Address = pAdd; 
+		/* And set first call to true */
+		Sp->first = 1;
+		/* This process is not dead yet! */
+		Sp->Halted = FALSE;
+		Sp->killed = FALSE;
+		/* No time outs as of yet */
+		Sp->timer = 0;
+		Sp->timer1 = 0;
+		/* No event dismis pending */
+		Sp->Edisms = 0;
+		Sp->Pflag = 0; Sp->Eparm = 0;
+		/* Now set active process pointer TO local var*/
+		s_Active[i] = Sp;
+		if (s_HIGH) s_priority[i] = HiPri;
+		else
+		    {s_priority[i] = LoPri; ++s_nLow;}
+		return(i);
+		}
+	    }
+	return(-1);
+	}
+
+/*********************************************************************
+
+	s_Edisms (p, Addr, flag, param)
+				Sets up Event Dismis for process p,
+				Addr is address of event dismiss routine.
+				flag != 0 if optional parameter present.
+				param optional parameter.
+	s_Tdisms (p, deltaT)	Sets timer for dismiss of deltaT "clock
+				tics. 
+
+	In both cases, if p refers to the current process,
+	then that process is suspended.
+
+*********************************************************************/
+# ifndef PDP11
+int s_GTime ()
+	{
+	int dum[];
+	return(_TIME(dum));
+	}
+# endif
+
+# define CaseT 0
+# define CaseE 1
+int s_Edisms (p, Addr, flag, param) int p, Addr, flag, param;
+	{return(s_DISMS (p, Addr, flag, param, CaseE));}
+
+int s_Tdisms (p, deltaT) int p, deltaT;
+	{return(s_DISMS (p, deltaT, 0, 0, CaseT));}
+
+int s_DISMS (p, Dtype, pf, pp, n) int p, pf, pp, Dtype, n;
+	{_Sprocess *dum;
+	if (p>=0)		/* process number OK */
+	    {dum = s_Active[p];
+	    if (dum) 
+		switch (n)
+		    {case CaseT:
+# ifndef PDP11
+	                    dum->timer = s_GTime () + Dtype;
+# endif
+# ifdef PDP11
+			    {int i, j;
+			    i = TODCLK; j = TODlow;
+		            l_longAdd(&i, &j, 0, Dtype);
+			    dum->timer = i;		/* high 16 bits */
+			    dum->timer1 = j;		/* low 16 bits */
+			    }
+# endif
+			    break;
+		    case CaseE:
+	                    dum->Edisms = Dtype;
+			    if (pf) 
+				{dum->pflag = YESpar; 
+				dum->Eparm = pp;
+				}
+			    else /* no parameter */
+				dum->pflag = NOpar;
+		    }
+	    else /* NON-existent process. */
+	        return(0);
+	    if (dum == s_Cur) s_suspend ();
+	    return(1);
+	    }
+	switch (n) 
+	    {case CaseT:
+# ifndef PDP11
+	                s_Cur->timer = s_GTime () + Dtype;
+# endif
+# ifdef PDP11
+			{int i, j;
+			i = TODCLK; j = TODlow;
+		        l_longAdd(&i, &j, 0, Dtype);
+			s_Cur->timer = i;		/* high 16 bits */
+			s_Cur->timer1 = j;
+			}
+# endif
+			break;
+	    case CaseE:
+	                s_Cur->Edisms = Dtype;
+			if (pf) 
+			    {s_Cur->pflag = YESpar; 
+			    s_Cur->Eparm = pp;
+			    }
+			else /* no parameter */
+			    s_Cur->pflag = NOpar;
+	    }
+	s_suspend ();
+	}
+
+/*********************************************************************
+	s_HaltP - halts the current process
+		- this must be done IN that process.
+	s_ContP - Continues the process p 
+		- A process must be continued by some OTHER process.
+		- after which it will be resumed by the scheduler.
+*********************************************************************/
+
+int s_HaltP ()
+	{s_Cur->Halted = 1; 
+	s_suspend();		/* suspend this process */
+	}
+
+int s_ContP (p) int p;
+	{if (p>=0)		/* legal process number? */
+	    if (s_Active[p]) 	/* active process? */
+	        {s_Active[p]->Halted = 0;
+		return(1);
+		}
+	return(0);
+	}
+/****************************************************************************
+
+	s_KillP (p) int p;
+
+****************************************************************************/
+
+int s_KillP (p) int p;
+	{_Sprocess *dum;
+	if (p>=0) 
+	    {dum = s_Active[p];
+	    if (dum) s_Active[p]->Killed = TRUE;
+	    else /* NON-existent process */
+		return(0);
+	    if (dum == s_Cur) s_suspend ();
+	    /* remove non-current processes from the queue NOW*/
+	    if ((p+1) == s_Mrunning) --s_Mrunning;
+	    l1_RELmem(s_Active[p]->stack);
+	    /* release memory for process structure ... maybe */
+	    if (p >= s_nKnown) l1_RELmem (s_Active[p]);
+	    s_Active[p] = 0; 
+	    if (s_Priority[p] == LoPri) --s_nLow;
+	    s_Priority[p] = -1; 
+	    return(1);
+	    }
+	else /* -1 kills current process */
+	    {s_Cur->Killed = TRUE; s_Funeral = 1; s_suspend ();}
+	}
+/*********************************************************************
+   WARNING - DO NOT USE LOCALS IN THE FOLLOWING TWO FUNCTIONS!!!   
+   ALSO - NO PARAMETERS CAN BE PASSED - AVOID INTERNAL USE OF STACK   
+**********************************************************************/
+# ifdef PDP11
+extern int s_r5;
+int *s_MDx {s_r5};		/* R5 is the relevant pointer */
+# endif
+
+# ifndef PDP11
+int *s_MDx {017};		/* points to stack pointer */
+# endif
+
+int *s_temp;
+int s_resume () 
+	{/* resume process pointed to by s_p */
+# ifdef PDP11
+	l_gr5 ();			/* s_r5 = r5 */
+# endif
+	s_temp = *s_MDx;		/* save current sp */
+	*s_MDx = s_Cur->savedSP;	/* put saved-sp into sp */
+# ifdef PDP11
+	l_sr5 ();			/* r5 = s_r5 */
+# endif
+	s_Cur->savedSP = s_temp;	/* and Save old sp */
+	If (s_Cur->first)		/* See if first call */
+	    {
+# ifndef PDP11
+	    s_temp = *s_MDx;	/* point sp to return address */
+	    *s_temp = s_Cur->Entry_Address; 
+# endif
+# ifdef PDP11
+       	    s_r5 = s_Cur->Entry_Address; /* put into global */	    
+	    l_pr5 ();			 /* put on stack (R5) */
+# endif
+	    s_Cur->first = 0;
+	    }
+	return;				/* return to resumed process */
+	} /* suspend does OUR return for US */
+int s_suspend ()
+	{/* suspend s_Cur process - switch to Scheduler's context */
+	/* Save our stack pointer */
+# ifdef PDP11
+	l_gr5 ();			/* s_r5 = r5 */
+# endif
+	s_temp = *s_MDx;		/* our contex sp */
+	*s_MDx = s_Cur->savedSP;	/* sp is now old sp */
+# ifdef PDP11
+	l_sr5 ();			/* r5 = s_r5 */
+# endif
+	s_Cur->savedSP = s_temp;	/* old sp is ours */
+    	return;				/* to Scheduler */
+	}/* resume does OUR return for US */
+
+
+

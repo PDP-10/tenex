@@ -1,0 +1,627 @@
+;<134>FREE.MAC;3901     9-JAN-76 14:34:53    EDIT BY TAFT
+; Soup merge to 1.34
+;<134-TENEX>FREE.MAC;39    28-APR-75 12:14:22    EDIT BY CLEMENTS
+;<134-TENEX>FREE.MAC;38    28-APR-75 11:32:15    EDIT BY CLEMENTS
+;<134-TENEX>FREE.MAC;37    24-APR-75 14:15:03    EDIT BY CLEMENTS
+;<133>FREE.MAC;3602    23-JUN-75 14:57:10    EDIT BY TAFT
+; Take out block zeroing code in ASGFRE -- doesn't work anyway
+;<133>FREE.MAC;3601     4-JAN-75 18:48:21    EDIT BY TAFT
+; SOUP merge to 1.33
+;<132>FREE.MAC;3601    22-JUL-74 15:07:39    EDIT BY TAFT
+; SOUP merge of PARC 1.31 code into 1.32
+;<TENEX-132>FREE.REL;36    13-FEB-73 18:57:03	EDIT BY CLEMENTS
+; ADDED JBCLCK IN ASGPAG
+;<131>FREE.MAC;3511     8-MAR-74 15:14:12	EDIT BY TAFT
+; Fix switched instructions at ASGFR2:.
+;<TENEX-130>FREE.MAC;35    21-NOV-72  7:26:46	EDIT BY WALLACE
+;<TENEX-130>FREE.MAC;34    21-NOV-72  7:14:26	EDIT BY WALLACE
+;<DLM/TEMP>FREE.MAC;33    28-SEP-72 14:51:38	EDIT BY TOMLINSON
+;<DLM/TEMP>FREE.MAC;32    28-SEP-72 14:20:45	EDIT BY TOMLINSON
+; Relfre returns biggest block found if failure
+;<FILESYSTEM>FREE.MAC;31    29-JUN-72  9:56:22	EDIT BY TOMLINSON
+
+	SEARCH	STENEX,PROLOG
+	TITLE	FREE	; Storage routines
+	SUBTTL	R.s.tomlinson
+
+EXTERN	BHC
+EXTERN	HSHLUK,MAPDIR,RESAC,SAVAC,SKPRET,USTDIR,XPAND0
+EXTERN	BUGCHK,BUGHLT,MSTKOV
+
+	USE	SWAPPC
+
+; Assign space in free storage region
+; Call:	RH(A)		; Location of free storage header
+;	LH(A)		; Index field for references to a and pointers
+;			; I.e. @a references first word of header
+;	B		; Size of block needed
+;	PUSHJ P,ASGFRE
+; Return
+;	+1	; Not enough space
+;	+2	; Ok, in a, the location of the block (absolute)
+; Clobbers a,b,c,d
+; Calling routine must take measures to prevent loss of free storage
+; Space by inhibiting psi's until the space assigned
+; Has been accounted for
+; Free storage header format is:
+;	0	; Lh points to first free block
+;	1	; Lock
+;	2	; Space counter
+;	3	; Most common block size
+;	4	; Lh has max top of free storage
+		; Rh has min bottom
+;	5	; Temp 2
+;	6	; Temp 3
+
+ASGFRE::MOVEI C,@A		; Get origin of header
+	CAMLE B,2(C)		; Any possibility of success?
+	POPJ P,			; No. return immediately
+	LOCK 1(C)		; Lock this free storage list
+	PUSH P,B		; Save desired block size
+	PUSH P,[0]		; BIGEST BLOCK SEEN SO FAR
+	MOVEI B,377777
+	MOVEM B,5(C)		; Initial best block size
+	SETZM 6(C)		; Initial location of best block
+	MOVE B,A		; Start with the header word
+	HLLZ C,A		; Initialize index field
+	MOVEI A,@A
+ASGFR1:	HLR C,@B		; Get pointer to next block
+	TRNN C,777777
+	JRST ASGFR2		; No more free blocks to examine
+	HRRZ D,@C		; Get size of the block
+	CAMLE D,0(P)
+	 MOVEM D,0(P)
+	CAMN D,-1(P)		; Is it the right size?
+	JRST ASGFR3		; Just right use it
+	CAML D,-1(P)		; Too small
+	CAML D,5(A)		; Or bigger than best?
+	JRST ASGFR4		; Yes, ignore it
+	MOVEM D,5(A)		; This one is better
+	MOVEM B,6(A)
+ASGFR4:	MOVE B,C		; Step to next block
+	JRST ASGFR1		; And repeat
+
+ASGFR2:	SKIPN B,6(A)		; Did we find anything?
+	JRST [	UNLOCK 1(A)	; No. unlock and return
+		SUB P,BHC+1
+		POP P,B		; Make transparent to b on error
+		POPJ P,]
+	MOVE D,-1(P)		; Get desired size
+	HLR C,@B		; Get pointer to block to be used
+	HRRM D,@C		; Convert to desired size
+	ADD D,C			; Pointer remainder of block
+	HRLM D,@B		; Point prev to remainder
+	HLLZ B,@C		; Get next
+	HLLM B,@D		; Point remainder to it
+	MOVE B,5(A)
+	SUB B,-1(P)		; Size of remainder
+	HRRM B,@D		; To header of remainder
+ASGFR5:	SUB P,BHC+1
+	MOVN B,0(P)
+	ADDM B,2(A)		; Reduce count of space left
+	UNLOCK 1(A)
+	MOVEI A,@C		; Get origin of block
+	HRROS (A)		; Set lh to ones
+REPEAT 0,<	; The following code doesn't work and would probably
+		; be undesirable even if it did
+	HRRZ B,(A)		; Get rh
+	HRRZI C,2(A)
+	HRLI C,1(A)
+	ADD B,A
+	HRRZS B
+	SETZM -1(C)
+	CAIGE B,(C)
+	BLT C,-1(B)		; Zero the block
+> ; End repeat 0
+	POP P,B
+	AOS (P)
+	POPJ P,
+
+ASGFR3:	HLL D,@C
+	HLLM D,@B		; Point predecessor to successor
+	JRST ASGFR5
+
+; Release free storage block
+; Call:	A		; Location of free storage header (like asgfre)
+;	B		; Location of the block to be returned
+;	PUSHJ P,RELFRE
+; Clobbers b,c,d
+
+RELFRE::HLLZ C,A
+	SUBI B,@C
+	HLL B,A
+	PUSH P,A
+	MOVEI A,@A
+	LOCK 1(A)
+	HRRZ D,0(A)
+	JUMPE D,RELFR0		; Jump if old style free block
+	HLRZ D,4(A)
+	HRRZ A,4(A)
+	CAILE D,0(B)
+	CAILE A,0(B)
+	 JRST RELFRA
+	MOVEI A,@0(P)
+	JRST RELFR0
+RELFRA:	BUG(CHK,<RELFRE: BLOCK RAN OUT OF RANGE>)
+	MOVEI A,@0(P)
+	UNLOCK 1(A)
+	POP P,A
+	POPJ P,
+RELFR0:	PUSH P,B
+	MOVE B,-1(P)
+RELFR1:	HLR C,@B		; Get loc of next block
+	TRNN C,777777
+	JRST RELFR2		; End of list
+	CAML C,0(P)
+	JRST RELFR2		; Or above block being returned
+	MOVE B,C
+	JRST RELFR1
+
+RELFR2:	CAME C,0(P)		; Releasing a block already released?
+	JRST RELFRB
+	UNLOCK(<1(A)>)
+	BUG(CHK,<RELFRE: BLOCK ALREADY RELEASED.>)
+	POP P,B
+	POP P,A
+	POPJ P,
+RELFRB:	HRRZ D,@0(P)
+	ADDM D,2(A)		; Augment count of remaining storage
+	ADD D,0(P)		; Get end of block being returned
+	CAME D,C		; Same as following block location?
+	JRST RELFR3		; No
+	HRRZ D,@C		; Get length of following block
+	ADDM D,@0(P)		; Augment length of block being returned
+	HLLZ D,@C		; Get loc of successor of successor
+	HLLM D,@0(P)
+RELFR5:	MOVE C,0(P)
+	HRLM C,@B
+	HRRZ D,@B		; Length of predecessor
+	ADD D,B			; End of predecessor
+	CAME D,C		; Same as new block
+	JRST RELFR4		; No, done
+	MOVE C,@C
+	HLLM C,@B
+	HRRZS C
+	ADDM C,@B
+RELFR4:	UNLOCK 1(A)
+	POP P,B
+	POP P,A
+	POPJ P,
+
+RELFR3:	HRLM C,@0(P)		; Point returned block to successor
+	JRST RELFR5
+
+; Assign a page in job area
+; Call:	PUSHJ P,ASGPAG
+; Return
+;	+1	; None available
+;	+2	; Success
+;	A	; Address of origin of page
+
+ASGPAG::LOCK(JBCLCK)		;LOCK THE PAGE ASSIGNMENT
+	MOVSI C,-4		; Four words of bits
+ASGPG1:	MOVE A,JBCOR(C)
+	JFFO A,ASGPG2		; Any bits?
+	AOBJN C,ASGPG1		; No, try next word
+	UNLOCK(JBCLCK)
+	POPJ P,			; No words left
+
+ASGPG2:	MOVN B,A+1
+	MOVSI A,400000
+	ROT A,(B)
+	ANDCAM A,JBCOR(C)		; Mark as used
+	UNLOCK(JBCLCK)
+	MOVEI A,(C)
+	IMULI A,^D36
+	SUB A,B
+	LSH A,9
+	ADDI A,PJMA		; Origin of job mapped area
+	JRST SKPRET
+
+; Return page
+; Call:	A	; Location of page
+;	PUSHJ P,RELPAG
+
+RELPAG::SUBI A,PJMA
+	LSH A,-9
+	IDIVI A,^D36
+	MOVSI C,400000
+	MOVNS A+1
+	ROT C,(A+1)
+	IORM C,JBCOR(A)	; Clear the bit
+	POPJ P,
+
+; Assign free storage in directory
+; Call:	B	; Size of block needed
+;	PUSHJ P,ASGDFR
+; Return
+;	+1	; Not enough room
+;	+2	; Ok, in a, the location of the block
+; Clobbers a,b,c,d
+
+ASGDFR::MOVE A,[XWD E,DIRFRE-DIRORG]
+	PUSH P,E
+	MOVEI E,DIRORG
+	PUSHJ P,ASGFRE
+	JRST ASGDF1		; No room, try garbage collection
+ASGDF3:	AOS -1(P)
+ASGDF2:	POP P,E
+	POPJ P,
+
+ASGDF1:	PUSHJ P,GCDIR
+	MOVE A,[XWD E,DIRFRE-DIRORG]
+	PUSHJ P,ASGFRE
+	JRST ASGDF4		; Still no room
+	JRST ASGDF3		; Now ok
+
+ASGDF4:	MOVE A,FRETOP
+	SUB A,DIRFRE+2
+	ADDI A,2(B)		; Where fretop must be if moved up +
+	PUSH P,B		; Save b
+	CAMG A,SYMBOT		; Will this overlap symtab?
+	 JRST ASGDF5		; No
+	PUSHJ P,XPAND0		; Move symtab up
+	 JRST [	POP P,B
+		JRST ASGDF2]	; Fail
+	SKIPA A,[-10]		; Space to leave for symtab after xpand
+ASGDF5:	MOVNI A,2		; Space to leave if no xpand
+	ADD A,SYMBOT		; Target fretop
+	MOVE B,FRETOP
+	HRLM A,DIRFRE+4
+	MOVEM A,FRETOP		; New fretop
+	SUB A,B			; Length of additional storage
+	MOVEM A,DIRORG(B)	; Make block header
+	MOVEI B,DIRORG(B)	; Convert to absolute
+	PUSHJ P,RELDFR		; Let reldfr put back the storage
+	POP P,B
+	MOVE A,[XWD E,DIRFRE-DIRORG]
+	PUSHJ P,ASGFRE
+	JRST ASGDF2
+	JRST ASGDF3
+
+; Release free storage in directory
+; Call:	B	; Location of the block to be released
+;	PUSHJ P,RELDFR
+; Returns +1 always
+; Clobbers a,b,c,d
+
+RELDFR::MOVE A,[XWD E,DIRFRE-DIRORG]
+	PUSH P,E
+	MOVEI E,DIRORG
+	PUSHJ P,RELFRE
+	POP P,E
+	POPJ P,
+
+; Assign job storage
+; Call:	B	; Size of block needed
+;	PUSHJ P,ASGJFR
+; Return
+;	+1	; Not enough room
+;	+2	; Success. location of block in b
+
+ASGJFR::MOVEI A,JSBFRE
+	PUSHJ P,ASGFRE		; Attempt to assign
+	 JRST ASGJF1		; Not enough
+	AOS (P)			; Success
+	POPJ P,
+
+ASGJF1:	PUSH P,B
+	PUSH P,C
+	PUSHJ P,ASGPAG		; Get another page of job storage
+	 JRST ASGJF2		; No pages left
+	MOVEI B,1000
+	HRROM B,(A)		; Make a free block out of it
+	MOVEI B,1000(A)
+	HLRZ C,4+JSBFRE
+	CAMGE C,B
+	 HRLM B,4+JSBFRE
+	MOVE B,A
+	MOVEI A,JSBFRE
+	PUSHJ P,RELFRE		; Release the new block
+	POP P,C
+	POP P,B
+	JRST ASGJFR		; Try again
+
+ASGJF2:	POP P,C
+	POP P,B
+	POPJ P,			; Fail
+
+; Garbage collect a directory
+; Call:	PUSHJ P,GCDIR
+; Transparent
+
+EXTERN	BITS
+
+GCDIR::	PUSHJ P,SAVAC		; Sav ac's
+	ADD P,[XWD 5,5]		; Make room for temps on stack
+	JUMPGE P,MSTKOV
+	PUSHJ P,ASGPAG		; Get a page for bit table
+	 BUG(HLT,<GCDIR: NO FREE PAGE FOR BIT TABLE>)
+	HRLI A,A		; Index by a
+	MOVEM A,0(P)		; Used to reference bit table
+	HRLZ B,A
+	HRRI B,1(A)		; Prepare blt pointer
+	SETZM 0(A)
+	BLT B,777(A)		; And zero page
+	JSP D,GCSCAN		; Initialize scanner
+GCDI0:	JSP D,0(D)		; Co-routine jump
+	 JRST GCDI2		; No more
+	 JRST GCDI0		; Pointer only
+	CAMGE E,FRETOP
+	CAIGE E,DIFREE-DIRORG
+	 JRST GCDI0		; Not pointer to dynamic area
+	HRRZ A,DIRORG(E)	; Get length of block
+	ADDI A,-1(E)		; Last word of block
+	IDIVI A,^D36		; Separate bit and word
+	MOVEM A,-1(P)		; Save word number
+	MOVN C,BITS(B)		; Mask of bits up to and including last
+	MOVE A,E
+	IDIVI A,^D36		; Separate first word into bit and word
+	MOVE B,BITS(B)		; Get bit for beginning of block
+	LSH B,1			; Bit to left of desired bits
+	SOS B			; Gives bits to right
+GCDI1:	CAMN A,-1(P)		; Last word of bits?
+	 AND B,C		; Yes, reduce bits
+	IORM B,@0(P)		; Or into bit word
+	CAMN A,-1(P)		; Done?
+	 JRST GCDI0		; Yes, next block
+	SETO B,			; All ones for next word
+	AOJA A,GCDI1		; No
+
+; Bit table is now formed, prepare for compaction
+
+GCDI2:	MOVE A,FRETOP
+	ADDI A,^D35
+	IDIVI A,^D36		; End of bit table
+	MOVEM A,-1(P)
+	MOVEI A,DIFREE-DIRORG
+	MOVEM A,-2(P)		; Current top of compacted storage
+	SOS A			; Start scanning below good stuff
+	MOVEM A,-3(P)		; In order to not miss anything
+GCDI3:	MOVE A,-3(P)		; Get current loc
+	IDIVI A,^D36		; Separate
+	MOVN B,BITS(B)		; Get mask of ones to ignore
+GCDI4:	ANDCA B,@0(P)		; Get ones in bit table
+	JFFO B,GCDI5		; Find first one and jump
+	CAMGE A,-1(P)		; No ones. end check
+	 AOJA A,GCDI4		; Not end, try next.  note b has 0
+	MOVE A,-2(P)		; Top of compacted storage
+	MOVE B,FRETOP		; Top of dynamic area
+	SUB B,A			; Recompute length of free area
+	MOVEM B,DIRFRE+2
+	JUMPE B,[HRRZS DIRFRE	; Empty free list
+		JRST GCDID]
+	MOVEM B,DIRORG(A)
+	HRLM A,DIRFRE
+GCDID:	HRRZ A,0(P)		; Page address
+	PUSHJ P,RELPAG		; Release
+	SUB P,[XWD 5,5]		; Flush stack
+	PUSHJ P,RESAC		; Restore ac's
+	POPJ P,
+
+; Found a one, now look for a zero
+
+GCDI5:	MOVN B,BITS(B+1)	; Get mask of bits to left inc first 1
+	MOVEM B+1,-4(P)
+	MOVE C,A
+	IMULI C,^D36
+	ADDM C,-4(P)		; Location of first good word
+GCDI6:	ANDCB B,@0(P)		; Get zeros, ignore those to left
+	JFFO B,GCDI7		; Find "zeroes"
+	CAMGE A,-1(P)
+	 AOJA A,GCDI6		; Try next word, note b=0
+	MOVEI B+1,^D36
+GCDI7:	IMULI A,^D36
+	ADD A,B+1
+	MOVEM A,-3(P)		; New bottom of garbage
+	MOVE B,-2(P)		; Get "to"
+	CAMN B,-4(P)		; Equals "from"?
+	 JRST GCDI9		; Move not needed
+	HRL B,-4(P)		; And "from"
+	ADD B,[XWD DIRORG,DIRORG]
+	SUB A,-4(P)		; Length of block
+	ADDI A,(B)		; Compute end address
+	BLT B,-1(A)		; Blt it
+
+; State now is:
+;	-2(P)	; Top of previous compact storage
+;	-3(P)	; End of good block+1
+;	-4(P)	; Beg of good block
+
+	JSP D,GCSCAN		; Set up scan
+GCDI8:	JSP D,0(D)		; Get a pointer
+	 JRST GCDI9		; Done
+	 JFCL
+	CAMGE E,-3(P)		; Beyond end
+	CAMGE E,-4(P)		; Or before beg
+	 JRST GCDI8		; Needs no adjustment
+	ADD E,-2(P)		; Adjust by new bottom
+	SUB E,-4(P)		; Minus old bottom
+	JRST GCDI8
+
+GCDI9:	MOVE A,-3(P)		; End
+	SUB A,-4(P)		; Minus beg = length
+	ADDM A,-2(P)		; New top of compacted storage
+	JRST GCDI3		; Loop to find next good block
+
+; The gc scanner
+; This routine knows where all the good things are
+; And operates as a coroutine with the garbage collector
+; Started up with
+;	JSP D,GCSCAN
+; For each datum,
+;	JSP D,(D)
+; Returns
+;	+1	; Nothing left
+;	+2	; Possible pointer for updating
+;	+3	; Pointer to good stuff to be retained
+; Uses f,num,dev
+; Returns datum in e
+
+GCSCAN:	MOVE NUM,SYMBOT		; Start with first symbol table entry
+	JSP D,(D)
+GCSCN1:	CAML NUM,SYMTOP		; Entire table scanned?
+	JRST GCSCN4		; Yes. no skip return
+	HLRZ E,DIRORG(NUM)	; Get pointer to string
+	JSP D,2(D)
+	HRLM E,DIRORG(NUM)	; Put back updated pointer
+	HRRZ E,DIRORG(NUM)	; Get pointer to data block
+	SKIPG DIRNUM
+	JRST GCSCN5
+	TRZE E,700000
+	 AOJA NUM,GCSCN1	; No blocks for current uses of rh
+	JSP D,2(D)
+	HRRM E,DIRORG(NUM)
+GCSCN3:	MOVE DEV,E		; Save root of fdb's
+GCSCN2:	MOVE F,E		; Point to current fdb
+	HRRZ E,FDBCTL+DIRORG(F)	; Pointer to name
+	JSP D,2(D)
+	HRRM E,FDBCTL+DIRORG(F)
+	HLRZ E,FDBEXT+DIRORG(F)
+	JSP D,2(D)
+	HRLM E,FDBEXT+DIRORG(F)
+	MOVE E,FDBACT+DIRORG(F)
+	TLNN E,777777
+	JSP D,2(D)
+	MOVEM E,FDBACT+DIRORG(F)
+	HRRZ E,FDBVER+DIRORG(F)	; Pointer to next version
+	JSP D,2(D)
+	HRRM E,FDBVER+DIRORG(F)	; Update
+	JUMPN E,GCSCN2		; Scan all versions
+	HRRZ E,FDBEXT+DIRORG(DEV)
+	JSP D,2(D)		; Update
+	HRRM E,FDBEXT+DIRORG(DEV)
+	JUMPN E,GCSCN3		; Scan all extensions
+	AOJA NUM,GCSCN1		; Scan all of the symtab
+
+GCSCN4:	HRRZ E,DIRSAV
+	JSP D,2(D)
+	MOVEI E,-DIRORG(E)
+	JSP D,2(D)
+	MOVEI E,DIRORG(E)
+	HRRM E,DIRSAV
+	HRRZ E,DIRSCN
+	JSP D,1(D)
+	MOVEI E,-DIRORG(E)
+	JSP D,1(D)
+	MOVEI E,DIRORG(E)
+	HRRM E,DIRSCN
+	HRRZ E,DIRLOC
+	JSP D,1(D)
+	MOVEI E,-DIRORG(E)
+	JSP D,1(D)
+	MOVEI E,DIRORG(E)
+	HRRM E,DIRLOC
+	JRST (D)
+
+; Subindex scanner
+
+GCSCN5:	MOVE DEV,E		; Remember directory number
+	SETZB E,F		; Zero mask and value
+	PUSHJ P,CHGHSH		; Update hash entry bits masked 1
+	JSP D,2(D)		; Return pointer
+	MOVSI F,7777
+	PUSHJ P,CHGHSH		; This really updates it
+	MOVE DEV,E		; Remember pointer to ddb
+	HLRZ E,DIRORG+DDBNAM(DEV)	; Pointer to password
+	JSP D,2(D)
+	HRLM E,DIRORG+DDBNAM(DEV)
+	HRRZ E,DIRORG+DDBNAM(DEV)	; Pointer to name
+	JSP D,2(D)
+	HRRM E,DIRORG+DDBNAM(DEV)
+	AOJA NUM,GCSCN1
+
+CHGHSH:	PUSH P,A		; Save temps
+	PUSH P,B
+	PUSH P,C
+	PUSH P,DIRNUM		; Remember where to come back to
+	MOVE A,DEV		; Get directory number to look up
+	PUSHJ P,HSHLUK
+	 BUG(HLT,<GCSCAN: HASH TABLE FOULED UP>)
+	HRLZS E
+	XOR E,DIRORG(B)		; Get difference
+	AND E,F			; Retain bits to change
+	XORB E,DIRORG(B)	; Change bits, keep result
+	HLRZS E
+	ANDI E,7777
+	PUSHJ P,USTDIR
+	POP P,A
+	PUSHJ P,MAPDIR		; Return to proper subindex
+	POP P,C			; Restore temps
+	POP P,B
+	POP P,A
+	POPJ P,
+
+IFN 0,<
+; Put item onto deallocation list
+; Call:	LH(A)	; Routine to call to deallocate the item
+;	RH(A)	; Item identifier (address usually)
+;	PUSHJ P,PUTITM
+; Items put on the deallocation are automatically deallocated whenever
+; A psi occurs and the user's program changes the pc such that
+; The monitor routine in progress does not complete
+
+PUTITM::PUSH P,B		; Free up some ac's
+	PUSH P,A
+PUTIT0:	MOVE A,INTLVL		; Get current interrupt level
+	SKIPE B,ITMHD(A)	; Get the correct item list header
+	JRST PUTIT1
+	PUSH P,A		; No header, create one
+	MOVEI A,PSBFRE
+	MOVEI B,6
+	PUSHJ P,ASGPAG		; Assign a block of psb free storage
+	JSR BUGHLT
+	POP P,B
+	MOVEM A,ITMHD(B)	; Point the header to the block
+	HRLI A,1(B)
+	HRRI A,2(B)
+	SETZM 1(B)
+	BLT A,6(B)		; Clear the block
+PUTIT1:	HRLI B,5
+	AOS B			; Make aobjn pointer
+PUTIT2:	SKIPN (B)		; Search for an empty slot
+	JRST PUTIT3		; Found
+	AOBJN B,PUTIT2
+	MOVE B,INTLVL		; No empty slots
+	MOVEI A,0
+	EXCH A,ITMHD(B)		; Clear header, get old header
+	HRLI A,RELITB		; Make into an item word
+	PUSHJ P,PUTITM		; Call self, making first thing on
+	JRST PUTIT0		; New block the old block. try again
+
+PUTIT3:	POP P,A
+	MOVEM A,(B)
+	POP P,B
+	POPJ P,
+
+; Release all items on interrupt level specified in a
+; Call:	A	; Interrupt level
+;	PUSHJ P,RELITM
+
+RELITM::PUSH P,ITMHD(A)
+	SETZM ITMHD(A)
+	POP P,A
+	JUMPN A,RELITB
+	POPJ P,
+
+RELITB:	PUSH P,A
+	PUSH P,B
+	HRLI A,-5
+	AOS A
+RELIT1:	SKIPN B,(A)
+	JRST RELIT2
+	PUSH P,A
+	HRRZ A,B
+	HRLZS B
+	PUSHJ P,(B)
+	POP P,A
+RELIT2:	AOBJN A,RELIT1
+	MOVE B,-1(P)
+	MOVEI A,PSBFRE
+	PUSHJ P,RELFRE
+	POP P,B
+	POP P,A
+	POPJ P,
+>
+	END
+

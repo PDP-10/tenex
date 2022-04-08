@@ -1,0 +1,358 @@
+;<PUP>PUPBOT.MAC.6, 26-Dec-81 22:58:03, Edit by SCHOEN
+; Make a separate fork for each boot.  Disregard duplicate boot requests
+; from the same host.
+;<PUP>PUPBOT.MAC.4, 				 Edit by SCHOEN
+;Add Boot directory request service
+;Add support for Stanford CSD boot-by-name extension to BootFileRequest
+;Fix fork creation hang up
+	
+	TITLE PUPBOT - Ethernet boot server
+	
+	SEARCH PUPDEF,PSVDEF
+	USEVAR TOPVAR,TOPPVR
+
+tops20,<SEARCH MONSYM>
+tenex,< SEARCH STENEX >
+
+	COMMENT 
+
+	The BootFileRequest PUP format has been extended to allow the
+	inclusion of arbitrary (!) boot file names (in keeping with 
+	the protocol adopted by the Stanford CSD).  A BootFileRequest
+	PUP can have either:
+		1) No data, in which case the low 16 bits of the 
+		   PUP ID are the boot file number (in keeping with
+		   the Xerox Alto protocol),
+			or
+		2) Have data in the form of a string containing the
+		   name of the boot file requested (allowing a 
+		   slightly less structured boot file directory and
+		   the capability of booting machines which are not
+		   Altos).
+		
+
+
+
+; Boot file request 
+BOOTRQ::PUSHJ P,CHKENT##	; Check for logins allowed
+	 POPJ P,		; Not allowed, stop here
+	PUSHJ P,DUPBOT		; Boot if this is not a duplicate request
+	POPJ P,
+
+	SUBTTL	Make sure we're not already booting the requestor
+; This routine makes sure we're not currently booting the requestor.
+; If not, a boot fork is created for the requestor, and the requestor
+; is booted.
+DUPBOT: LDB A,PPUPSN
+	LDB B,PPUPSH		; Get net,,host
+	LSH A,^D8		; Shift net left 8 bits
+	IORI A,(B)		; Make net|host combination
+	MOVSI B,-NBOOTP		; Prepare to scan through boot fork tables
+	SETZ D,			; Also prepare to remember a free entry
+DUPBT1:	HRRZ C,BTFORK(B)	; Is it this one?
+	CAMN C,A
+	 POPJ P,		; A duplicate request, leave
+	AOBJN B,DUPBT1		; No match, loop
+; Here if host isn't being booted currently
+	PUSHJ P,MAKBFK		; Make and start boot fork
+	POPJ P,			; Return
+
+; Routine to make boot server fork
+; CALL: PUSHJ P,MAKBFK
+;	A/ Net|host to boot
+MAKBFK:	PUSH P,A		; Save net,,host
+	MOVSI A,(1B1)		; Create fork with my caps
+	CFORK
+	 JRST [ ELOG <Failed to create boot fork%/ - %1J>
+	 	POPJ P,]
+; Now get a JFN on the file
+	PUSH P,A
+	LDB A,PUPLEN		; Check the length
+	CAIE A,MNPLEN		; Is there any data in the PUP?
+	 JRST MAKBF2		; There appears to be
+	LDB A,[POINT 16,PBHEAD+1(PB),31] ; Boot file # in low 16 bits of ID
+	PUSHJ P,CHKBNM		; Can we boot this file?
+	 JRST MAKBF3		; No, die
+MAKBF1: PUSHJ P,GTPORT		; Open port for EFTP
+	 JRST MAKBF3
+	POP P,A			; Fork index into A
+	SETZ B,			; Set inferior's ACs
+	SFACS			; Put fork index in AC1 of inferior fork
+	MOVEI B,-400000(A)	; Make a small number out of fork index
+	EXCH A,(P)		; Recover net|host
+	HRRZ C,P3		; Get file JFN
+	LSH C,^D9		; Shift nine bits left
+	IORI C,(P4)		; Merge in port JFN
+	HRL A,C			; Put into left half of BTFORK word
+	MOVEM A,BTFORK(B)	; Save
+	MOVE A,(P)		; Get fork index
+	PUSHJ P,SETMAP##	; Map pages
+	MOVEI B,BRQSRV		; Now start the fork
+	MOVE A,(P)	
+	SFORK
+	POP P,(P)		; Clean stack
+	POPJ P,			; Return
+
+; Here when PUP supplies name of file to boot
+MAKBF2:	MOVNI C,-MNPLEN(C)	; Put -data length in C
+	MOVEI A,PBCONT(PB)	; Set up rest of SOUT
+	HRLI A,(POINT 8,0)
+	HRROI B,TEMP
+	SOUT			; Write filename to TEMP
+	PUSHJ P,CHKBNA		; Is there such a file?
+	 JRST MAKBF3		; No, die
+	JRST MAKBF1		; OK, go to boot
+
+; Here when no such file
+MAKBF3:	POP P,A			; Get fork index
+	MOVEI A,-400000(A)	; Convert to small number
+	HLLOS BTFORK(A)		; Say this fork done
+	POP P,(P)		; Clean stack and leave
+	POPJ P,
+
+	SUBTTL	Boot fork watchdog
+BTCHK::	TIME			; Get now
+	ADD A,[BCKINT*^D1000]	; Compute time of next check
+	MOVEM A,BTTIM		; Save it
+	MOVEI SV,SV.MSC		; This is a miscellaneous service
+	MOVEI FX,76		; Another dummy fork index
+
+; Check the state of our boot forks
+	MOVSI D,-NBOOTP		
+BTCHK1:	HRRE A,BTFORK(D)
+	CAIL A,0
+	 JRST BTCHK2		; Not a boot fork, or still running
+	MOVEI A,400000(D)	; A finished fork...
+	KFORK			; Kill it
+	LDB A,[POINT 9,BTFORK(D),8] ; Recover file JFN
+	CAIE A,0		; If there was one, then close it
+	CLOSF
+	 CAIN A,0
+	  CAIA
+	ELOG <Failed to close boot file - %1J>
+	LDB A,[POINT 9,BTFORK(D),17] ; Recover port jfn
+	CAIE A,0		; If there was one, then close it
+	CLOSF
+	 CAIN A,0
+	  CAIA
+	ELOG <Failed to close boot port JFN - %1J>
+	SETZM BTFORK(D)		; Clear slot
+	MOVEI A,(D)		
+	TLNE F,(DEBUGF)		; Log if debugging
+	 LOG <Boot directory fork %1O terminated> 
+BTCHK2:	AOBJN D,BTCHK1		; Loop
+	POPJ P,			; Done, leave
+
+; Boot server starts here
+BRQSRV:	SUBI A,400000		; Convert to absolute fork index
+	MOVEI FX,(A)
+	JSYS FRKINI##		; Init fork
+	MOVEI A,(C)		; Get JFN into A
+	PUSHJ P,DOBOOT		; Boot the requestor
+	HLLOS BTFORK(FX)	; Say we're no longer booting this host
+	HALTF			; Die
+
+
+; See if we have the requested boot file
+; Call: A/Boot file number
+; Returns: +1/ This server does not have the requested boot file
+;	   +2/ File available, and opened read, 36 bit, JFN in A
+; Clobbers B
+CHKBNM:	PUSH P,A		; Copy boot file number
+	HRROI A,TEMP		; Construct <PUP>NUMBER-NAME.BOOT
+	MOVEI B,74
+	BOUT
+	WRITE <PUP>
+	MOVEI B,76
+	BOUT
+	POP P,B
+	WRITE <%2O-*.BOOT>
+; Entry point for file name already in TEMP
+CHKBNA:	MOVSI A,(1B2+1B11)	; Try to GTJFN - old file + * allowed
+	HRROI B,TEMP
+	SETZ P3,		; in case of failure
+	GTJFN
+	 JRST [DTYPE <CHKBNA: GTJFN error for %2P: %1J%/>
+	       POPJ P,]		; File doesn't exist
+	MOVE P3,A		; File exists - save JFN
+	MOVE B,[8B5+1B19]	; Open 8 bits, read
+	MOVEI 1,(1)		; Clear LH flags
+	OPENF
+	 PUSHJ P,SCREWUP##	; Shouldn't fail
+	LOG <Booting file %1F for %2P%/>
+	AOS 0(P)		; Return +2
+	POPJ P,			; Return
+
+; Boot the requestor
+; Call: PUSHJ P,DOBOOT
+;	PB/Pointer to BootFileRequest PUP from requestor
+;	P3 should contain JFN of boot file opened in 36 bit read mode
+; Returns: +1 always
+DOBOOT:	PUSH P,FX		; Don't clobber fork index
+	MOVEI A,400000		; Init interrupt system
+	MOVE B,[LEVTAB##,,BCHNTB]
+	SIR
+	EIR
+	MOVEI A,BTSOC		; Socket info block for EFTP
+	MOVE B,P4		; Get socket JFN		
+	SETO C,			; Use any convenient timeout interrupt chn
+	PUSHJ P,EOPEN##		; Open EFTP socket
+	 JRST [ELOG <DOBOOT: EOPEN failed%/>
+	       JRST DOBTX]
+	PUSHJ P,SNDBT		; Send the boot
+	 JRST DOBTX		; Failed
+	MOVEI A,BTSOC
+	MOVEI D,^D30000		; Time out in 30 seconds
+	PUSHJ P,ESEND##		; EFTP send end
+	 DTYPE <DOBOOT: EFTP End error booting %2P%/>
+	DTYPE <DOBOOT: Finished booting %2P%/>
+DOBTX:	MOVEI A,BTSOC
+	PUSHJ P,ECLOSE##	; Close the port
+DOBTXX:	POP P,FX		; Recover FX
+	POPJ P,
+	
+; Open a port for boot transaction
+; Call: PUSHJ P,GTPORT
+;	PB/ Pointer to BootFileRequest PUP from requestor
+; Returns: +1/ failure
+;	   +2/ success,	P4/ JFN of port
+; Clobbers A-D
+GTPORT:	HRROI A,TEMP		; Construct GTJFN string
+	LDB B,PPUPSN		; Source net
+	LDB C,PPUPSH		; Source host
+	LDB D,PPUPSS		; Source socket
+tenex,<	WRITE <PUP:!J.%2O#%3O#%4O> >	; Create a string
+tops20,<WRITE <PUP:!J.%2O#%3O#%4O>>	; Tops20 needs ^V's before #'s
+	MOVSI A,(1B2+1B17)	; Setup GTJFN
+	HRROI B,TEMP
+	GTJFN
+	 JRST GTPRTF		; Failed
+	MOVE D,A		; Save JFN
+	MOVE B,[16B9+1B19+1B20]	; Open raw packet, read/write
+	OPENF			; Create the port
+	 JRST GTPRTF		; Shouldn't fail
+	MOVE P4,D		; JFN to P4
+	JRST SKPRET##		; Return +2
+
+; Here when GTJFN or OPENF failed
+GTPRTF:	ELOG <GTPORT: GTJFN or OPENF failure %1J%/>
+	POPJ P,
+
+; Send boot to requestor
+; Call: PUSHJ P,SNDBT
+;	PB/ Pointer to pup buffer
+
+SNDBT:	HRRZ A,P3		; Read next block of data from file
+	MOVEI B,PBCONT(PB)
+	HRLI B,(POINT 8,)
+	MOVNI C,^D512		; Number of bytes
+	SIN			; Read block into packet
+	ADDI C,^D512		; Compute number of bytes read
+	JUMPE C,SKPRET##	; Jump if none (eof)
+	MOVEI A,BTSOC
+	MOVE B,PB
+	MOVEI D,^D10000		; Ten second timeout 
+				; (I know this isn't right)
+	PUSHJ P,ESDATA##
+	 JRST SNDBTF		; Failed
+	JRST SNDBT
+
+
+; Here when EFTP transaction fails
+SNDBTF:	CAIN A,-1		; Timeout?
+	 JRST [ELOG <SNDBT: Timeout booting %10F%/>
+	       POPJ P,]
+	CAIG A,177777		; Abort?
+	 JRST [ELOG <SNDBT: Abort received while booting %10F%/>
+	       POPJ P,]
+	ELOG <SNDBT: JSYS error while booting %10F: %1J%/>
+	POPJ P,
+; Boot directory request
+BTDRRQ::PUSHJ P,CHKENT##
+	 POPJ P,		; System closed
+	PUSHJ P,BTDSRV		; Do the stuff
+	POPJ P,			; Return
+
+BTDSRV:	HRROI A,TEMP		; Find all *.BOOT in PUP
+	MOVEI B,74
+	BOUT
+	WRITE <PUP>
+	MOVEI B,76
+	BOUT
+	WRITE <*.BOOT.0>
+	MOVSI A,(1B2+1B11+1B17)
+	HRROI B,TEMP
+	GTJFN
+	 POPJ P,		; Take failure to mean no BOOT files
+	MOVEM A,BTDJFN
+	MOVE D,[POINT 8,PBCONT(PB)]
+BTDLP:	PUSHJ P,BFNAME		; Enter a boot directory block
+	 SKIPA A,D		; Prepare to send Pup
+	JRST BTDLP		; Loop until all files done
+
+; Here to send off reply
+	PUSHJ P,ENDPUP##	; Compute length
+	PUSHJ P,SWPPRT##	; Swap source and destination
+	MOVEI A,260		; Type = BootDirectoryReply
+	PUSHJ P,SNDPUP##
+	 POPJ P,
+	LOG <Boot directory reply to %1P>
+	POPJ P,			; Return
+
+; BFNAME - convert *.BOOT jfn into directory block entry
+; returns: +1: no more files
+; +2, more files
+BFNAME:	HRRZ B,A		; Remove flags
+	HRROI A,TEMP		; Get name
+	MOVE C,[1B8+1B11+1B35]
+	JFNS
+	 ERJMP BFNAMX
+	HRROI A,TEMP		; Get boot file number
+	MOVEI C,^D8
+	NIN
+	 JRST BFNAMX		; Failure
+	PUSH P,A		; Save string pointer
+	LSH B,^D20		; Left justify 16 bits worth
+	ROT B,^D8		; Get most significant byte
+	IDPB B,D		; Put into Pup
+	ROT B,^D8		; Get least significant byte
+	IDPB B,D		; Put into Pup
+	HRRZ A,BTDJFN		; Get create date
+	MOVE B,[1,,13]
+	MOVEI C,C
+	GTFDB
+	MOVE A,C
+	PUSHJ P,ALTTCV##	; Convert to Alto time
+	ROT B,^D8		; Deposit in Pup
+	IDPB B,D
+	ROT B,^D8
+	IDPB B,D
+	ROT B,^D8
+	IDPB B,D
+	ROT B,^D8
+	IDPB B,D
+	POP P,B			; Recover string name
+	MOVE A,D		; Set up for BCPL string
+	PUSHJ P,PBCSTR##	; Put string into Pup
+	MOVE D,A		; Save updated Pup pointer
+	MOVE A,BTDJFN
+	GNJFN
+	 POPJ P,
+	AOS 0(P)
+	POPJ P,
+
+; Here when something failed in processing a file name
+BFNAMX:	HRRZ A,BTDJFN		; Make sure the jfn is released
+	RLJFN
+	 JFCL
+	POPJ P,
+
+; Storage
+LS BTSOC,^D20		; Socket info block for EFTP
+LS BTDJFN,1		; Storage for *.BOOT JFN
+GS BTFORK,NBOOTP	; Boot fork table (JFN,,net|host)
+LS BTTIM		; Next boot fork GC time
+LS BCHNTB,^D36		; Blank CHNTAB for boot server fork
+
+	END
+

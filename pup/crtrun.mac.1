@@ -1,0 +1,212 @@
+	.title	hack PDP11-RT11 C support
+
+;	stack frame format
+;
+;	sp->	local variables
+;		and temps
+;		...
+;	r5->	return pc
+;		old r4 (arg ptr)
+;		old r5
+;
+
+;	calling sequence
+;
+;		<code to store args in local frame>
+;		jsr r5,routine
+;		<offset of args in local frame>
+;		<number of arguments>
+;
+	.globl	$main,start
+	.globl  prolog
+	.globl  epilog
+	.globl  $nargs
+r0=%0
+r1=%1
+r2=%2
+r3=%3
+r4=%4
+r5=%5
+sp=%6
+pc=%7
+	
+	.mcall .exit
+	.macro	rentry 	name
+		.list  	meb
+		.globl	name
+	name:
+		jsr	R0,prolog
+		0.
+		.nlist	meb
+	.endm
+ 	.macro	.ttyin
+ 	jsr	pc,ttyin
+ 	.endm
+
+ 	.macro	.ttyout
+ 	jsr	pc,ttyout
+ 	.endm
+	.sbttl	start up stuff...
+start:
+	mov	#1000,sp		; set up stack pointer.
+	mov	#0,-(sp)		; two dummies for return via epilog
+	mov	#0,-(sp)
+
+	jsr	pc,TTinit		; init tty vectors
+
+	jsr	r5,$main		; start the program.
+	0
+	2
+	jsr	pc,TTEXIT		; fix up TT stuff.
+	.exit
+
+prolog:
+	mov	r4,(sp)
+	mov	sp,r4
+	add	(r5)+,r4
+	add	#4,r4
+	tst	(r5)+
+	mov	r5,-(sp)
+	mov	sp,r5
+	sub	(r0)+,sp
+	mov	r0,pc
+
+epilog:
+	mov	r5,sp
+	mov	(sp)+,r5
+	mov	(sp)+,r4
+	rts	r5
+
+$nargs:
+	mov	(sp),r0		; pointer to old frame
+	mov	(r0),r0		; old old pc
+	mov	-2(r0),r0	; old old nargs
+	cmp	(r5)+,(r5)+	; skip past junk
+	rts	r5		; return
+
+	.sbttl	TTY interrupt service 
+ttysta = 177560
+ttybuf = ttysta + 2
+ringL = 256.
+ring:	.BLKB	ringL
+nxtCHR:	0
+TTINT1:
+	mov	r0,-(sp)
+
+	; check for wrap around -
+	mov	nxtCHR,r0
+	inc	r0
+	cmp	r0,#ringL
+	blt	1$
+	 clr	r0
+1$:
+	cmp 	r0,nxtIN		; = on overflow.
+	bne	2$			; if no branch, forget char.
+	 movb	@#ttybuf,r0		; clear char
+	 br	TTINT2			; exit
+2$:
+	mov	#ring,r0
+	add	nxtCHR,r0
+	movb	@#ttybuf,(r0)
+	inc	nxtCHR
+	cmp	nxtCHR,#ringL
+	blt	TTINT2
+	 clr	nxtCHR
+TTINT2:
+	mov	(sp)+,r0
+	RTI
+
+	.sbttl	TTY char input from ring buffer.
+nxtIN:	0
+TTYIN:
+;	pc link register - return chr in R0
+	mov	nxtCHR,r0
+	cmp	nxtIN,r0
+	beq	TTYin			; wait for a character
+
+	mov 	#ring,r0
+	add	nxtIN,r0
+	movb	(r0),r0
+	inc	nxtIN
+	cmp	nxtIN,#ringL
+	blt	TTYxit
+	 clr	nxtIN
+TTYxit:
+	rts	pc
+	
+	.sbttl	ttyout char stuff.
+ttouts = 177564
+ttoutb = ttouts + 2
+TTYOUT:
+;	R0 has char
+	TSTB	@#ttouts		; done bit on?
+	bge	TTYOUT			; no, if branch.
+	 movb	r0,@#ttoutb		; into buffer.
+	 rts	pc
+invec =	60
+TTOVEC: 0
+TTOSTA: 0
+TTINIT:
+;	 set up vector 
+	bic	#100,@#ttysta		; clear interrupt for a sec.
+	mov	@#invec,TTOVEC		; save old vector.
+	mov	#TTINT1,@#invec		;
+	mov	@#ttouts,TTOSTA		; save old output status.
+	bic	#100,@#ttouts		; turn off output interrupt
+	bis	#100,@#ttysta		; turn on input interrupt
+	rts	pc
+TTEXIT:
+	mov	TTOVEC,@#invec		; restore vector
+	mov	TTOSTA,@#ttouts		; and old output status.
+	rts	pc
+
+	.sbttl	Some library routines.
+lf=12
+cr=15
+rentry $cputc
+	movb	(r4),r0
+	bic	#177400,r0
+	.ttyout
+	jmp	epilog
+
+rentry $puts
+;	called with (R4) = address of address of buffer
+	mov	(r4),r4
+1$:	
+	movb	(r4)+,r0	; next character
+	beq	2$		; NULL terminates
+	.ttyout
+	cmp	r0,#lf
+	bne	1$
+	 mov	#cr,r0
+	 .ttyout		; tag on carraige-return with \n
+	 br	1$		; full string.
+
+2$:
+	jmp	epilog
+
+rentry $cgetc
+	bis	#4000,@#44	; set bit 12 to return a char
+	.ttyin
+	.ttyout			; echo it
+	bic	#4000,@#44	; out of single char mode.
+	jmp 	epilog		; char in r0
+
+rentry $gets
+;	called with (r4) = address of address of input buffer
+	mov	(R4),R4
+1$:	
+	.ttyin
+	cmp	r0,#lf
+	beq	3$
+	cmp	r0,#cr
+	bne	2$
+	clr	r0		; terminate with NULL
+2$:
+	movb	r0,(r4)+
+	br	1$		;  No, string in.
+3$:
+	jmp	epilog
+	.end	start
+
+

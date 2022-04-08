@@ -1,0 +1,897 @@
+;[BBN-TENEXD]<DISP-LISP>PUPNM.MAC.8, 21-Jun-78 23:02:15, Ed: BELL
+;[BBN-TENEXD]<DISP-LISP>PUPNM.MAC.4, 21-Jun-78 11:16:50, Ed: BELL
+;[BBN-TENEXD]<DISP-LISP>PUPNM.MAC.3, 21-Jun-78 09:51:45, Ed: BELL
+;[BBN-TENEXD]<DISP-LISP>PUPNM.MAC.2, 20-Jun-78 11:45:59, Ed: BELL
+;Integrate PUP code into TOPS-20
+;<134>PUPNM.MAC;10    30-JAN-77 15:14:22    EDIT BY TAFT
+; Fix CMPADR to do unsigned compares correctly and
+; to not care about garbage low-order 4 bits
+;<134>PUPNM.MAC;9    21-APR-76 16:43:03    EDIT BY TAFT
+; Add attribute lookup capability
+;<134>PUPNM.MAC;7    11-JAN-76 21:36:47    EDIT BY TAFT
+; Fix assembly glitch -- need () around LOCK/UNLOCK macro arg
+;<134>PUPNM.MAC;6    10-JAN-76 23:57:57    EDIT BY TAFT
+; Revise LOCK/UNLOCK calls for 1.34 scheduler strategy
+
+	SEARCH PROLOG
+	TTITLE PUPNM
+	SUBTTL PUP NETWORK DIRECTORY LOOKUP  /  E. A. Taft, April 1975
+
+
+; Format of Network Directory:
+; The directory consists of the highest-numbered version of
+; file <SYSTEM>PUP-NETWORK.DIRECTORY, which is a file written
+; in 16-bit bytes (for the sake of Altos and Novas) and mapped
+; into monitor space starting at NETDIR for the purpose of doing
+; lookups by means of the PUPNM Jsys.  All "pointers" in the
+; directory refer to 16-bit bytes relative to the start of the
+; directory.  All "strings" are BCPL-style, i.e. an 8-bit
+; byte count followed by that number of 8-bit bytes.  All
+; "blocks" and "tables" start at Maxc word boundaries, i.e.
+; "pointers" to them are always even.
+
+; Header block (starts at word 0 of the directory):
+;  # of name blocks
+;  Pointer to name lookup table
+;  # of address blocks
+;  Pointer to address lookup table
+;  # words occupied by entry blocks
+;  Pointer to first entry block
+
+; Name lookup table (ordered alphabetically by name):
+;  Pointer to name block
+;  Pointer to name block
+;   ...
+;  Pointer to name block
+
+; Address lookup table (ordered by value of <net,host,socket>):
+;  Pointer to address block
+;  Pointer to address block
+;   ...
+;  Pointer to address block
+
+; Entry block:
+;  Pointer to first name block for entry
+;  Pointer to first address block for entry
+;  Number of attributes
+;  Pointer to first attribute name
+;  Pointer to first attribute value
+;   ...
+;  Pointer to last attribute name
+;  Pointer to last attribute value
+
+; Name block:
+;  Pointer to next name block for same entry, or 0
+;  Pointer to owning entry block
+;  Name string
+
+; Address block:
+;  Pointer to next address block for same entry, or 0
+;  Pointer to owning entry block
+;  Net (8 bits), Host (8 bits)
+;  Socket (32 bits)
+;  Number of attributes
+;  Pointer to first attribute name
+;  Pointer to first attribute value
+;   ...
+;  Pointer to last attribute name
+;  Pointer to last attribute value
+
+; Attribute block (name or value):
+;  Attribute string
+
+; Parameters defined in PARAMS.MAC
+;  NTDSIZ	Max # pages in which to map network directory
+
+; AC definitions
+
+DEFAC(UNIT,Q1)
+DEFAC(IOS,Q2)
+DEFAC(JFN,P2)
+DEFAC(E,Q3)
+DEFAC(F,P1)
+
+; Storage
+
+
+NR NAMLTP	; AOBJN pointer to name lookup table
+NR ADRLTP	; AOBJN pointer to address lookup table
+NR NTDVER	; Version # of <SYSTEM>PUP-NETWORK.DIRECTORY
+RS NTDUSE	; Use count: +1 for every active user of NETDIR
+RS NTDLCK	; Lock against modifying NETDIR or incrementing NTDUSE
+
+
+SWAPCD
+
+; Initialize network directory
+; Returns +1:  Unsuccessful, 1/ Error # (assuming call from OPRFN)
+;	+2:  Successful
+; Clobbers A-C and probably others (see JFNOFN, SETMPG)
+
+NTDINI::MOVSI A,(1B2+1B17)	; Old file, name from string
+	HRROI B,[ASCIZ /SYSTEM:PUP-NETWORK.DIRECTORY/]
+	GTJFN
+	 POPJ P,		; Failed, take fail return
+	PUSH P,A		; Ok, save JFN
+	MOVEI B,1B19+1B25	; Read, thawed
+	OPENF			; Open file
+	 JRST [	EXCH A,0(P)	; Failed, save error code
+		RLJFN		; Release JFN
+		 CAI
+		JRST NTDINZ]	; Fail return
+	SIZEF			; Get # pages in file
+	 BUG(HLT,NTDINA,<NTDINI: Impossible failure of SIZEF>)
+	CAILE C,NTDSIZ		; Too big to map?
+	 JRST [	MOVEI A,OPRFX2	; Yes, fail
+		JRST NTDINX]
+
+; Lock out all access to the network directory before changing it
+	SKIPN SYSIFG##		; System initialized?
+	 SETOM NTDLCK		; No, unlock NTDLCK
+NTDIN1:	NOINT
+	LOCK(NTDLCK,,HIQ)	; Get the lock
+	SKIPE NTDUSE		; Directory in use?
+	 JRST [	UNLOCK(NTDLCK,RESIDENT,HIQ)  ; Yes, must wait until unused
+		OKINT
+		MOVEI A,NTDUSE
+		PUSHJ P,DISE##	; Dismiss until NTDUSE zero
+		JRST NTDIN1]	; Then try again
+
+; Map in all pages of the directory file
+	MOVN A,C		; Make page counter for AOBJN
+	MOVSI A,(A)
+NTDIN2:	PUSH P,A		; Save it
+	HRL A,-1(P)		; Make JFN,,page #
+	PUSHJ P,JFNOFN##	; Convert to OFN,,page #
+	 BUG(HLT,NTDINB,<NTDINI: JFNOFN failed>)
+	HRRZ B,0(P)		; Recover page #
+	LSH B,9			; Make monitor virtual address
+	ADDI B,NETDIR
+	HRLI B,100000		; Only read access wanted
+	PUSHJ P,SETMPG##	; Map page into monitor space
+	POP P,A			; Recover counter
+	AOBJN A,NTDIN2		; Repeat for all pages
+
+; Done mapping pages, now setup some derived constants
+	HRRZ A,0(P)		; Recover JFN
+	MOVE B,[1,,.FBGEN]	; Get file version
+	MOVEI C,C
+	GTFDB
+	HLRZM C,NTDVER		; Store for return by PUPNM
+	MOVE A,NETDIR		; Get name count, pointer
+	PUSHJ P,NTDCNV		; Convert to -count,,pointer
+	MOVEM A,NAMLTP		; Store name lookup table ptr
+	MOVE A,NETDIR+1		; Get address count, pointer
+	PUSHJ P,NTDCNV		; Convert to -count,,pointer
+	MOVEM A,ADRLTP		; Store address lookup table ptr
+
+	UNLOCK(NTDLCK,RESIDENT,HIQ)  ; Make new NETDIR available
+	OKINT
+	AOS -1(P)		; Preset skip return
+
+; NTDINI (cont'd)
+
+; Here on error, with A/ Error code, 0(P)/ JFN
+NTDINX:	EXCH A,0(P)		; Save error #, recover JFN
+	CLOSF			; Close file (pages stay mapped)
+	 BUG(CHK,NTDIN3,<NTDINI: Unaccountable CLOSF failure>)
+NTDINZ:	POP P,A			; Restore error # (if any)
+	POPJ P,			; Return
+
+
+; Convert NETDIR lookup pointer to usable form
+;	A/ BYTE(16) count, pointer
+; Returns +1:
+;	A/ -count ,, pointer
+; Clobbers B
+
+NTDCNV:	LSHC A,-^D20		; Right-justify count
+	MOVN A,A		; Negate count
+	LSH A,2			; Vacate 2 low-order bits
+	LSHC A,^D16		; Make -count,,pointer
+	POPJ P,
+
+; Do Pup name/address translation
+;	1/ Source/destination designator (must be string ptr if source)
+;	2/ B0 off: Lookup address pointed to by 2, output resulting
+;		   name string to 1 (or attribute string if B4 on)
+;	      on:  Lookup name string given by 1, return address(es)
+;		   in block pointed to by 2
+;	   B1 off: Output something for each field (B0 off)
+;		   Do not allow recognition (B0 on)
+;	      on:  Omit fields where possible (B0 off)
+;		   Allow recognition (B0 on)
+;	   B2 off: Error if address not found (B0 off)
+;	      on:  Output octal numbers for unknown fields
+;	   B3 on:  Return address block pointer in 3 (B0 off)
+;	   B4 on:  Lookup attribute name string given by 4, output
+;		   corresponding attribute value string to 1
+;		   (B0 must be off, and B4 on suppresses outputting
+;		   of name string and forces B2 off)
+;	   B9-17:  Block length (words) (ignored unless B0 on)
+;	   B18-35: Block address
+;	4/ Destination designator for attribute value string (B4 on)
+; Returns +1:  Unsuccessful, 1/ Error #
+;	+2:  Successful
+;		1/ Updated where relevant (string pointer)
+;		2/ Updated only if B0 on:
+;		   LH: # words used in block (i.e. 2*number of
+;		       matching addresses, which can be greater
+;		       than the number of words in the block)
+;		   RH: Unchanged
+;		3/ LH: Version # of <SYSTEM>PUP-NETWORK.DIRECTORY
+;		   RH: 16-bit byte address of first word of address
+;		   block (if B3 on in call 2).  Zero if not found.
+;		4/ Updated where relevant
+
+; Block format (pointed to by 2), any number of repetitions of:
+;	Net ,, Host
+;	Socket
+
+; Errors:
+;	PUPNX1	Name or address not found
+;	PUPNX2	Recognition invoked and name ambiguous
+;	PUPNX3	Syntax error or illegal address
+;	PUPNX4	Inconsistent overlapping elements in name string
+;	PUPNX5	Syntax error in attribute name string
+;	PUPNX6	Attribute name not found
+
+DEFINE ERRX(ERRORN,EXTRA) <
+	JRST [	EXTRA
+		IFNB <ERRORN>,<MOVEI A,ERRORN>
+		JRST PNMERR]
+>
+	PNMADR==0	; Offset of address temp region (6 words)
+	PNMSTR==6	; Offset of string temp region (8 words)
+	PNMTSZ==PNMSTR+8  ; Size of temp region
+
+.PUPNM::MCENT
+	UMOVE E,2		; Get flags
+	UMOVE JFN,1		; Check designator
+	PUSHJ P,CHKJFN##
+	 RETERR()		; Bad
+	 JRST .+2		; TTY
+	 TLNN JFN,-1		; Special, always ok if byte ptr
+	JUMPL E,[RETERR(DESX1,<CALL UNLCKF##>)]	; TTY,files not ok for input
+	PUSHJ P,UNLCKF##	; Unlock
+	HRRI E,1(P)		; Start of temp region in stack
+	ADD P,BHC##+PNMTSZ	; Advance P past temp region
+	JUMPGE P,MSTKOV##	; Make sure no overflow
+	NOINT
+	LOCK(NTDLCK,,HIQ)	; Lock network directory
+	AOS NTDUSE		; Bump use count
+	UNLOCK(NTDLCK,RESIDENT,HIQ)  ; Unlock network directory
+	JUMPL E,PNMNTA		; Jump if looking up name
+;	JRST PNMATN
+
+; PUPNM (cont'd)
+; Do address to name conversion (or output attributes for address)
+
+PNMATN:	UMOVE B,2		; Get address arguments
+	UMOVE A,0(B)		;  from user block
+	UMOVE B,1(B)
+	TDNN A,[777400,,777400]	; Range check
+	TLNE B,740000
+	 ERRX(PUPNX3)		; Illegal address
+
+; Reformat address to be the same as in the network directory
+	LSH B,4			; Left-justify socket
+	LSHC A,^D10		; Left-justify net
+	HLLZM A,PNMADR(E)	; Store <net>B7
+	LSHC A,6		; A/ <host>B19 + <high socket>B35
+	LSH A,4			; A/ <host>B15 + <high socket>B31
+	IORM A,PNMADR(E)	; Store host, high socket
+	MOVEM B,PNMADR+1(E)	; Store low socket
+
+; Lookup the complete address
+	MOVEI B,PNMADR(E)	; Pointer to key address
+	PUSHJ P,ADRSRC		; Lookup address
+	 JRST [	TLNE E,(1B2)	; Not found, is that ok?
+		TLNE E,(1B4)
+		 ERRX(PUPNX1)	; No, give error
+		SETZB A,IOS	; Yes, note no match yet
+		JRST PNMAT1]	; Print as best we can
+	MOVEI IOS,(A)		; Save pointer to address block
+
+; Generate name string and return address block ptr if desired
+PNMAT1:	TLNN E,(1B4)		; Unless looking up attribute,
+	 PUSHJ P,PNMWRT		;  write name string for address
+	TLNN E,(1B3+1B4)	; Anything more to do?
+	 JRST PNMXIT		; No
+	SKIPN A,IOS		; Yes, have address block pointer?
+	 JRST PNMAT3		; No, return zero
+	LSHC A,-1		; Convert address table ptr
+	LSH B,-^D35		;  to word and byte number
+	LDB IOS,[POINT 16,NETDIR(A),15  ; Get ptr to address block
+		POINT 16,NETDIR(A),31](B)
+	HRL IOS,NTDVER		; Return version # in lh
+PNMAT3:	TLNE E,(1B3)		; Want to return pointer to user?
+	 UMOVEM IOS,3		; Yes, do so
+	TLNN E,(1B4)		; Want to look up attribute?
+	 JRST PNMXIT		; No, done
+
+; PUPNM (cont'd)
+; Look up attribute for address
+	UMOVE A,4		; Get attribute name from user
+	TLC A,-1		; Convert -1 lh to string ptr
+	TLCN A,-1
+	 HRLI A,(POINT 7)
+	UMOVEM A,4		; Put back in case changed
+	PUSHJ P,PNMSIN		; Read string from user
+	 ILDB C,4		; Inst to "XCTUU" to get char
+	 ERRX(PUPNX5)		; Error, no characters
+	JUMPN C,[ERRX(PUPNX5)]	; Give error if not null terminator
+	HRRZ A,IOS		; Get address block pointer
+	LSH A,-1		; Make Maxc offset
+	LDB A,[POINT 15,NETDIR(A),30]  ; Get ptr to entry block
+	LDB B,[POINT 16,NETDIR+1(A),15]  ; Get number of attributes
+	JUMPE B,[ERRX(PUPNX6)]	; Error if none
+	MOVN B,B		; Negate
+	LSH A,1			; Convert pointer to 16-bit bytes
+	ADDI A,3		; Point to first attribute name ptr
+	HRLI A,(B)		; Make AOBJN pointer
+	MOVEI B,PNMSTR(E)	; Make string ptr to input
+	HRLI B,(POINT 7)
+
+; Loop to compare user's string to attribute names for entry
+PNMAT5:	PUSHJ P,CMPATR		; Compare string to attribute name
+	 JRST PNMAT6		; String < entry
+	 JRST PNMAT6		; String > entry
+	MOVEI A,1(A)		; String = entry, advance to value ptr
+	LSHC A,-1		; Convert to Maxc word and byte
+	LSH B,-^D35
+	LDB A,[	POINT 15,NETDIR(A),14  ; Get ptr to attribute value
+		POINT 15,NETDIR(A),30](B)
+	ADD A,[POINT 8,NETDIR]	; Make byte ptr
+	ILDB C,A		; Get byte count
+	ILDB B,A		; Get char from attribute value
+	PUSHJ P,BOUTA		; Output via caller's ac1
+	SOJG C,.-2		; Repeat for all bytes
+	JRST PNMXIT		; Done
+
+; Here when string doesn't match this attribute name
+PNMAT6:	ADDI A,1		; So pointer will advance by 2
+	AOBJN A,PNMAT5		; Try next attribute
+	ERRX(PUPNX6)		; No more, fail
+
+; PUPNM (cont'd)
+; Do name to address conversion
+
+PNMNTA:	MOVEI F,PNMADR(E)	; Make AOBJN pointer to temp
+	HRLI F,-6		;  address region
+PNMNT1:	SETZM 0(F)		; Init address
+	SETZM 1(F)
+	PUSHJ P,PNMSIN		; Get a string
+	 ILDB C,1		; Inst to "XCTUU" to get char
+	 JRST [	CAIN C,"#"	; None, start of octal constant?
+		 JRST PNMNT2	; Yes
+		ERRX(PUPNX3)]	; No, syntax error
+	JUMPGE D,PNMNT3		; Jump if numeric
+	PUSH P,C		; Save user terminator
+	PUSHJ P,PNMLUK		; Look up string
+	POP P,C			; Restore terminator
+	HRROM A,0(F)		; Store entry pointer
+	JRST PNMNT4		; On to next
+
+; Here to do octal constants
+PNMNT2:	PUSHJ P,PNMSIN		; Get next field
+	 ILDB C,1		; Inst to "XCTUU" to get char
+	 TDZA D,D		; Empty means zero
+	JUMPL D,[ERRX(PUPNX3)]	; Error if non-numeric string
+PNMNT3:	EXCH D,1(F)		; Store new socket, get old
+	MOVE A,0(F)		; Get old net/host
+	TLNN A,-1		; Error if already had net
+	CAILE D,377		; Error if new host too big
+	 ERRX(PUPNX3)
+	HRLI A,(D)		; Net_Host, Host_Socket
+	MOVSM A,0(F)
+	CAIN C,"#"		; More numbers?
+	 JRST PNMNT2		; Yes, continue
+
+; Repeat if necessary for next field
+PNMNT4:	ADD F,BHC##+2		; Advance field pointer
+	CAIN C,"+"		; More fields?
+	 JUMPL F,PNMNT1		; Yes, go process
+	CAIE C,"+"		; Error if have special char now
+	CAIN C,"#"
+	 ERRX(PUPNX3)
+
+; Now check all input fields for consistency, and return all
+;  possible addresses by iterating names over all their values
+	SUBI F,PNMADR(E)	; Compute # words input
+	HRLOI F,-1(F)		; Reset AOBJN pointer
+	EQVI F,PNMADR(E)
+	UMOVE IOS,2		; Get block pointer from user
+	TLZ IOS,(-1B8)
+	TLC IOS,-1		; Make AOBJN pointer to user block
+	ADD IOS,[1,,0]
+	SETZB A,B		; Init merged address to zero
+	PUSHJ P,PNMEAD		; Emit address(es)
+	UMOVE A,2		; Get user block pointer again
+	SUBI IOS,(A)		; Compute # words used
+	TRNN IOS,-1		; Did we emit any addresses?
+	 ERRX(PUPNX4)		; No, means no consistent combinations
+	XCTU [HRLM IOS,2]	; Yes, return count
+
+; Here on success exit.
+PNMXIT:	SOSGE NTDUSE		; Decrement directory use count
+	 BUG(CHK,PNMXIA,<PNMXIT: Over-decremented NTDUSE>)
+	JRST SKMRTN##		; Skip return
+
+; Here on error exit
+PNMERR:	SOSGE NTDUSE		; Decrement directory use count
+	 BUG(CHK,PNMERA,<PNMERR: Over-decremented NTDUSE>)
+	RETERR()		; Take error return
+
+; PUPNM subroutines
+
+; Write name for address
+;	A/ Address lookup table index for block matching entire
+;	   address (0 if none)
+;	E/ Flags,,temp block pointer
+;	PNMADR(E)/ BYTE(8) Net, Host (16) High socket
+;	PNMADR+1(E)/ BYTE(16) Low socket (rest zeroes)
+; If B1 of E is off, outputs all fields separately, with
+;  punctuation between fields.
+; If B1 is on, simply outputs the first name for that entry, if found.
+; Returns +1 always
+; Clobbers A-D, UNIT
+
+PNMWRT:	MOVEI UNIT,2		; Set initial state
+	JRST PNMWR0		; Perform conversion
+
+; Recursive calls here for preceding fields
+PNMWRA:	MOVEI B,PNMADR(E)	; Set ptr to key address
+	PUSHJ P,ADRSRC		; Search directory for address
+	 SETZ A,		; Not found, remember so
+
+; Here with A/ index of matching entry, or zero
+PNMWR0:	TLNE E,(1B1)		; Want field omission?
+	 JUMPN A,PNMWR3		; Yes, if found entry just print it
+	JUMPE UNIT,PNMWR2	; Skip following if state=0
+	PUSH P,A		; Save entry pointer if have one
+	PUSH P,PNMADR(E)	; Save address being looked up
+	PUSH P,PNMADR+1(E)
+	MOVE A,FLDMSK(UNIT)	; Mask to just preceding fields
+	ANDB A,PNMADR(E)
+	JUMPE A,PNMWR1		; Do nothing if all zero
+	SETZM PNMADR+1(E)
+	SUBI UNIT,1		; State _ State-1
+	PUSHJ P,PNMWRA		; Recursive call for preceding field(s)
+	ADDI UNIT,1		; Back to current state
+PNMWR1:	POP P,PNMADR+1(E)	; Restore address
+	POP P,PNMADR(E)
+	POP P,A			; Restore entry pointer
+PNMWR2:	MOVE B,FLDMSK(UNIT)	; Mask out preceding fields
+	ANDCAB B,PNMADR(E)	; (Following fields masked by caller)
+	SKIPN PNMADR+1(E)	; Current field zero?
+	 JUMPE B,PNMWR7		; If so, print zero or nothing
+	JUMPN A,PNMWR3		; Print name and exit if have entry
+	MOVEI B,PNMADR(E)	; Set ptr to key address
+	PUSHJ P,ADRSRC		; Lookup just this field
+	 JRST PNMWR8		; Not found
+
+; PNMWRT (cont'd)
+
+; Here to output first name string for entry
+;	A/ Address table pointer (as returned by ADRSRC)
+PNMWR3:	TLON UNIT,(1B1)		; Preceding field printed?
+	 JRST PNMWR5		; No, no prefix needed
+	JUMPGE UNIT,PNMWR4	; Yes, numeric?
+	MOVEI B,"#"		; Yes, output 3-state# trailing #'s
+	HRREI C,-3(UNIT)
+	PUSHJ P,BOUTA		; Assumed not to clobber A
+	AOJL C,.-1
+PNMWR4:	MOVEI B,"+"		; Now separator
+	PUSHJ P,BOUTA
+PNMWR5:	TLZ UNIT,(1B0)		; Remember symbolic field printed
+	MOVEI A,(A)		; Clear lh
+	LSHC A,-1		; Compute word address and remainder
+	LSH B,-^D35		;  for address lookup table entry
+	LDB A,[	POINT 15,NETDIR(A),14  ; Get ptr to address block
+		POINT 15,NETDIR(A),30](B)
+	LDB A,[POINT 15,NETDIR(A),30]  ; Get ptr to entry block
+	LDB A,[POINT 15,NETDIR(A),14]  ; Get ptr to name block
+	ADD A,[POINT 8,NETDIR+1] ; Make byte ptr
+	ILDB C,A		; Get byte count
+PNMWR6:	ILDB B,A		; Get byte
+	PUSHJ P,BOUTA		; Output it (via caller's ac1)
+	SOJG C,PNMWR6		; Repeat for all bytes
+	POPJ P,			; Return from PNMWRT
+
+; Here if current field is zero
+PNMWR7:	JUMPL UNIT,PNMWR8	; Preceding numeric field printed?
+	CAIE UNIT,2		; Last field and none printed yet?
+	 POPJ P,		; No, do nothing
+
+; Here to print field value as octal number
+PNMWR8:	TLNN UNIT,(1B1)		; Preceding field printed?
+	 JRST PNMWR9		; No, no prefix needed
+	MOVEI B,"+"		; Yes, use "+" if symbolic
+	TLNE UNIT,(1B0)		; "#" if numeric
+	 MOVEI B,"#"
+	PUSHJ P,BOUTA		; Output separator
+PNMWR9:	MOVE A,PNMADR(E)	; Fetch the address
+	MOVE B,PNMADR+1(E)
+	XCT FLDRJB(UNIT)	; Right-justify field in B
+	CAIE UNIT,2		; Last field and none printed yet?
+	 JUMPE B,PNMWRX		; No, don't print if zero
+	PUSH P,E		; Save (clobbered by NOUTX)
+	MOVEI C,10		; Octal radix
+	PUSHJ P,NOUTX##		; Print value of field in octal
+	 BUG(HLT,PNMWRB,<PNMWRT: Impossible fail return from NOUTX>)
+	POP P,E
+PNMWRX:	TLO UNIT,(1B0+1B1)	; Remember numeric field printed
+	POPJ P,			; Return from PNMWRT
+
+
+; State-indexed tables controlling the operation of PNMWRT
+
+; Mask covering all preceding fields
+FLDMSK:	0
+	-1B7
+	-1B15
+
+; Instruction to right-justify current field in B
+FLDRJB:	LSHC A,-^D<72-8>	; Right-justify net
+	LSHC A,-^D<72-16>	; Right-justify host
+	PUSHJ P,[LSH A,-4	; Right-justify socket
+		LSHC A,-^D<36-16>
+		POPJ P,]
+
+; Get string or octal number from user
+;	E/ pointer to storage block
+;	+1:  Instruction to "XCTUU" to get next char into C
+; Returns +2:  No characters input before terminator
+;	+3:  At least one character input before terminator
+;	C/ Terminating character (on either return)
+;	D/ Numeric value if all chars were digits, or -1 if not
+; Does not return if error (string too long)
+; Input terminates on "+", "#" or any character outside the range
+;  41-176.  If called from monitor, "!" is also a terminator
+;  (for the sake of GTJFN).  The terminator is not stored
+;  in the buffer.  Lower-case letters are converted to upper.
+; Clobbers A-D
+
+PNMSIN:	PUSH P,F		; Save another ac
+	MOVEI B,PNMSTR(E)	; Make storage byte pointer
+	HRLI B,(POINT 7)
+	MOVEI A,^D39		; Max # chars
+	SETZ D,			; Init number
+PNMSI1:	XCTBUU @-1(P)		; Get next char
+	CAIE C,"+"		; One of special chars?
+	CAIN C,"#"
+	 JRST PNMSI3		; Yes, terminate
+	CAIL C,41		; In range of printing characters?
+	CAILE C,176
+	 JRST PNMSI3		; No, terminate
+	CAIN C,"!"		; Special terminator for GTJFN?
+	 JRST [	XSFM F		; STORE FLAGS
+		TLNN F,(1B6)	; Yes, call from monitor?
+		 JRST PNMSI3	; Yes, terminate on that
+		JRST PNMSI2]	; No, treat as ordinary character
+	CAIL C,"0"		; An octal digit?
+	CAILE C,"7"
+	 JRST PNMSI2		; No, try other things
+	LSH D,3			; Yes, shift previous number
+	TLNN D,740000		; Skip if too big or not number
+	 TROA D,-"0"(C)		; Ok, add value of new digit
+PNMSI2:	SETO D,			; Not ok, remember can't be number
+	SOJL A,[ERRX(PUPNX3)]	; If too long, give syntax error
+	CAIL C,"a"		; Lower case letter?
+	CAILE C,"z"
+	 CAIA			; No
+	SUBI C,40		; Yes, make upper
+	IDPB C,B		; Ok, store char
+	JRST PNMSI1		; Back for more
+
+; Here when hit end of input string
+PNMSI3:	CAIE A,^D39		; Were any characters input?
+	 AOS -1(P)		; Yes, preset +3 return
+	SETZ A,			; Append null
+	IDPB A,B
+	POP P,F			; Restore saved ac
+	RETSKP			; Done, return +2 or +3
+
+; Lookup string and do recognition if appropriate
+;	E/ Pointer to temp block containing string
+;	User ac1/ Byte pointer to input string terminator
+; Does not return if error
+; Returns +1:  A/ 16-bit byte address of directory entry
+
+PNMLUK:	MOVEI B,PNMSTR(E)	; Make pointer to string
+	HRLI B,(POINT 7)
+	PUSHJ P,NAMSRC		; Lookup name string
+	 JRST PNMLU1		; Key # entry, might be substring
+	JRST PNMLU5		; Key = entry, success
+
+; If key < entry, it might be a substring
+PNMLU1:	JUMPGE A,PNMLUF		; Fail if off end of table
+	XCTBUU [LDB C,1]		; Get terminating char of input
+	JUMPN C,PNMLUF		; Can't recognize if not null terminator
+	TLNN E,(1B1)		; Recognition allowed?
+PNMLUF:	 ERRX(PUPNX1)		; No, just fail
+	AOBJP A,PNMLU2		; Look at next entry if have one
+	PUSHJ P,CMPNAM		; Check for match
+	 JUMPN D,[ERRX(PUPNX2)]	; Ambiguous if also substring
+	 JRST PNMLU2		; Did not match, continue
+	BUG(HLT,PNMLUA,<PNMLUK: Unexpected +3 return from CMPNAM>)
+
+PNMLU2:	SUB A,BHC##+1		; Back to current entry
+	PUSHJ P,CMPNAM		; Check for match
+	 JUMPN D,PNMLU3		; Jump if substring
+	 ERRX(PUPNX1)		; Not found
+	BUG(HLT,PNMLUB,<PNMLUK: Unexpected +3 return from CMPNAM>)
+
+; Got unique initial substring.
+; Now have A/ Name table pointer,
+; C/ Char count, D/ String pointer to tail
+PNMLU3:	ILDB B,D		; Get first char of tail
+	XCTBUU [DPB B,1]		; Overwrite null at end of input
+	SOJLE C,PNMLU4		; Check count
+	ILDB B,D		; Append rest of tail to input
+	XCTBUU [IDPB B,1]
+	SOJG C,.-2
+PNMLU4:	UMOVE B,1		; Copy pointer
+	XCTBU [IDPB C,B]	; Append null without changing pointer
+
+; Success:  Set pointer to directory entry and return
+; Rh A/ 16-bit byte address of matching name table entry
+PNMLU5:	MOVEI A,(A)		; Just rh
+	LSHC A,-1		; Compute word adr and remainder
+	LSH B,-^D35
+	LDB A,[	POINT 15,NETDIR(A),14  ; Get ptr to name block
+		POINT 15,NETDIR(A),30](B)
+	LDB A,[POINT 16,NETDIR(A),31]  ; Get ptr to dir entry
+	POPJ P,			; Return
+
+; Emit address(es) and do consistency checking (recursively)
+;	A/ Net,,Host so far compiled
+;	B/ Socket so far compiled
+;	F/ AOBJN ptr to address table
+;		Entries are 2 words each,
+;		Net,,Host and Socket, or
+;		-1,,Dir entry ptr and 0
+;	IOS/ AOBJN ptr to user block to return addresses in
+; Returns +1:  IOS/ Updated AOBJN pointer
+; This routine iterates recursive calls of itself over all
+;  possible addresses corresponding to fields which are names.
+;  Each branch is followed until either (a) an address is
+;  encountered with a nonzero field that conflicts with the
+;  address so far compiled, in which case that branch is
+;  terminated, or (b) the end of the branch is reached (i.e.
+;  all fields have been used up), in which case the compiled
+;  address is passed back to the user (and IOS is advanced).
+; Clobbers A-D, F
+
+PNMEAD:	JUMPGE F,PNMEA7		; Emit address if at terminal node
+	SKIPGE C,0(F)		; Numeric field?
+	 JRST PNMEA2		; No, symbolic
+
+; Here for numeric field
+	MOVE D,1(F)		; Get socket too
+	PUSHJ P,PNMMRG		; Merge and check consistency
+	 POPJ P,		; Inconsistent, terminate branch
+	ADD F,BHC##+2		; Ok, advance to next field
+	JRST PNMEAD		; Merge it in too
+
+; Here for symbolic field
+PNMEA2:	PUSH P,A		; Save current address
+	PUSH P,B
+	MOVEI A,(C)		; Just right half
+	LSH A,-1		; Make word address
+	LDB A,[POINT 15,NETDIR(A),30]  ; Get adr of first address block
+PNMEA3:	HRLM A,-2(P)		; Save address block pointer
+	MOVE C,NETDIR+1(A)	; Get address from block
+	MOVE D,NETDIR+2(A)
+	LSH C,-4		; Reformat to net,,host and socket
+	LSHC C,-^D16
+	LSH D,-4
+	MOVE A,C
+	LSH A,^D<18-8>
+	ANDI C,377
+	HLL C,A
+	MOVE A,-1(P)		; Restore current address
+	MOVE B,0(P)
+	PUSHJ P,PNMMRG		; Merge and check consistency
+	 JRST PNMEA4		; Inconsistent, omit branch
+	PUSH P,F		; Save current field pointer
+	ADD F,BHC##+2		; Advance to next field
+	PUSHJ P,PNMEAD		; Recursive call to process it
+	POP P,F			; Restore field pointer
+PNMEA4:	HLRZ A,-2(P)		; Recover address block adr
+	LDB A,[POINT 15,NETDIR(A),14]  ; Get adr of next address block
+	JUMPN A,PNMEA3		; Loop if more
+	SUB P,BHC##+2		; Done, fix stack and return
+	POPJ P,
+
+; Here to emit address in A,B
+PNMEA7:	JUMPGE IOS,.+2		; Don't store if block exhausted
+	UMOVEM A,(IOS)		; Store address in block
+	AOBJP IOS,.+2
+	UMOVEM B,(IOS)
+	AOBJP IOS,.+1
+	POPJ P,
+
+; Merge addresses and check consistency
+;	A,B/ Current address
+;	C,D/ Address to be merged in
+; Returns +1:  Inconsistent, ac's unchanged
+;	+2: Consistent, A,B/ Combined address
+
+PNMMRG:	PUSH P,A		; Save current address
+	PUSH P,B
+	XORM C,-1(P)		; Compute differences
+	XORM D,0(P)
+	TLNE A,-1		; Unspecified net?
+	TLNN C,-1
+	 HRRZS -1(P)		; Yes, scratch that difference
+	TRNE A,-1		; Unspecified host?
+	TRNN C,-1
+	 HLLZS -1(P)		; Yes, that's a match
+	SKIPE B			; Unspecified socket?
+	SKIPN D
+	 SETZM 0(P)		; Yes, match
+	SKIPN -1(P)		; Any inconsistencies?
+	SKIPE 0(P)
+	 JRST PNMMR1		; Yes, give fail return
+	IOR A,C			; No, now do the merge
+	IOR B,D
+	AOS -2(P)		; Set skip return
+PNMMR1:	SUB P,BHC##+2		; Fix stack
+	POPJ P,			; Return
+
+; Binary search comparison routines for network directory lookup.
+; See BINSRC for further details of calling sequence.
+
+; BINSRC entry to do address lookup
+;	B/ Key (see CMPADR)
+
+ADRSRC:	MOVE A,ADRLTP		; Set address lookup table ptr
+	JSP C,BINSRC		; Do binary search
+
+
+; Compare network address
+;	rh A/ 16-bit byte address of address lookup table entry,
+;		which is in turn the 16-bit byte address of the
+;		address block itself (which is guaranteed to start
+;		on a 36-bit word boundary)
+;	B/ (key) pointer to address being looked up, in the form
+;		BYTE(8) net, host (16) high 16 bits of socket
+;		BYTE(16) low 16 bits of socket (rest of word zero)
+
+CMPADR:	MOVEI C,(A)		; Copy byte address of entry
+	LSHC C,-1		; Divide by 2 to get Maxc word adr
+	LSH D,-^D35
+	LDB C,[	POINT 15,NETDIR(C),14	; Fetch entry/2
+		POINT 15,NETDIR(C),30](D)
+	JFCL 17,.+1		; Clear flags
+	MOVE D,NETDIR+1(C)	; Get first word of entry
+	TRZ D,17		; Clear garbage bits
+	SUB D,0(B)		; Compare with key
+	JUMPN D,CMPAD1		; Jump if not equal
+	JFCL 17,.+1		; Equal, clear flags again
+	MOVSI D,(177777B15)	; Get second word of entry (16 bits)
+	AND D,NETDIR+2(C)
+	SUB D,1(B)		; Compare with key
+	JUMPE D,SK2RET##	; Return +3 if equal
+CMPAD1:	JCRY0 CPOPJ##		; Return +1 if key < entry
+	RETSKP			; Return +2 if key > entry
+
+; BINSRC entry to do name lookup
+;	B/ Key (see CMPNAM)
+
+NAMSRC:	MOVE A,NAMLTP		; Set name lookup table ptr
+	JSP C,BINSRC		; Do binary search
+
+
+; Compare network name
+;	rh A/ 16-bit byte address of name lookup table entry,
+;		which in turn contains the 16-bit byte address of
+;		the name block itself (which is guaranteed to start
+;		on a 36-bit word boundary)
+;	B/ (key) Byte pointer to ASCIZ string being looked up.
+;		All letters must be upper-case.
+; Note lower-case letters are treated the same as upper case
+;  when they appear in the name block.
+; As an additional bonus, on the +1 return (key < entry), if the
+;  key is an initial substring of the entry,
+;	C/ Count of characters in tail
+;	D/ String pointer to tail
+;  D is zero in all other cases.
+
+CMPNAM:	SKIPA D,[POINT 8,NETDIR+1]  ; Name string offset in name block
+
+; Enter here to compare attribute name
+CMPATR:	MOVE D,[POINT 8,NETDIR]	; Attribute string offset in block
+	PUSH P,A		; Need more ac's
+	PUSH P,B
+	PUSH P,E
+	PUSH P,D		; Save offset
+	MOVEI C,(A)		; Copy byte address of entry
+	LSHC C,-1		; Divide by 2 to get Maxc word adr
+	LSH D,-^D35
+	LDB D,[	POINT 15,NETDIR(C),14	; Fetch entry/2
+		POINT 15,NETDIR(C),30](D)
+	POP P,C			; Recover offset in block
+	ADD D,C			; Make byte ptr to string
+	ILDB C,D		; Get byte count
+CMPNA1:	SOJGE C,.+2		; Name string exhausted?
+	 TDZA A,A		; Yes, use null
+	ILDB A,D		; No, get char from name string
+	CAIL A,"a"		; Lower case letter?
+	CAILE A,"z"
+	 CAIA			; No
+	SUBI A,40		; Yes, make upper case
+	ILDB E,B		; Get char from string being looked up
+	CAIGE E,(A)		; Compare characters
+	 JRST [	JUMPN E,CMPNA3	; Key < entry, return +1
+		ADD D,[8B5]	; Initial substring, backup byte
+		AOJA C,CMPNA4]	;  pointer and fix count
+	CAILE E,(A)
+	 JRST CMPNA2		; Key > entry, return +2
+	JUMPN E,CMPNA1		; Key char = entry, look at next
+	AOS -3(P)		; End, matched, return +3
+CMPNA2:	AOS -3(P)
+CMPNA3:	SETZ D,			; Note key not initial substring
+CMPNA4:	POP P,E			; Restore ac's
+	POP P,B
+	POP P,A
+	POPJ P,
+
+; Perform binary search
+;	A/ -length ,, address of table to search
+;	B/ Search key
+;	C/ Routine to call to compare key to entry
+; Returns +1: Not found, A points to smallest entry > key
+;	+2: Found, A points to matching entry
+; In both cases, A is still in AOBJN pointer format.  In the
+;  +1 return, the lh is positive if A points past end of table.
+; Clobbers A-D
+
+; The comparison routine must operate as follows:
+;	A/ Address of table entry to compare in rh
+;	B/ Search key (as passed to BINSRC)
+; Returns +1: Key < Entry
+;	+2: Key > Entry
+;	+3: Key = Entry
+; C and D may be clobbered freely, others must be protected
+
+BINSRC:	PUSH P,C		; Save routine to call
+	PUSH P,E		; Save another temp
+	HLRE C,A		; Get negative table length
+	MOVN C,C		; Make positive
+	JFFO C,.+2		; Find position of first 1
+	 JRST BINSRF		; Empty table, fail
+	MOVE E,BITS##(D)	; Compute largest power of 2 <= table length
+	HRLI E,(E)		; Put in both halves
+	SUB A,BHC##+1		; Backup ptr to one before table
+BINSR1:	ADD A,E			; Add increment to table pointer
+BINSR2:	LSH E,-1		; Halve increment (both halves)
+	TRZ E,400000
+	JUMPGE A,BINSRL		; Jump if off end of table
+	PUSHJ P,@-1(P)		; Call routine to do compare
+	 JRST BINSRL		; Key < entry
+	 JRST BINSRG		; Key > entry
+	AOSA -2(P)		; Key = entry, set skip return
+
+; Here to add 1 to pointer and fail return
+BINSR3:	AOBJN A,.+1
+
+; Here to fail return
+BINSRF:	POP P,E			; Restore ac's
+	POP P,C
+	POPJ P,
+
+; Here if key < entry, or past end: backup table pointer
+BINSRL:	JUMPE E,BINSRF		; Fail if increment zero
+	SUB A,E			; Backup table pointer
+	JRST BINSR2		; Try again
+
+; Here if key > entry: advance table pointer
+BINSRG:	JUMPE E,BINSR3		; Fail if increment zero
+	JRST BINSR1		; Advance pointer and try again
+
+
+	TNXEND
+	END

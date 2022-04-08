@@ -1,0 +1,413 @@
+; Copyright Xerox Corporation 1979
+        .TITLE  PUP0A
+
+	.CSECT	GLOBAL
+G=.
+.=G+144.+144.
+	.WORD	FILTER
+	.WORD	SEIN
+	.WORD	SEOUT
+	.WORD	INEIO
+
+	.CSECT
+
+NQUEUE=G+115.+115.
+DQUEUE=G+116.+116.
+SETTIM=G+122.+122.
+
+NDBQ=G+190.+190.
+PBIFQ=G+191.+191.
+
+;
+;PBI DATA STRUCTURE
+;
+LINK=0.
+TQUEUE=2.
+SOCKET=4.
+NDB=6.
+STATUS=8.
+TIMER=10.
+PLNGTH=12.
+ENCAP1=14.
+ENCAP2=16.
+LENGTH=18.
+;
+;ETHER NDB DATA STRUCTURE
+;
+ELINK=0.
+LNET=2.
+LHOST=4.
+DEVNUM=6.
+NGPBI=8.
+PFQ=10.
+PLINK=14.
+PPRED=16.
+PQUEUE=18.
+ENCPUP=20.
+XMIT=22.
+STATS=24.
+ICCNT=26.
+ICADDR=28.
+ICSTAT=30.
+IPBI=32.
+OCCNT=34.
+OCADDR=36.
+OCSTAT=38.
+OCDLAY=40.
+LOAD=42.
+XMTTIM=44.
+OPBI=46.
+OQ=48.
+;
+;PACKET FILTER DATA STRUCTURE
+;
+PFLINK=0
+PFPRED=2
+PFQUE=4
+;
+;PROCESSOR STATUS WORDS FOR INTERRUPT ROUTINES
+;
+XMTPS=240             ;TRANSMIT PS           (PRIORITY = 5)
+RCVPS=240             ;RECEIVE PS            (PRIORITY = 5)
+ERRPS=240             ;COLLISION PS          (PRIORITY = 5)
+;
+;MISCELLANEOUS CONSTANTS
+;
+PUP=1000                        ;PUP IDENTIFIER
+PUPSIZ=280.
+ETHOC=400                       ;ETHERNET OUTPUT COMPLETE INTERRUPT
+ETHIC=404                       ;ETHERNET INPUT COMPLETE INTERRUPT
+ETHCO=410                       ;ETHERNET COLLISION OCCURRED INTERRUPT
+ETHOWC=160020                   ;ETHERNET OUTPUT WORD COUNT
+ETHOBL=160022                   ;ETHERNET OUTPUT BUFFER LOCATION
+ETHOCS=160024                   ;ETHERNET OUTPUT CONTROL & STATUS
+ETHOSD=160026                   ;ETHERNET OUTPUT START DELAY
+ETHIWC=160030                   ;ETHERNET INPUT WORD COUNT
+ETHIBL=160032                   ;ETHERNET INPUT BUFFER LOCATION
+ETHICS=160034                   ;ETHERNET INPUT CONTROL & STATUS
+ETHRDA=160036                   ;ETHERNET READ DEVICE ADDRESS
+      .PAGE
+;
+;SUBROUTINE INITETHERIO() = HOST
+;
+INEIO::
+;
+;RESET ETHERNET HARDWARE
+;
+      CLR      @#ETHOCS         ;RESET OUTPUT BOARD
+      CLR      @#ETHICS         ;RESET INPUT BOARD
+;
+;INITIALIZE ETHERNET INTERRUPTS
+;
+      MOV      #EXINT,@#ETHOC   ;XMIT COMPLETE INTERRUPT
+      MOV      #XMTPS,@#ETHOC+2 ;
+;
+      MOV      #ERINT,@#ETHIC   ;RECEIVE COMPLETE INTERRUPT
+      MOV      #RCVPS,@#ETHIC+2 ;
+;
+      MOV      #EEINT,@#ETHCO   ;XMIT COLLISION INTERRUPT
+      MOV      #ERRPS,@#ETHCO+2 ;
+;
+;GET AND RETURN HOST ADDRESS
+;
+      MOV      @#ETHRDA,R1      ;HOST ADDR
+      COMB     R1
+;
+      ADD      #2,0(SP)
+      RTS      PC               ;RETURN
+      .PAGE
+;
+;SUBROUTINE EXINT
+;
+;ENTERED BY INTERRUPT AT LOC ETHOC AFTER SUCCESSFUL TRANSMISSION
+;
+EXINT::
+      MOV      R1,-(SP)         ;PUSH R1
+      MOV      R2,-(SP)         ;PUSH R2
+      MOV      R3,-(SP)         ;PUSH R3
+;
+      MOV      NDBQ,R3          ;
+      ASL      R3               ;
+      MOV      @R3,R3           ;
+      ASL      R3               ;R3 = NDB ADDRESS
+      MOV      @#ETHOCS,OCSTAT(R3);OUTPUT STATUS
+      CLR      @#ETHOCS         ;RESET OUTPUT
+      MOV      OPBI(R3),R2      ;
+      ASL      R2               ;R2 = PBI ADDRESS
+      BNE      .+4              ;IS IT ZERO?
+      HALT                      ;YES, BAD XMT INTERRUPT
+;
+      MOV      TQUEUE(R2),R1    ;R1 = TQUEUE
+      CLC
+      ROR      R2
+      JSR      PC,@NQUEUE       ;ENQUEUE PBI ON TQUEUE
+      .WORD    0                ;
+;
+      CLR      OPBI(R3)         ;NDB.OPBI = 0
+      CLR      LOAD(R3)         ;NDB.LOAD = 0
+;
+      MOV      R3,R1            ;R1 = NDB ADDRESS
+      CLC
+      ROR      R1
+      JSR      PC,SEOUT         ;START ETHER OUTPUT
+      .WORD    0                ;
+;
+      MOV      (SP)+,R3         ;POP R3
+      MOV      (SP)+,R2         ;POP R2
+      MOV      (SP)+,R1         ;POP R1
+      RTI                       ;RETURN FROM INTERRUPT
+      .PAGE
+;
+;SUBROUTINE EEINT
+;
+;ENTERED BY INTERRUPT AT LOC ETHCO AFTER UNSUCCESSFUL TRANSMISSION
+;
+EEINT::
+      MOV      R1,-(SP)         ;PUSH R1
+      MOV      R2,-(SP)         ;PUSH R2
+      MOV      R3,-(SP)         ;PUSH R3
+;
+      MOV      NDBQ,R3          ;
+      ASL      R3               ;
+      MOV      @R3,R3           ;
+      ASL      R3               ;R3 = NDB ADDRESS
+      MOV      @#ETHOCS,OCSTAT(R3);OUTPUT STATUS
+      CLR      @#ETHOCS         ;RESET OUTPUT
+      MOV      OPBI(R3),R2      ;
+      ASL      R2               ;R2 = PBI ADDRESS
+      BNE      .+4              ;IS IT ZERO?
+      HALT                      ;YES, BAD XMT INTERRUPT
+;
+      TST      LOAD(R3)         ;TEST FOR LOAD OVERFLOW
+      BPL      EEINT1           ;BRANCH IF NOT
+;
+      MOV      TQUEUE(R2),R1    ;R1 = TQUEUE
+      CLC
+      ROR      R2
+      JSR      PC,@NQUEUE       ;
+;
+      CLR      OPBI(R3)         ;NDB.OPBI = 0
+      CLR      LOAD(R3)         ;NDB.LOAD = 0
+;
+EEINT1:
+      MOV      R3,R1            ;R1 = NDB ADDRESS
+      CLC
+      ROR      R1
+      JSR      PC,SEOUT         ;START ETHER OUTPUT
+;
+      MOV      (SP)+,R3         ;POP R3
+      MOV      (SP)+,R2         ;POP R2
+      MOV      (SP)+,R1         ;POP R1
+      RTI                       ;RETURN FROM INTERRUPT
+      .PAGE
+;
+;SUBROUTINE ERINT
+;
+;ENTERED BY INTERRUPT AT LOC ETHIC AFTER RECEIPT OF PACKET
+;
+ERINT::
+      MOV      R4,-(SP)         ;PUSH R4
+      MOV      R3,-(SP)         ;PUSH R3
+      MOV      R2,-(SP)         ;PUSH R2
+      MOV      R1,-(SP)         ;PUSH R1
+;
+      MOV      NDBQ,R3          ;
+      ASL      R3               ;
+      MOV      @R3,R3           ;
+      ASL      R3               ;R3 = NDB ADDRESS
+      MOV      @#ETHICS,ICSTAT(R3);INPUT CONTROL & STATUS
+      MOV      IPBI(R3),R2      ;
+      ASL      R2               ;R2 = PBI ADDRESS
+      BNE      .+4              ;IS IT ZERO?
+      HALT                      ;YES, BAD RCV INTERRUPT
+;
+      MOV      @#ETHIWC,ICCNT(R3);INPUT WORD COUNT (NEG)
+      BIS      #176000,ICCNT(R3)	;SIGN EXTEND
+      MOV      #PUPSIZ,PLNGTH(R2) ;MAX WORDS
+      ADD      ICCNT(R3),PLNGTH(R2);PBI.PACKET LENGTH
+;
+      MOV      R3,R1            ;
+      CLC
+      ROR      R1
+      MOV      R1,NDB(R2)       ;PBI.NDB
+;
+      TST      ICSTAT(R3)       ;INPUT STATUS
+      BMI      ERINT1           ;BRANCH IF INPUT ERROR
+;
+      MOV      PFQ(R3),R4       ;
+      ASL      R4               ;R4 = ADDRESS OF PF
+ERINT3:
+      BEQ      ERINT1           ;BRANCH IF NO MORE PF'S
+      MOV      R2,R1            ;R1 = PBI ADDRESS
+      CLC
+      ROR      R1
+      JSR      PC,@PFPRED(R4)   ;EXECUTE ETHER PUP FILTER
+      .WORD    0
+      TST      R1               ;GOOD PUP?
+      BNE      ERINT2           ;YES, BRANCH
+      MOV      PFLINK(R4),R4    ;
+      ASL      R4               ;R4 = ADDRESS OF NEXT PF
+      BR       ERINT3           ;TRY AGAIN
+;
+ERINT2:
+      MOV      PFQUE(R4),R1     ;QUEUE PBI ON PBIIQ
+      CLC
+      ROR      R2
+      JSR      PC,@NQUEUE       ;
+      .WORD    0
+;
+      CLR      IPBI(R3)         ;NDB.IPBI = 0
+;
+ERINT1:
+      MOV      R3,R1            ;R1 = NDB ADDRESS
+      CLC
+      ROR      R1
+      JSR      PC,SEIN          ;START ETHER INPUT
+      .WORD    0
+;
+      MOV      (SP)+,R1         ;POP R1
+      MOV      (SP)+,R2         ;POP R2
+      MOV      (SP)+,R3         ;POP R3
+      MOV      (SP)+,R4         ;POP R4
+      RTI                       ;RETURN FROM INTERRUPT
+      .PAGE
+;
+;SUBROUTINE ETHERPUPFILTER(PBI) = TRUE/FALSE
+;
+FILTER::
+      MOV      R3,-(SP)         ;PUSH R3
+      MOV      R2,-(SP)         ;PUSH R2
+;
+      ASL      R1               ;
+      MOV      R1,R2            ;R2 = PBI ADDRESS
+      CLR      R1               ;RESULT = FALSE
+      CMP      ENCAP2(R2),#PUP  ;TYPE = 'PUP'?
+      BNE      FLTER5           ;NO, BRANCH
+      MOV      LENGTH(R2),R3    ;PUP.LENGTH
+      ADD      #5,R3            ;   + 5
+      ASR      R3               ;       /2
+      CMP      R3,PLNGTH(R2)    ;           = PACKET LENGTH?
+      BNE      FLTER5           ;NO, BRANCH
+      DEC      R1               ;RESULT = TRUE
+FLTER5:
+      MOV      (SP)+,R2         ;POP R2
+      MOV      (SP)+,R3         ;POP R3
+      ADD      #2,0(SP)         ;
+      RTS      PC               ;RETURN
+      .PAGE
+;
+;SUBROUTINE STARTETHERINPUT(NDB)
+;
+SEIN::
+      MOV      R0,-(SP)         ;PUSH R0
+      MOV      R2,-(SP)         ;PUSH R2
+      MOV      R3,-(SP)         ;PUSH R3
+;
+      MOV      R1,R2            ;
+      ASL      R2               ;R2 = NDB ADDRESS
+      MFPS     R0
+      MTPS     #240
+      TST      IPBI(R2)         ;IS NDB.IPBI = 0?
+      BNE      SEIN1            ;NO, BRANCH
+;
+      MOV      PBIFQ,R1         ;
+      JSR      PC,@DQUEUE       ;DEQUEUE PBI FROM PBIFREEQ
+      .WORD    0                ;
+      MOV      R1,IPBI(R2)      ;SET NEW NDB.IPBI
+;
+SEIN1:
+      MOV      IPBI(R2),R3      ;
+      ASL      R3               ;R3 = NDB.IPBI
+      BEQ      SEIN2            ;PBIFREEQ EMPTY, BRANCH
+;
+      ADD      #ENCAP1,R3       ;R3 = PACKET ADDRESS
+      MOV      R3,ICADDR(R2)    ;
+;
+      MOV      #-PUPSIZ,@#ETHIWC  ;SET MAX WORD COUNT
+      MOV      ICADDR(R2),@#ETHIBL;SET BUFFER ADDRESS
+      MOV      #101,@#ETHICS    ;ENABLE & INTERRUPT ENABLE
+;
+SEIN2:
+      MTPS      R0
+      MOV      (SP)+,R3         ;POP R3
+      MOV      (SP)+,R2         ;POP R2
+      MOV      (SP)+,R0         ;POP R0
+      ADD      #2,0(SP)         ;
+      RTS      PC               ;RETURN
+      .PAGE
+;
+;SUBROUTINE STARTETHEROUTPUT(NDB)
+;
+SEOUT::
+      MOV      R0,-(SP)         ;PUSH R0
+      MOV      R2,-(SP)         ;PUSH R2
+      MOV      R3,-(SP)         ;PUSH R3
+;
+      MOV      R1,R2            ;
+      ASL      R2               ;R2 = NDB ADDRESS
+      MFPS     R0
+      MTPS     #240
+      TST      OPBI(R2)         ;IS NDB.OPBI = 0?
+      BNE      SEOUT1           ;NO, BRANCH
+;
+      MOV      R2,R1
+      ADD      #OQ,R1
+      CLC
+      ROR      R1
+      JSR      PC,@DQUEUE       ;DEQUEUE PBI FROM NDB.OQ
+      .WORD    0                ;
+      MOV      R1,OPBI(R2)      ;SET NEW NDB.OPBI
+;
+SEOUT1:
+      MOV      OPBI(R2),R3      ;
+      ASL      R3               ;R3 = NDB.OPBI
+      BEQ      SEOUT2           ;NDB.OQ EMPTY, BRANCH
+;
+;      SET TRANSMIT TIMEOUT FOR 1 SECOND
+;
+      MOV      R2,R1
+      ADD      #XMTTIM,R1
+      CLC
+      ROR      R1
+      MOV      R2,-(SP)
+      MOV      #10.,R2
+      JSR      PC,@SETTIM       ;SET TIMER
+      .WORD    0                ;
+      MOV      (SP)+,R2
+;
+      MOV      PLNGTH(R3),OCCNT(R2)
+      NEG      OCCNT(R2)        ;
+      MOV      OCCNT(R2),@#ETHOWC;SET OUTPUT WORD COUNT
+      ADD      #ENCAP1,R3       ;
+      MOV      R3,OCADDR(R2)    ;
+      MOV      R3,@#ETHOBL      ;SET BUFFER ADDRESS
+;
+      MOV      OCDLAY(R2),R3    ;CALCULATE RANDOM NUMBER
+      ASH      #9.,R3		;
+      ADD      OCDLAY(R2),R3    ;
+      ASH      #2.,R3		;
+      ADD      OCDLAY(R2),R3    ;
+      ADD      #13849.,R3       ;
+      MOV      R3,OCDLAY(R2)    ;
+;
+      MOV      LOAD(R2),R1      ;CALCULATE OUTPUT START DELAY
+      NEG      R1               ;
+      ASH      #-8.,R3          ;
+      NEG      R3               ;
+      BIS      R1,R3            ;
+      NEG      R3               ;R3 = RANDOM/256 .AND. NDB.LOAD
+      MOVB     R3,@#ETHOSD      ;SET OUTPUT START DELAY
+;
+      ASL      LOAD(R2)         ;LOAD = 2*LOAD+1
+      ADD      #1,LOAD(R2)      ;
+;
+      MOV      #101,@#ETHOCS    ;ENABLE AND INTERRUPT ENABLE
+;
+SEOUT2:
+      MTPS      R0
+      MOV      (SP)+,R3         ;POP R3
+      MOV      (SP)+,R2         ;POP R2
+      MOV      (SP)+,R0         ;POP R0
+      ADD      #2,0(SP)         ;
+      RTS      PC               ;RETURN
+      .END

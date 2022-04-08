@@ -1,0 +1,334 @@
+;<134-TENEX>LOOKUP.MAC;16    28-APR-75 12:38:21    EDIT BY CLEMENTS
+;<134-TENEX>LOOKUP.MAC;15    28-APR-75 11:36:28    EDIT BY CLEMENTS
+;<134-TENEX>LOOKUP.MAC;14    24-APR-75 14:18:11    EDIT BY CLEMENTS
+;<TENEX-132>LOOKUP.MAC;13    23-NOV-73 17:30:54	EDIT BY CLEMENTS
+;<TENEX-132>LOOKUP.MAC;12    13-JUN-73 21:28:58	EDIT BY CLEMENTS
+;<TENEX-132>LOOKUP.MAC;11     6-MAR-73 18:34:15	EDIT BY CLEMENTS
+;<DLM/TEMP>LOOKUP.MAC;10    31-OCT-72  9:10:12	EDIT BY TOMLINSON
+;<DLM/TEMP>LOOKUP.MAC;9    30-OCT-72 13:21:39	EDIT BY TOMLINSON
+; INACCESSIBLE DIRECTORY ADDITIONS
+;<FILESYSTEM>LOOKUP.MAC;8    25-AUG-72 17:43:50	EDIT BY TOMLINSON
+;<FILESYSTEM>LOOKUP.MAC;7    29-JUN-72 10:00:49	EDIT BY TOMLINSON
+
+	SEARCH	STENEX,PROLOG
+	TITLE	LOOKUP
+	SUBTTL	R.S.TOMLINSON
+	USE	SWAPPC
+
+EXTERN	CPOPJ,SKPRET,SK2RET,MDDNAM,BHC,BUGHLT,BUGCHK
+
+; Name lookup
+; Call:	A		; Iowd # full words in string,1st word of string
+;	FLAG NREC	; =1 for no partial string recognition
+;	FILOPT(JFN)	; Should address the last byte of input
+;	PUSHJ P,NAMLUK	; For recognition
+; Or
+;	PUSHJ P,NAMLKX	; For no recognition
+; Return
+;	+1	; Match is impossible
+;	+2	; Ambiguous
+;	+3	; Match, the complete string replaces the input
+; A contains address of fdb for the first file of the name
+; B contains the location of the pointer whose rh points to the fdb
+; Clobbers a,b,c,d, and bits norec1, mtchf, and ambgf
+
+NAMLKX::TEST(OA,NREC1)		; Enter here for recognition
+NAMLUK::TEST(Z,NREC1)
+	TEST(ZA,UNLKF)
+NAMLUU:	TEST(O,UNLKF,NREC1)
+	TEST(Z,MTCHF,AMBGF)
+	TEST(NE,ASTF)		; If output stars
+	 JRST [	TEST(NN,UNLKF)
+		JRST SK2RET	; Then always give goo return
+		JRST SKPRET]
+	PUSH P,A		; Save a
+	TEST(NE,DIRSF,NAMSF)	; Are we stepping?
+	JRST NAMSTP		; Yes.
+	HRRZ A,FILDDN(JFN)	; Get directory number of this file
+	HLRZ B,DEV
+	PUSHJ P,@DLUKD(DEV)	; Map the directory, and lock it
+	JRST [	TEST(O,NNAMF)	; Nameless device
+		POP P,A
+		MOVSI B,774000
+		SKIPL A		; Check for null name
+		TDNE B,1(A)
+		JRST [	MOVEI A,GJFX25
+			POPJ P,]; Non-null name and no dir
+		TEST(NN,UNLKF)	; Null name and no directory
+		JRST SK2RET	; Yields success if normal lookup
+		JRST SKPRET]	; And single skip if called from extluk
+	 JRST [	SUB P,[1,,1]
+		POPJ P,]
+	POP P,A
+	JRST @NLUKD(DEV)	; Continue with device dependent portion
+
+NAMSTP:	TEST(NE,STEPF)
+	TEST(O,NAMXF)
+	TEST(NE,STEPF)
+	TEST(NE,NAMSF)		; Is name to be stepped?
+	JRST NAMST1		; Yes.
+NAMST4:	HRRZ A,FILDDN(JFN)	; Get directory number
+	HLRZ B,DEV
+	TEST(NE,STEPF)
+	TEST(O,DIRXF)
+	PUSHJ P,@DLUKD(DEV)	; Step directory
+	JRST NAMFAI		; Stepping nameless device fails
+	JRST NAMFAI		; No directories left
+	MOVE A,DIRNUM
+	HRRM A,FILDDN(JFN)
+	JRST NAMST2
+
+NAMST1:	PUSH P,F1
+	TEST(Z,STEPF)
+	HRRZ A,FILDDN(JFN)
+	HLRZ B,DEV
+	PUSHJ P,@DLUKD(DEV)	; Set directory
+	 JFCL
+	 JRST [	POP P,F1
+		JRST NAMFAI]
+	AND F1,[XWD EXTXF!NNAMF!NVERF,NAMXF!DIRXF]
+	IORM F1,(P)
+	POP P,F1
+NAMST2:	MOVE A,(P)		; Get lookup pointer
+	PUSHJ P,@NLUKD(DEV)	; Step the name
+	JRST NAMST3		; No more
+	BUG(HLT,<EXTLUK: SKIP FROM @NLUKD(DEV) WHEN STEPPING>)
+	SUB P,BHC+1
+	TEST(Z,STEPF)
+	JRST SK2RET		; Double skip
+
+NAMST3:	MOVEI A,GJFX32
+	TEST(NN,DIRSF)		; Able to step directory?
+	JRST NAMFAI
+	TEST(NE,NAMSF)
+	SETZM (P)		; Cause first name to be set
+	TEST(O,STEPF)
+	JRST NAMST4
+
+NAMFAI:	SUB P,BHC+1
+	POPJ P,
+
+; Extension lookup
+; Call:	RH(FILDDN(JFN))	; The directory number
+;	LH(FILNEN(JFN))	; The file name string block location
+;	LH(A)		; Minus number of full words in string
+;	RH(A)		; Location of first word of string -1
+;	FILOPT(JFN)	; Location of last byte of input if recognition
+;	PUSHJ P,EXTLUK	; For recognition
+; Or
+;	PUSHJ P,EXTLKX	; For no recognition
+; Return
+;	+1	; Error, no match
+;	+2	; Ambiguous
+;	+3	; Match
+;	A	; Location of fdb of first version
+;	B	; Location of pointer to fdb  in a
+; Directory locked
+; Clobbers a,b,c,d,filopt(jfn), and bits mtchf, ambgf, norec1
+
+EXTLUK::TEST(ZA,NREC1)
+EXTLKX::TEST(O,NREC1)
+	TEST(ZA,UNLKF)
+EXTLUU::TEST(O,UNLKF,NREC1)
+	TEST(NE,ASTF)
+	 JRST [	TEST(NN,UNLKF)
+		JRST SK2RET
+		JRST SKPRET]
+	PUSH P,A
+	TEST(NN,EXTSF)
+	TEST(NE,NAMSF,DIRSF)
+	JRST EXTSTP		; Stepping
+	PUSH P,F1
+	PUSHJ P,EXTNLK		; Get pointer to fdb for this name
+	JRST [	SUB P,BHC+2
+		POPJ P,]	; ????? name wasn't there!!!!!
+	JRST [	POP P,F1
+		POP P,A
+		MOVSI B,774000
+		SKIPL A		; Check for null extension
+		TDNE B,1(A)
+		JRST [	MOVEI A,GJFX26
+			POPJ P,]	; Non-null ext and no direct
+		TEST(NN,UNLKF)
+		JRST SK2RET
+		JRST SKPRET]
+	POP P,F1		; Restore f1
+	TEST(Z,MTCHF,AMBGF)
+	POP P,A
+	JRST @ELUKD(DEV)	; Continue with device dependent portion
+
+EXTSTP:	TEST(NE,STEPF)
+	TEST(O,EXTXF)
+	TEST(NE,STEPF)
+	TEST(NE,EXTSF)		; Stepping extension?
+	JRST EXTST1		; Yes.
+EXTST4:	PUSH P,FILOPT(JFN)
+	HLRZ A,FILNEN(JFN)
+	ADD A,[POINT 7,0,35]
+	MOVEM A,FILOPT(JFN)
+	PUSH P,F1
+	PUSHJ P,EXTNLK
+	JFCL
+	JRST [	POP P,F1
+		POP P,FILOPT(JFN)
+		JRST EXTFAI]	; Failed
+	AND F1,[XWD EXTXF!NNAMF!NVERF,NAMXF!DIRXF]
+	IORM F1,(P)
+	POP P,F1
+	POP P,FILOPT(JFN)
+	JRST EXTST2
+
+EXTST1:	PUSH P,F1
+	TEST(Z,STEPF)
+	PUSHJ P,EXTNLK		; Lookup name for this file
+	JFCL
+	JRST [	POP P,F1
+		JRST EXTFAI]
+	POP P,F1
+EXTST2:	MOVE A,(P)
+	PUSHJ P,@ELUKD(DEV)
+	JRST EXTST3		; No more extensions
+	BUG(HLT,<VERLUK: SKIP FROM @ELUKD(DEV) WHEN STEPPING>)
+	SUB P,BHC+1
+	TEST(Z,STEPF)
+	JRST SK2RET		; Success
+
+EXTST3:	TEST(NN,DIRSF,NAMSF)
+	JRST EXTFAI		; Can't step either name or dir
+	TEST(NE,EXTSF)
+	SETZM (P)
+	TEST(O,STEPF)
+	JRST EXTST4
+
+EXTNLK:	HLRZ A,FILNEN(JFN)
+	HRLI A,700
+	ILDB B,A		; Search for the null
+	JUMPN B,.-1
+	HLRZ B,FILNEN(JFN)
+	SUBI B,-1(A)		; Number of full words
+	HRLZ A,B
+	HLR A,FILNEN(JFN)
+	JRST NAMLUU
+
+EXTFAI:	SUB P,BHC+1
+	POPJ P,
+
+; Get pointer to an fdb
+; Call:	LH(FILDDN(JFN))	; Device name block location
+;	RH(FILDDN(JFN))	; Directory number
+;	LH(FILNEN(JFN))	; File name block location
+;	RH(FILNEN(JFN)	; Extension block location
+;	RH(FILVER(JFN))	; File version number
+;	PUSHJ P,GETFDB
+; Return
+;	+1	; Not found
+;	+2	; Found, a has location of the fdb
+; Leaves directory locked and psi off
+; Clobbers a,b,c,d
+
+GETFDB::TEST(NE,ASTF)
+	 BUG(HLT,<GETFDB: CALLED FOR JFN WITH OUTPUT STARS>)
+PUSH P,F1
+	PUSH P,F
+	HRRZ A,FILVER(JFN)	; Get the version number in a
+	HRRZ F,NLUKD(DEV)
+	CAIE F,MDDNAM
+	BUG(HLT,<GETFDB: CALLED FOR NON-MDD DEVICE>)
+	MOVSI F,OLDNF!IGDLF
+	TEST(O,NREC)
+	TLZ F1,-1
+	PUSHJ P,VERLKX
+	SOS -2(P)
+	POP P,F
+	POP P,F1
+	AOS (P)
+	POPJ P,
+
+; Version lookup
+; Call:	LH(FILDDN(JFN))	; Device name block location
+;	RH(FILDDN(JFN))	; Directory number
+;	LH(FILNEN(JFN))	; File name block location
+;	RH(FILNEN(JFN)	; Extension block location
+;	A		; Version number to find 0 => most recent
+;			; -1 => next higher than most recent
+;	PUSHJ P,VERLUK
+; Return
+;	+1	; Not found
+;	+2	; Found, a points to the pertinent fdb
+; Leaves directory locked and psi off if successfull
+; Clobbers a,b,c,d
+
+VERLKX:	TEST(OA,UNLKF)
+VERLUK::TEST(Z,UNLKF)
+	TEST(NE,ASTF)
+	 JRST SKPRET
+	PUSH P,A		; Preserve a
+	TEST(NN,VERSF,EXTSF)
+	TEST(NE,NAMSF,DIRSF)
+	JRST VERSTP		; Stepping
+	PUSH P,F1		; Save f1, since extluu will clobber
+	PUSHJ P,VERELK		; Lookup extension (name directory etc)
+	JRST [	SUB P,BHC+2
+		POPJ P,]
+	JRST [	POP P,F1
+		POP P,A
+		JRST SKPRET]
+	POP P,F1
+	POP P,A			; Restore version to look up
+	JRST @VLUKD(DEV)
+
+VERSTP:	TEST(NE,STEPF)
+	TEST(NE,VERSF)		; Stepping versions?
+	JRST VERST1
+VERST4:	PUSH P,FILOPT(JFN)
+	HRRZ A,FILNEN(JFN)
+	ADD A,[POINT 7,0,35]
+	MOVEM A,FILOPT(JFN)
+	PUSH P,F1
+	PUSHJ P,VERELK
+	JFCL
+	JRST [	POP P,F1
+		POP P,FILOPT(JFN)
+		JRST VERFAI]	; Failure
+	AND F1,[XWD EXTXF!NNAMF!NVERF,NAMXF!DIRXF]
+	IORM F1,(P)
+	POP P,F1
+	POP P,FILOPT(JFN)
+	JRST VERST2
+
+VERST1:	PUSH P,F1
+	TEST(Z,STEPF)
+	PUSHJ P,VERELK		; Find the extension
+	JRST [	POP P,F1
+		JRST VERFAI]
+	BUG(HLT,<VERLUK: IMPOSSIBLE SKIP RETURN FROM EXTLUU>)
+	POP P,F1
+VERST2:	MOVE A,(P)
+	PUSHJ P,@VLUKD(DEV)	; Step the version
+	JRST VERST3		; None left
+	SUB P,BHC+1
+	TEST(Z,STEPF)
+	JRST SKPRET		; Success
+
+VERST3:	TLNN F1,EXTSF!NAMSF!DIRSF
+	JRST VERFAI		; Not stepping anything else
+	TEST(NE,VERSF)
+	SETZM (P)		; To find most recent
+	TEST(O,STEPF)
+	JRST VERST4
+
+VERELK:	HRRZ A,FILNEN(JFN)
+	HRLI A,(<POINT 7,0,35>)
+	ILDB B,A
+	JUMPN B,.-1
+	HRRZ B,FILNEN(JFN)
+	SUBI B,-1(A)
+	HRLZ A,B
+	HRR A,FILNEN(JFN)
+	JRST EXTLUU
+
+VERFAI:	SUB P,BHC+1
+	POPJ P,
+
+	END
+

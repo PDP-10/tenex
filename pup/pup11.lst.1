@@ -1,0 +1,1032 @@
+.MAIN.	MACN11   V4.26T    1-Jun-82 16:36:48   PAGE 1
+PUP11.MAC;6
+
+      1					;<ACHENBACH>PUP11.MAC.4, 22-Oct-81 10:15:43, Edit by ACHENBACH
+      2					; Added a check for the switch register.  There are now three functional
+      3					; switches - bit0 enables the switch register, bit15 halts the process
+      4					; (actually puts it in a tight loop with the priority at 7), and bit14
+      5					; does an error restart ( reset the processor, and hit ci.eod so any
+      6					; partial pup gets sent.-- MWA
+      7					;<ACHENBACH>PUP11.MAC.2, 19-Oct-81 10:07:56, Edit by ACHENBACH
+      8					; added an automatic restart in the event of a bad trap.  Some glich
+      9					; has been causing us to hit these things, and its a pain to come in
+     10					; on the weekend to restart the 11. -- MWA
+     11					; 16 September 81 -- Finally changing rand to produce a real random number
+     12					;		     on retransmission -- MWA
+     13					; 6 June 81 --  Changing priorty the pup routine interupts at, to leave room
+     14					;		for the clock.  Also, changing the network directory number
+     15					;		to 55 (our official network).
+     16					; 12 February 81 -- Adding another error, notAPup.  Aw, guess... MWA
+     17					; 12 February 81 -- Adding two error counters, in1Err and in2Err, on input
+     18					;		    interrupt routine.  in1Err indicates an error bit was
+     19					;		    on.  in2Err indicates that the input word count was
+     20					;		    zero (i.e. an input overrun) -- MWA
+     21					; 27 January 81 -- Adding GoCount to count the number of times we hit the
+     22					;		   go bit.  If this is different from the number of times
+     23					;		   we interupt, we are getting spurious ones.  MWA
+     24					; 3 December 80 -- Adding a timer and a timeout to wait loop for ether
+     25					; 		   output done.  Lost an ether interupt once, and it killed 
+     26					;		   us.
+     27					; 29 July 80 -- Ten's response to a spurious interupt was killing us.
+     28					;		Chaning reqA2 to treat these right.  MWA
+     29					; 25 July 80 -- Whoops! playing with o.len when I shouldn't be... Also adding
+     30					;		some more debuging to see if we can catch a dropping
+     31					;		interupt.  Removed obsolete IOcontrol word.  MWA
+     32					; 14 July 80 -- Increasing number of input buffers to allow the 20/20 to
+     33					;		clobber us with input on the BSP.  MWA
+     34					; 20 March 80 -- Picking up length to send to the ethernet board from the
+     35					;		 length in the PUP. MWA
+     36					; 11 March 80 -- Changes to isolate input and output.  Changing the names of
+     37					; 		 a few bits.  MWA
+     38					; 7 March 80 -- Extensive debugging stuff added. MWA
+     39					; 5 March 80 -- Adding tests for reset bit. MWA
+     40					; 3 March 80 -- Making changes to implement new 10 <=> 11 communication
+     41					; protocols MWA
+     42					;
+     43					; **********
+     44					; *        *
+     45					; * PUP11  *
+     46					; *        *
+     47					; **********
+     48					;
+     49					;
+     50					; pup service on the 11.  If the pupOnly flag is set, the code will strain
+     51					; out pups only, and will change the ethernet packet type (word two of the
+     52					; packet) to a length, as required by the 10.
+
+
+.MAIN.	MACN11   V4.26T    1-Jun-82 16:36:48   PAGE 2
+PUP11.MAC;6
+
+
+
+
+.MAIN.	MACN11   V4.26T    1-Jun-82 16:36:48   PAGE 3
+PUP11.MAC;6
+
+     58					; device registers for ether net board
+
+     60		160400			outWordCount	= 160400
+     61		160402			outBuffer	= 160402
+     62		160404			outStatus	= 160404
+     63		160406			outDelay	= 160406
+     64		160410			inWordCount	= 160410
+     65		160412			inBuffer	= 160412
+     66		160414			inStatus	= 160414
+     67		160416			portAddress	= 160416
+
+     69		000100			ena.ether	= 100			; interupt enable
+     70		000001			go.ether	= 1			; go bit on the interface
+     71		000002			promis.ether	= 2			; promisuous bit
+     72		000240			pri.ether	= 240			; priority 5 (clock can interupt)
+
+     74					; vectors
+
+     76		000400			outvec		= 400
+     77		000404			inVec		= 404
+     78		000410			collisionVec	= 410
+
+
+     81					; device registers for the 10 <=> 11 interface
+
+     83		160000			stat1		= 160000
+     84		160002			wDat1		= 160002
+     85		160004			rDat1		= 160004
+     86		160006			ctrl1		= 160006
+     87		160010			stat2		= 160010
+     88		160012			wDat2		= 160012
+     89		160014			rDat2		= 160014
+     90		160016			ctrl2		= 160016
+
+     92		000100			ena.a1		= 100		; enable reqA1 interupt.  Set in STAT1
+     93		000002			sel.a1		= 2		; selects the a1 (as opposed to b1)
+
+     95		000100			ena.a2		= 100		; enable a2 (data ready).  Set in STAT2
+     96		000040			ena.b2		= 40		; enable b2 (ready for more data) "  "  "
+
+     98					; vectors
+
+    100		000160			a1iVec		= 160		; status "A" interupt
+    101		000164			b1iVec		= 164
+    102		000170			a2iVec		= 170		; datao (11 input) interupt
+    103		000174			b2iVec		= 174		; datai (11 output) interupt
+
+    105		000240			pri.ten		= 240		; br 5
+
+    107					; status register for KW11 line clock
+
+    109		177546			lineClock	= 177546
+
+    111					; vector
+.MAIN.	MACN11   V4.26T    1-Jun-82 16:36:48   PAGE 4
+PUP11.MAC;6
+
+
+    113		000100			clockVec	= 100
+
+    115		000100			ena.clock	= 100
+    116		000340			pri.clock	= 340		; br 7
+
+    118					; switch register
+
+    120		177570			switch		= 177570
+
+    122					; bits
+
+    124		040000			co.reset	= 40000		; reset bit
+    125		002000			co.bpo		=  2000		; 10 => 11 begin pup output (obsolete)
+    126		001000			co.cts		=  1000		; 10 => 11 clear to send (formerly co.bpi)
+    127		000200			co.pod		=   200		; 10 => 11 pup output done
+    128		000100			co.rts		=   100		; 10 => 11 request to send
+
+    130		004000			ci.pid		= 4000		; 11 => 10 pup input done
+    131		002000			ci.eod		= 2000		; 11 => 10 ether output done
+    132		001000			ci.cts		= 1000		; 11 => 10 clear to send
+    133		000400			ci.rts		=  400		; 11 => 10 request to send
+
+    135		177776			psw		= 177776	; processor status word
+
+    137						.macro	intoff
+    138						mov	@#psw, -(sp)	; save the psw
+    139						bis	#340, @#psw	; and bump cpu to prio 7
+    140						.endm
+
+    142						.macro	inton
+    143						mov	(sp)+, @#psw	; restore the old psw
+    144						.endm
+
+    146						.macro	dClr dw		; double word clear
+    147						clr	dw
+    148						clr	dw+2
+    149						.endm
+
+    151						.macro	dInc dw, ?l	; double word inc
+    152						inc	dw
+    153						bne	l
+    154						inc	dw+2
+    155					l:	nop
+    156						.endm
+
+
+.MAIN.	MACN11   V4.26T    1-Jun-82 16:36:48   PAGE 5
+PUP11.MAC;6
+
+    159					; start of program.  Quam's loader sends us to 1000.  Restart address
+    160					; is where we go on a bad interupt
+
+    162	000000'	000005			start:	reset				; issue hardware reset (sends an 
+    163										; init to the unibus)
+    164	000002'	032737	040000	160006	1$:	bit	#co.reset, @#ctrl1	; is reset still high?
+    165	000010'	001374				bne	1$			; yes, wait till it goes down
+
+    167	000012'	012706	001000			mov	#1000, sp		; set up the stack
+    168	000016'	000167	003056			jmp	main			; for the loader
+
+
+    171					; restart is to get around some hardware troubles we've been having.
+
+    173	000022'				reStart:
+    174	000022'	000005				reset			; reset the world
+    175	000024'	012706	001000			mov	#1000, sp	; reset the stack
+    176	000030'					dInc	reTry		; increament the flag
+    181	000044'	052737	002000	160000		bis	#ci.eod, @#stat1	; clear a posible partial packet xfers
+    182	000052'	000167	003022			jmp	main
+
+
+.MAIN.	MACN11   V4.26T    1-Jun-82 16:36:48   PAGE 6
+PUP11.MAC;6
+
+
+    186					; variables -- Note: The input buffers are all stored at the end of the
+    187					; program.  Thus the last word must be bigBuff.
+
+    189		000001			pupsOnly	= 1		; set to 0 if we want to send ALL packets to 10
+
+    191		077700			highCore	= 77700		; not really, but that's where the boot starts
+    192		000012			numQs		= 10.		; allow us to buffer up a bunch of stuff for BSP
+    193		001034			pkSize		= 540.		; the biggest packet we can get
+    194		000012			maxRetries	= 10.		; number of times to try sending a packet
+    195		000055			etherNet	= 55		; physical network number for the ether net
+    196		001000			pupType		= 1000		; ether net packet type for a pup
+
+    198					; offsets for ethernet packets
+
+    200		000000			source		= 0		; a byte
+    201		000001			dest		= 1		; a byte
+    202		000002			type		= 2		; a word
+
+    204	000056'	000000			iAm:		.word	0	; this is where our host number is stored
+    205	000060'	000055			physNet:	.word	etherNet	; this is connected network #
+
+    207					; there is only one output buffer
+
+    209	000062'	000000			o.pntr:		.word	0	; output word pointer
+    210	000064'	000000			o.len:		.word	0	; output length
+    211	000066'	000000			o.done:		.word	0	; flag to indicate that we are ready to send
+
+    213					; output ether stuff
+
+    215	000070'	000000			e.retry:	.word	0	; number of times to retry the packet
+    216	000072'	000000			e.done:		.word	0	; packet has been sent to the ether
+
+    218					; stuff for the input queue:  Queue elements look like
+    219					;
+    220					; +------------------+
+    221					; |     pointer      |
+    222					; +------------------+
+    223					; |     length       |
+    224					; +------------------+
+    225					; | buffer pointer   |
+    226					; +------------------+
+    227					; |  buffer start    |
+    228					; +------------------+
+    229					; |   	 	     |
+    230					; |      buffer      |
+    231					; |	   .  	     |
+    232					; |	   .	     |
+    233					; |	   .	     |
+    234					; +------------------+
+    235					;
+    236					; queue of stuff ready to send is pointed at by i.qHead, end of queue by
+    237					; i.qTail, free elements by freeQ
+
+.MAIN.	MACN11   V4.26T    1-Jun-82 16:36:48   PAGE 7
+PUP11.MAC;6
+
+
+    240					; offsets
+
+    242		000000			q.link		= 0
+    243		000002			q.length	= 2
+    244		000004			q.pntr		= 4
+    245		000006			q.buffer	= 6
+    246		000010			q.data		= 10
+    247		002076			q.Size		= pkSize*2 + q.data - 2
+
+
+    250	000074'	000000			i.qHead:	.word	0	; head of the q
+    251	000076'	000000			i.qTail:	.word	0	; end of it
+    252	000100'	000000			freeQ:		.word	0
+
+    254	000102'	000000			i.Current:	.word	0	; queue elemetn being sent to the ten
+    255	000104'	000000			e.Current:	.word	0	; queue element the ether is going into
+
+    257	000106'	000000			i.busy:		.word	0	; flag for if we are sending a packet to 10
+    258	000110'	000000			i.done:		.word	0	; non zero on the last interupt from the 10
+
+    260	000112'	000000			badOut:		.word	0	; number of outputs to nothing
+    261	000114'	000000			inCollisions:	.word	0	; number of times we get an input with no
+    262									; request from the 10
+    263	000116'	000000			a2extra:	.word	0	; a2 interupt when not receiving a packet
+
+    265					; interupt counters.  Note that these are all double words
+
+    267	000120'	000000	000000		a2Count:	.word	0, 0	; count of a2 interupts
+    268	000124'	000000	000000		b2Count:	.word	0, 0	; count of b2 interupts
+    269	000130'	000000	000000		ceCount:	.word	0, 0
+    270	000134'	000000	000000		ieCount:	.word	0, 0 	; count of input ethernet interupts
+    271	000140'	000000	000000		oeCount:	.word	0, 0	; count of output ethernet interupts
+    272	000144'	000000	000000		goCount:	.word	0, 0	; count of number of go bits
+
+    274	000150'	000000	000000		wDatCount:	.word	0, 0	; number of writes to wDat (1 + 2)
+    275	000154'	000000	000000		rDatCount:	.word	0, 0	; number of reads from rDat
+
+    277	000160'	000000	000000		lenError:	.word	0, 0	; count of length errors
+    278	000164'	000000	000000		netError:	.word	0, 0	; count the destination net work errors
+    279									; (ethernet(R) is the only legal one)
+    280	000170'	000000	000000		timeErr:	.word	0, 0	; ethernet interupt has timed out
+    281	000174'	000000	000000		in1Err:		.word	0, 0	; ethernet input error (unspecified)
+    282	000200'	000000	000000		in2Err:		.word	0, 0	; in1err caused by packet overrun
+    283	000204'	000000	000000		notAPup:	.word 	0, 0	; increment if the packet recieved wasn't a pup
+    284	000210'	000000	000000		reTry:		.word	0, 0	; count of retry's because of bad trap
+
+    286	000214'	000000			ran:		.word	0	; current random number, used by rand
+    287	000216'	000000			ocLoad:		.word	0	; current delay mask, used by rand
+
+    289					; pointer to the ring buffer of interpt ID's and ctrl and stat
+
+    291		000001			a2.ID	= 1
+    292		000002			b2.ID	= 2
+.MAIN.	MACN11   V4.26T    1-Jun-82 16:36:48   PAGE 8
+PUP11.MAC;6
+
+    293		000003			ce.ID	= 3
+    294		000004			ie.ID	= 4
+    295		000005			oe.ID	= 5
+
+    297	000220'	000000			ringIndex:	.word	0
+    298	000222'	000000			clearRing:	.word	0
+    299		000277			maxRing	= <6 * 40> - 1
+
+    301					; variable to trace a2 enable/disable.  iSetA2 is set when the software sets
+    302					; it, and cleared when software clears it.  SetPC stores the PC where this
+    303					; happens
+
+    305	000224'	000000			iSetA2:		.word	0
+    306	000226'	000000			setPC:		.word	0
+    307	000230'	000000			gettingPacket:	.word	0
+
+    309					; todClk is clock timer.  Gets set to zero when timing starts, and gets 
+    310					; interupt on 60 cycle clock interupt
+
+    312	000232'	000000			todClk:		.word	0
+
+.MAIN.	MACN11   V4.26T    1-Jun-82 16:36:48   PAGE 9
+PUP11.MAC;6
+
+    314					; ring buffer handler -- all interupt routines call this.  Takes an interupt
+    315					; id in r0, stores the id, stat2 and ctrl1 in the ring
+
+    317					; initRing -- initializes the ring.  Gets called if the flag clearRing is
+    318					;	set.  This is so we can re-initialize things while the program is
+    319					; 	running, if we so desire
+
+    321	000234'				initRing:
+    322	000234'	010046				mov	r0,-(sp)		; save r0
+    323	000236'	005067	177756			clr	ringIndex		; init the index
+    324	000242'	012700	000277			mov	#maxRing, r0		; clear the maximum number of spots
+    325	000246'	105060	033540'		ir.100:	clrb	ringBuff(r0)		; clear this spot
+    326	000252'	005300				dec	r0			; any more?
+    327	000254'	002374				bge	ir.100			; yup
+
+    329	000256'					dClr	a2Count			; now initialize all the error counts
+    332	000266'					dClr	b2Count
+    335	000276'					dClr	ieCount
+    338	000306'					dClr	oeCount
+    341	000316'					dClr	ceCount
+    344	000326'					dClr	goCount
+    347	000336'					dClr	wDatCount
+    350	000346'					dClr	rDatCount
+    353	000356'					dClr	lenError
+    356	000366'					dClr	netError
+    359	000376'					dClr	timeErr
+    362	000406'					dClr	in1Err
+    365	000416'					dClr	in2Err
+    368	000426'					dClr	notAPup
+    371	000436'					dClr	retry
+
+    375	000446'	005067	177550			clr	clearRing		; and clear the flag, so we stop doing this
+
+    377	000452'	012600				mov	(sp)+, r0
+    378	000454'	000207				rts	pc
+
+    380					; saveRing -- saves an inturupt id, stat2 and ctrl1
+    381
+    382	000456'				saveRing:
+    383	000456'	010146				mov	r1, -(sp)		; save r1
+    384	000460'	005767	177536			tst	clearRing		; should we clear the ring first?
+    385	000464'	001402				beq	1$			; nope
+    386	000466'	004767	177542			jsr	pc, initRing
+
+    388	000472'	016701	177522		1$:	mov	ringIndex, r1		; get the ringindex
+    389	000476'	010061	033540'			mov	r0, ringBuff(r1)	; save the interupt id
+    390	000502'	013761	160010	033542'		mov	@#stat2, ringBuff+2(r1)	; save the status reg
+    391	000510'	013761	160006	033544'		mov	@#ctrl1, ringBuff+4(r1)	; and the control
+    392	000516'	062701	000006			add	#6, r1			; update the ring
+    393	000522'	020127	000277			cmp	r1, #maxRing		; too big?
+    394	000526'	002401				blt	sr.100
+    395	000530'	005001				clr	r1			; if so, reset
+    396	000532'	010167	177462		sr.100:	mov	r1, ringIndex		; save the new pointer
+    397	000536'	012601				mov	(sp)+, r1		; restore the r1
+.MAIN.	MACN11   V4.26T    1-Jun-82 16:36:48   PAGE 10
+PUP11.MAC;6
+
+    398	000540'	000207				rts	pc
+
+.MAIN.	MACN11   V4.26T    1-Jun-82 16:36:48   PAGE 11
+PUP11.MAC;6
+
+    400					; clock interupt
+
+    402	000542'				clockInt:
+    403	000542'	005267	177464			inc	todClk		; wish they were all this hard
+    404	000546'	000002				rti
+
+
+.MAIN.	MACN11   V4.26T    1-Jun-82 16:36:48   PAGE 12
+PUP11.MAC;6
+
+
+    408					; 10 <=> 11 interupts
+
+
+    411					; 3 Mar, 80 -- removing A1 interupt. MWA
+
+
+    414					; reqA2 is a datao from the 10, i.e. the ten has sent us some data
+
+    416	000550'	010046			reqA2:	mov	r0, -(sp)
+    417	000552'	000240				nop				; to patch a halt
+    418	000554'	012700	000001			mov	#a2.ID, r0
+    419	000560'	004767	177672			jsr	pc, saveRing		; mark us as here
+    420	000564'					dInc	a2Count
+    425	000600'	005767	177424			tst	gettingPacket		; are we really receiving?
+    426	000604'	001010				bne	4$			; yup
+    427	000606'	005267	177304			inc	a2extra			; extra a2 this means
+    428	000612'	005737	160004			tst	@#rdat1
+    429	000616'	005737	160014			tst	@#rdat2			; touch the rdat words to clear
+    430	000622'	000167	000160			jmp	ra2900			; and just leave
+    431
+    432	000626'	016700	177230		4$:	mov	o.pntr, r0		; point to the buffer
+    433	000632'	001010				bne	1$			; if we have one, transfer is in progress
+    434	000634'	012700	003274'			mov	#o.buffer, r0		; otherwise, start a new buffer
+    435	000640'	012767	001034	177216		mov	#pkSize, o.len		; set length to buffer size
+    436	000646'	042737	003000	160000		bic	#<ci.eod+ci.cts>, @#stat1	; clear the output done and clear to sen
+
+    438	000654'	005767	177204		1$:	tst	o.len			; check to make sure we don't overflow
+    439	000660'	003015				bgt	2$			; whew... we have enough room
+    440	000662'	005737	160004			tst	@#rdat1
+    441	000666'	005737	160014			tst	@#rdat2			; just throw away the data
+    442	000672'					dInc	rDatCount
+    447	000706'	005267	177200			inc	badOut			; error counter
+    448	000712'	000416				br	3$
+
+    450	000714'	005367	177144		2$:	dec	o.len			; negative word count
+    451	000720'	013720	160014			mov	@#rDat2, (r0)+
+    452	000724'	005367	177134			dec	o.len
+    453	000730'	013720	160004			mov	@#rDat1, (r0)+		; get a word
+    454	000734'					dInc	rDatCount
+    459	000750'	010067	177106		3$:	mov	r0, o.pntr		; save the pointer
+    460	000754'	032737	000200	160006		bit	#co.pod, @#ctrl1	; was this the last word?
+    461	000762'	001411				beq	ra2900			; nope, so just continue
+    462	000764'	005267	177076			inc	o.done			; set the ouput done flag
+    463	000770'	005067	177230			clr	iSetA2			; flag the disable
+    464	000774'	010767	177226			mov	pc, setPC		; and save the spot
+    465	001000'	042737	000100	160010		bic	#ena.a2, @#stat2	; make sure the 10 doesn't bother us
+    466										; until after we have sent the packet.
+    467										; N.B. hthis bit gets reset in 
+    468										; tenToEther
+
+    470	001006'	012600			ra2900:	mov	(sp)+, r0		; restore
+    471	001010'	000002				rti				; and return
+
+.MAIN.	MACN11   V4.26T    1-Jun-82 16:36:48   PAGE 13
+PUP11.MAC;6
+
+
+    474					; reqB2 is a DATAI from the 10, i.e. we have sent a word, and it is ready
+    475					; for another
+
+    477	001012'	010046			reqB2:	mov	r0, -(sp)
+    478	001014'	010146				mov	r1, -(sp)
+    479	001016'	000240				nop				; to patch a halt
+    480	001020'	012700	000002			mov	#b2.ID, r0
+    481	001024'	004767	177426			jsr	pc, saveRing
+    482	001030'					dInc	b2Count
+    487	001044'	016700	177032			mov	i.Current, r0		; get the current output
+    488	001050'	001452				beq	rb0900			; nope, just return
+    489
+    490	001052'	005767	177032			tst	i.done			; is this last of the packet?
+    491	001056'	001417				beq	1$			; nope
+    492	001060'	005067	177024			clr	i.done			; clear the done flag
+    493	001064'	005067	177016			clr	i.busy			; and the busy flag
+    494	001070'	016760	177004	000000		mov	freeQ, q.link (r0)	; add this element to the free list
+    495	001076'	010067	176776			mov	r0, freeQ
+    496	001102'	005067	176774			clr	i.Current
+    497	001106'	042737	000040	160010		bic	#ena.b2, @#stat2	; clear the interupt
+    498	001114'	000430				br	rb0900			; and don't touch the register
+
+    500	001116'	016001	000004		1$:	mov	q.pntr(r0), r1		; get the pointer into buffer
+    501	001122'	005360	000002			dec	q.length (r0)
+    502	001126'	005360	000002			dec	q.length (r0)		; done yet?
+    503	001132'	003005				bgt	rb0100			; no
+
+    505	001134'	052737	004000	160000		bis	#ci.pid, @#stat1	; signal that this is the last word
+    506	001142'	005267	176742			inc	i.done			; and signal to clean up next time
+
+    508	001146'	012137	160012		rb0100:	mov	(r1)+, @#wDat2		; send the word
+    509	001152'	012137	160002			mov	(r1)+, @#wDat1
+    510	001156'					dInc	wDatCount
+    515	001172'	010160	000004			mov	r1, q.pntr (r0)		; save the new pointer
+
+    517	001176'	012601			rb0900:	mov	(sp)+, r1
+    518	001200'	012600				mov	(sp)+, r0
+    519	001202'	000002				rti
+
+
+
+
+.MAIN.	MACN11   V4.26T    1-Jun-82 16:36:48   PAGE 14
+PUP11.MAC;6
+
+
+    525					; ether net routines.  These routines are the interupts from the ethernet
+    526					; board, and a couple of support routines for them
+
+
+    529					; rand -- return a random delay in r0.  A new 8 bit random number is 
+    530					; genrated, and sucesivly larger parts of it are used for the random
+    531					; delay. On the first call, ocLoad should be set to -1, which will
+    532					; produce a 0 delay.  Since a 0 result gets set to 1, that's what you get
+
+    534	001204'	016700	177004		rand:	mov	ran, r0		; get the old value
+    535	001210'	006300				asl	r0
+    536	001212'	006300				asl	r0		; mulitple by 4
+    537	001214'	066700	176774			add	ran, r0		; and add the old value, gives ran*5
+    538	001220'	062700	000015			add	#13., r0	; add nice prime number
+    539	001224'	042700	177400			bic	#177400, r0	; clear the high order bits
+    540	001230'	010067	176760			mov	r0, ran		; save the new value
+    541	001234'	046700	176756			bic	ocLoad, r0	; clear the bits masked
+    542	001240'	001001				bne	r0100		; if result is 0, set to 1
+    543	001242'	005200				inc	r0
+    544	001244'	006367	176746		r0100:	asl	ocLoad		; shift in a larger mask for the next delay
+    545	001250'	000207				rts	pc
+
+    547					; collideEther -- a collision has take place.  Get a random number, and
+    548					; retry (unless we've tried too much
+
+    550	001252'				collideEther:
+    551	001252'	010046				mov	r0, -(sp)
+    552	001254'	000240				nop				; to patch a halt
+    553	001256'	012700	000003			mov	#ce.ID, r0
+    554	001262'	004767	177170			jsr	pc, saveRing
+    555	001266'					dInc	ceCount
+    560	001302'	005367	176562		ce0100:	dec	e.retry			; have we done this too much?
+    561	001306'	003444				ble	oe0100			; yup, pretend we sent the packet
+    562	001310'	004767	177670			jsr	pc, rand		; get a random number in r0
+    563	001314'	010037	160406			mov	r0, @#outDelay		; and pause that long
+    564	001320'	012737	003274'	160402		mov	#o.buffer, @#outBuffer	; set the buffer pointer
+    565	001326'	016737	176532	160400		mov	o.len, @#outWordCount	; the word count
+    566	001334'	052737	000101	160404		bis	#<ena.ether+go.ether>, @#outStatus	; start the show
+    567	001342'					dInc	goCount			; update go counts
+    572	001356'	012600				mov	(sp)+, r0		; restore
+    573	001360'	000002				rti				; and return
+
+
+    576					; outEther -- have sent the packet
+
+    578	001362'				outEther:
+    579	001362'	010046				mov	r0, -(sp)
+    580	001364'	000240				nop				; to patch a halt
+    581	001366'	012700	000005			mov	#oe.ID, r0
+    582	001372'	004767	177060			jsr	pc, saveRing
+    583	001376'					dInc	oeCount
+    588	001412'	005737	160404			tst	@#outStatus		; any kind of error?
+    589	001416'	002731				blt	ce0100			; yes, try to resend the packet
+.MAIN.	MACN11   V4.26T    1-Jun-82 16:36:48   PAGE 15
+PUP11.MAC;6
+
+    590	001420'	005037	160404		oe0100:	clr	@#outStatus		; we have sent the packet. clear int
+    591	001424'	005067	176434			clr	o.len
+    592	001430'	005067	176434			clr	e.retry
+    593	001434'	005267	176432			inc	e.done			; set the flag that we did it
+    594	001440'	012600				mov	(sp)+, r0
+    595	001442'	000002				rti
+
+
+    598					; inEther -- we have just recived a packet.
+
+    600	001444'				inEther:
+    601	001444'	010046				mov	r0, -(sp)
+    602	001446'	010146				mov	r1, -(sp)
+    603	001450'	000240				nop				; to patch a halt
+    604	001452'	012700	000004			mov	#ie.ID, r0
+    605	001456'	004767	176774			jsr	pc, saveRing
+    606	001462'					dInc	ieCount
+
+    612	001476'	016700	176402			mov	e.Current, r0		; pointer to queue element
+    613	001502'	001522				beq	ie0900
+    614	001504'	005737	160414			tst	@#inStatus		; an error?
+    615	001510'	002020				bge	ie0010			; no, take care of the packet
+
+    617					; we had an input error.  Is it just a random error, or have we recieved
+    618					; a packet that was too big?
+
+    620	001512'					dInc	in1Err			; we mark an in1err in any event
+    625	001526'	005737	160410			tst	@#inWordCount		; did this go zero?
+    626	001532'	001073				bne	ie0100			; nope, just blow off this packet
+    627	001534'					dInc	in2Err			; word count was zero, mark in2err
+    632	001550'	000464				br	ie0100			; and blow off this packet
+
+    634	001552'				ie0010:
+
+    636					.if	ne pupsOnly
+    637	001552'	016001	000006			mov	q.buffer(r0), r1	; get a pointer to the packet
+    638	001556'	026127	000002	001000		cmp	type(r1), #pupType	; is this a pup 
+    639	001564'	001407				beq	ie0020			; yup, go to it
+    640	001566'					dInc	notAPup			; keep track of it
+    645	001602'	000447				br	ie0100			; but blow it off
+    646					.endc
+
+    648	001604'	013701	160410		ie0020:	mov	@#inWordCount, r1	; get the number of words we read
+    649	001610'	052701	176000			bis	#176000, r1		; for the wierd way they do things
+    650	001614'	062701	001034			add	#pkSize, r1		; this gives us really the word count
+    651	001620'	010160	000002			mov	r1, q.length(r0)	; save the length of the packet
+    652	001624'	016060	000006	000004		mov	q.buffer(r0), q.pntr(r0); set up the transfer pointer
+    653	001632'	016701	176242			mov	freeQ, r1		; do we have a queue element?
+    654	001636'	001003				bne	ie0050			; if we have no element, use this one
+    655	001640'	005267	176250			inc	inCollision		; add one to the error count
+    656	001644'	000426				br	ie0100			; and just use this bufefer
+
+    658	001646'	016167	000000	176224	ie0050:	mov	q.link(r1), freeQ	; update the free list
+    659	001654'	005061	000000			clr	q.link(r1)		; and remove this element from it
+.MAIN.	MACN11   V4.26T    1-Jun-82 16:36:48   PAGE 16
+PUP11.MAC;6
+
+    660	001660'	016700	176212			mov	i.qTail, r0		; last element of queue
+    661	001664'	001007				bne	1$			; if there is no queue
+    662	001666'	016767	176212	176200		mov	e.Current, i.qHead	; we need to set the head too
+    663	001674'	052737	000400	160000		bis	#ci.rts, @#stat1	; and tell the 10 we want to send
+    664	001702'	000403				br	2$
+    665	001704'	016760	176174	000000	1$:	mov	e.Current, q.link (r0)	; tack this on to the end of the queu
+    666	001712'	016767	176166	176156	2$:	mov	e.Current, i.qTail	; and save the new end
+    667	001720'	010100				mov	r1, r0			; put the next element into r1
+
+    669	001722'	010067	176156		ie0100:	mov	r0, e.Current		; save the current buffer
+    670	001726'	016037	000006	160412		mov	q.buffer(r0), @#inBuffer
+    671	001734'	012737	176744	160410		mov	#-pkSize, @#inWordCount
+    672	001742'	052737	000101	160414		bis	#<ena.ether+go.ether>, @#inStatus
+    673
+
+    675	001750'	012601			ie0900:	mov	(sp)+, r1
+    676	001752'	012600				mov	(sp)+, r0
+    677	001754'	000002				rti
+
+
+
+.MAIN.	MACN11   V4.26T    1-Jun-82 16:36:48   PAGE 17
+PUP11.MAC;6
+
+
+    682					; tenToEther -- the ten has sent us a request to send, and we are not
+    683					;		doing input at the moment.  Tell him he is clear to send,
+    684					;		and wait for the packet
+
+
+    687	001756'				tenToEther:
+    688	001756'	005067	176104			clr	o.done			; clear the done flag
+    689	001762'	005067	176074			clr	o.pntr			; reset the pointer
+    690	001766'	005067	176072			clr	o.len			; and the length
+    691	001772'	012767	000001	176230		mov	#1, gettingPacket	; set the software flag
+    692	002000'	052737	001000	160000		bis	#ci.cts, @#stat1	; then tell the 10 he can procede
+
+    694	002006'	005767	176054		te.100:	tst	o.done			; has the packet finished yet?
+    695	002012'	001775				beq	te.100			; nope, so wait for it
+
+    697	002014'	005067	176042			clr	o.pntr			; clear pointer
+    698	002020'	005067	176204			clr	gettingPacket		; clear the flag 
+
+    700					.if	ne pupsOnly
+    701	002024'	126767	176030	001243		cmpb	physNet, o.physNet	; are we sending to the ether net?
+    702	002032'	001410				beq	te.150			; yup, take off
+    703	002034'					dInc	netError		; blech
+    708	002050'	000167	000172			jmp	te.200			; pretend we didn't see this stuff
+
+    710	002054'	012767	001000	001214	te.150:	mov	#pupType, o.type	; set the packet to type pup
+    711	002062'	000367	001206			swab	o.buffer		; put the ether destination into the
+    712										; high order byte
+    713					.endc
+
+    715	002066'	116767	175764	001200		movb	iAm, o.buffer		; make sure we identify ouselves right
+    716	002074'	012767	000012	175766		mov	#maxRetries, e.retry 	; how long must I persevere?
+    717	002102'	005067	175764			clr	e.done
+
+    719	002106'	016700	001166			mov	p.length, r0		; calculate the number of words to send
+    720	002112'	005200				inc	r0
+    721	002114'	006200				asr	r0			; number of 16 bit words
+    722	002116'	005200				inc	r0			; add the 2 encapsulation words
+    723	002120'	005200				inc	r0
+    724	002122'	005400				neg	r0			; negative word count
+    725	002124'	010037	160400			mov	r0, @#outWordCount	; set it for the ethernet
+    726	002130'	012767	177777	176060		mov	#177777, ocLoad		; set up the collision mask
+    727	002136'	005037	160406			clr	@#outDelay		; no delay, mail today
+    728	002142'	012737	003274'	160402		mov	#o.buffer, @#outBuffer	; buffer location
+    729	002150'	052737	000101	160404		bis	#<ena.ether+go.ether>, @#outStatus ; start things up
+    730	002156'					dInc	GoCount			; update the number of goes
+
+    736					; removed a length calculation.... playing with o.len, which may be used
+    737					; if the packet collides.  MWA
+    738					; including timer in this loop.  I think this is the only loop safe to
+    739					; time out, since the other loops are during a ten <=> eleven transfer.
+    740					; If something fucks up there, we need to know about it.  MWA
+
+    742	002172'	005067	176034			clr	todClk			; clear the timer
+.MAIN.	MACN11   V4.26T    1-Jun-82 16:36:48   PAGE 18
+PUP11.MAC;6
+
+    743	002176'	032737	040000	160006	1$:	bit	#co.reset, @#ctrl1	; did the 10 reset us?
+    744	002204'	001402				beq	2$			; no
+    745	002206'	000167	175566			jmp	start			; otherwise, restart
+
+    747	002212'	026727	176014	000454	2$:	cmp	todClk, #<5 * 60.>	; have we waited five seconds?
+    748	002220'	002407				blt	3$			; nope 
+    749	002222'					dInc	timeErr		 	; otherwise, signal an error and
+    754	002236'	000403				br	te.200			; pretend we're done
+
+    756	002240'	005767	175626		3$:	tst	e.done			; did it get sent?
+    757	002244'	001754				beq	1$			; hurry up and wait
+
+    759	002246'	042737	001000	160000	te.200:	bic	#ci.cts, @#stat1	; no longer clear to send
+    760	002254'	005067	175612			clr	e.done
+    761	002260'	005067	175602			clr	o.done
+    762	002264'	012767	000001	175732		mov	#1, iSetA2		; flag the enable
+    763	002272'	010767	175730			mov	pc, setPC		; and the location
+    764	002276'	052737	000100	160010		bis	#ena.a2, @#stat2	; the 10 can bother us again
+    765	002304'	052737	002000	160000		bis	#ci.eod, @#stat1	; tell the 10 that the packet was sent
+    766	002312'	000207				rts	pc			; return
+
+
+
+    770					; etherToTen -- have a packet from the ether in the queue.  Start off the
+    771					; 		transfer
+
+    773	002314'				etherToTen:
+    774	002314'	005267	175566			inc	i.busy			; set the busy flag
+    775	002320'	005067	175564			clr	i.done			; we've only just begun...
+    776	002324'	042737	004000	160000		bic	#ci.pid, @#stat1		; clear the done and request to send
+
+    778	002332'					intoff			; interupts off whilst we fiddle with queue
+
+    782	002344'	016700	175524			mov	i.qHead, r0		; get the head of the queue
+    783	002350'	016001	000000			mov	q.link (r0), r1		; update the queue
+    784	002354'	001005				bne	1$
+    785	002356'	005067	175514			clr	i.qTail			; if no element, clear the tail
+    786	002362'	042737	000400	160000		bic	#ci.rts, @#stat1	; and clear the request to send
+    787	002370'	010167	175500		1$:	mov	r1, i.qHead
+
+    789	002374'					inton			; fiddling done, interupts back on
+
+    792	002400'	005060	000000			clr	q.link (r0)		; clear this link
+
+    794					.if	ne pupsOnly
+    795	002404'	016001	000002			mov	q.length(r0), r1	; get the length of the packet (in words)
+    796	002410'	005301				dec	r1
+    797	002412'	006201				asr	r1			; convert to pdp10l minus the header
+    798	002414'	000240				nop				; in case we need to patch
+    799	002416'	000240				nop
+    800	002420'	000240				nop
+    801	002422'	016002	000006			mov	q.buffer(r0), r2	; get a pointer to the packet
+    802	002426'	010162	000002			mov	r1, type(r2)		; and set the pup type to the length
+    803	002432'	116762	175422	000001		movb	physNet, dest(r2)	; set up the physical net nubmer for
+.MAIN.	MACN11   V4.26T    1-Jun-82 16:36:48   PAGE 19
+PUP11.MAC;6
+
+    804										; the 10
+    805					.endc
+
+    807	002440'	010067	175436			mov	r0, i.Current		; save the pointer
+
+    809	002444'	005360	000002			dec	q.length (r0)		; otherwise we need to start it off
+    810	002450'	005360	000002			dec	q.length (r0)
+    811	002454'	016001	000004			mov	q.pntr (r0), r1		; get the buffer pointer
+    812	002460'	012137	160012			mov	(r1)+, @#wdat2		; send the first word
+    813	002464'	012137	160002			mov	(r1)+, @#wdat1
+    814	002470'					dInc	wDatCount
+    819	002504'	010160	000004			mov	r1, q.pntr(r0)		; save the pointer
+    820	002510'	052737	000040	160010		bis	#ena.b2, @#stat2	; enable the interupt
+
+
+    823	002516'	032737	040000	160006	3$:	bit	#co.reset, @#ctrl1
+    824	002524'	001402				beq	4$
+    825	002526'	000167	175246			jmp	start
+    826	002532'	005767	175350		4$:	tst	i.busy
+    827	002536'	001367				bne	3$
+
+    829	002540'	000207			et0900:	rts	pc			; that's all we have to do
+
+
+
+.MAIN.	MACN11   V4.26T    1-Jun-82 16:36:48   PAGE 20
+PUP11.MAC;6
+
+
+    834					; initQ -- initializes the queue structure
+
+    836	002542'				initQ:
+    837	002542'	012700	005364'			mov	#bigBuff, r0		; where all the queues start
+    838	002546'	005067	175326			clr	freeQ			; clear out the free q
+    839	002552'	012701	000012			mov	#numQs, r1
+
+    841	002556'	010002			iq0100:	mov	r0, r2			; use this to calculate wher the buffer
+    842	002560'	062702	000010			add	#q.data, r2		; this is data
+    843	002564'	010260	000006			mov	r2, q.buffer(r0)
+    844	002570'	016760	175304	000000		mov	freeQ, q.link (r0)	; link in witht the free list
+    845	002576'	010067	175276			mov	r0, freeQ		; update
+    846	002602'	062700	002076			add	#q.size, r0		; bump r0 to next element
+    847	002606'	005301				dec	r1
+    848	002610'	001362				bne	iq0100
+
+    850	002612'	005067	175256			clr	i.qHead
+    851	002616'	005067	175254			clr	i.qTail
+    852	002622'	005067	175254			clr	i.Current
+    853	002626'	005067	175252			clr	e.Current		; zero out variables
+    854	002632'	005067	175250			clr	i.busy
+    855	002636'	005067	175246			clr	i.done
+
+    857	002642'	000207				rts	pc
+
+
+    860					; initVectors -- initalize relevent interupt vectors
+
+    862	002644'				initVectors:
+    863	002644'	005000				clr	r0
+    864	002646'	012701	000002			mov	#2, r1
+
+    866	002652'	012720	000022'		iv0100:	mov	#reStart, (r0)+		; set up retry address in vectors
+    867	002656'	005020				clr	(r0)+
+    868	002660'	062701	000004			add	#4, r1
+    869	002664'	020027	000400			cmp	r0, #400
+    870	002670'	002770				blt	iv0100
+    871	002672'	005037	000000			clr	@#0			; 0 doesn't get a number
+
+    873					; set the clock interupt
+
+    875	002676'	012737	000542'	000100		mov	#clockInt, @#clockVec
+    876	002704'	012737	000340	000102		mov	#pri.clock, @#<clockVec + 2>
+    877	002712'	052737	000100	177546		bis	#ena.clock, @#lineClock
+
+
+    880	002720'	012700	000170			mov	#a2iVec, r0		; start at a2 interupt vector
+    881	002724'	012720	000550'			mov	#reqA2, (r0)+		; data input ready
+    882	002730'	012720	000240			mov	#pri.ten, (r0)+
+    883	002734'	012720	001012'			mov	#reqB2, (r0)+		; data output ready
+    884	002740'	012720	000240			mov	#pri.ten, (r0)+
+
+    886	002744'	012700	000400			mov	#outVec, r0		; vector for ether net stuff
+.MAIN.	MACN11   V4.26T    1-Jun-82 16:36:48   PAGE 21
+PUP11.MAC;6
+
+    887	002750'	012720	001362'			mov	#outEther, (r0)+
+    888	002754'	012720	000240			mov	#pri.ether, (r0)+
+    889	002760'	012720	001444'			mov	#inEther, (r0)+
+    890	002764'	012720	000240			mov	#pri.ether, (r0)+
+    891	002770'	012720	001252'			mov	#collideEther, (r0)+
+    892	002774'	012720	000240			mov	#pri.ether, (r0)+
+
+    894					; find out who we are on the ether net
+    895	003000'	013767	160416	175050		mov	@#portAdress, iAm	; get the port
+    896	003006'	105167	175044			comb	iAm			; and invert the bits (bad design)
+
+    898					; grab the first queue element, and start the ether net
+    899	003012'	016700	175062			mov	freeQ, r0
+    900	003016'	016067	000000	175054		mov	q.link(r0), freeQ	; first element
+    901	003024'	005060	000000			clr	q.link(r0)
+    902	003030'	016037	000006	160412		mov	q.buffer(r0), @#inBuffer
+    903	003036'	012737	176744	160410		mov	#-pkSize, @#inWordCount
+    904	003044'	010067	175034			mov	r0, e.Current		; mark the buffer
+    905	003050'	052737	000101	160414		bis	#<ena.ether + go.ether>, @#inStatus
+
+    907					; prime the 10 <=> 11 stuff
+
+    909	003056'	012767	000001	175140		mov	#1, iSetA2		; flag the first enable
+    910	003064'	010767	175136			mov	pc, setPC		; and the spot
+    911	003070'	052737	000100	160010		bis	#ena.a2, @#stat2	; listen to the 10
+
+    913	003076'	000207				rts	pc
+
+
+
+
+.MAIN.	MACN11   V4.26T    1-Jun-82 16:36:48   PAGE 22
+PUP11.MAC;6
+
+    918					; main program
+
+    920	003100'	004767	177436		main:	jsr	pc, initQ		; set up the queue
+    921	003104'	004767	177534			jsr	pc, initVectors		; and the vectors
+    922	003110'	004767	175120			jsr	pc, initRing
+    923	003114'	005067	174774			clr	inCollision
+    924	003120'	005067	174766			clr	badOut
+    925	003124'	005067	174732			clr	o.pntr
+
+    927					; this is the main loop.  see if have an input packet, send it if we do.
+    928					; Check for an ouput, etc..
+
+
+    931	003130'	032737	040000	160006	m0000:	bit	#co.reset, @#ctrl1	; did the 10 reset?
+    932	003136'	001402				beq	m0100			; no, so just spin
+    933	003140'	000167	174634			jmp	start			; yes, go and reset things
+
+
+    936	003144'	032737	000100	160006	m0100:	bit	#co.rts, @#ctrl1	; 10 want to send us something?
+    937	003152'	001402				beq	m0200			; nope
+    938	003154'	004767	176576			jsr	pc, tenToEther		; send it off
+
+    940	003160'	032737	001000	160006	m0200:	bit	#co.cts, @#ctrl1	; has the 10 asked for anything?
+    941	003166'	001405				beq	m0300			; nope, so spin
+    942	003170'	005767	174700			tst	i.qHead			; do we have anything to send?
+    943	003174'	001402				beq	m0300			; nope
+    944	003176'	004767	177112			jsr	pc, etherToTen		; send the packet
+
+    946	003202'	032737	000001	177570	m0300:	bit	#1, @#switch		; is the switch reg unlocked?
+    947	003210'	001747				beq	m0000			; nop, so spin
+
+    949					; see if we want to halt
+
+    951	003212'	042737	000100	177546		bic	#ena.clock, @#lineClock	; clear the clock
+    952	003220'	012737	000340	177776		mov	#340, @#psw		; and set priority to 7
+
+    954	003226'	032737	100000	177570	m0400:	bit	#100000, @#switch	; is bit 15 up?
+    955	003234'	001374				bne	m0400			; while it is, loop on this spot
+
+    957	003236'	005037	177776			clr	@#psw			; set priority back
+    958	003242'	052737	000100	177546		bis	#ena.clock, @#lineClock	; and turn the clock back on
+
+    960	003250'	032737	040000	177570		bit	#40000, @#switch	; do we want to try a reset?
+    961	003256'	001724				beq	m0000			; no, so continue loop
+
+    963	003260'	032737	040000	177570	m0500:	bit	#40000, @#switch	; we do
+    964	003266'	001374				bne	m0500			; so spin till the switch goes down
+    965	003270'	000167	174526			jmp	reStart			; and now go restart
+
+    967					; here we place the input/output buffers
+
+    969	003274'				o.buffer:
+    970	003274'	   000			o.source:	.byte	0
+    971	003275'				o.physNet:		; when the 10 sends it, this byte contains the physical network
+.MAIN.	MACN11   V4.26T    1-Jun-82 16:36:48   PAGE 23
+PUP11.MAC;6
+
+    972	003275'	   000			o.dest:		.byte	0
+    973	003276'	000000			o.type:		.word	0		; where the packet type goes
+
+    975	003300'	000000			p.Length:	.word	0		; this is where the PUP starts
+    976	003302'	   000			p.Type:		.byte	0
+    977	003303'	   000			p.HopCount:	.byte	0
+    978	003304'	000000	000000		p.ID:		.word	0, 0
+    979	003310'	   000			p.dstHost:	.byte	0
+    980	003311'	   000			p.dstNet:	.byte	0
+    981	003312'	000000	000000		p.dstSocket:	.word	0, 0
+    982	003316'	   000			p.srcHost:	.byte	0
+    983	003317'	   000			p.srcNet:	.byte	0
+    984	003320'	000000	000000		p.srcSocket:	.word	0, 0
+    985	003324'	000000			p.data:		.word	0		; data starts here
+
+    987		005364'			bigBuff		= o.buffer + <pkSize * 2> ; we only have 1 output packet
+
+    989		033540'			ringBuff	= bigBuff + <q.size * numQs> + 1000
+    990		034040'			progEnd		= ringBuff + maxRing + 1
+
+    992		000000'				.end	start
+.MAIN.	MACN11   V4.26T    1-Jun-82 16:36:48   PAGE 24
+PUP11.MAC;6	Symbol table
+
+A1IVEC = 000160  	A2COUN   000120R 	A2EXTR   000116R 	A2IVEC = 000170  
+A2.ID  = 000001  	BADOUT   000112R 	BIGBUF = 005364R 	B1IVEC = 000164  
+B2COUN   000124R 	B2IVEC = 000174  	B2.ID  = 000002  	CECOUN   000130R 
+CE.ID  = 000003  	CE0100   001302R 	CI.CTS = 001000  	CI.EOD = 002000  
+CI.PID = 004000  	CI.RTS = 000400  	CLEARR   000222R 	CLOCKI   000542R 
+CLOCKV = 000100  	COLLID   001252R 	COLLIS = 000410  	CO.BPO = 002000  
+CO.CTS = 001000  	CO.POD = 000200  	CO.RES = 040000  	CO.RTS = 000100  
+CTRL1  = 160006  	CTRL2  = 160016  	DEST   = 000001  	ENA.A1 = 000100  
+ENA.A2 = 000100  	ENA.B2 = 000040  	ENA.CL = 000100  	ENA.ET = 000100  
+ETHERN = 000055  	ETHERT   002314R 	ET0900   002540R 	E.CURR   000104R 
+E.DONE   000072R 	E.RETR   000070R 	FREEQ    000100R 	GETTIN   000230R 
+GOCOUN   000144R 	GO.ETH = 000001  	HIGHCO = 077700  	IAM      000056R 
+IECOUN   000134R 	IE.ID  = 000004  	IE0010   001552R 	IE0020   001604R 
+IE0050   001646R 	IE0100   001722R 	IE0900   001750R 	INBUFF = 160412  
+INCOLL   000114R 	INETHE   001444R 	INITQ    002542R 	INITRI   000234R 
+INITVE   002644R 	INSTAT = 160414  	INVEC  = 000404  	INWORD = 160410  
+IN1ERR   000174R 	IN2ERR   000200R 	IQ0100   002556R 	IR.100   000246R 
+ISETA2   000224R 	IV0100   002652R 	I.BUSY   000106R 	I.CURR   000102R 
+I.DONE   000110R 	I.QHEA   000074R 	I.QTAI   000076R 	LENERR   000160R 
+LINECL = 177546  	MAIN     003100R 	MAXRET = 000012  	MAXRIN = 000277  
+M0000    003130R 	M0100    003144R 	M0200    003160R 	M0300    003202R 
+M0400    003226R 	M0500    003260R 	NETERR   000164R 	NOTAPU   000204R 
+NUMQS  = 000012  	OCLOAD   000216R 	OECOUN   000140R 	OE.ID  = 000005  
+OE0100   001420R 	OUTBUF = 160402  	OUTDEL = 160406  	OUTETH   001362R 
+OUTSTA = 160404  	OUTVEC = 000400  	OUTWOR = 160400  	O.BUFF   003274R 
+O.DEST   003275R 	O.DONE   000066R 	O.LEN    000064R 	O.PHYS   003275R 
+O.PNTR   000062R 	O.SOUR   003274R 	O.TYPE   003276R 	PC     =%000007  
+PHYSNE   000060R 	PKSIZE = 001034  	PORTAD = 160416  	PRI.CL = 000340  
+PRI.ET = 000240  	PRI.TE = 000240  	PROGEN = 034040R 	PROMIS = 000002  
+PSW    = 177776  	PUPSON = 000001  	PUPTYP = 001000  	P.DATA   003324R 
+P.DSTH   003310R 	P.DSTN   003311R 	P.DSTS   003312R 	P.HOPC   003303R 
+P.ID     003304R 	P.LENG   003300R 	P.SRCH   003316R 	P.SRCN   003317R 
+P.SRCS   003320R 	P.TYPE   003302R 	Q.BUFF = 000006  	Q.DATA = 000010  
+Q.LENG = 000002  	Q.LINK = 000000  	Q.PNTR = 000004  	Q.SIZE = 002076  
+RAN      000214R 	RAND     001204R 	RA2900   001006R 	RB0100   001146R 
+RB0900   001176R 	RDATCO   000154R 	RDAT1  = 160004  	RDAT2  = 160014  
+REQA2    000550R 	REQB2    001012R 	RESTAR   000022R 	RETRY    000210R 
+RINGBU = 033540R 	RINGIN   000220R 	R0     =%000000  	R0100    001244R 
+R1     =%000001  	R2     =%000002  	R3     =%000003  	R4     =%000004  
+R5     =%000005  	R6     =%000006  	R7     =%000007  	SAVERI   000456R 
+SEL.A1 = 000002  	SETPC    000226R 	SOURCE = 000000  	SP     =%000006  
+SR.100   000532R 	START    000000R 	STAT1  = 160000  	STAT2  = 160010  
+SWITCH = 177570  	TENTOE   001756R 	TE.100   002006R 	TE.150   002054R 
+TE.200   002246R 	TIMEER   000170R 	TODCLK   000232R 	TYPE   = 000002  
+WDATCO   000150R 	WDAT1  = 160002  	WDAT2  = 160012  	.MACN. = 000004  
+.VRSN. = 000006  	1$       000002R 	1$       000472R 	1$       000654R 
+1$       001116R 	1$       001704R 	1$       002176R 	1$       002370R 
+2$       000714R 	2$       001712R 	2$       002212R 	3$       000750R 
+3$       002240R 	3$       002516R 	4$       000626R 	4$       002532R 
+64$      000042R 	64$      000576R 	64$      001042R 	64$      001170R 
+64$      001300R 	64$      001354R 	64$      001410R 	64$      001474R 
+64$      001600R 	64$      002046R 	64$      002170R 	64$      002502R 
+65$      000704R 	65$      001524R 	65$      002234R 	66$      000746R 
+66$      001546R 	.      = 003326R 
+.MAIN.	MACN11   V4.26T    1-Jun-82 16:36:48   PAGE 25
+PUP11.MAC;6	Symbol table
+
+
+
+.MAIN.	MACN11   V4.26T    1-Jun-82 16:36:48   PAGE 26
+PUP11.MAC;6
+
+
+
+ Errors detected: 0
+
+ *,pup11_pup11
+ Run-time:  11 seconds
+

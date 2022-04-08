@@ -1,0 +1,340 @@
+
+	Title	makebt
+	subttl	Convert .LDA format to ethernet bootable format
+	search	stenex
+
+	comment 
+	The Ether boot loader which resides in the ROMs of all PDP11
+	Ethernet devices expects to see a stream of Pups from the
+	boot server in "core image" format; that is, a stream of bytes
+	in exactly the same order as they belong in memory.
+
+	Thus, this program converts Image or Binary format to 
+	Etherboot's .boot format.
+	
+opdef	call	[pushj	p,]
+opdef	ret	[popj	p,]
+f==0
+a==1
+b==2
+c==3
+d==4
+cnt==10
+p==17
+
+lpdl==20
+
+; flags
+firstf==400000				; Just falling into loop
+donef==200000				; Seen last block
+inhdr==100000				; In data block header
+mnyzro==40000
+prevzr==20000
+
+define type (mess),<
+	call [push p,a
+	      hrroi a,[asciz/mess/]
+	      psout
+	      pop p,a
+	      ret]>
+
+start:	move	p,[iowd lpdl,pdl]
+	type <Make Ethernet boot files for PDP11s
+MAKE or LIST .BOOT file? >
+	hrroi	a,temp
+	movei	b,5
+	setz	c,
+	pstin
+	move	a,[point 7,temp]
+	ildb	b,a
+	trz	b,40
+	cain	b,"M"
+	 jrst	rstart
+	cain	b,"L"
+	 jrst	lstfil
+	jrst	start
+
+rstart:	type <
+Input file: >
+	movei	a,bintab
+	setz	b,
+	gtjfn
+	 erjmp	[call jser
+		 jrst rstart]
+	movem	a,binjfn
+	move	b,a
+	hrroi	a,namstr
+	movsi	c,(1b8)
+	jfns
+start1:	type <
+Output file: >
+	movei	a,bttab
+	setz	b,
+	gtjfn
+	 erjmp	[call jser
+		 jrst start1]
+	movem	a,btjfn
+
+; Now try to open the files
+	move	a,binjfn
+	move	b,[44b5+1b19]
+	openf
+	 erjmp	[call jser
+		 type <Trying again>
+		 jrst rstart]
+	move	a,btjfn
+	move	b,[^d16b5+1b20]
+	openf
+	 erjmp	[call jser
+		 type <Trying again>
+		 jrst rstart]
+	tlo	f,firstf+inhdr		; Say first entry
+; Now fall into loop
+loop:	call	getbyt				; Get the next data byte
+	tlne	f,donef
+	 jrst	loopx
+	move	a,btjfn
+	bout
+	jrst	loop
+
+; Fall out of loop
+loopx:	move	a,btjfn
+	setz	b,
+	sfptr
+	 jrst	[call jser
+		 jrst rstart]
+	move	a,binjfn
+	bin
+	move	c,b
+	bin
+	lsh	b,^d8
+	ior	b,c
+	move	1,btjfn
+	bout
+exit:	closf
+	 ercal	jser
+	move	a,binjfn
+	closf
+	 ercal	jser
+	haltf
+	type	<Restarting...
+>
+	jrst	start
+
+getbyt:	tlz	f,donef
+	move	a,binjfn
+	bin
+	jumpe	cnt,getb0	; See if into next block
+	sojn	cnt,.+2		; Anything left?
+	 popj 	p,		; No, leave
+	move	c,b
+	bin
+	lsh	b,^d8
+	ior	b,c
+	soj	cnt,		; Decr count, return if not < 0
+	popj	p,		; Else just return
+
+getb0:	tlne	f,donef		; Last block?
+	 popj	p,		; Then return
+
+; fall through
+
+getb1:	call	getbc1		; Make sure byte is 0
+getb2:	caie	b,1		; Make sure this is a 1 byte
+	 jrst	fmter		; If not, there's an error
+	bin			; Get next byte
+	caie	b,0		; this must be 0
+	 jrst	fmter		; Else error
+	bin			; get byte count low
+	move	c,b
+	bin			; get byte count high
+	lsh	b,^d8
+	ior	b,c		; b now has block byte count
+	move	cnt,b		; get block byte count into an AC
+	cain	cnt,6		; A count of 6 indicates last block
+	 jrst	[tlo f,donef
+		 popj p,]
+	bin			; get address low
+	move	c,b
+	bin
+	lsh	b,^d8
+	ior	b,c
+	move	a,btjfn
+	lsh	b,-1		; Convert to 16 bit byte address
+	sfptr
+	 erjmp	[call jser
+		 jrst  rstart]
+	jrst	getbyt		; get next byte
+
+getbc1: cain	b,1
+	 popj	p,
+	bin
+	jrst	getbc1
+
+fmter:	type	<Input file not in correct IMAGE format, CONTINUE to try again>
+	move	a,btjfn
+	jrst	exit
+
+
+; call with jsys error in 1
+jser:	push	p,c
+	push	p,b
+	push	p,a
+	type	<
+JSYS Error: >
+	move	b,a
+	movei	a,101
+	setz	c,
+	caige	b,600000
+	 movei	b,-1
+	hrli	b,400000
+	erstr
+	 jrst	[type <Undefined error number>
+		 jrst jserx]
+	 jrst	[type <ERSTR foulup!>
+		 jrst jserx]
+jserx:	type	<
+>
+	pop	p,a
+	pop	p,b
+	pop	p,c
+	popj 	p,
+
+; listing utility
+lstfil:	move	p,[iowd lpdl,pdl]
+	type	<List .BOOT file: >
+	movei	a,btltab
+	setz	b,
+	gtjfn
+	 erjmp	[call	jser
+		 jrst	lstfil]
+	movem	a,btjfn
+	move	b,a
+	hrroi	a,namstr
+	movsi	c,(1b8)
+	jfns
+	type	<Listing to file: >
+	movei	a,lsttab
+	gtjfn
+	 erjmp	[call jser
+		 jrst lstfil]
+	movem	a,lstjfn
+	move	b,[7b5+1b20]
+	openf
+	 erjmp	[call jser
+		 jrst lstfil]
+	move	a,btjfn
+	move	b,[^d16b5+1b19]
+	openf
+	 erjmp	[call	jser
+		 jrst	lstfil]
+	tlz	f,prevzr+mnyzro
+	move	cnt,[-1,,-2]
+lstlp:	move	a,btjfn
+	addi	cnt,2
+	bin
+	call	lstout
+	move	a,btjfn
+	gtsts
+	tlnn	2,(1b8)
+	 jrst	lstlp
+	move	a,btjfn
+	closf
+	 ercal	jser
+	move	a,lstjfn
+	closf
+	 ercal	jser
+	haltf
+	jrst	start
+
+lstout:	jumpn	b,lsto1
+	tlne	f,prevzr
+	 tlo	f,mnyzro
+	tlo	f,prevzr
+	popj	p,
+
+lsto1:	push	p,b
+	tlze	f,mnyzro
+	 jrst	[call	lsteol
+		 tlz	f,prevzr
+		 jrst	.+3]
+	tlze	f,prevzr
+	 jrst	[move	b,cnt
+		 subi	b,2
+		 move	a,lstjfn
+		 move	c,[1b2+6b17+^d8]
+		 nout
+		  ercal jser
+		 movei	b,11
+		 bout
+		 setz	b,
+		 move	c,[1b2+6b17+^d8]
+		 nout
+		  ercal	jser
+		 call	lsteol
+		 jrst	.+1]
+	move	b,cnt
+	move	a,lstjfn
+	move	c,[1b2+6b17+^d8]
+	nout
+	 ercal	jser
+	movei	b,11
+	bout
+	pop	p,b
+	nout
+	 ercal	jser
+; fall through
+lsteol:	move	a,lstjfn
+	movei	b,15
+	bout
+	movei	b,12
+	bout
+	popj 	p,
+
+
+; storage
+btjfn:	block	1
+binjfn:	block	1
+lstjfn:	block	1
+temp:	block	5
+namstr:	block	10
+pdl:	block	lpdl
+lsttab:	460000,,0
+	100,,101
+	0
+	0
+	-1,,namstr
+	-1,,[asciz/list/]
+	0
+	0
+	0
+bintab:	160000,,0
+	100,,101
+	0
+	0
+	0
+	-1,,[asciz/bin/]
+	0
+	0
+	0
+
+bttab:	460000,,0
+	100,,101
+	0
+	0
+	-1,,namstr
+	-1,,[asciz/boot/]
+	0
+	0
+	0
+btltab:	160000,,0
+	100,,101
+	0
+	0
+	-1,,namstr
+	-1,,[asciz/boot/]
+	0
+	0
+	0
+
+	end	start

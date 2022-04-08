@@ -1,0 +1,638 @@
+# include "<yeager>version.h"
+int m_probeOut;			/* =1 if time request has been sent. */
+# define Trequest 0200
+# define Treply 0201
+# define NameLookUp 0220
+# define AddressLookUp 0223
+/* # define NetDirVersion 0240 */
+# define NetDirVersion 0		/* temporary fix for no forwarding*/
+# define ERP 0240
+# define Wait 1
+int m_ERP (), m_time ();
+#ifdef PDP1105
+extern int l0_purge ();
+#endif
+int m_ReceivedTime;
+L2_PUP *m_PUPforEVT ();
+/****************************************************************************
+
+	pupMSR		here, looks for PUPs on socket 4. Only handles
+			    1. type 240 - network directory version info.
+			       Just broadcast to all directly connected
+			       Networks - we DO NOT maintain a directory
+			       just yet, but will forward such PUPs.
+
+			    2. If on SUMEX-ALTO net, then Namelookup
+			       if forwarded.
+
+****************************************************************************/
+# define MSRdebug YES 
+# define maxLen 30
+char m_daytime[maxLen];		/* time of day string */
+extern int l0_nFreeBufs,l0_Ie,l1_Ie,l0_CX,l1_CX,l0_Oe[],l1_Oe[];
+extern int l0_TP,l0_LP,l1_TP,l1_LP;
+extern int TODHRS,TODMIN,TODSEC;
+extern int l0_H0,l0_H1,l0_H2,l0_H3,l0_H4,l0_H5;
+extern short int ip_1rcvd, ip_2rcvd, ip_1sent, ip_2sent; 
+
+pupMSR ()
+	{l1_Port _ms[1], *ms; l1_Sock *m_soc; int p1, p2; int i;
+# endif
+# ifdef PDP1105
+#     ifdef MSRdebug
+	TTYOUT ("\033H\033J"); 	/* master clear the HEATH */
+#     endif
+# endif
+	/* open misc. services sock. with misc. services as destination */
+	ms = _ms;
+	ms->Net = 0; ms->Host = 0;
+	ms->Sock1 = 0; ms->Sock2 = 4; 
+	m_soc = p_OpenSocket (ms, ms, 0, NOtag+DontWantOwnBroadcasts); 
+	/* start time probe process */
+	m_dayTime[0] = '\0';			/* NO time yet... */
+	m_ReceivedTime = 0;
+	p1 = s_MDpInit (m_time, 0, 0, 2);	/* Medium range stacks */
+	p2 = s_MDpInit (m_ERP, 0, 0, 0);	/* MAX stack... */
+#ifdef PDP1105
+	s_MDpInit (l0_purge, 0, 0, 1);		/* min stack... */
+#endif
+	while (m_soc)
+	    {l2_PUP *msPUP;
+	    /* we'll wait forever here... */
+	    msPUP = p_ReceivePUP (m_soc, Wait, 0); 
+	    i = 0;
+	    switch (msPUP->PUPtype)
+		{/* turn off Net dir version temporarily - see def. above*/
+ 	        case NetDirVersion:  
+# ifndef MJACKS
+		 case NameLookUp: 
+		 case AddressLookUp: 
+# endif
+			/* broad cast - but don't set sNET,,sHOST locally */
+# ifdef TENEX
+			cprint("\nJust got NetDirVersion-forwarding...");
+# endif
+			/* if sender doesn't  know it's net...*/
+			if (msPUP->sNet == 0) p_FixSnet (msPUP);
+			p_SendPUP (msPUP, broadCast+forward);
+			break;
+	        default:/* Just dispose of any other service types */
+	    		p_PUPdispose (msPUP);
+			break;
+		}
+	    s_suspend ();
+	    }
+        /* kill off associated processes, and misc. services too. */
+	s_kill (p1); 
+	s_kill (p2); 
+	s_kill (-1);
+	}
+
+/****************************************************************************
+
+	m_time		broadcast for time every 5 seconds.
+
+****************************************************************************/
+# ifdef TENEX
+# define mWait 30
+# endif
+# ifndef TENEX
+# define mWait 5
+# endif
+char m_cBUF[6];			/* n free buffers count */
+char m_coreLeft[6];		/* count of free core */
+m_time ()
+	{/* broadcast every 5 seconds for time string */
+	l1_Port _lp[1], *lp, _dp[1], *dp; l1_Sock *ls;
+	lp = _lp; dp = _dp;
+	m_cBUF[0] = '\0'; m_coreLeft[0] = '\0';
+	/* from us to miscellaneous services socket */
+	lp->Net = 0; lp->Host = 0;
+	dp->Net = 0; dp->Host = 0;
+	lp->Sock1 = 0; lp->Sock2 = 0; dp->Sock1 = 0; dp->Sock2 = 4;
+	/* broadcast every 5-seconds and wait for a reply */
+	ls = p_OpenSocket (lp, dp, Wait, DontWantOwnBroadcasts); 
+	while (1)		/* then, we're alive, so get time */
+	    {/* allocate a PUP and broadcast it */
+	    l2_PUP *PUP; int KeptTime;
+	    PUP = p_allocatePUP (ls, 0, 0);
+	    if (PUP) 	/* then, have one, so broadcast it...*/
+	        {l2_PUP *REPLY;
+	        PUP->PUPtype = Trequest;
+	        PUP->PUPlen = PUPoverhead;
+	        p_SendPUP (PUP, BroadCast);
+	        /* NOW, wait for first reply-AT MOST 5 secs. */
+	        s_toHIGH ();  /* watch at high priority */
+	        REPLY = p_ReceivePUP (ls, Wait, mWait*h_tics); 
+	        s_toLOW ();
+	        if (REPLY)	  /* Then we received a reply */
+	            {if (REPLY->PUPtype == Treply) 
+			{m_saveTime (REPLY); m_ReceivedTime = 1;}
+		    p_PUPdispose (REPLY);
+		    }
+		}
+	    /* put socket to sleep so any additional replies will NOT */
+	    /* tie up input buffers */
+	    p_ToBed (ls);
+	    /* keep some stats */
+	    /* Lock out event reporting until all statistics done once */
+	    KeptTime = m_receivedTime; m_receivedTime = 0;
+	    m_keepStats (); 
+	    m_receivedTime = KeptTime;
+	    s_Tdisms (-1, 7*h_tics);		/* and wait around. */
+	    p_Awaken (ls);			/* wake up the socket */
+	    }
+	}
+
+/****************************************************************************
+
+	m_KeepStats  	keep statistics for ERP stuff.
+
+****************************************************************************/
+char *m_msg {"** From Pine Hall at: "};
+char *m_t1 {"\015\012UP>"};
+char *m_t2 {":"};
+# define ipr 0
+#ifdef iprouting
+# define ipr 4
+#endif
+# define nsList (19+ipr)
+# define nList (40+(2*ipr))
+char *m_Fbuf {" FIB: "};
+char *m_Rbuf {" FC: "};
+char *m_mn1 {"\015\012NET1-CRC: "};
+char *m_mn2 {"\015\012NET2-CRC: "};
+char *m_me1 {" COL: "};
+char *m_me3 {" TP:"};
+char *m_me4 {" "};
+char *m_me5 {"\015\012WT: "};
+char *m_me6 {", "};
+char *m_me7 {"\015\012IP: "};
+
+/* reorganize someday to one long buffer: char m_ebf[120+(6*ipr)]; */
+char m_b0[6];
+char m_b1[6];			
+char m_b2[6];
+char m_b3[6];
+char m_b4[6];
+char m_b5[6];
+char m_b6[6];
+char m_b7[6];
+char m_b8[6];
+char m_b9[6];			/* 60 */
+
+char m_c0[6];
+char m_c1[6];
+char m_c2[6];			/* 24 */
+
+char m_d0[6];
+char m_d1[6];
+char m_d2[6];
+char m_d3[6];
+char m_d4[6];
+char m_d5[6];			/* 36 */
+
+char m_d6[6];
+char m_d7[6];
+char m_d8[6];
+char m_d9[6];			/* 24 */
+
+char *m_EP1 {m_b1};
+char *m_EP2 {m_b2};
+char *m_EP3 {m_b3};
+char *m_EP4 {m_b4};
+char *m_EP5 {m_b5};
+char *m_EP6 {m_b6};
+char *m_EP7 {m_b7};
+char *m_EP8 {m_b8};
+char *m_EP9 {m_b9};
+char *m_EP0 {m_b0};
+
+char *m_EQ0 {m_c0};
+char *m_EQ1 {m_c1};
+char *m_EQ2 {m_c2};
+
+char *m_DQ0 {m_d0};		/* weighted throughput counters */
+char *m_DQ1 {m_d1};
+char *m_DQ2 {m_d2};
+char *m_DQ3 {m_d3};
+char *m_DQ4 {m_d4};
+char *m_DQ5 {m_d5};
+
+char *m_ip0 {m_d6};		/* ip-routing couters */
+char *m_ip1 {m_d7};
+char *m_ip2 {m_d8};
+char *m_ip3 {m_d9};
+
+int *m_AP1 {m_cBUF};
+int *m_AP2 {m_daytime};
+int *m_AP3 {m_coreLeft};
+
+/* 
+ *  The following data structure is made up of POINTERS TO STRING POINTERS
+ *  to all of the strings we wish to output in our report.
+ *  It has nflist entries.
+ *
+ */
+int *m_fList[] {m_msg,m_AP2,m_t1,m_EQ0,m_t2,m_EQ1,m_t2,m_EQ2,
+		m_Fbuf,m_AP1,m_Rbuf,m_AP3,
+		m_mn1,m_EP1,m_me1,m_EP2,m_me3,m_EP7,m_me4,m_EP8,
+		m_mn2,m_EP4,m_me1,m_EP5,m_me3,m_EP9,m_me4,m_EP0,
+		m_me5,m_DQ0,m_me4,m_DQ1,m_me6,m_DQ2,m_me4,m_DQ3,m_me6,
+		m_DQ4,m_me4,m_DQ5
+#ifdef iprouting
+		,m_me7,m_ip0,m_me4,m_ip1,m_me6,m_ip2,m_me4,m_ip3
+#endif
+		};
+/* 
+ *  The following data structure is made up of pairs of POINTERS.
+ *  The 1st is the address of a value we wish to convert to ASCII.
+ *  The 2nd is the buffer into which it is to be moved.
+ *
+ */
+int *m_sList[] {l0_nFreeBufs,m_cBUF,l1_coreLeft,m_coreLeft,
+		l0_Ie,m_b1,l0_CX,m_b2,l0_TP,m_b7,l0_LP,m_b8,
+		l1_Ie,m_b4,l1_CX,m_b5,l1_TP,m_b9,l1_LP,m_b0,
+		TODHRS,m_c0,TODMIN,m_c1,TODSEC,m_c2,
+		l0_H0,m_d0,l0_H1,m_d1,l0_H2,m_d2,
+		l0_H3,m_d3,l0_H4,m_d4,l0_H5,m_d5 
+#ifdef iprouting
+		,ip_1rcvd,m_d6,ip_2rcvd,m_d7
+		,ip_1sent,m_d8,ip_2sent,m_d9
+#endif
+		};
+char nDigs[]	{0,0,0,0,0,0,0,0,0,0,0,3,3,0,0,0,0,0,0
+#ifdef iprouting
+		,0,0,0,0
+#endif
+		};
+# ifdef PDP11
+static short int *console {0177570};	/* 11 console switch address */
+# endif
+m_keepStats ()	    
+	{/* 1. number of free buffers around */
+	 /* 2. Free core remaining */
+	int **m_SLP, i, **outList; char *nC;
+
+	m_SLP = (int **)m_sList;
+	nC = (char *)nDigs;
+	for (i=0; i<nsList; i++) 
+	    {m_itoa (**m_SLP++, *m_SLP++, *nC++);
+# ifndef TENEX	    
+	    s_suspend ();		/* give up some cycles */
+# endif
+	    }
+# ifdef MSRdebug
+#   ifndef TENEX
+#    ifdef PDP11
+     if (*console < 0)       /* only type when bit 15 ON on ssw */
+#    endif
+	{/* type out our info */
+	TTYOUT("\033H");
+	outList = (int *)m_fList;
+	for (i=0; i<nList; i++) 
+	    {TTYOUT (**outList++); 
+	    if (!(i & 07)) s_suspend ();	/* wait Mod 8 = 0 */
+	    }
+	}
+#   endif
+#   ifdef TENEX
+        cprint ("\nFrom keep stats:\n");
+	outList = (int *)m_fList;
+	for (i=0; i<nList; i++) cprint ("%s",**outList++);
+	cprint ("\n");
+#   endif
+# endif
+	}
+/****************************************************************************
+
+	m_saveTime   Store time in the global day time string, m_dayTime.
+
+****************************************************************************/
+
+int m_saveTime (PUP) l2_PUP *PUP;
+	{/* move time into m_dayTime - 11 has slight hack */
+	int i, m, nData; 
+	nData = PUP->PUPlen - PUPoverhead;
+	if (nData <= 0) return;			/* something bogus here! */
+	m = (nData > maxLen-1) ? maxLen-1:nData;
+	for (i=0; i < m; i++)
+	    {int j; 
+	    /* hack for reverse byte order on 11 clones - PUP data is */
+	    /* strictly ordered from left to right in 16 bit words */
+	    j = (i & 1) ? i-1:i+1;
+	    m_dayTime[i] = PUP->data[j];
+	    }
+	m_daytime[i] = '\0';
+# ifdef TENEX
+	cprint ("\nJust got daytime(inverted chars) = %s\n", m_dayTime);
+# endif
+	}
+/****************************************************************************
+
+	m_ERP		Send the gateway Event Report PUP to
+			sumex,,sumexAIM Every 56 minutes for now.
+
+****************************************************************************/
+int m_ERP ()	    
+	{l1_Port _lp[1], *lp, _dp[1], *dp; l1_Sock *ls; int id;
+	lp = _lp; dp = _dp; id = 0;
+	lp->Net = 0; lp->Host = 0;
+	lp->Sock1 = 0; lp->Sock2 = 0; 
+	/* NOW This guy goes to the SUMEX-AIM file <system>PDP11-EVENT.LOG */
+	dp->Net = ERPnet; dp->Host = ERPhost;
+	dp->Sock1 = 0; dp->Sock2 = PDP11ERP;
+	/* allocate a PUP and broadcast it */
+	ls = p_OpenSocket (lp, dp, Wait, 0); 
+	while (1)
+	    {l2_PUP *PUP; int i;
+	    while (!m_ReceivedTime) s_suspend ();  /* wait for TOD action */
+	    PUP = m_PUPforEVT (ls); /* build PUP for EVT report... */
+	    if (PUP) 		/* then, have one, so broadcast it...*/
+		{int retry;
+		PUP->ID2 = ++id; retry = 4;
+		while (--retry)
+		    {l2_PUP *EVTREPLY; 
+		    if (p_SendPUP (PUP, KeepPUP) != 1) break; /* error */
+		    /* suspend for 5 secs. */    
+		    s_Tdisms (-1, h_tics * 5); 
+		    EVTREPLY = p_ReceivePUP (ls, 0, 0);
+		    /* if we got one, then quit, else... */
+		    if (EVTREPLY) {p_PUPdispose (EVTREPLY); break;}
+		    }
+		p_PUPdispose (PUP); 
+		}
+	    p_ToBed (ls);	/* refuse all input. Discard any arrivals */
+# ifndef TENEX
+	    /* Until I fix Tdisms to handle double word wait */
+	    /* and wait around about 56 min. */
+	    for (i=0; i < 7; i++) s_Tdisms (-1, 8*60*h_tics);   
+# endif
+# ifdef TENEX
+	    s_Tdisms (-1, 10*h_tics);   /* and wait around 10 sec */
+# endif
+	    p_Awaken (ls);		/* We are accepting again */
+	    }
+	}
+
+/****************************************************************************
+
+	*m_PUPforEVT    build event report PUP
+
+****************************************************************************/
+char *m_xHed {"\015\012Net "};
+char m_hxst[6];
+char m_errs[6];
+char m_net[6];
+char *m_h1 {m_hxst};
+char *m_h2 {m_errs};
+char *m_h3 {m_net};
+char *m_crlf {"\015\012"};
+int *m_Hlist[] {m_crlf,m_h1,m_me4,m_h2, 0};
+# define herrLen 11 /* <crlf>xxx 12345     */
+		    /*     12345678901     */
+# define Netchrs 3  /* Net xxx */
+		    /*     123 */
+L2_PUP *m_PUPforEVT (ls) l1_Sock *ls; 
+      {
+	L2_PUP *PUP; short int Dsize, HEsize;
+	/* Find number of data bytes */
+	Dsize = m_ERTscan ();			/* event report tables */
+	HEsize = m_HEscan (l0_Oe); 		/* Host error tables */
+	HEsize += m_HEscan (l1_Oe);
+	HEsize *= herrlen;			/* Into bytes */
+	HEsize += ((length(m_xHed) + Netchrs) << 1); /* Two headers */
+	Dsize += HEsize;			/* Total data BYTES */
+	if (Dsize > nDataBytes) {
+	    HEsize -= (Dsize - nDataBytes); 	/* Trim from host report */
+	    if (HEsize < 0) HEsize = 0;
+	    Dsize = nDataBytes;
+	    }
+	PUP = p_allocatePUP (ls, (Dsize+(sizeof(Dsize)-1)) >> (sizeof(Dsize)-1), 0);
+	if (PUP) {
+            m_fillInData (PUP, HEsize);
+	    PUP->PUPtype = ERP;
+	    PUP->PUPlen = PUPoverhead+Dsize;
+	    }
+	return (PUP);
+      }
+
+/****************************************************************************
+
+	m_fillInData    fills in data for ERP PUP
+
+****************************************************************************/
+int m_fillInData (PUP, HEsize) int *PUP, HEsize;
+	{int i, j, **outList;
+	outList = (int **)m_Flist; j = 0;
+	/* move some data into PUP */
+	for (i=0; i<nList; i++) m_movERP (**outList++, PUP, &j);
+# ifdef TENEX
+	cprint ("\nSending event report:");
+	outList = (int **)m_Flist;
+	for (i=0; i<nList; i++) cprint ("%s", **outList++);
+	cprint ("\n");
+# endif
+	m_HostErrs (PUP, HEsize, j); 
+	}
+
+/****************************************************************************
+
+	m_HostErrs  moves hostErr stuff into PUP
+
+****************************************************************************/
+/* <crlf>Net 123       */
+/* <crlf>xxx 12345     */
+# define Dend -1
+extern int *l0_NDBq;
+int m_HostErrs (PUP, Nbytes, j) int *PUP, Nbytes, j;
+	{int tab1, tab2, net; l0_NDB *NDB;
+	/* store most errored Hosts - Nbytes worth of data */
+	int nEntries;
+	/* remove >>2<< headers worth of data */
+	nEntries = Nbytes - ((length (m_xHed) + Netchrs) << 1);
+	/* Actual number of "<crlf>hst 12345" entries we have ROOM for */
+	nEntries /= herrlen;
+	/* see if we send ALL entries from the 2 tables */
+	/* Or the maximum errored from each table */
+	tab1 = m_HEscan (l0_Oe); tab2 = m_HEscan (l1_Oe);
+/*
+# ifdef TENEX
+	cprint ("\nError Entries: Net1's %d, Net2's %d; Allowed %d\n", 
+		tab1, tab2, nEntries);
+# endif
+*/
+	if ((tab1+tab2) > nEntries) m_fixN (&tab1, &tab2, nEntries);
+	/* Now use tab1 from first list and tab2 from second list */
+	NDB = *(l0_NDB *)l0_NDBq;
+	net = NDB->localNet; m_EHmov (net, tab1, &j, PUP, l0_Oe);
+	NDB = NDB->link;
+	net = NDB->localNet; m_EHmov (net, tab2, &j, PUP, l1_Oe);
+	}
+
+/****************************************************************************
+
+	m_fixN 		trims number of entries in err. tables so
+			we can fit into one PUP
+
+****************************************************************************/
+int m_fixN (s, t, n) int *s, *t, n;
+	{int l, m, c, done;
+	if (*s > *t) {m = *s; l = *t; c = 0;}
+	else 
+	    {m = *t; l = *s; c = 1;}
+	done = 0;
+	while (m > l)
+	    {--m; 
+	    if ((m+l) == n) {done = 1; break;}
+	    }
+	if (!done)
+	    {int select;
+	    select = 0;
+	    while ((m+l) > n)
+	        {switch (select)
+		    {case 0: --m; break;
+		    case  1: --l; break;
+		    }
+		select =^ 1;
+		}
+	    }
+	/* now restore the trimed values */
+	switch (c)
+	    {case 0: *s = m; *t = l; break;
+	    case 1:  *s = l; *t = m; break;
+	    }
+	}
+
+/****************************************************************************
+
+	m_EHmov      moves host errs to PUP buffer
+
+****************************************************************************/
+int m_EHmov (net, tab1, l, PUP, LP) int net, tab1, *l, *PUP, *LP; 
+	{int host, v, k, j, *HT;
+	j = *l;
+	m_movERP (m_xHed, PUP, &j);
+	m_otoa (net, m_net, 2);			/* octal to ascii */
+	m_movERP (m_net, PUP, &j);		/* to buff */
+# ifdef TENEX
+	cprint ("%s%s",m_xHed, m_net);
+# endif
+	if (!tab1) {*l = j; return;}		/* NO errors */
+	HT = LP; host = 0; k = 0;
+	while ((v = *HT++) != Dend)
+	    {int **tab;
+	    if (!v) {++host; continue;}
+	    m_otoa (host, m_hxst, 2); m_itoa (v, m_errs, 0);
+	    tab = (int **)m_Hlist;    
+	    while (*tab) m_movERP (**tab++, PUP, &j);
+# ifdef TENEX
+	    tab = (int **)m_Hlist;    
+	    while (*tab) cprint (**tab++);
+	    cprint ("\n");
+# endif
+	    if (++k == tab1) break; ++host;
+	    }
+	*l = j;
+	}
+
+/****************************************************************************
+
+	m_ERTscan    returns number bytes required to dump Error report
+		     tables.
+
+****************************************************************************/
+int m_ERTscan ()
+	{int j, Nbytes, **outList;
+	Nbytes = 0; 
+	outList = (int **)m_Flist;
+	/* calculate length of strings in Flist */
+	for (j=0; j<nList; j++) Nbytes += length (**outList++);
+	return (Nbytes);
+	}
+
+/****************************************************************************
+
+	m_HEscan    returns number of non zero entries in a list of 
+		    integers terminated by \177
+
+****************************************************************************/
+int m_HEscan (D) int *D;
+	{int n, len;
+	len = 0;
+	while ((n = *D++) != Dend) if (n) ++len;
+	return (len);
+	}
+/****************************************************************************
+
+	m_movERP    moves strings into PUP
+
+****************************************************************************/
+int m_movERP (s, PUP, j) char *s; l2_PUP *PUP; int *j;
+	{int k;
+	while (*s != '\0')
+	    {k = *j;		/* the byte counter, 0,1,...,n */
+	    k = (k & 1) ? k-1:k+1; 
+	    PUP->data[k] = *s++;
+	    *j = *j + 1;
+	    }
+	}
+
+/****************************************************************************
+
+	length (s)	returns length of string in bytes.
+
+****************************************************************************/
+     
+int length (s)	char *s;
+	{int i;
+	i = 0;
+	while (*s++ != '\0') ++i;
+	return (i);
+	}
+/****************************************************************************
+
+   m_itoa ()
+     integer to ascii string : for positive i only - PDP11 sixteen bit words
+
+
+****************************************************************************/
+# define ndiv 5
+/*      j =      0     1    2   3  4     for Ndigits you wish */
+/* N digs =	 5     4    3	2  1			      */
+int r_div[] {10000, 1000, 100, 10, 1};
+m_itoa (i, buff, j) int i, j; char *buff;
+	{int k, idx, *r_ptr;
+	r_ptr = r_div;
+	for (k=0; k < j; k++) ++r_ptr;		/* skip to divisor */
+	for (idx=j; idx < ndiv; idx++)
+	    {k = *r_ptr++;
+	    *buff++ = i/k + '0'; 
+	    i %= k;
+	    }
+	*buff = '\0';
+	}
+/****************************************************************************
+
+   m_otoa ()
+     octal to ascii string : at most 15 bits of PDP11 sixteen bit words
+
+
+****************************************************************************/
+
+/*      j =     0    1   2  3  4     for Ndigits you wish */
+/* N digs =	5    4	 3  2  1			  */
+int o_div[] {4096, 512, 64, 8, 1};
+m_otoa (i, buff, j) int i, j; char *buff;
+	{int k, idx, *r_ptr;
+	r_ptr = o_div;
+	for (k=0; k < j; k++) ++r_ptr;		/* skip to divisor */
+	for (idx=j; idx < ndiv; idx++)
+	    {k = *r_ptr++;
+	    *buff++ = i/k + '0'; 
+	    i %= k;
+	    }
+	*buff = '\0';
+	}
+
+

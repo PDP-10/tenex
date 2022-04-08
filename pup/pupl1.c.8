@@ -1,0 +1,213 @@
+# include "version.h"			 /* the header */
+/****************************************************************************
+
+	PUPlevel 1 exec  l1_pupExec
+
+	[Many thanks to the thoughtfully designed Xerox-Parc software 
+	for the 11 after which a great deal of level1 is modeled]
+
+	Patches:
+		1. New bit in socket, DontWantOwnBroadcasts. If it is
+		set and a broadcast packet with source host in the
+		encapsulation the same as the local host #, then discard it.
+
+		2. fix pupError to put packet directly into freeQ instead
+		of disposing of it(It wasn't assigned to socket!).
+
+		3. Have echo server FORWARD echoes so source port
+		   will NOT change after SWAP - we can be more than
+		   1 source port if we are a gateway.
+
+****************************************************************************/
+/* entry point for PUP level 1 */
+extern int l1_Init (), l1_Qinit (), l1_routeInit ();
+extern int *l1_gateQ, *l0_Discards, *l0_rawIQ;
+int l1_Level1 ()
+	{
+# ifdef debug
+	int *i1;
+# endif
+	l1_Init ();
+	/* Here We go... */
+	while (1)
+	    {/* dispose of any output packets */
+	    l0_smlpak *aPak;			
+	    while (1) 
+	        {aPak = p_Dequeue (l0_Discards);    
+		if (!aPak) break;
+# ifdef debug
+		i1 = Apak;
+		cprint("\n----> level1 - discarding Pak at: %o\n", i1-3);
+# endif
+		aPak->intent |= disposed;
+		p_DisposePak (aPak); 
+		}
+	    /* see if any input to sort out */
+	    while (1)
+	        {aPak = p_Dequeue (l0_RawIQ);
+		if (!aPak) break;
+		aPak->intent |= delivered;
+	        l1_DeliverPak (aPak);
+	        }
+	    s_suspend ();
+	    }
+	}
+
+int l1_DeliverPak (aPak) l0_smlPak *aPak;
+/* see if aPak can be delivered locally, or passed to gateWay */
+	{int destNet, destHost, locHost;
+	l0_NDB *destNDB;
+	/* 0 source Host is illegal! */
+	if (!aPak->sHost) 
+	    {l1_PUPerror (ZeroShost, aPak);
+	    return;
+	    }
+	destNet = aPak->dNet;			/* net to whom addressed */
+	if (!(destNDB = l1_ForUs (destNet, aPak, destNDB))) return;
+	/* It is for our NET - is it really us? */
+	/* Note: WE may not know our OWN NET# */
+	/*	 BUT if it is for this host and an open socket... */
+	destHost = aPak->dHost; locHost = destNDB->localHost;
+	if (destHost)			/* Not broadcast */
+	    if (destHost != locHost) 	/* Not for us */
+	        {p_Enqueue (l1_GateQ, aPak); return;}
+	
+	/* Either broadcast, or destHost = local Host if we can find */
+	/* a socket match ... check out sockets...*/
+	    {l1_Sock *soc;
+	    if (!(Soc = p_findSocket (aPak)))
+	        {l1_PupError (unknownPort, aPak); return;}
+	    /* checksum ? */    
+	    if (!(Soc->status & NOcheckSum))	/* check checksum */
+	        if (!p_ValidCS (aPak))
+	            {l1_PupError (checksumErr, aPak); return;}
+	    /* See if a broadcast and if source HOST is localHost */
+	    if (!(aPak->Encap1 & 0177400))  /* Then a broadcast */
+		if ((aPak->Encap1 & 0377) == destNDB->localHost) 
+		    if (soc->status & DontWantOwnBroadCasts)
+	                {l1_PupError (unwanted, aPak); return;}
+	    /* For nets with no Self identity */
+	    /* Believe destNet is the identity, and add to routing table. */
+	    if (destNet && !destNDB->localNet)
+	        {destNDB->localNet = destNet;	/* fix NDB */
+		g_Rinsert (destNet, destNDB, 0, 0, 0);
+		}
+	    aPak->SocPTR = soc;			/* associated socket */
+	    p_updateNS (aPak);			/* update nets, sock# */
+	    /* see if this socket has exceeded its allocation */
+	    if (soc->inAllowed == soc->inAllocated
+		|| soc->paksAllocated == soc->paksAllowed)
+	            {l1_PupError (socketFull, aPak); return;}
+	    soc->inAllocated++;    
+	    soc->PaksAllocated++;
+	    /* so all is well, give this packet to the socket */
+	    aPak->intent |= intoSocket;		
+	    p_Enqueue (&soc->inQhead, aPak);   /* Soc queue it  */
+	    }
+	}
+
+int l1_ForUs (destNet, aPak, destNDB) 
+    int destNet; l0_NDB *destNDB; l0_smlPak *aPak;
+    {l1_Route *route;
+    /* see if we can get to this net */
+    route = g_probe (destNet, 0);		/* do  routing probe */
+    /* If we know the net ON which it arrived, and, dest net is non- */
+    /* zero, see if we have a routine table entry */
+    destNDB = aPak->ndbPTR;			/* for NDB - Pak arrived */
+    if (destNet) 				/* not gratuitous...*/
+        if (route)				/* have routing entry */
+	    if (route->Hops)			/* give to gateway? */
+	        {/* Non-zero hopcount - not for directly connected Net */
+		p_Enqueue (l1_GateQ, aPak); /* let gateway handle it */
+		return(0);
+		}
+	    else  				/* for dir. connected Net */
+		destNDB = route->NDB;		/* for destination */
+	else  /* No routing table entry : Non-zero dest Net */
+	    if (destNDB->localNet) 	/* we know the net it arrived on? */
+	        {l1_PupError (unknownDest, aPak); return(0);}
+    return(destNDB);
+    }
+/****************************************************************************
+
+	l1_PupError	standard errors...just throw away for now.
+
+
+****************************************************************************/
+extern l0_Q *l0_FreeQ;
+int l1_PupError (err, Pak) int err; l0_smlpak *Pak;
+	{/* for now just dispose of packet */
+# ifdef debug
+	cprint ("PUP ERROR: ");
+	switch (err)
+	    {case UnknownDest:
+		cprint ("Can't get there from here!\n"); break;
+	    case UnknownPort:
+		cprint ("Unknown Port!\n"); break;
+	    case checkSumErr:
+		cprint ("Check Sum Error!\n"); break;
+	    case Socketfull:
+		cprint ("Socket full!\n"); break;
+	    case TooManyHops:
+		cprint ("Too many Hops!\n"); break;
+	    case ZeroShost: 
+		cprint ("Zero source HOST!\n"); break;
+	    case unwanted: 
+		cprint ("unwanted PUP!\n"); break;
+	    default:
+		cprint ("Unknown error message # %d!\n", err); 
+	    }
+# endif
+	Pak->intent |= PUPerrored;
+	p_Enqueue (l0_FreeQ, Pak);	/* give it back */
+	}
+# ifdef wantEchoServer
+/****************************************************************************
+
+	l1_Echo ()		Manages socket 5, for echoes...
+
+****************************************************************************/
+# define EchoMe 1
+# define ImAnEcho 2
+# define ImAbadEcho 3
+int l1_NE {0};			/* counts echoes received */
+int l1_NS {0};			/* counts couldn't send */
+int l1_Echo ()
+	{/* open socket 5 & respond to Echo Me PUPs */
+	l1_Port _E[1], *E; l1_Sock *E_Soc;
+	E = _E;
+	E->Net = 0; E->Host = 0; E->Sock1 = 0; E->Sock2 = 5;
+	/* Open the socket, but pass any PUP for this socket */
+	/* No output packets - except those we INPUT - thus, NO tags */
+	E_Soc = p_OpenSocket (E, E, 0, NOcheckSum+NOtag);
+	while (E_Soc)			/* there is a socket */
+	    {/* so process it  */
+	    l2_PUP *PUP; int Bad, Err;
+	    PUP = p_ReceivePUP (E_soc, 1, 0);   /* wait on socket for PUP */
+# ifdef Debug
+	    cprint ("Echo server received PUP of type, %d\n", PUP->PUPtype);
+# endif
+	    Bad = 0;
+	    ++l1_NE;			/* count echoes received */
+	    /* See if Chk sum OK */
+	    If (!l2_ValidCS(PUP)) Bad = 1;
+	    /* check type - if Echo, then Do so with ImAnEcho(BAD echo) */
+	    if (!Bad) 
+		if (PUP->PUPtype != EchoMe) Bad = 1;
+	    if (Bad) PUP->PUPtype = ImAbadEcho;
+	    else
+		PUP->PUPtype = ImAnEcho;
+	    PUP->transport = 0;
+	    p_SwapPorts (PUP);
+	    if ((Err = p_SendPUP (PUP, forward)) == -1)
+	        /* couldn't send it - so dispose of it */
+		{p_PUPdispose (PUP);
+		++l1_NS;
+		}
+	    s_suspend ();
+	    }
+	s_kill (-1);				/* bye bye --- */
+	}
+# endif
+
+

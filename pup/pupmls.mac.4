@@ -1,0 +1,1509 @@
+;<PUP>PUPMLS.MAC;5	3/2/81		Edit by RINDFLEISCH
+; Added code to use HOSTSL.BIN for host lookup.
+; Made queue file format consistent with XMAILR
+; Added code to handle file addressees
+;<PUP>PUPMLS.MAC;4	1/5/81		Edit by RINDFLEISCH
+; Fixed some TENEX file naming problems for TOPS-20
+; ; [SMX #1] Added Mail-from:... header to received msgs
+;<PUP>PUPMLS.MAC;3	4/23/80		Edit by Schoen
+; Added Tenex/tops20 assembly conditionals
+;<PUP>PUPMLS.MAC;2     3/21/80			EDIT BY RINDFLEISCH
+; Converted MAXC defaults to SUMEX
+;<PUP>PUPMLS.MAC;52     4-NOV-79 12:47:02    EDIT BY TAFT
+; Fix another glitch in handling empty mailbox when over allocation
+;<PUP>PUPMLS.MAC;51     2-SEP-79 16:00:35    EDIT BY TAFT
+;<PUP>PUPMLS.MAC;50    29-JUL-79 15:33:14    EDIT BY TAFT
+; Optionally append retrieved mail to Message.Archive also.
+;<PUP>PUPMLS.MAC;49     4-MAY-79 10:44:53    EDIT BY TAFT
+; Bug fixes
+;<PUP>PUPMLS.MAC;48     3-MAY-79 19:35:11    EDIT BY TAFT
+; Quote special characters in recipient names put into queue files
+;<PUP>PUPMLS.MAC;47    11-APR-79 17:10:31    EDIT BY TAFT
+; Parse internally recipient names of the form "name.host" rather
+; than passing them to the MAILBOX program.  Recognize hosts
+; belonging to the "local site" and treat such recipients as local.
+; Expand mailbox-exception messages earlier and buffer the resulting text.
+; Improve some of the mailbox-exception messages.
+;<PUP>PUPMLS.MAC;44     8-APR-79 16:10:09    EDIT BY TAFT
+; Fix QUEREC so it doesn't rejuvenate a deleted [--UNDISTRIBUTED-MAIL--] file
+;<PUP>PUPMLS.MAC;43    18-MAR-79 19:35:14    EDIT BY TAFT
+; Add Sender property parser
+; Use bit 0 of <SYSTEM>MAILER.FLAGS to notify Mailer of undistributed mail
+;<PUP>PUPMLS.MAC;41     9-FEB-79 16:16:51    EDIT BY TAFT
+; Rename [--UNSENT-MAIL--] to [--UNDISTRIBUTED-MAIL--]
+; Filter out zero-length messages during retrieve
+; Faster NAMCHK routine
+; Misc bug fixes
+;<PUP>PUPMLS.MAC;40    18-JAN-79 17:12:30    EDIT BY TAFT
+; Redo queueing mechanism for new Pup mail forwarding strategy.
+; Queue even local recipients if more than 3 of them.
+;<PUP>PUPMLS.MAC;33    24-OCT-78 17:07:35    EDIT BY TAFT
+; Add count of messages and bytes to mail retrieval log entry
+;<PUP>PUPMLS.MAC;32     9-OCT-78 18:32:52    EDIT BY TAFT
+; Buffer the mailbox exception messages until the property list
+; has been completely processed.  Otherwise we get a deadlock!
+;<PUP>PUPMLS.MAC;30     4-JUL-78 16:48:10    EDIT BY TAFT
+; Another special case in Retrieve-mail OPENF failure
+;<PUP>PUPMLS.MAC;29    17-APR-78 17:27:30    EDIT BY TAFT
+; Correct error code for "No" reply in Retrieve-mail
+;<PUP>PUPMLS.MAC;28     5-APR-78 15:54:37    EDIT BY TAFT
+; Disallow delivery to System
+;<PUP>PUPMLS.MAC;27     4-FEB-78 14:42:21    EDIT BY TAFT
+; Read source file with PMAP in CPYFIL
+;<PUP>PUPMLS.MAC;26     3-FEB-78 19:55:10    EDIT BY TAFT
+; Eliminate logging each mailbox delivered to, except when debugging.
+; Eliminate unnecessary CLOSF/OPENF
+;<PUP>PUPMLS.MAC;24    10-JAN-78 12:13:57    EDIT BY TAFT
+; Alternate handling if Retrieve-mail unable to open mailbox for writing
+; due to user being over allocation
+;<PUP>PUPMLS.MAC;23    16-OCT-77 15:52:40    EDIT BY TAFT
+; Fix bug in QUEMSG causing names of the form xx@XNET not to be terminated correctly
+;<PUP>PUPMLS.MAC;22    17-SEP-77 15:47:29    EDIT BY TAFT
+; Revise handling of deleted or empty mailbox
+; Fix Flush-mail to render mailbox empty in all respects
+;<PUP>PUPMLS.MAC;21    16-SEP-77 13:24:28    EDIT BY TAFT
+; More bug fixes
+;<PUP>PUPMLS.MAC;19    15-SEP-77 18:17:32    EDIT BY TAFT
+; Bug fixes
+;<PUP>PUPMLS.MAC;17     2-SEP-77 12:20:57    EDIT BY TAFT
+; Bug fixes
+;<PUP>PUPMLS.MAC;16     1-SEP-77 17:07:13    EDIT BY TAFT
+; Remove "Mail from host ..." line
+; Mods to conform to revised Mail Transfer Protocol:
+; - Multiple mailboxes now come in multiple property lists.
+; - Maintain mailbox index for [Mailbox-exception] replies
+; Add Retrieve-mail and Flush-mail commands.
+;<PUP>PUPMLS.MAC;15     3-JUN-77 13:09:22    EDIT BY TAFT
+; Remove "Sender" and "Distribution" properties
+;<PUP>PUPMLS.MAC;14    12-APR-77 20:18:41    EDIT BY TAFT
+; Add code in QUEMSG for Telenet kludge
+;<PUP>PUPMLS.MAC;13     7-APR-77 17:16:10    EDIT BY TAFT
+; Improve a few messages.
+; Zero JFNs stored in memory when they are closed or released.
+
+; Copyright 1979 by Xerox Corporation
+
+	TITLE PUPMLS -- MAIL SERVER PORTION OF FTP SERVER
+	SUBTTL E. A. Taft / March 1977
+
+	SEARCH PUPDEF,PSVDEF
+
+tenex,< SEARCH STENEX >
+tops20,<SEARCH MONSYM>
+
+	USEVAR FTPVAR,FTPPVR
+
+
+LMBXTB==^D1000		; Length of MBXTAB
+MAXLCL==3		; Max number of messages delivered locally
+
+; From Yeager re random number generation (derived from Knuth)...
+; hsha mod 8 = 5, hshb = 0.5*(1 - sqrt(3)/3)*nhhsh
+NHHSH==^D331		; Hash table size for host site table adrs
+HSHA==31415		; Multiplier for hashing host site tbl adrs
+HSHB==^D69		; Addend for hashing host site tbl adrs
+
+FILCHR=="*"		; Char signalling addressee is a file
+
+; "Store-Mail"
+
+C.SMAI::PUSHJ P,SAVE1##
+	SETZM MBXTAB		; Zero out mailbox table
+	MOVE A,[MBXTAB,,MBXTAB+1]
+	BLT A,MBXTAB+LMBXTB-1
+	SETZM HSTHSH		; Zero out host hash table
+	MOVE A,[HSTHSH,,HSTHSH+1]
+	BLT A,HSTHSH+NHHSH-1
+	SKIPN OKHSTL##		; HOSTSL.BIN mapped?
+	 JRST [ CALL GTHSTL##	; No, do it
+		 FTPM(NO,107,<Cannot load network host tables>,1)
+		JRST .+1 ]	; +2, success
+	MOVEI A,MBXBUF		; Set pointer to name buffer
+	MOVEM A,MBXFRE
+	MOVSI P1,-LMBXTB	; Length of MBXTAB
+	AOBJN P1,.+1		; Start counting at 1
+	SETZM FILPRP##		; Clear out property list
+	MOVE B,[FILPRP##,,FILPRP##+1]
+	BLT B,FILPRP##+PLSIZE-1
+	MOVEI B,1		; Init to Type text
+	MOVEM B,FILPRP+P.TYPE
+	MOVEI B,7		; Byte size 7
+	MOVEM B,FILPRP+P.BYTE
+	HRROI A,NETBUF##	; Set pointer to argument string
+
+; Loop to collect mailbox property lists
+C.SMA0:	HRRZM P1,MBXIDX		; Store current index
+	MOVEI B,FILPRP##	; File property list
+	PUSHJ P,SCNPRP##	; Scan property list
+	 POPJ P,		; Failed
+	MOVE B,A		; Peek ahead in input
+	ILDB C,B
+	JUMPE C,.+3		; Done if no more property lists
+	AOBJN P1,C.SMA0		; Repeat if room in table
+	FTPM(NO,110,<Mailbox table full>,1)
+
+; Count recipients and generate Mailbox-Exception responses
+	SETZM NQUEUE		; Reset counts
+	SETZM NDELIV
+	MOVN P1,MBXIDX		; Init table index
+	HRLZ P1,P1
+	HRRI P1,1
+GMBEX:	MOVE A,MBXTAB(P1)	; Get entry
+	JUMPE A,GMBEX2		; Ignore sender entry
+	TLNN A,(1B1)		; Mailbox exception?
+	 JRST GMBEX0		; No, normal entry
+	UFTPM 0(A)		; Yes, generate Mailbox-exception response
+	SETZM MBXTAB(P1)	; Flush this entry
+	JRST GMBEX2		; On to next
+
+; Here the addressee is a valid one
+GMBEX0:	TLNE A,(1B0)		; Local address?
+	 JRST [ AOS NQUEUE	; No, count queued msgs
+		JRST GMBEX1 ]
+	AOS NDELIV		; Count local deliveries
+	MOVE B,LCLSTN##		; b _ local site tbl entry
+	HRLZM B,-1(A)		; Save it in the data block header
+GMBEX1:	HLRZ A,-1(A)		; a _ site tbl entry for host
+	CALL HSHLNK		; Hash it and link recips for this host
+	 FTPM(NO,110,<Host hash table overflow>,1)
+GMBEX2:	AOBJN P1,GMBEX		; Loop for all 
+
+; "Store-mail" (cont'd)
+
+; See whether there were any valid mailboxes
+	SKIPN A,NDELIV
+	 SKIPE NQUEUE
+	 CAIA
+	FTPM(NO,40,<No valid mailbox in property list>,1)
+
+; Set to queue all if more than MAXLCL local recipients
+	CAIG A,MAXLCL
+	 JRST .+3
+	ADDM A,NQUEUE		; Add local recipients to queue count
+	SETZM NDELIV		; No local deliveries
+
+; Open a temporary file to receive the message
+	GJINF			; Generate unique version number
+	IMULI C,NFORKS		; = job#*NFORKS + fork#
+	ADDI C,(FX)
+	HRROI A,TEMP		; Make filename
+	WRITE <PUPSRV.MAIL;P770000>
+	MOVSI A,(1B0+1B5+1B8+1B17)  ; Output, temp, ignore deleted
+	HRRI A,0(C)		; Install the version number
+	HRROI B,TEMP
+	GTJFN
+	 FTPM(NO,107,<Mail system malfunction: %1J>,1)
+	MOVEM A,DSTJFN##	; Save JFN
+
+; Note: open write-only now and re-open for read later, because if we
+; open for read-write now, SOUT works inefficiently and writing the file
+; is ~25 times more costly!  This is a bad glitch in Tenex.
+	MOVE B,[7B5+1B20]	; Open for write
+	OPENF
+	 JRST [	FTPM(NO,107,<Mail system malfunction: %1J>)
+		MOVE A,DSTJFN##
+		RLJFN
+		 PUSHJ P,SCREWUP##
+		SETZM DSTJFN##
+		POPJ P,]
+	PUSHJ P,.UDELF##	; Undelete the file
+
+; Generate "Yes" reply and await "Here-is-file" command
+; and file data
+	FTPM(YES,0,<Ready for message>)
+C.SMA1:	PUSHJ P,GETCMD		; Get next command
+	 JRST SMAEND		; End received
+	CAIN A,MKFILE		; "Here-is-file"?
+	 JRST C.SMA3		; Yes, go receive file
+	CAIN A,MKNO		; "No"? (i.e. abort)
+	 JRST DELDST		; Flush output file and return
+	MOVE C,MRKNAM##(A)	; No, get dispatch
+	TLNN C,(OKSTOR)		; Command ok during "Store"?
+	 JRST [	HRRO C,MRKNAM##(A)  ; No, make ptr to command name
+		FTPM(NO,3,<Comand [%3S] out of sequence during Store-Mail>)
+		JRST DELDST]	; Flush output file and return
+	MOVE C,MRKDSP##(A)	; Ok, get dispatch
+	PUSHJ P,0(C)		; Do the command
+	JRST C.SMA1		; Look for another
+
+; "Store-Mail" (cont'd)
+
+; Here when "Here-is-file" command encountered
+C.SMA3:	HLRZ A,FRKJFN(FX)	; Source is net
+	MOVEM A,SRCJFN##
+
+; [SMX #1] Start the file with "Mail-from: ..." header
+	MOVEI A,NW%LCL##	; a _ local network number (INTERNET)
+	CALL GTNTNM##		; Convert it to a string
+	 HRROI A,[ASCIZ /LOCAL NET/]  ; 
+	MOVE B,A		; b _ str ptr
+	MOVE A,DSTJFN		; [SMX #1] a _ temp file jfn
+	HRROI C,FRNHST		; [SMX #1] b _ ptr to foreign host name
+	WRITE <Mail-from: %2S host %3S rcvd at >
+	SETO B,			; [SMX #1] Add current time stamp
+	MOVSI C,(1B10+1B12+1B13+1B17)
+	ODTIM
+	WRITE <%/>		; [SMX #1] New line
+	MOVEI A,FILPRP##	; Property list being used
+	PUSHJ P,RECDAT##	; Receive the message
+	 JRST [	PUSHJ P,GETCMD##  ; Failed, suck up next command
+		 JRST SMAEND	; End received
+		HRRZ A,DSTJFN##	; Report failure
+		LOG <Data error during Store-Mail %1F>
+		FTPM(NO,103,<Data error during Store-Mail>)
+		JRST DELDST]	; Flush output file and return
+	PUSHJ P,GETCMD##	; Done, get next command
+	 JRST SMAEND		; End received
+	CAIN A,MKNO		; Terminated by "No"?
+	 JRST [	FTPM(NO,106,<Store-Mail not completed>)
+		JRST DELDST]	; Flush output file and return
+	CAIE A,MKYES		; Terminated by "Yes"?
+	 JRST [	HRRO C,MRKNAM##(A)  ; No, make ptr to command name
+		FTPM(NO,3,<Command [%3S] out of sequence during Store-Mail>)
+		JRST DELDST]	; Flush output file and return
+
+; Mail received successfully
+; Now deliver to mailboxes or queue for forwarding
+	MOVE A,DSTJFN##		; Get current file position (= length)
+	RFPTR
+	 PUSHJ P,SCREWUP##
+	MOVEM B,MSGLEN		; Save length
+	HRLI A,400000		; Close but don't release JFN
+	CLOSF
+	 PUSHJ P,SCREWUP##
+	MOVE A,DSTJFN##		; Re-open for reading and writing
+	MOVE B,[7B5+1B19+1B20]
+	OPENF
+	 JRST [	FTPM(NO,107,<Mail system malfunction: %1J>)
+		MOVE A,DSTJFN##
+		RLJFN
+		 PUSHJ P,SCREWUP##
+		POPJ P,]
+	MOVN P1,MBXIDX		; Init table index
+	HRLZ P1,P1
+	HRRI P1,1
+
+; Loop to deliver to each mailbox
+C.SMA5:	PUSHJ P,SETWDT##	; Reset watchdog timer
+	SKIPG MBXTAB(P1)	; Have local mailbox to deliver to?
+	 JRST C.SMA6		; No
+	MOVE A,DSTJFN##		; Get temp file JFN
+	HRRO B,MBXTAB(P1)	; String ptr to mailbox name
+	MOVE C,MSGLEN		; Length of message
+	SKIPE NDELIV		; Queueing all?
+	PUSHJ P,SNDMSG		; No, try to append to mailbox
+	 JRST [	MOVSI A,(1B0)	; Failed, force queueing
+		IORM A,MBXTAB(P1)
+		SKIPG NDELIV	; Making local deliveries?
+		 JRST C.SMA6	; No
+		SOS NDELIV	; Yes, adjust counts
+		AOS NQUEUE
+		JRST C.SMA6]	; And move on
+	HRRO A,MBXTAB(P1)
+	TLNE F,(DEBUGF)		; Log only if debugging
+	 LOG <Mail delivered to %1S>
+	SETZM MBXTAB(P1)	; Show this guy delivered
+C.SMA6:	AOBJN P1,C.SMA5		; Look at all addressee entries
+
+; "Store-Mail" (cont'd)
+
+; (FALL THROUGH)  Here see if need to queue messages
+FP%HST=400000		; Local flag to control writing host to q file
+	SKIPG NQUEUE		; Any msgs queued?
+	 JRST C.SM11		; No
+	SAVE <F,P1,P2>		; Yes, save ac's
+	HLLZS F			; Clear rh flags in f
+	MOVSI P2,-NHHSH		; p2 _ aobjn ptr through hash table
+C.SMA7:	HRRZ P1,HSTHSH(P2)	; p1 _ hash tbl link
+	JUMPE P1,C.SM10		; Move on if null link
+	TRO F,FP%HST		; Set flag to output this host name
+C.SMA8:	SKIPL B,0(P1)		; Entry to be queued?
+	 JRST C.SMA9		; No
+	PUSHJ P,QUEREC		; Add recipient name to queue
+	 JRST [	MOVEI A,-MBXTAB(P1)  ; a _ mailbox index
+		HRRO B,0(P1)	     ; b _ name ptr
+		HLRZ C,-1(B)	     ; c _ site tbl entry for host
+		HLRZ C,STLNAM##+HSTLOC##(C)
+		HRROI C,HSTLOC##(C)  ; c _ str ptr to host name
+		FTPM(MBEX,3,<%1D Unexpected failure to queue mail for %2S@%3S>)
+		JRST C.SMA9]	; Give up on this mailbox
+	HRRO A,0(P1)		; a _ name string
+	HLRZ B,-1(A)	     	; b _ site tbl entry for host
+	HLRZ B,STLNAM##+HSTLOC##(B)
+	HRROI B,HSTLOC##(B)   	; b _ str ptr to host name
+	TLNE F,(DEBUGF)		; Log only if debugging
+	 LOG <Mail queued for %1S@%2S>
+C.SMA9:	HRRZ P1,0(P1)		; p1 _ data block adr for this guy
+	HRRZ P1,-1(P1)		; p1 _ link to next adr for this host
+	JUMPN P1,C.SMA8		; If not null, process the entry
+C.SM10:	AOBJN P2,C.SMA7		; Look at next hash table entry
+	RSTR <P2,P1,F>		; Recover ac's
+
+; Here when done queueing addressees
+C.SM11:	MOVE A,DSTJFN##		; Get temp file JFN
+	MOVE C,MSGLEN		; Length of message
+	PUSHJ P,QUEMSG		; Finish queueing message if necessary
+	 PUSHJ P,SCREWUP##	; Can't happen at present
+	FTPM(YES,0,<Mail delivery completed>)
+	PUSHJ P,DELDST		; Close and delete temp file
+	MOVE A,MSGLEN		; Log summary
+	MOVE B,NDELIV
+	MOVE C,NQUEUE
+	LOG <Mail received, length: %1D;  %2D copies delivered, %3D queued>
+	POPJ P,			; Exit [Store-mail] command
+
+; Here if End received in the middle of a Store-Mail
+SMAEND:	PUSHJ P,DELDST		; Close and delete destination file
+	SETZM MBXIDX
+	JRST FTPEND##		; Handle EOF normally
+
+; Close and delete DSTJFN
+DELDST:	MOVE A,DSTJFN##
+	DELF
+	 MOVE A,DSTJFN##
+	CLOSF
+	 PUSHJ P,SCREWUP##
+	SETZM DSTJFN##
+	POPJ P,
+
+; Send message to mailbox
+;	A/ JFN of file containing message
+;	B/ String ptr to name of recipient
+;	C/ Length of message in bytes
+; Returns +1:  unsuccessful
+;	+2:  successful
+; Clobbers A-D, TEMP buffer
+; Does not close JFN
+
+SNDMSG:	HRLM A,0(P)		; Save source JFN
+	HRROI A,TEMP		; Buffer mailbox filename here
+TENEX,<			; If TENEX system
+	 WRITE <<%2S>MESSAGE.TXT>  ; Yes
+	MOVE A,[1B0+1B2+1B8+1B17+1]	; Out, old file, ign del, vers 1
+>
+TOPS20,<		; If TOPS-20 system
+	 WRITE <<%2S>MAIL.TXT>	; Yes
+	MOVE A,[1B2+1B8+1B17+1]	; Old file, ign del, vers 1
+>
+	HRROI B,TEMP
+	GTJFN			; Get JFN for it
+	 POPJ P,		; Mailbox went away?
+	PUSH P,C		; Save byte count
+	MOVE D,A		; Save JFN
+	MOVEI C,5		; Max number of retries
+SNDMS1:	MOVE B,[7B5+1B22]	; Open for append
+	OPENF
+	 JRST [	CAIN A,OPNX9	; Failed, busy?
+		 SOJG C,[MOVEI A,^D1000  ; Yes, wait a second
+			DISMS
+			MOVE A,D  ; Try again
+			JRST SNDMS1]
+		MOVE A,D	; Other failure, release JFN
+		RLJFN
+		 PUSHJ P,SCREWUP##
+		POP P,C		; Discard byte count
+		POPJ P,]	; Fail return
+TOPS20,<
+	PUSHJ P,.UDELF##	; Make sure it is undeleted
+>
+
+; Put special header on message for mail programs
+	SETO B,			; Output current date and time
+	MOVSI C,(1B13)		; Include time zone
+	ODTIM
+	POP P,C			; Recover length
+	WRITE <,%3D;000000000000%/>
+
+; Copy the message to the file
+	PUSH P,D
+	HLRZ A,-1(P)		; Source file
+	MOVE B,D		; Destination file
+	PUSHJ P,CPYFIL		; Do it (byte count in C)
+TOPS20,<
+	HRROI A,TEMP		; Now construct sender@host string
+	HRROI B,FILPRP##+P.SNDR	; b _ ptr to mail sender name
+	MOVE C,SDRSTN		; c _ sender host site tbl entry
+	HLRZ C,STLNAM##+HSTLOC##(C)
+	HRROI C,HSTLOC##(C)	; c _ str ptr to host site name
+	WRITE <%2S@%3S>
+	MOVE A,0(P)		; a _ file jfn
+	HRROI B,TEMP
+	PUSHJ P,.SFUST##	; Update the file writer
+>
+	POP P,A			; Recover mailbox JFN
+	CLOSF			; Close it
+	 PUSHJ P,SCREWUP##
+	JRST SKPRET##		; Return +2
+
+; Message queueing 
+
+; TCR 3/1/81: *****************************************************
+;  The old PUPSRV queueing stuff from PARC has been replaced with
+;  the XMAILR queue file mechanism.  See <SOURCES>XMAILR.FAI for
+;  details.
+; *****************************************************************
+
+; This is a three-stage process:
+
+; (1) The recipient list and message body are appended to file
+; [--UNDISTRIBUTED-MAIL--] (distinguishing it from old-style queue files,
+; which are [--UNSENT-MAIL--].user@host), and the Mailer is notified.
+; Notification consists of setting bit 0 of word 0 in <SYSTEM>MAILER.FLAGS.
+; This bit corresponds to directory number zero, which doesn't exist,
+; and is checked more frequently than the bits corresponding to real
+; directories.
+
+; (2) The Mailer reads this file, distributes copies of messages to
+; the Message.txt files of local recipients, and appends a recipient list
+; and message body to file [--FORWARDED-MAIL--].host for each host that
+; has one or more of the recipients' mailboxes.
+; When an [--UNDISTRIBUTED-MAIL--] file has been completely processed,
+; it is deleted.
+
+; (3) The Mailer then enumerates the [--FORWARDED-MAIL--].host files.
+; For each one, it attempts to contact the host and deliver all the
+; messages queued in the file.  When all messages have been delivered,
+; the file is deleted.
+
+; Syntax of queued message:
+
+; *start*+nnnnnn,date,_sender,+recipient1,+recipient2, ... ,+recipientN <cr><lf>
+; message body
+
+; nnnnnn is length of queued message (recipient list + body).
+; date is the date and time at which the message was received.
+; Leading "+" means message pending; changed to "-" when entirely delivered.
+; "+" before recipient name means delivery pending to that recipient;
+; changed to "-" when delivery to recipient completed.
+; "_" before name designates sender, if known.
+; The characters @, comma, and single quote must be quoted by preceding
+; them with a single quote if they appear literally in a recipient name.
+; Note that in a recipient name of the form "name@host", the @ should NOT
+; be quoted -- @ should be quoted only if it appears in the "name".
+
+; The user-settable word (FDBUSW) of the FDB points to the start of
+; the first message that is still pending.  The file attributes are set
+; to "nonexistent" when all messages have been delivered to all recipients.
+
+; Undistributed messages are appended to file [--UNDISTRIBUTED-MAIL--].;99999.
+; If that file is busy, successively lower versions are used.
+; (Decreasing rather than increasing version numbers are used so as to
+; correspond to Tenex directory order and thereby ensure messages are
+; delivered in order.)
+
+; Message queueing (cont'd)
+
+; Begin queued message if necessary and insert recipient name.
+;	B/ MBXTAB entry for recipient
+; Returns +1:  unsuccessful (shouldn't happen, error logged)
+;	+2:  successful
+
+QUEREC:	HRLI B,(POINT 7)	; b _ valid str ptr
+	PUSH P,B		; Save string ptr to recipient name
+	SKIPE A,QUEJFN		; Already have file open?
+	 JRST QUERE4		; Yes
+TENEX,<
+	MOVEI C,^D99999		; Version to use if no queue file exists
+	MOVE A,[1B2+1B8+1B17+<0,,-2>] ; Find oldest existing version
+	HRROI B,[ASCIZ /[--NETWORK-MAIL--]./]
+	GTJFN
+	 JRST QUERE1		; No existing version, use 99999
+	MOVE B,[1,,7]		; Found one, get its version number
+	MOVEI C,C
+	GTFDB
+	HLRZS C			; c _ current lowest version
+	SOSGE C			; Use the next lower
+	 SETZ C,		; Overflow, use next higher
+	RLJFN			; Release old jfn
+	 CALL SCREWUP##
+>
+TOPS20,<
+	SETZ C,			; Use next higher version
+>
+	
+QUERE1:	HRRZ A,C		; Try version (C), create if necessary
+	HRLI A,(1B0+1B17)
+	HRROI B,[ASCIZ /[--NETWORK-MAIL--].;P770000/]
+	GTJFN
+	 JRST QUEFAI		; Failed!
+QUERE2:	MOVEM A,QUEJFN
+	MOVE B,[7B5+1B20]	; 7-bit byte, write only
+	OPENF
+	 JRST [	PUSH P,A	; Failed, save error code
+		MOVE A,QUEJFN	; Release JFN
+		RLJFN
+		 PUSHJ P,SCREWUP##
+		POP P,A
+		JRST QUEFAI]	; Other error, fail
+
+; We open write-only rather
+; than read-write due to a Tenex performance problem that makes SOUT
+; much (~25x) more expensive when the file is open read-write.
+; I would have opened append-only, except if I had done that I wouldn't be
+; allowed to execute SFPTR later to fix up the count in the stamp!
+
+; Append sender for start of message
+QUERE3:	SKIPN FILPRP+P.SNDR	; Sender given?
+	 JRST QUERE4		; No
+	MOVEI B,FF		; Yes, begin definition line
+	BOUT
+	MOVE B,SDRSTN		; b _ sender host site tbl entry
+	HLRZ B,STLNAM##+HSTLOC##(B)
+	HRROI B,HSTLOC##(B)   	; b _ str ptr to host name
+	HRROI C,FILPRP+P.SNDR	; c _ ptr to sender name
+	WRITE <_%2S%/%3S%/>
+
+; Message queueing (cont'd)
+
+; Append new recipient name
+QUERE4:	TRZN F,FP%HST		; New host?
+	 JRST QUERE5		; No
+	MOVEI B,FF		; Yes, output it
+	BOUT
+	MOVE B,0(P)		; b _ addressee name ptr
+	HLRZ B,-1(B)		; b _ addressee host site tbl entry
+	HLRZ B,STLNAM##+HSTLOC##(B)
+	HRROI B,HSTLOC##(B)   	; b _ str ptr to host name
+	WRITE <%2S%/>
+QUERE5:	POP P,B			; b _ addressee name ptr
+	WRITE <%2S%/>
+	JRST SKPRET##		; Return +2
+
+; Here if failed to open queue file
+QUEFAI:	POP P,B			; b _ ptr to addressee name
+	HLRZ C,-1(C)		; c _ addressee host site tbl entry
+	HLRZ C,STLNAM##+HSTLOC##(C)
+	HRROI C,HSTLOC##(C)   	; c _ str ptr to host name
+	ELOG <QUEREC: Failed to queue mail for %2S@%3S%/ - %1J>
+	POPJ P,
+
+; Message queueing (cont'd)
+
+; Finish queueing message for background delivery, if necessary
+;	A/ JFN of file containing message
+;	C/ Length of message in bytes
+; Returns +1:  unsuccessful (no way this can happen at present)
+;	+2:  successful
+; Clobbers A-D, TEMP buffer
+; Does not close JFN
+
+QUEMSG:	SKIPN QUEJFN		; Is there a queue file?
+	 JRST SKPRET##		; No, return immediately
+	SAVE A			; Yes, save source jfn
+	MOVE A,QUEJFN		; a _ queue file jfn
+	MOVEI B,FF		; Finish addressee part
+	BOUT
+	WRITE <%/>		; Append crlf
+	RSTR A			; Recover source jfn
+	MOVE B,QUEJFN		; b _ output jfn
+	PUSHJ P,CPYFIL		; Append body of message
+	MOVE A,QUEJFN
+	TLO A,400000		; Don't release queue file jfn
+	CLOSF			; Close queue file
+	 PUSHJ P,SCREWUP##
+	HRRO A,MBXFRE		; Make string for queue file dir
+	MOVE B,QUEJFN
+	MOVE C,[010000,,1]
+	JFNS
+	HRRO B,MBXFRE		; Now get a number
+	CALL .STDIR##
+	 CALL SCREWUP##		; ???
+	HRRZ B,C		; b _ dir # part
+	IDIVI B,^D36		; b _ wd index, c _ bit index
+	MOVSI A,(1B0)		; Form bit mask for directory
+	MOVNS C
+	LSH A,0(C)
+	IORM A,MFLAGS(B)	; Inform MAILER that mail is there
+	MOVE A,QUEJFN		; a _ queue jfn again
+	RLJFN			; Release it
+	 CALL SCREWUP##
+	SETZM QUEJFN
+	JRST SKPRET##		; Return +2
+
+
+; Copy a file (7-bit ASCII)
+;	A/ Source JFN
+;	B/ Destination JFN
+;	C/ Number of bytes to copy
+; Reads the specified number of bytes from the source file starting
+; at the beginning, and appends them to the destination file.
+; Returns +1 always
+; Clobbers A-D, TEMP buffer; does not close JFNs
+
+CPYFIL:	MOVE D,C		; Save byte count
+	PUSH P,B		; Save destination JFN
+	HRLZ A,A		; Make source JFN,,page designator
+
+CPYFI1:	MOVEI B,TEMP		; Where to map source page
+	LSH B,-9		; Convert to page number
+	HRLI B,400000		; This fork
+	MOVSI C,(1B2)		; Read access
+	JUMPLE D,CPYFI2		; Jump if no more bytes left
+	PMAP			; Map the page
+	EXCH A,0(P)		; Save source designator, get destination
+	HRROI B,TEMP		; Where the data is
+	MOVNI C,5000		; Number of bytes assuming full page
+	CAIGE D,5000		; Full page remaining?
+	 MOVN C,D		; No, cut down to actual amount
+	SOUT			; Write to destination
+	EXCH A,0(P)		; Save destination, get back source
+	SUBI D,5000		; Decrement byte count
+	AOJA A,CPYFI1		; Increment page number and repeat
+
+; Here when no more bytes left, B and C set up for PMAP
+CPYFI2:	SETO A,			; Unmap source page
+	PMAP
+	POP P,A			; Flush stack and return
+	POPJ P,
+
+; "Retrieve-mail"
+
+C.RMAI::SETZM FILPRP		; Clear out property list
+	MOVE A,[FILPRP,,FILPRP+1]
+	BLT A,FILPRP+PLSIZE-1
+	MOVEI A,1		; Init to Type text, byte size 7
+	MOVEM A,FILPRP+P.TYPE
+	MOVEI A,7
+	MOVEM A,FILPRP+P.BYTE
+	SETZM MBXTAB		; Zero out mailbox table
+	MOVE A,[MBXTAB,,MBXTAB+1]
+	BLT A,MBXTAB+LMBXTB-1
+	MOVEI A,MBXBUF		; Where to put mailbox property
+	MOVEM A,MBXFRE
+	HRROI A,1		; Table index to use (negative => Retrieve)
+	MOVEM A,MBXIDX
+	HRROI A,NETBUF		; Set pointer to argument string
+	MOVEI B,FILPRP
+	PUSHJ P,SCNPRP##	; Scan property list
+	 POPJ P,		; Failed
+	SKIPN MBXTAB+1		; Make sure a mailbox was specified
+	 FTPM(NO,40,<No mailbox in property list>)
+	MOVEI A,FILPRP
+	PUSHJ P,LOGCHK##	; Check login/connect parameters
+	 POPJ P,		; Failed
+
+; Open mail file
+	SETZM MBXLEN		; Zero length in case open fails
+	SETZM NDELIV		; No messages processed yet
+	HRROI A,TEMP		; Build mailbox filename here
+	HRROI B,MBXBUF
+TENEX,<			; If TENEX system
+	 WRITE <<%2S>MESSAGE.TXT>  ; Yes
+>
+TOPS20,<		; If TOPS-20 system
+	 WRITE <<%2S>MAIL.TXT>  ; Yes
+>
+	MOVE A,[1B2+1B8+1B17+1]	; Old file, ign deleted, name from string
+	HRROI B,TEMP
+	GTJFN			; Attempt to get JFN for mail file
+	 JRST RGJFER##		; Not found
+	MOVEM A,SRCJFN##	; Ok, store it
+	MOVEI C,5		; Max number of retries
+	MOVE B,[7B5+1B19+1B20]	; Open for read and write
+C.RMA2:	MOVE A,SRCJFN##
+	OPENF
+	 JRST [	CAIN A,OPNX9	; Failed, busy?
+		 SOJG C,[MOVEI A,^D1000  ; Yes, wait a second
+			DISMS
+			JRST C.RMA2]  ; Try again
+		CAIN A,OPNX10	; Over allocation?
+		 SOJG C,[TRZ B,1B20  ; Yes, abandon trying to write
+			JRST C.RMA2]
+		CAIN A,OPNX2	; File doesn't exist?
+		 JRST C.RMA8	; Yes, behave as if it exists but is empty
+		PUSHJ P,ROPNER##  ; Other problem, report it and fail
+		MOVE A,SRCJFN##	; Release JFN
+		RLJFN
+		 PUSHJ P,SCREWUP##
+		SETZM SRCJFN##
+		POPJ P,]
+
+; Set up for mail transfer.  Read from mail file using local PMAPs,
+; but send to net using normal mechanism.
+	MOVE B,[1,,1]		; Get FDBCTL
+	MOVEI C,C
+	GTFDB
+	SETZ B,			; In case empty file
+	TLNE C,(1B3)		; Deleted?
+	 JRST .+3		; Yes, treat as empty
+	SIZEF			; Get file length
+	 PUSHJ P,SCREWUP##
+	MOVEM B,MBXLEN		; Save it
+	MOVEI A,MBXDTE		; Enable for data error in mailbox file
+	MOVEM A,SRCDSP##
+	MOVEM P,ERRPDP##
+	SETOM MBXPGN		; Don't have input file mapped yet
+	SETZ A,			; Position to first byte
+	PUSHJ P,POSMBX
+	 JRST C.RMA8		; Mailbox is empty
+
+; "Retrieve-mail" (cont'd)
+
+; Loop to send each message to user.
+; First, read and interpret the stamp.
+C.RMA4:	PUSHJ P,SETWDT##	; Reset watchdog timer
+	HRRZ A,FRKJFN(FX)	; Destination is net
+	MOVEM A,DSTJFN##
+	MOVEI A,NETBUF##	; Buffer to use for sending
+	MOVEM A,DSTIBP##
+	MOVEI A,8		; Byte size 8
+	PUSHJ P,SETOUT##	; Setup for output
+	MOVE D,[POINT 7,TEMP]	; Buffer stamp here
+C.RMA5:	SOSGE MBXCNT		; Read up to line feed
+	 JRST [	PUSHJ P,FIXMBX
+		 JRST C.RMA8	; Eof, done
+		JRST C.RMA5]
+	ILDB A,MBXBYT		; Copy byte
+	IDPB A,D
+	CAIE A,12		; Line feed?
+	 JRST C.RMA5		; No, continue
+
+	HRROI A,TEMP		; Read date received
+	MOVSI B,(1B8)
+	IDTIM
+	 JRST MBXBAD		; Bad format
+	MOVEM B,DATREC
+	MOVEI C,^D10		; Decimal
+	NIN			; Get message length
+	 JRST MBXBAD		; Bad format
+	MOVEM B,MSGLEN
+	MOVEI C,10		; Octal
+	NIN			; Get flags
+	 JRST MBXBAD
+	MOVEM B,MSGFLG		; Store flags
+
+; Now one pass over the message to determine length after LFs stripped
+	PUSHJ P,FIXMBX		; Get where we are now
+	 JRST MBXBAD		; Bad format if eof
+	PUSH P,A		; Save it
+	MOVE D,MSGLEN		; Nominal length
+	MOVEM D,TEMP
+
+C.RMA6:	SOSGE MBXCNT		; Decrement and test count
+	 JRST [	PUSHJ P,FIXMBX	; No more, get next buffer
+		 JRST [	POP P,A	; Bad mailbox if hit eof
+			JRST MBXBAD]
+		JRST C.RMA6]
+	ILDB A,MBXBYT		; Get byte
+	CAIN A,12		; Line feed?
+	 SOS TEMP		; Yes, do not include in count
+	SOJG D,C.RMA6		; Repeat for all bytes in message
+	SKIPN TEMP		; Zero-length message?
+	 JRST C.RMA4		; Yes, filter out
+	AOS NDELIV		; Count messages
+
+; Send property list
+	MOVE A,MSGFLG		; Get flags
+	SETZB C,D
+	TRNE A,1B35		; Message already read?
+	 HRROI C,[ASCIZ /(Opened Yes)/]
+	TRNE A,1B34		; Deleted?
+	 HRROI D,[ASCIZ /(Deleted Yes)/]
+	MOVE A,TEMP		; Length not including LFs
+	MOVE B,DATREC		; Date of receipt
+	FTPM(PLST,,<((Length %1D)(Date-received %2T)%3S%4S)>)
+
+; "Retrieve-mail" (cont'd)
+
+; Send the message
+	MOVEI A,MKFILE		; "Here-is-file"
+	SETZ B,
+	PUSHJ P,BEGCMD##
+	POP P,A			; Recover starting position
+	PUSHJ P,POSMBX		; Reposition file
+	 PUSHJ P,SCREWUP##
+
+C.RMA7:	SOSGE MBXCNT		; Decrement and test count
+	 JRST [	PUSHJ P,FIXMBX	; No more, get next buffer
+		 PUSHJ P,SCREWUP##
+		JRST C.RMA7]
+	ILDB A,MBXBYT		; Get byte
+	CAIN A,12		; Line feed?
+	 JRST C.RM7A		; Yes, ignore
+	SOSGE DSTCNT##		; Decrement and test destination count
+	 PUSHJ P,PUTNPG##	; Dump buffer, return .-1
+	IDPB A,DSTBYT##		; Store byte
+C.RM7A:	SOSLE MSGLEN		; Repeat for entire message
+	 JRST C.RMA7
+	PUSHJ P,PUTLPG##	; Send last partial page
+
+	JRST C.RMA4		; On to next message
+
+; Here when done
+C.RMA8:	FTPM(YES,0,<Mail retrieval completed>)
+	PUSHJ P,UNMAP##		; Unmap file page
+	SETOM MBXPGN		; Don't know where we are now
+	MOVE A,SRCJFN##		; Log mailbox filename and length
+	MOVE B,NDELIV
+	MOVE C,MBXLEN
+	LOG <Retrieve mailbox %1F, %2D messages, %3D bytes>
+
+C.RMA9:	PUSHJ P,GETCMD##	; Get next command
+	 JRST FTPEND##
+	MOVE P1,MRKDSP##(A)	; Get dispatch
+	CAIE A,MKCOMM		; Comment?
+	CAIN A,MKEOC		; EOC?
+	 JRST [	PUSHJ P,0(P1)	; Yes, execute and stay in this context
+		JRST C.RMA9]
+	CAIN A,MKFMAI		; Flush-mail?
+	 JRST FLMAIL		; Yes, do it
+	PUSHJ P,CLZMAI		; Something else, close mail file
+	JRST 0(P1)		; Execute command, return to main loop
+
+; Here when Flush-Mail command received.
+FLMAIL:	MOVE A,SRCJFN##
+	GTSTS
+	JUMPGE B,FLMAI1		; Just release JFN if never got the file open
+
+; "Retrieve-mail" (cont'd)
+
+; First, append retrieved messages to Message.Archive, if such a file exists.
+	SKIPN MBXLEN		; Were there any messages?
+	 JRST NOARC		; No, forget it
+	HRROI A,TEMP		; Build file name here
+	HRROI B,MBXBUF		; Where Mailbox property value is
+TENEX,<			; If TENEX system
+	 WRITE <<%2S>MESSAGE.ARCHIVE>
+>
+TOPS20,<		; If TOPS-20 system
+	 WRITE <<%2S>MAIL.ARCHIVE>
+>
+	MOVSI A,(1B2+1B17)	; Old file, name from string
+	HRROI B,TEMP
+	GTJFN
+	 JRST NOARC		; No such file
+	MOVEM A,ARCJFN		; Save JFN
+	MOVE B,[7B5+1B22]	; Open for append
+	OPENF
+	 JRST [	MOVE A,ARCJFN	; Failed, forget it
+		RLJFN
+		 PUSHJ P,SCREWUP##
+		JRST NOARC1]
+	SETZ A,			; Position mailbox to start of first message
+	PUSHJ P,POSMBX
+	 JRST ARCMS5
+ARCMS1:	MOVE A,ARCJFN		; Destination file
+	MOVE B,MBXBYT		; Source byte ptr
+	MOVN C,MBXCNT		; Byte count
+	JUMPE C,ARCMS5		; Jump if none
+	SOUT
+	SETZM MBXCNT		; Say all bytes consumed
+	PUSHJ P,FIXMBX		; Advance to next page
+	 JRST ARCMS5		; EOF
+	JRST ARCMS1		; Continue copying
+
+; Here when reach EOF
+ARCMS5:	PUSHJ P,UNMAP##		; Unmap mailbox file page
+	MOVE A,ARCJFN		; Close archive file
+	CLOSF
+	 PUSHJ P,SCREWUP##
+
+NOARC1:	SETZM ARCJFN
+
+; Now really flush the mailbox.
+NOARC:	MOVE A,SRCJFN##
+	GTSTS
+	TLNE B,(1B2)		; Do we have mailbox open for writing?
+	 PUSHJ P,DELPGS##	; Yes, delete all pages in file
+	MOVE A,SRCJFN##		; Reset EOF pointer to zero
+	HRLI A,12
+	SETO B,
+	SETZ C,
+	CHFDB
+	MOVE A,SRCJFN##		; Delete file
+	DELF
+	 PUSHJ P,SCREWUP##
+FLMAI1:	FTPM(YES,0,<Flush-mail completed successfully>)
+CLZMAI:	MOVE A,SRCJFN##
+	CLOSF
+	 JRST [	MOVE A,SRCJFN## ; If it fails, it can be only because the
+		RLJFN		;  file isn't open to begin with
+		 PUSHJ P,SCREWUP##
+		JRST .+1]
+	SETZM SRCJFN##
+	POPJ P,
+
+; Here if discover bad format in message file
+MBXBAD:	PUSHJ P,UNMAP##
+	FTPM(NO,103,<Mailbox is malformed>)
+	JRST CLZMAI
+
+; Here if encounter data error in message file
+MBXDTE:	PUSHJ P,UNMAP##
+	FTPM(NO,103,<Disk error in mailbox file>)
+	JRST CLZMAI
+
+; Retrieve-mail subroutines
+
+; Fix up mailbox byte count, and read next page if necessary.
+; Expects MBXCNT to reflect number of bytes read.
+; Returns +1: EOF
+;	+2: normal, A/ current byte position
+; Clobbers A-C
+
+FIXMBX:	MOVE A,MBXPGN		; Get current page
+	ADDI A,1		; Advance to next
+	IMULI A,5000		; Convert to byte number
+	CAML A,MBXLEN		; Past end?
+	 MOVE A,MBXLEN		; Yes, limit
+	SKIPL MBXCNT		; Compensate for extra SOS
+	 SUB A,MBXCNT		; Subtract bytes remaining
+				; Fall into POSMBX
+
+
+; Position mailbox file to specified byte and set up byte count
+;	A/ byte position
+; Returns +1: EOF
+;	+2: normal, A/ byte position
+; Clobbers A-C
+
+POSMBX:	CAML A,MBXLEN		; Past end?
+	 POPJ P,		; Yes, don't do anything
+	MOVE B,MBXLEN		; Compute remaining bytes
+	SUB B,A
+	MOVEM B,MBXCNT		; Store temporarily
+	PUSH P,A
+	IDIVI A,5000		; Compute page number and byte in page
+	MOVEI C,5000		; Compute remaining bytes in page
+	SUBI C,(B)
+	CAMGE C,MBXCNT		; Less than rest of file?
+	 MOVEM C,MBXCNT		; Yes, limit
+	IDIVI B,5		; Compute byte pointer
+	ADD B,BPTAB(C)
+	MOVEM B,MBXBYT
+	CAMN A,MBXPGN		; Already at desired page?
+	 JRST POSMB1		; Yes, done
+	MOVEM A,MBXPGN
+	HRL A,SRCJFN##		; No, map the page
+	MOVEI B,FILBUF##
+	LSH B,-9
+	HRLI B,400000
+	MOVSI C,(1B2)
+	HRROS SRCDSP##		; Enable data error dispatch
+	PMAP
+	SKIP FILBUF##		; Data error will happen here
+	HRRZS SRCDSP##
+POSMB1:	POP P,A			; Recover current position
+	JRST SKPRET##
+
+BPTAB:	POINT 7,FILBUF
+	POINT 7,FILBUF,6
+	POINT 7,FILBUF,13
+	POINT 7,FILBUF,20
+	POINT 7,FILBUF,27
+
+
+; "Flush-mail" -- should never be received at top-level
+
+C.FMAI::FTPM(NO,3,<Incorrect context for Flush-mail command>,1)
+C.MBEX::FTPM(NO,3,<Unexpected command>,1)
+
+; Property value processing routines specific to the mail server
+
+; (Mailbox <name>)
+
+; The following macro queues up a Mailbox-exception reply.
+; It must be executed at top level, and the text is interpreted
+; as for FTPM except that arguments may be in B-D only.
+
+DEFINE MBEX(CODE,TEXT) <
+	JRST [	JSP A,DOMBEX
+		FTPM(MBEX,CODE,<%1D TEXT>) ]
+>
+
+PPMLBX::SKIPN D,MBXIDX		; Get mailbox table index
+	 FTPM(NO,10,<Mailbox property out of context>,1)
+	MOVEI B,1		; Make room for header word
+	ADDB B,MBXFRE
+	SETZM -1(B)		; Clear header = site tbl ent,,link
+	HRROS B			; b _ st ptr for property value
+	HRRZM B,MBXTAB(D)
+	MOVEI C,500
+	PUSHJ P,GTPVAL##	; Get property value string
+	 FTPM(NO,10,<Malformed property>,1)
+	MOVEI D,1(B)		; Update free pointer, get start
+	EXCH D,MBXFRE
+
+; First see whether the mailbox exists locally
+	HRLI D,(POINT 7)
+	PUSH P,A		; Save source string ptr
+	MOVE A,D
+	SETZ B,
+CHKLCL:	ILDB C,A		; Search for last "@" or "." in name
+;;;	CAIN C,"@"
+;;;	 JRST NOMLBX		; "@", let the MAILBOX program handle it
+;;;	CAIN C,"."
+;;;	 MOVE B,A		; Found ".", remember where it was
+	CAIN C,"@"
+	 MOVE B,A		; [SMX #1] Found "@", remember where it was
+	JUMPN C,CHKLCL
+	JUMPN B,CHKHST		; If found one, go see what host it is
+
+; Name has no "@" or "." in it, may be local
+MABLCL:	MOVE B,D		; b _ ptr to input string
+	ILDB A,B		; Peak at the first char
+	CAIN A,FILCHR		; Destination a file?
+	 MBEX (1,<Cannot send to a file: %4S>)
+	MOVE B,D		; b _ ptr to input string
+	PUSHJ P,CKLMBX		; Check for existence of local mailbox
+	 JRST NOMLBX		; No
+LCLMBX:	MOVE A,D		; Check for attempt to send to System
+	HRROI B,[ASCIZ /SYSTEM/]
+	PUSHJ P,NAMCHK
+	 JRST MLBXOK		; Not System, ok to deliver to local user
+	MBEX(1,<Not permitted to send to System>)
+
+; Mailbox property parser (cont'd)
+
+; Found "@" in name.  b = ptr to @, d = ptr to whole addressee string
+; Check for easy cases here and pass more difficult ones off to
+; the MAILBOX program.
+CHKHST:	SKIPG MBXIDX		; Stop here if context is "Retrieve-mail"
+	 FTPM(NO,41,<No such mailbox as %4S>,2)
+	SAVE B			; Save ptr to @
+	ILDB A,B		; Host null?
+	JUMPE A,CHKHS2		; If so, treat as local
+	SAVE D			; Non-trivial host, save d
+	MOVE A,-1(P)		; a _ ptr to host string
+	CALL HSTLUK##		; Look it up
+	 JRST BADHST		;
+	RSTR D			; Recover ac
+	CAME C,LCLSTN##		; Local site?
+	 JRST NOTLCL		; No
+
+; It is a member of the local site.  Strip off host name and treat
+; recipient name as local.
+CHKHS2:	RSTR B			; b _ ptr to "@" separator
+	SETZ C,			; Smash with null
+	DPB C,B
+	JRST MABLCL		; Go do local handling
+
+; Not local.  Queue for forwarding using standard mechanism.
+NOTLCL:	POP P,B			; Recover pointer to "@" separator
+	SETZ A,			; Smash with null
+	DPB A,B
+	IBP B			; Increment byte ptr
+	MOVEI B,1(B)		; Point to next free word
+	MOVEM B,MBXFRE		; Reclaim space for host name
+	MOVSI A,(1B0)		; Mark entry for queueing
+	MOVE B,MBXIDX
+	IORM A,MBXTAB(B)
+	HRRZ A,MBXTAB(B)	; a _ adr of data block
+	HRLZM C,-1(A)		; Save the site tbl entry
+	JRST MLBXOK		; Signal success
+
+BADHST:	RSTR <D,B>		; Recover ac's
+	MBEX(1,<Unrecognized host name in "%4S">)
+
+
+; Mailbox property parser (cont'd)
+
+; Definitely not local, see if can forward the mail
+NOMLBX:	SKIPG MBXIDX		; Stop here if context is "Retrieve-mail"
+	 FTPM(NO,41,<No such mailbox as %4S>,2)
+	SKIPE MBXFRK		; Is there a mailbox finder fork?
+	 JRST NOMLB1		; Yes, go use it
+	MOVSI A,(1B2+1B17)	; No, get JFN for finder program
+TENEX,<			; If TENEX system
+	HRROI B,[ASCIZ /<SUBSYS>MAILBOX.SAV/]
+>
+TOPS20,<		; If TOPS-20 system
+	HRROI B,[ASCIZ /SYS:MAILBOX.EXE/]
+>
+	GTJFN
+	 MBEX(1,<Cannot locate mailbox %4S>)  ; No mailbox finder
+	MOVE B,A		; Ok, save JFN
+	MOVSI A,(1B1)		; Create fork, my capabilities
+	CFORK
+	 JRST [	EXCH A,B	; Failed, release JFN
+		RLJFN
+		 PUSHJ P,SCREWUP##
+		MBEX(3,<Mail system malfunction for mailbox "%4S%/ - %2J">)]
+	MOVEM A,MBXFRK		; Save handle
+	MOVSI A,(A)		; Construct handle,,JFN
+	HRRI A,(B)
+	GET			; Get the program
+	HRLZ A,MBXFRK		; Page 0 of inferior
+	MOVEI B,MBXPAG		; Put in my map
+	LSH B,-9
+	HRLI B,400000
+	MOVSI C,(1B2+1B3)	; Read and write access
+	PMAP
+
+; Pass name to mailbox finder and let it chew on it
+NOMLB1:	SETZM MBXPAG+140	; Zero out buffer
+	MOVE A,[MBXPAG+140,,MBXPAG+141]
+	BLT A,MBXPAG+157
+	MOVE B,D		; Search for last "@" in name
+	PUSH P,B
+	ILDB C,B
+	CAIN C,"@"
+	 MOVEM B,0(P)		; Save its position
+	JUMPN C,.-3
+	MOVE A,[POINT 7,MBXPAG+140]  ; Where finder wants name
+	MOVE B,D		; Where name is now
+NOMLB5:	ILDB C,B		; Get a char
+	CAMN B,0(P)		; Reached position of last "@"?
+	 SKIPA A,[POINT 7,MBXPAG+150] ; Yes, start host
+	 IDPB C,A		; Store char
+	JUMPN C,NOMLB5		; Repeat til end of string
+	POP P,B			; Discard saved position
+	MOVE A,MBXFRK		; Get fork handle
+	MOVEI B,[1]-1		; Set ac1 to 1 for "specified site"
+	SFACS
+	MOVEI B,2		; Start fork at entry vector +2
+	SFRKV
+	WFORK			; Wait for it to terminate
+	RFSTS			; See if it finished ok
+	HLRZ A,A
+	CAIE A,2		; HALTF?
+	 MBEX(3,<Mail system malfunction for mailbox %4S>)
+	MOVE A,MBXFRK		; Ok, get fork's ac's
+	MOVEI B,TEMP
+	RFACS
+	SKIPG TEMP+1		; Success answer?
+	 JRST [	MOVN A,TEMP+1	; No, make failure code positive
+		CAIN A,0
+		 MBEX(1,<Cannot locate mailbox %4S>)
+		CAIN A,3
+		 MBEX(1,<Unrecognized host name in "%4S">)
+		MBEX(3,<Mail system malfunction for mailbox %4S>)]
+
+; Mailbox property parser (cont'd)
+
+; Mailbox finder found a forwarding address.
+; Now make some minimal checks to prevent infinite forwarding loops.
+; Note that the Mailbox-finder returns host names in canonical form always,
+; so string equality suffices to test host identity.
+	MOVE A,MBXPAG+150	; See if finder returned null host
+	TLNN A,(177B6)
+	 JRST NOMLB2		; Yes
+	HRROI A,MBXPAG+150	; Host name returned by finder
+	HRROI B,LCLHST##	; Local host name
+	PUSHJ P,NAMCHK		; Compare strings
+	 JRST NOMLB3		; Not equal
+NOMLB2:	HRROI B,MBXPAG+140	; Mailbox claims to be local
+	PUSHJ P,CKLMBX		; See whether it really is
+	 JRST [	MOVE D,MBXIDX
+		HRRO D,MBXTAB(D)
+		ELOG <Mailbox-finder says %4S is local, but it isn't>
+		MBEX(4,<Mailbox forwarding error: can't locate %4S.>)]
+	MOVE A,[POINT 7,MBXPAG+140]  ; a _ ptr to forwarding adr
+	ILDB A,A		; Peak at first char
+	CAIN A,FILCHR		; Address a file?
+	 JRST MBXFWD		; Yes, queue it for MAILER to process
+	MOVE A,MBXIDX
+	HRRO A,MBXTAB(A)	; Yes, overwrite original name
+	HRROI B,MBXPAG+140	; ...with one from finder (omitting host)
+	SETZ C,
+	SOUT
+	IBP A			; Update free pointer
+	MOVEI A,1(A)
+	MOVEM A,MBXFRE
+	JRST LCLMBX		; Treat as local
+
+NOMLB3:	HRROI A,MBXPAG+140	; Name returned by finder
+	MOVE B,D		; Name we started with
+	PUSHJ P,NAMCHK		; Compare strings
+	 JRST MBXFWD		; No match, ok
+	HRROI A,MBXPAG+150	; See if message going back to
+	HRROI B,FRNHST##	;  host it came from
+	PUSHJ P,NAMCHK		; Compare strings
+	 JRST MBXFWD		; No match, ok
+
+; Seems to be forwarding in a loop--reject.
+	HRROI B,LCLHST##
+	HRROI C,FRNHST##
+	MOVE D,MBXIDX
+	HRRO D,MBXTAB(D)
+	MBEX(4,<Cannot locate mailbox for %4S on either %2S or %3S.>)
+
+; Mailbox property parser (cont'd)
+
+; Here when found acceptable forwarding address
+MBXFWD:	SAVE D			; Save the input string ptr
+	HRROI A,MBXPAG+150	; a _ ptr to host string
+	CALL HSTLUK##		; Look it up
+	 JRST [ RSTR D		; Recover input str ptr
+		HRROI B,MBXPAG+150
+		MBEX(2,<Forwarding address for %4S on unknown host %2S.>) ]
+	MOVE D,C		; d _ site table entry
+	MOVE B,MBXIDX
+	HRRO A,MBXTAB(B)	; Copy forwarding address
+	HRROI B,MBXPAG+140
+	SETZ C,
+	SOUT
+	IBP A			; Increment to where "@" would be
+	MOVE C,D		; c _ site table entry
+	RSTR D			; Recover input str ptr
+	SAVE A			; Save the ptr to the "@"
+	JRST NOTLCL		; And process an remote address
+
+MLBXOK:	POP P,A			; Restore source string ptr
+	JRST SKPRET##		; Return +2
+
+; Here to buffer up a Mailbox-exception response (MBEX macro).
+; A points to an FTPM instruction.  Copy its control word and
+; expand its text into the MBXFRE area, and put a pointer to that
+; into the MBXTAB entry.  B-D may contain arguments to be used in
+; the expansion.
+DOMBEX:	PUSH P,P1
+	PUSH P,P2
+	HRRZ P2,0(A)		; Get pointer to FTPM argument
+	MOVE P1,MBXFRE		; Buffer FTPM control word here
+	MOVE A,0(P2)
+	MOVEM A,0(P1)
+	HRROI P1,1(P1)		; Expand message here
+	HRRZ A,MBXIDX		; Index to be included in message
+	UWRITE P1,1(P2)
+	IBP P1			; Update free storage pointer
+	MOVEI P1,1(P1)
+	EXCH P1,MBXFRE		; Get start of resulting FTPM argument
+	HRLI P1,(1B1)		; Mark as mailbox-exception
+	MOVEM P1,MBXTAB(A)	; Put in table
+	POP P,P2
+	POP P,P1
+	JRST MLBXOK		; Go give normal return
+
+
+; (Sender <name>)
+; We make no attempt to parse or validate the sender name.
+
+PPSNDR::SETZM SDRSTN		; Clear the sender site tbl entry
+	HRROI B,P.SNDR(P1)	; Where to put string
+	MOVEI C,USRSTL		; Max # of characters
+	PUSHJ P,GTPVAL##	; Collect and store string
+	 FTPM(NO,42,<Malformed Sender property>,1)
+	SKIPN P.SNDR(P1)	; Really have a sender?
+	 JRST SKPRET##		; No
+	MOVEI D,P.SNDR(P1)	; Yes, set to scan the string
+	HRLI D,(POINT 7)
+	SAVE <A,D>		; Save src and sndr string ptrs
+	MOVE A,D
+	SETZ B,
+PPSND0:	ILDB C,A		; Search for last "@" in name
+	CAIN C,"@"
+	 MOVE B,A		; Found "@", remember where it was
+	JUMPN C,PPSND0
+	JUMPN B,[DPB C,B	; If host in name, clobber the "@"
+		 JRST .+2 ]
+	HRROI B,FRNHST##	; No host, assume the foreign host
+	MOVE A,B		; a _ ptr to sender host spec
+	CALL HSTLUK		; Look it up
+	 JRST [	RSTR <D,A>	; Recover ac's
+		FTPM(NO,42,<Unrecognized sender host in %4S>,1)]
+	MOVEM C,SDRSTN		; Save the sender site table entry
+	RSTR <D,A>		; Recover ac's
+	JRST SKPRET##
+
+; Check for existence of local mailbox
+;	B/ String ptr to recipient name
+; Returns +1: Doesn't exist
+;	+2: Exists
+; Clobbers A-C, TEMP buffer
+
+CKLMBX:	HRROI A,TEMP		; Make mailbox filename
+	TLC B,-1		; Convert to proper str ptr
+	TLCN B,-1
+	 HRLI B,(<POINT 7,0>)
+	MOVE C,B		; c _ copy of ptr
+	ILDB C,C		; Peak at first char
+	CAIN C,FILCHR		; Address to a file?
+	 JRST [	IBP B		; Yes, step over marker
+		WRITE <%2S>	; Use the name as is
+		JRST CKLMB0 ]
+TENEX,<			; If TENEX system
+	 WRITE <<%2S>MESSAGE.TXT>
+>
+TOPS20,<		; If TOPS-20 system
+	 WRITE <<%2S>MAIL.TXT>
+>
+CKLMB0:	MOVE A,[1B2+1B8+1B17+1]	; Old file, ign del, vers 1
+	HRROI B,TEMP
+	GTJFN			; See if it exists
+	 POPJ P,		; No
+; SUMEX - don't require permanent mailboxes
+REPEAT 0,<
+	MOVE B,[1,,1]		; Is alleged mailbox permanent?
+	MOVEI C,C
+	GTFDB
+	RLJFN
+	 PUSHJ P,SCREWUP##
+	TLNN C,(1B1)
+	 POPJ P,		; No
+>		; End REPEAT 0
+	JRST SKPRET##		; Yes
+
+
+; Compare names
+;	A/ one string pointer
+;	B/ another string pointer
+; Returns +1:  not equal
+;	+2:  equal
+; Case differences are ignored
+; Clobbers A and B
+
+NAMCHK:	PUSH P,C
+	PUSH P,D
+	TLC A,-1		; Convert -1 lh to string ptr
+	TLCN A,-1
+	 HRLI A,(POINT 7)
+	TLC B,-1
+	TLCN B,-1
+	 HRLI B,(POINT 7)
+NAMCH1:	ILDB C,A		; Get chars to compare
+	ILDB D,B
+	CAIE C,(D)		; Try exact match first
+	 JRST [	XORI C,40	; Not equal, try flipping case
+		CAIE C,(D)	; Now equal?
+		 JRST NAMCH2	; No, definitely a mismatch
+		TRZ C,40	; Maybe, see if alphabetic
+		CAIL C,"A"
+		CAILE C,"Z"
+		 JRST NAMCH2	; No, fail
+		JRST NAMCH1]	; Yes, continue
+	JUMPN C,NAMCH1		; Exact match, end?
+	AOS -2(P)		; Yes, preset skip return
+NAMCH2:	POP P,D
+	POP P,C
+	POPJ P,
+
+; Routine to enter a foreign address into a linked list of addressees
+; for that site in.  The root of the list of addressees to the site is
+; in HSTHSH:
+;	(site tbl adr,,ptr to 1st entry)
+; Successive addressees on the list are linked through the word
+; preceeding the user name string:
+;	(site tbl adr,,ptr to 1st entry)
+; The adr of the data block (header and name string) is in MBXTAB.
+; Entry:   a = site table entry adr
+;	   p1 = index into MBXTAB
+; Call:    CALL HSHLNK
+; Return:  +1, hash table overflow
+;	   +2, success
+HSHLNK:	CALL HASH		; Hash the host site tbl entry
+	CALL HSHLUK		; Look it up
+	 JRST [ JUMPL B,CPOPJ##	   ; Return +1 if overflow
+		HRLZM A,HSTHSH(B)  ; Otherwise, not there so init entry
+		JRST .+1]
+	SAVE C			; Save an ac
+	HRRZ C,MBXTAB(P1)	; c _ adr of data block (hdr + string)
+	HRRZ A,HSTHSH(B)	; a _ current link ptr
+	HRRM A,-1(C)		; Link new addressee in
+	MOVEI A,MBXTAB(P1)	; a _ adr of new head of list
+	HRRM A,HSTHSH(B)	; Install it
+	RSTR C			; Recover the ac
+	JRST SKPRET##
+
+; Routine to hash a host site table number
+; Entry:   a = site tbl entry adr
+; Call:    CALL HASH
+; Return:  +1, b = starting index to hash table entry
+HASH::	SAVE A			; Save the site tbl #
+	IMULI A,HSHA		; Hash code _ (n*a+b) mod size
+	ADDI A,HSHB
+	IDIVI A,NHHSH		; b _ hash code
+	RSTR A			; Recover
+	RET
+
+; Routine to lookup a host site table number in the host hash table.
+; The hash table is in HSTHSH and each entry has the form:
+;	site tbl entry adr,,link to 1st addressee 
+; Entry:   a = site tbl entry adr
+;	   b = starting hash code
+;	   nhhsh = hash table size
+; Call:    CALL HSHLUK
+; Return:  +1, not found, b = index to next empty entry
+;	   +2, success, b = index to right entry
+HSHLUK::SAVE <A,B>		; Save entry ac's
+HSHLU0:	SKIPN A,HSTHSH(B)	; Entry here?
+	 JRST HSHLU1		; No, take it
+	HLRZS A			; Yes, a _ site tbl entry adr
+	CAMN A,-1(P)		; What we're looking for?
+	 JRST [ AOS -2(P)	; Yes, bump return
+		JRST HSHLU1 ]
+	ADDI B,1		; No, bump hash index
+	CAIL B,NHHSH		; Beyond table end?
+	 SETZ B,		; Yes, start over
+	CAME B,0(P)		; Wrap around
+	 JRST HSHLU0		; No, look further
+	ELOG <HSHLUK: Host hash table overflow!>
+	SETO B,			; Flag overflow
+
+; Here we found the entry or an empty slot
+HSHLU1:	SUB P,[1,,1]		; Reset stack
+	RSTR <A>		; a _ site tbl adr
+	RET
+
+
+; Initialize mail server
+; Returns +1
+
+INIMLS::TLNN F,(ENABLF)		; Are we the system server?
+	 POPJ P,		; No, do nothing
+	MOVE A,[1B2+1B17+1]	; Look for <SYSTEM>MAILER.FLAGS
+TENEX,<			; If TENEX system
+	HRROI B,[ASCIZ /<SYSTEM>MAILER.FLAGS/]
+>
+TOPS20,<		; If TOPS-20 system
+	HRROI B,[ASCIZ /SYSTEM:XMAILR.FLAGS/]  ; Yes
+>
+	GTJFN
+	 JRST INIML9		; Failed
+	MOVE C,A
+	MOVEI B,1B19+1B20+1B25	; R+W, thawed
+	OPENF
+	 JRST INIML8		; Failed
+	MOVSI A,0(A)		; JFN ,, page 0
+	MOVEI B,MFLAGS
+	LSH B,-9
+	HRLI B,400000		; This fork ,, page number
+	MOVSI C,(1B2+1B3)	; R+W
+	PMAP			; Map flag page into this fork
+	POPJ P,
+
+; Failures
+INIML8:	EXCH A,C
+	RLJFN
+	 PUSHJ P,SCREWUP##
+	MOVE A,C
+INIML9:	ELOG <Failed to open <SYSTEM>MAILER.FLAGS%/ - %1J>
+	POPJ P,
+
+
+; Wired-in table of Pup host addresses of hosts to be treated as members
+; of the "local site", i.e., that share a common registry of names.
+; This is a crock and should be handled some other way.
+
+;;;LCLSIT:	1 ,, 123	; SUMEX KI-10s
+;;;	1 ,, 124	; SUMEX 2020
+;;;	0		; Ends table
+
+
+; Storage
+
+LS MBXFRK		; Fork handle for mailbox finder
+LS MBXLEN		; Length of mailbox
+LS MBXPGN		; Current page number
+LS MBXCNT		; Byte count
+LS MBXBYT		; Byte pointer
+LS DATREC		; Date received
+LS MSGLEN		; Length of message in bytes
+LS MSGFLG		; Message flags in stamp
+LS NDELIV		; Number of messages delivered
+LS NQUEUE		; Number of messages queued
+LS QUEJFN		; JFN for [--UNDISTRIBUTED-MAIL--] file
+LS QUEPTR		; File pointer to start of current message
+LS SDRSTN		; Sender host site table entry
+LS ARCJFN		; JFN for MESSAGE.ARCHIVE file
+LS MBXFRE		; Free storage pointer for name list
+LS MBXIDX		; Current mailbox index
+LS MBXTAB,LMBXTB	; Table of pointers to mailbox names
+LS HSTHSH,NHHSH		; Hash tbl for hosts to link adrs to same site
+
+LSP MBXPAG		; Page mapped into mailbox finder fork
+LSP MBXBUF,<LMBXTB*20>/1000 ; Storage for names and Mailbox-exception text
+
+GSP MFLAGS		; Page mapped into <SYSTEM>MAILER.FLAGS
+
+	END

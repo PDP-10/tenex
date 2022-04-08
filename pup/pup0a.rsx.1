@@ -1,0 +1,452 @@
+; Copyright Xerox Corporation 1979
+        .TITLE  PUP0A
+
+	.DSABL	GBL
+
+	.MCALL	QIO$
+	.MCALL	QIO$S
+	.MCALL	DIR$
+	.MCALL	ALUN$S
+	.MCALL	ASTX$S
+	.MCALL	DSAR$S
+	.MCALL	ENAR$S
+	.MCALL	IOERR$
+	.GLOBL	IO.KIL
+	.GLOBL	IO.WLB
+	.GLOBL	IO.RLB
+
+	IOERR$
+
+	.CSECT	GLOBAL
+G=.
+.=G+144.+144.
+	.WORD	FILTER
+	.WORD	SEIN
+	.WORD	SEOUT
+	.WORD	INEIO
+
+	.CSECT
+	.LIST	MEB
+
+SETTIM=G+122.+122.
+
+NDBQ=G+190.+190.
+PBIFQ=G+191.+191.
+
+;
+;QUEUE STRUCTURE
+;
+HEAD=0
+TAIL=2
+;
+;PBI DATA STRUCTURE
+;
+LINK=0.
+TQUEUE=2.
+SOCKET=4.
+NDB=6.
+STATUS=8.
+TIMER=10.
+PLNGTH=12.
+ENCAP1=14.
+ENCAP2=16.
+LENGTH=18.
+;
+;ETHER NDB DATA STRUCTURE
+;
+ELINK=0.
+LNET=2.
+LHOST=4.
+DEVNUM=6.
+NGPBI=8.
+PFQ=10.
+PLINK=14.
+PPRED=16.
+PQUEUE=18.
+ENCPUP=20.
+XMIT=22.
+STATS=24.
+ICCNT=26.
+ICADDR=28.
+ICSTAT=30.
+IPBI=32.
+OCCNT=34.
+OCADDR=36.
+OCSTAT=38.
+OCDLAY=40.
+LOAD=42.
+XMTTIM=44.
+OPBI=46.
+OQ=48.
+;
+;PACKET FILTER DATA STRUCTURE
+;
+PFLINK=0
+PFPRED=2
+PFQUE=4
+;
+;MISCELLANEOUS CONSTANTS
+;
+PUP=1000                        ;PUP IDENTIFIER
+PUPSIZ=560.
+;
+;MACRO CALLS
+;
+HOST:	QIO$	3000,6,,,IOSB
+IOSB:	.BLKW	2
+;
+OUTPUT:
+	.BYTE	1,12.
+	.WORD	IO.WLB
+	.WORD	5
+	.BYTE	0,0
+	.WORD	IOSB1
+	.WORD	OUTAST
+OUTARG:
+	.BLKW	6
+IOSB1:	.BLKW	2
+;
+INPUT:
+	.BYTE	1,12.
+	.WORD	IO.RLB
+	.WORD	6
+	.BYTE	0,0
+	.WORD	IOSB2
+	.WORD	INAST
+INARG:
+	.BLKW	6
+IOSB2:	.BLKW	2
+      .PAGE
+;
+;SUBROUTINE InitEtherIO() = host
+;
+INEIO::
+	ALUN$S	#5,EN,#0,ERROR	;ASSIGN LUN FOR OUTPUT
+	ALUN$S	#6,EN,#1,ERROR	;ASSIGN LUN FOR INPUT
+;
+;CANCEL I/O
+;
+	QIO$S	#IO.KIL,#6
+;
+;GET AND RETURN HOST ADDRESS
+;
+	DIR$	#HOST,ERROR
+	MOV	IOSB+2,R1	;HOST ADDRESS
+;
+      ADD      #2,0(SP)
+      RTS      PC               ;RETURN
+EN:	.ASCII	/EN/		;DEVICE NAME IS 'EN'
+      .PAGE
+;
+;SUBROUTINE OUTAST
+;
+;ENTERED BY INTERRUPT AFTER TRANSMISSION
+;
+OUTAST::
+	TST	(SP)+		;REMOVE ADDR OF IOSB
+      MOV      R1,-(SP)         ;PUSH R1
+      MOV      R2,-(SP)         ;PUSH R2
+      MOV      R3,-(SP)         ;PUSH R3
+;
+      MOV      NDBQ,R3          ;
+      ASL      R3               ;
+      MOV      @R3,R3           ;
+      ASL      R3               ;R3 = NDB ADDRESS
+      MOV      OPBI(R3),R2      ;
+      ASL      R2               ;R2 = PBI ADDRESS
+	CMP	IOSB1,#IS.SUC	;GOOD COMPLETION?
+	BEQ	OUTAS2		;YES, BRANCH
+      TST      LOAD(R3)         ;NO, LOAD OVERFLOW?
+      BPL      OUTAS3           ;NO, BRANCH
+OUTAS2:
+      MOV      TQUEUE(R2),R1    ;R1 = TQUEUE
+      CLC
+      ROR      R2
+      JSR      PC,NQ		;ENQUEUE PBI ON TQUEUE
+      .WORD    0                ;
+;
+      CLR      OPBI(R3)         ;NDB.OPBI = 0
+      CLR      LOAD(R3)         ;NDB.LOAD = 0
+;
+OUTAS3:
+      MOV      R3,R1            ;R1 = NDB ADDRESS
+      CLC
+      ROR      R1
+      JSR      PC,$SEOUT	;START ETHER OUTPUT
+      .WORD    0                ;
+;
+      MOV      (SP)+,R3         ;POP R3
+      MOV      (SP)+,R2         ;POP R2
+      MOV      (SP)+,R1         ;POP R1
+	ASTX$S			;RETURN FROM AST
+      .PAGE
+;
+;SUBROUTINE INAST
+;
+;ENTERED BY INTERRUPT AFTER RECEIPT OF PACKET
+;
+INAST::
+	TST	(SP)+		;REMOVE ADDR OF IOSB
+      MOV      R4,-(SP)         ;PUSH R4
+      MOV      R3,-(SP)         ;PUSH R3
+      MOV      R2,-(SP)         ;PUSH R2
+      MOV      R1,-(SP)         ;PUSH R1
+;
+      MOV      NDBQ,R3          ;
+      ASL      R3               ;
+      MOV      @R3,R3           ;
+      ASL      R3               ;R3 = NDB ADDRESS
+      MOV      IPBI(R3),R2      ;
+      ASL      R2               ;R2 = PBI ADDRESS
+	ASR	IOSB2+2		;CONVERT BYTE CNT TO WORD CNT
+      MOV      IOSB2+2,ICCNT(R3)	;INPUT WORD COUNT
+      MOV      IOSB2+2,PLNGTH(R2)	;PBI.PACKET LENGTH
+;
+      MOV      R3,R1            ;
+      CLC
+      ROR      R1
+      MOV      R1,NDB(R2)       ;PBI.NDB
+;
+	CMP	IOSB2,#IS.SUC	;GOOD COMPLETION?
+	BNE	INAST3		;NO, BRANCH
+;
+      MOV      PFQ(R3),R4       ;
+      ASL      R4               ;R4 = ADDRESS OF PF
+INAST1:
+      BEQ      INAST3           ;BRANCH IF NO MORE PF'S
+      MOV      R2,R1            ;R1 = PBI ADDRESS
+      CLC
+      ROR      R1
+      JSR      PC,@PFPRED(R4)   ;EXECUTE ETHER PUP FILTER
+      .WORD    0
+      TST      R1               ;GOOD PUP?
+      BNE      INAST2           ;YES, BRANCH
+      MOV      PFLINK(R4),R4    ;
+      ASL      R4               ;R4 = ADDRESS OF NEXT PF
+      BR       INAST1           ;TRY AGAIN
+;
+INAST2:
+      MOV      PFQUE(R4),R1     ;QUEUE PBI ON PBIIQ
+      CLC
+      ROR      R2
+      JSR      PC,NQ		;
+      .WORD    0
+;
+      CLR      IPBI(R3)         ;NDB.IPBI = 0
+;
+INAST3:
+	CMP	IOSB2,#IE.ABO
+	BEQ	INAST4		;CANCEL I/O PERFORMED
+      MOV      R3,R1            ;R1 = NDB ADDRESS
+      CLC
+      ROR      R1
+      JSR      PC,$SEIN          ;START ETHER INPUT
+      .WORD    0
+;
+INAST4:
+      MOV      (SP)+,R1         ;POP R1
+      MOV      (SP)+,R2         ;POP R2
+      MOV      (SP)+,R3         ;POP R3
+      MOV      (SP)+,R4         ;POP R4
+	ASTX$S			;RETURN FROM AST
+      .PAGE
+;
+;SUBROUTINE EtherPupFilter(pbi) = true/false
+;
+FILTER::
+      MOV      R3,-(SP)         ;PUSH R3
+      MOV      R2,-(SP)         ;PUSH R2
+;
+      ASL      R1               ;
+      MOV      R1,R2            ;R2 = PBI ADDRESS
+      CLR      R1               ;RESULT = FALSE
+      CMP      ENCAP2(R2),#PUP  ;TYPE = 'PUP'?
+      BNE      FLTER5           ;NO, BRANCH
+      MOV      LENGTH(R2),R3    ;PUP.LENGTH
+      ADD      #5,R3            ;   + 5
+      ASR      R3               ;       /2
+      CMP      R3,PLNGTH(R2)    ;           = PACKET LENGTH?
+      BNE      FLTER5           ;NO, BRANCH
+      DEC      R1               ;RESULT = TRUE
+FLTER5:
+      MOV      (SP)+,R2         ;POP R2
+      MOV      (SP)+,R3         ;POP R3
+      ADD      #2,0(SP)         ;
+      RTS      PC               ;RETURN
+      .PAGE
+;
+;SUBROUTINE StartEtherInput(ndb)
+;
+SEIN::
+      MOV      R0,-(SP)         ;PUSH R0
+      MOV      R2,-(SP)         ;PUSH R2
+      MOV      R3,-(SP)         ;PUSH R3
+	DSAR$S			;DISABLE AST
+	JSR	PC,$SEIN
+	.WORD	0
+	ENAR$S			;ENABLE AST
+      MOV      (SP)+,R3         ;POP R3
+      MOV      (SP)+,R2         ;POP R2
+      MOV      (SP)+,R0         ;POP R0
+      ADD      #2,0(SP)         ;
+      RTS      PC               ;RETURN
+;
+$SEIN:
+      MOV      R1,R2            ;
+      ASL      R2               ;R2 = NDB ADDRESS
+      TST      IPBI(R2)         ;IS NDB.IPBI = 0?
+      BNE      SEIN1            ;NO, BRANCH
+;
+      MOV      PBIFQ,R1         ;
+	JSR	PC,DQ		;DEQUEUE PBI FROM PBIFREEQ
+	.WORD	0		;
+      MOV      R1,IPBI(R2)      ;SET NEW NDB.IPBI
+;
+SEIN1:
+      MOV      IPBI(R2),R3      ;
+      ASL      R3               ;R3 = NDB.IPBI
+      BEQ      SEIN2            ;PBIFREEQ EMPTY, BRANCH
+;
+      ADD      #ENCAP1,R3       ;R3 = PACKET ADDRESS
+      MOV      R3,ICADDR(R2)    ;
+;
+      MOV      #PUPSIZ,INARG+2	;SET MAX BYTE COUNT
+      MOV      ICADDR(R2),INARG	;SET BUFFER ADDRESS
+;
+	DIR$	#INPUT,ERROR	;QIO
+SEIN2:
+      ADD      #2,0(SP)         ;
+      RTS      PC               ;RETURN
+      .PAGE
+;
+;SUBROUTINE StartEtherOutput(ndb)
+;
+SEOUT::
+      MOV      R0,-(SP)         ;PUSH R0
+      MOV      R2,-(SP)         ;PUSH R2
+      MOV      R3,-(SP)         ;PUSH R3
+	DSAR$S			;DISABLE AST
+	JSR	PC,$SEOUT
+	.WORD	0
+	ENAR$S			;ENABLE AST
+      MOV      (SP)+,R3         ;POP R3
+      MOV      (SP)+,R2         ;POP R2
+      MOV      (SP)+,R0         ;POP R0
+      ADD      #2,0(SP)         ;
+      RTS      PC               ;RETURN
+;
+$SEOUT:
+      MOV      R1,R2            ;
+      ASL      R2               ;R2 = NDB ADDRESS
+      TST      OPBI(R2)         ;IS NDB.OPBI = 0?
+      BNE      SEOUT1           ;NO, BRANCH
+;
+      MOV      R2,R1
+      ADD      #OQ,R1
+      CLC
+      ROR      R1
+	JSR	PC,DQ		;DEQUEUE PBI FROM NDB.OQ
+	.WORD	0		;
+      MOV      R1,OPBI(R2)      ;SET NEW NDB.OPBI
+;
+SEOUT1:
+      MOV      OPBI(R2),R3      ;
+      ASL      R3               ;R3 = NDB.OPBI
+      BEQ      SEOUT2           ;NDB.OQ EMPTY, BRANCH
+;
+;      SET TRANSMIT TIMEOUT FOR 1 SECOND
+;
+      MOV      R2,R1
+      ADD      #XMTTIM,R1
+      CLC
+      ROR      R1
+      MOV      R2,-(SP)
+      MOV      #10.,R2
+      JSR      PC,@SETTIM       ;SET TIMER
+      .WORD    0                ;
+      MOV      (SP)+,R2
+;
+      MOV      PLNGTH(R3),OCCNT(R2)
+      MOV      OCCNT(R2),OUTARG+2
+	ASL	OUTARG+2	;SET OUTPUT BYTE COUNT
+      ADD      #ENCAP1,R3       ;
+      MOV      R3,OCADDR(R2)    ;
+      MOV      R3,OUTARG	;SET BUFFER ADDRESS
+;
+      MOV      OCDLAY(R2),R3    ;CALCULATE RANDOM NUMBER
+      ASH      #9.,R3		;
+      ADD      OCDLAY(R2),R3    ;
+      ASH      #2.,R3		;
+      ADD      OCDLAY(R2),R3    ;
+      ADD      #13849.,R3       ;
+      MOV      R3,OCDLAY(R2)    ;
+;
+      MOV      LOAD(R2),R1      ;CALCULATE OUTPUT START DELAY
+      NEG      R1               ;
+      ASH      #-8.,R3          ;
+      NEG      R3               ;
+      BIS      R1,R3            ;
+      NEG      R3               ;R3 = RANDOM/256 .AND. NDB.LOAD
+      MOVB     R3,OUTARG+4	;SET OUTPUT START DELAY
+;
+      ASL      LOAD(R2)         ;LOAD = 2*LOAD+1
+      ADD      #1,LOAD(R2)      ;
+;
+	DIR$	#OUTPUT,ERROR	;QIO
+SEOUT2:
+      ADD      #2,0(SP)         ;
+      RTS      PC               ;RETURN
+;
+ERROR:
+	HALT			;I/O ERROR
+      .PAGE
+;
+;SUBROUTINE Enqueue(queue,item)
+;
+NQ::
+      ASL      R1
+      MOV      R3,-(SP)         ;PUSH R3
+      MOV      R4,-(SP)         ;PUSH R4
+      MOV      R2,R3
+      ASL      R3
+      CLR      LINK(R3)         ;LINK OF NEW TAIL = 0
+      TST      HEAD(R1)         ;IS QUEUE EMPTY?
+      BNE      QUSED            ;NO, BRANCH
+      MOV      R2,HEAD(R1)      ;YES, UPDATE HEAD POINTER
+      BR       NOTAIL           ;
+QUSED:
+      MOV      TAIL(R1),R4      ;UPDATE LINK OF PREVIOUS TAIL
+      ASL      R4		;
+      MOV      R2,@R4		;
+NOTAIL:
+      MOV      R2,TAIL(R1)      ;UPDATE TAIL POINTER
+      MOV      (SP)+,R4         ;POP R4
+      MOV      (SP)+,R3         ;POP R3
+      ADD      #2,0(SP)         ;
+      RTS      PC               ;RETURN
+;
+;SUBROUTINE Dequeue(queue) = item
+;
+DQ:
+      ASL      R1
+      MOV      R2,-(SP)         ;PUSH R2
+      MOV      R3,-(SP)         ;PUSH R3
+      MOV      R4,-(SP)         ;PUSH R4
+      MOV      HEAD(R1),R3      ;RETURN ITEM ADDR TO CALLER
+      BEQ      NOQUE            ;
+      MOV      HEAD(R1),R4
+      ASL      R4
+      MOV      @R4,HEAD(R1)	;HEAD = NEXT ITEM
+      TST      HEAD(R1)         ;TEST NEXT ITEM
+      BNE      TAILOK           ;BRANCH IF QUEUE NOT EMPTY
+      CLR      TAIL(R1)         ;QUEUE EMPTY, TAIL = 0
+NOQUE:                          ;
+TAILOK:                         ;
+      MOV      R3,R1            ;R1 = ITEM ADDRESS
+      MOV      (SP)+,R4         ;POP R4
+      MOV      (SP)+,R3         ;POP R3
+      MOV      (SP)+,R2         ;POP R2
+      ADD      #2,0(SP)         ;
+      RTS      PC               ;RETURN
+      .END
+(1729)

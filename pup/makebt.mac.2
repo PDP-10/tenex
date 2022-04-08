@@ -1,0 +1,606 @@
+	title	makebt
+	subttl	Make Ethernet .BOOT files from .LDA files
+	search	stenex
+ 
+f=0
+a=1
+b=2
+c=3
+d=4
+e=5
+type=10
+pos=11
+pcnt=12
+p=17
+stksiz==40
+
+;flags
+inpckt==400000
+ 
+opdef	call	[pushj	p,0]
+opdef	ret	[popj	p,0]
+
+; A simple macro to assemble ASCIZ text
+
+define str (text) <[asciz text]>
+
+
+; Macros to append to and expand lists
+
+define append(list,item) <
+define list(op,more) <
+op list,<item,more>
+>>
+
+define expand(list,value) <
+define opmac(junk,item) <
+irp item <ifnb <item>,<value>>>
+list(opmac)
+purge opmac
+>
+
+define uuo(op,routin) <uuon==uuon+1
+opdef op [<uuon>b8]
+ifb <routin>,<uuos(append,%'op)>
+ifnb <routin>,<uuos(append,routin)>
+>
+
+;macro to declare local storage
+define ls(name,size<1>),<
+name:	block	size
+>
+
+;macro to declare global storage
+define gs(name,size<1>),<
+name::	block	size
+>
+
+;macros to declare and end reserved block
+define rborg(name,size),<
+staddr==.
+addr==.
+blksiz==size
+ls name,size
+>
+define rbend,<
+	purge	staddr,addr
+>
+;macro to declare local symbol in reserved block
+define rbls(name,size<1>),<
+ifndef staddr,<
+	printx	Must define start of reserved block before using RBLS!!!
+>
+ifndef addr,<addr==staddr>
+ifg addr-staddr-blksiz,<
+	printx	Symbols overrun reserved block!!!
+>
+name=addr
+addr==addr+size
+>
+
+;macro to declare global symbol in reserved block
+define rbgs(name,size<1>),<
+ifndef staddr,<
+	printx	Must define start of reserved block before using RBGS!!!
+>
+ifndef addr,<addr==staddr>
+ifg addr-staddr-blksiz,<
+	printx	Symbols overrun reserved block!!!
+>
+name=:addr
+addr==addr+size
+>
+
+append(uuos)	;init dispatch list
+uuon==0		;init uuo numbers
+
+	uuo	(print)
+
+define	type	(mess)	<
+	utype	[asciz \mess\] >
+	uuo	(utype,%type)
+
+define	etype	(mess)	<
+	uetype	[asciz \mess\] >
+	uuo	(uetype,%etype)
+
+define	error	(message,retry<0>)	<
+	uerr	[retry,,[asciz message]] >
+	uuo	(uerr,%err)
+
+
+; Handle a JSYS error
+
+define jerr(ac<1>) <
+	error(%acE%N)
+>
+
+start:	reset
+	setzm	sclr0
+	move	1,[sclr0,,sclr0+1]
+	blt	1,sclr1
+
+	move	p,[iowd stksiz,stack]
+	movei	1,101
+	movem	1,ttyjfn
+	move	1,[call uuohan]
+	movem	1,41
+	etype	<MAKEBT -- Make Ethernet .BOOT files from .LDA files%n>
+	call	getlda			; Get the LDA file
+	call	getbt			; Get the BOOT file to write
+	call	genbt			; Generate the BOOT file
+haltt:	reset
+	haltf
+	jrst	start		
+; Routine to GTJFN and OPENF LDA file
+getlda:	type	<Input from: >
+	movei	a,ldatab		; Do long gtjfn
+	setz	b,
+	gtjfn
+	 error	(<%1E%%N>,getlda)
+	movem	1,ldajfn
+	move	2,[44b5+1b19+1b26]	; Open 36 bit, read
+	openf
+	 error	(<%1E%%N>,getlda)
+	move	2,1
+	hrroi	1,namstr
+	move	3,[1b8]
+	jfns
+	 erjmp	[jerr]
+	ret
+
+; Routine to GTJFN and OPENF new .BOOT file
+getbt:	type	<Output to: >
+	movei	a,bttab			; Do long GTJFN
+	setz	b,
+	gtjfn
+	 error	(<%1E%%N>,getbt)
+	movem	1,btjfn			; Open 16 bit, write
+	move	2,[20b5+1b20]
+	openf
+	 error	(<%1E%%N>,getbt)
+	ret
+; Main routine -- generate .BOOT file
+genbt:	setzb	pos,f
+	call	gettyp			; File is binary/image
+	tlo	f,inpckt
+genlp:	call	$bin			; Read next data byte
+	 jrst	genend			; Reached EOF
+	move	a,btjfn
+	bout
+	jrst	genlp
+
+$bin:	jrst	@$bintab(type)
+
+$bintab:$binig
+	$binbi
+
+$binig:	push	p,c
+	tlzn	f,inpckt		; Check if in packetting
+	 jrst	$bing1			; No	
+	move	a,ldajfn
+	bin				; Yes, read packets
+	jumpe	b,$binig
+	caie	b,1			; Expect a 1 followed by a 0
+	 error	(<Bad IMAGE format -- expected 1 but got %2o>,)
+	bin
+	caie	b,0
+	 error	(<Bad IMAGE format -- expected 0 but got %2o>,)
+	bin				; Read byte count
+	movei	pcnt,(b)
+	bin
+	lsh	b,^d8
+	iori	pcnt,(b)
+	bin				; Set file address
+	movei	c,(b)
+	bin
+	lsh	b,^d8
+	iori	b,(c)
+	move	a,btjfn
+	cain	pcnt,6
+	 jrst	[pop p,c
+		 ret]
+
+	lsh	b,-1
+	sfptr
+	 jerr
+$bing1:	move	a,ldajfn
+	bin				; Read a byte
+	movei	c,(b)
+	soje	pcnt,$binge
+	bin
+	lsh	b,^d8
+	iori	c,(b)
+	sojn	pcnt,$bing2
+$binge:	bin				; Read checksum byte
+	tlo	f,inpckt
+$bing2:	movei	b,(c)
+	pop	p,c
+	aos	0(p)
+	ret
+
+$binbi:	push	p,c	
+$binb3:	tlze	f,inpckt
+	 jrst	$binbp
+	call	$bbyte
+	movei	c,(b)
+	soje	pcnt,$binbe
+	call	$bbyte
+	lsh	b,^d8
+	iori	c,(b)
+	sojn	pcnt,$binb1
+$binbe:	call	$bbyte
+	tlo	f,inpckt
+$binb1:	movei	b,(c)
+	pop	p,c
+	aos	0(p)
+	ret
+
+$binbp:	call	$bbyte
+	jumpe	b,$binbp
+	caie	b,1
+	 error	(<Bad BINARY format -- expected 1 but got %2o>,)
+	call	$bbyte
+	skipe	b
+	 error	(<Bad BINARY format -- expected 0 but got %2o>,)
+	call	$bbyte
+	movei	c,(b)
+	call	$bbyte
+	lsh	b,^d8
+	iori	b,(c)
+	movei	pcnt,(b)
+	call	$bbyte
+	movei	c,(b)
+	call	$bbyte
+	lsh	b,^d8
+	iori	b,(c)
+	cain	pcnt,6
+	 jrst	[pop p,c
+		 ret]
+	move	a,btjfn
+	lsh	b,-1
+	sfptr
+	 jerr
+	jrst	$binb3
+
+$bbyte:	andi	pos,3			; Mask position to 2 bits
+	jumpe	pos,[move a,ldajfn	; If zero, then read a word
+		     bin
+		     movem b,binwd
+		     jrst .+1]
+	ldb	b,$bbtab(pos)
+	aoj	pos,
+	ret
+
+$bbtab:	point	8,binwd,17
+	point	8,binwd,9
+	point	8,binwd,35
+	point	8,binwd,27
+
+genend:	move	a,btjfn
+	push 	p,b
+	setz	b,
+	sfptr
+	 jerr
+	pop	p,b
+	bout
+	closf
+	 error	(%1e,gc)
+gc:	ret
+
+gettyp:	move	1,ldajfn
+	bin
+	bkjfn
+	 jerr
+	soje	2,getimg
+	etype	<File is in BINARY format%n>
+	movei	type,1
+	ret
+getimg:	etype	<File is in IMAGE format%n>
+	setz	type,
+	ret
+
+; Support routines
+
+uuohan:	movem	1,uuotmp
+	hlrz	1,40
+	lsh	1,-^D9
+	hrrz	1,uuotbl-1(1)
+	exch	1,uuotmp
+	jrst	@uuotmp
+ 
+uuotbl:	expand(uuos,<exp item>)
+
+%type:	push	p,1
+	push	p,2
+	push	p,3
+	move	1,ttyjfn
+	hrro	2,40
+	setz	3,
+	sout
+	pop	p,3
+	pop	p,2
+	pop	p,1
+	ret
+
+%print:	push	p,2
+	hrrz	2,40
+	call	outchr
+	pop	p,2
+	ret
+
+; print the character in b
+outchr:	push	p,1
+	move	1,ttyjfn
+	bout
+	pop	p,1
+	ret
+ 
+
+; Handle general errors
+
+%err:	skipe	errflg		; Already an error?
+	 jrst  [type	< Error when already in error, aborting >
+		jrst	haltt ]
+	setom	errflg
+	exch	1,(p)
+	tlz	1,-1
+	push	p,40
+	etype	<
+Error at PC %1o, >		; Show error address
+	move	1,-1(p)
+	etype	<ACs %1h  %2h  %3h  %4h
+>				; And contents of Acs
+	pop	p,40
+	move	1,@40
+	hlrzm	1,errLH		; Separate the halves of the word loc. 40
+	hrrzm	1,errRH		; points to and save them
+	pop	p,1
+	skipe	errRH		; Any error message?
+	 uetype	@errRH		; Yes, ETYPE it
+	setzm	errflg
+	skipe	errLH		; Retry address given?
+	 jrst	@errLH		; Yes, go there
+	jrst	haltt		; None, fatal error
+
+; Taken from the EXEC (%ETYPE (ETYPE macro, UETYPE UUO))
+;Handler for UUO that types message, interpreting % codes.
+;Special codes are of form %NL%
+;	Where N is an optional octal number specifying an AC
+;	      L is a letter:
+;		D	;contents of ac in decimal
+;		H	;halfwords in octal
+;		N	;CR-LF (Newline)
+;		O	;contents of specified ac in octal
+;		S	;string ac has address of
+ 
+%etype:	push	p,z
+	push	p,1
+	push	p,2
+	push	p,3
+	push	p,4
+etype1:	hrr	1,40
+	hrli	1,(point 7,0)		;form byte ptr from eff addr
+etyp2:	ildb	2,1			;next character
+etyp2a:	jumpe 2,[pop p,4		;null terminates text
+		pop p,3
+		pop p,2
+		pop p,1
+		sub p,[xwd 1,1]		;forget saved z value
+		ret	]
+	caie	2,"%"
+	jrst [	call outchr		;not a %, output it
+		jrst etyp2]
+	setzb	3,4		;c: if no number, use 0
+				;d: init number to 0.
+etyp4:	ildb	2,1		;character after %
+	caig	2,"7"
+	caige	2,"0"
+	jrst	etyp5
+	imuli	4,10
+	addi	4,-"0"(2)	;add new digit to number
+	move	3,4		;compute location to get ac from...
+	caig	3,4		;...ac's 5-9 are preserved,
+	addi	3,-4(p)		;...contents of 0-4 are in pushdown.
+	move	3,(3)		;fetch contents of ac indicated by number so far
+	jrst	etyp4		;go check for additional digit(s)
+etyp5:	push	p,1		;save byte ptr during processing
+	cail	2,"a"
+	caile	2,"z"
+	 jrst	.+2
+	 trz	2,40		;make upper case
+	cail	2,"A"
+	caile	2,"Z"		;highest letter in table
+	call	un%		;not letter, unrecognized % code
+	call	@%lets-"A"(2)	;dispatch with a pushj through letter
+				;table.  at this time c contains 0 or
+				;c(indicated ac).
+ 
+;Done interpreting a % code.  Must follow dispatch pushj!
+ 
+end%:	pop	p,1		;get text pointer back
+	ildb	2,1		;next character
+	caie	2,"%"		;pass following %
+	move	1,1(p)
+	jrst	etyp2		;continue typing
+;%etype...
+ 
+%lets:	un%			;a
+	un%			;b
+	un%			;c
+	un%			;d 
+	%e		;erstr for error code in AC or most recent
+	un%			;f
+	un%			;g
+	%h		;halfwords in octal
+	un%			;i
+	%j		;JFNS for JFN in AC
+	un%			;k
+	un%			;l
+	un%			;m
+	%n		;CR-LF (Newline)
+	%o		;contents of specified ac in octal
+	un%			;p
+	%q		;contents of ac in decimal 
+	un%			;r
+	%s		;string ac has address of
+	un%			;t
+	un%			;u
+	un%			;v
+	un%			;w
+	un%			;x
+	un%			;y
+	un%			;z
+ 
+;unrecognized %-code
+ 
+un%:	sub	p,[xwd 1,1];forget return
+	pop	p,1	;recover text pointer
+	print	"%"	;digit, if any, is lost.
+	jrst	etyp2a	;continue typing, starting with char after %.
+;%etype...
+;routines for letters after %.
+;these routines receive in c: contents of specified AC, or 0 if none.
+;they may clobber ac's 1, 2, 3, and d only.
+
+; Newline
+%n:	move	1,ttyjfn
+	movei	2,15
+	bout
+	movei	2,12
+	bout
+	ret
+
+; ERSTR for error number in AC or most recent
+
+%e:	move	1,ttyjfn
+	hrli	2,400000
+	skipn	3		; Error code given?
+	 troa	2,-1		; No, use mose recent
+	 hrr	2,3		; Yes, use code given
+	setz	3,		; No limit of bytes to print (ERSTR)
+	erstr
+	 jrst  [type < Undefined error >
+		jrst haltt ]
+	 jrst  [type < Error while already processing error >
+		jrst haltt ]
+	ret
+
+
+;JFNS for JFN in AC
+
+%j:	move	1,ttyjfn
+	move	2,3
+	setz	3,
+	jfns
+	ret
+
+;type asciz string whose addr is in ac
+ 
+%s:	move	1,ttyjfn
+	hrro	2,3
+	setz	3,
+	sout
+	ret
+ 
+;halfwords in octal
+
+%h:	hlrz	2,3		;left half first
+	jumpe	2,%h1		;forget it if 0
+	call	toct
+	movei	2,","
+	call	outchr
+	call	outchr
+%h1:	hrrz	2,3		;then right
+	jrst	toct
+
+;octal number in specified ac.
+ 
+%o:	move	2,3
+
+; output octal number from 2, no leading zeroes or spaces.
+toct:	push	p,1
+	push	p,3
+	move	1,ttyjfn
+	move	3,[1b0!10]	;magnitude flag and radix
+	nout
+	 type	<NOUT error>
+	pop	p,3
+	pop	p,1
+	ret
+ 
+;floating pt or decimal number from ac.		      >	>
+;print as floating if normalized and with exponent 100<e<377
+%q:	move 2,3		;number in 2
+	movm 3,2		;magnitude in 3
+	tlne 3,700000		;exponent .ge. 100?
+	tlnn 3,400		;normalized?
+	jrst %q1		;no, print decimal
+	camge 3,[1.0e5]		;can accommodate fixed point?
+	 jrst %q2		;yes, don't use flout
+	move 3,[1b6+2b29]
+	move 1,ttyjfn
+	flout
+	 jrst  [type <%Q: >	;We don't want ETYPE to try to decode %Q
+		etype <%3E>
+		jrst .+1]
+	ret
+ 
+;here to do our own floating output rather than calling flout
+%q2:	fmpri 3,(100.0)		;want two digits past decimal point
+	fixr 3,3		;fix and round
+	skipge 2		;correct sign
+	print "-"
+	idivi 3,^d100		;get integer part
+	move 2,3
+	call %q1		;print integer part
+	print "."
+	move 2,4		;and the fraction
+	skipa 3,[1b2+1b3+2b17+^d10]
+%q1:	movei 3,^d10
+	move 1,ttyjfn
+	nout
+	 jrst  [type <%Q: >	;We don't want ETYPE to try to decode %Q
+		etype <%3E>
+		jrst .+1]
+	ret
+; Data storage
+
+ldatab:	160000,,0
+	-1
+	0
+	0
+	0
+	-1,,[ASCIZ/LDA/]
+	0
+	0
+	0
+
+bttab:	460000,,0
+	-1
+	0
+	0
+	-1,,namstr
+	-1,,[ASCIZ/BOOT/]
+	0
+	0
+	0
+	 
+ttyjfn:	block	1		;JFN of the teletype (usually 101)
+debug:	block	1
+
+sclr0==.		;beginning of block to zero at startup
+ldajfn:	block	1
+btjfn:	block	1
+binwd:	block	1
+namstr:	block	10
+uuotmp:	block	1		;Temp. for UUO handler
+errLH:	block	1		;Some temp. vars. for %ERR (ERROR macro)
+errRH:	block	1
+errflg:	block	1		;Non-zero if in an error
+sclr1==.		;end of zeroed block
+
+stack:	block	stksiz
+lits:	lit
+	end	start
+

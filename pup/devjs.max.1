@@ -1,0 +1,1625 @@
+;<134>DEVJS.MAC;803    31-MAY-77 10:09:52    EDIT BY TAFT
+; Repair bug in DELDF other job check
+;<134>DEVJS.MAC;802    25-APR-77 16:04:33    EDIT BY TAFT
+; Lock out interrupts during PMAP
+;<134>DEVJS.MAC;801     9-JAN-76 17:21:38    EDIT BY TAFT
+; Insert patches from 1.33 JSYS.MAC:
+; Permit DELDF for either login or connected directory
+; Changes for Pup in SIBE, SOBE, DIBE, DOBE
+; Add call to CLRLFK at .ERSTR+14
+; Fix bug in DEVST - was appending extra null
+; Modify RFMOD and SFMOD to reference FILMOD(JFN) for non-terminals
+;<134-TENEX>DEVJS.MAC;8    28-AUG-75 17:11:34    EDIT BY ALLEN
+; UNLOCK DIRLCKS MUST NOW SPECIFICALLY REQUEST RELEASE OF HIQ
+;<134-TENEX>DEVJS.MAC;7    14-JUL-75 09:56:16    EDIT BY PLUMMER
+; FIX AC2 RETURNED BY DELNF
+;<134-TENEX>DEVJS.MAC;6    23-MAY-75 11:47:30    EDIT BY ALLEN
+; ADD VARIOUS EXTERNS
+;<134-TENEX>DEVJS.MAC;5     6-MAY-75 16:05:18    EDIT BY BTHOMAS
+; ADD SETER JSYS
+;<134-TENEX>DEVJS.MAC;4    28-APR-75 15:05:52    EDIT BY CLEMENTS
+;<134-TENEX>DEVJS.MAC;3    28-APR-75 12:17:59    EDIT BY CLEMENTS
+;<134-TENEX>DEVJS.MAC;2    28-APR-75 11:34:48    EDIT BY CLEMENTS
+;<134-TENEX>DEVJS.MAC;1     8-APR-75 18:58:24    EDIT BY CLEMENTS
+; SEPARATED FROM JSYS.MAC
+
+SEARCH STENEX,PROLOG
+TITLE DEVJS
+	SWAPCD
+
+EXTERN	MENTR,MRETN,MRPACS,ITRAP,JOBPT,TTFORK,BUGCHK,BUGHLT
+EXTERN	ASOFN,RELOFN,SETMPG,LSTERR,ERRSAV,CAPENB,MRETNE,SKIIF,SETLF1,CHKWT,CLRLFK
+
+; Error macro definitions
+
+DEFINE	ERUNLK(ERRORN,EXTRA)<
+JRST [	EXTRA
+	IFDIF <ERRORN>,<>,<MOVEI A,ERRORN>
+	JRST ERUNLD##]>
+
+DEFINE	ERR(ERRORN,EXTRA)<
+JRST [	EXTRA
+	IFDIF <ERRORN>,<>,<MOVEI A,ERRORN>
+	JRST ERRD##]>
+
+DEFINE	ERABRT(ERRORN,EXTRA)<
+JRST [	EXTRA
+	IFDIF <ERRORN>,<>,<MOVEI A,ERRORN>
+	JRST ERABRD##]>
+
+; Pmap jsys
+; Call:	1	; Page ident (frk.pn or jfn.pn)
+;	2	; Page ident
+;	3	; Bits 2,3,4 to set page table access
+;	PMAP
+
+.PMAP::	JSYS MENTR
+	NOINT
+	IOR 1,2
+	JUMPGE 1,[MOVEI A,PMAPX2
+		JRST PMAPER]	; Neither is fork -- error
+	UMOVE A,2		; Get destination designator
+	PUSHJ P,CPMAP		; Convert to ptn.pn and get access
+	TLNN C,(1B3)
+	ERABRT(PMAPX1)		; Must be able to write destination
+	PUSH P,A		; Save destination ptn.pn
+	UMOVE A,1		; Get source designator
+	CAMN A,MINUS1		; Delete wanted?
+	 JRST [	PUSH P,ZERO##	; 0 access
+		PUSH P,ZERO	; And 0 source
+		JRST PMAP2]	; Then skip the following
+	PUSHJ P,CPMAP		; Convert source and get it's access
+	PUSH P,C		; Save access
+	PUSH P,A		; And ptn.pn
+	XCTUU [SKIPGE 2]	; Is "to" a file?
+	 JRST PMAP2		; No, ok to do
+	PUSHJ P,MRPACS		; Yes, get access
+	TLNN A,(1B10)		; Better be private
+	 JUMPN A,[MOVEI A,PMAPX2; Or empty
+		JRST PMAPER]	; Else error
+PMAP2:	XCTUU [SKIPGE A,1]	; Is from a file?
+	JRST PMAP4		; No.
+	HLRZS A			; Yes, get jfn
+	LSH A,SJFN		; Convert to index
+	MOVSI B,2
+	ADDM B,FILLFW(A)	; Increment count of reasons for opening
+
+PMAP4:	XCTUU [SKIPL A,2]	; Is "to" a file?
+	JRST [	XCTUU [SKIPL B,1]
+		ERABRT(PMAPX2)
+		HLRZS A
+		LSH A,SJFN	; Convert to index
+		MOVSI C,2
+		CAME B,MINUS1##
+		ADDM C,FILLFW(A)
+		JRST PMAP3]
+	MOVE A,-2(P)		; Get ptn.pn of "to"
+	PUSHJ P,MRPACS		; Find out what's currently there.
+	JUMPE A,PMAP3		; Jump if empty
+	TLNE A,(1B10)
+	JRST PMAP3		; Or if private
+	MOVE A,-2(P)		; Is indirect or share
+	PUSHJ P,MRPT##		; Get its id
+	 JRST PMAP3		; Not file
+	PUSHJ P,OFNJFX##	; Convert to jfn
+	JRST PMAP3		; No jfn
+	MOVSI B,-2
+	HLRZS A
+	LSH A,SJFN		; Convert to index
+	ADDB B,FILLFW(A)
+	LSH A,-SJFN		; Convert back to jfn
+	TLNN B,777777
+	CLOSF			; Close the file if count goes to 0
+	JFCL
+
+PMAP3:	POP P,A
+	POP P,C
+	POP P,B
+	TLO C,1407		; Retain write copy bit and disposal
+	XCTUU [AND C,3]
+	PUSHJ P,SETPT##
+	 JFCL
+	JRST MRETN
+
+PMAPER:	MOVEM A,LSTERR
+	MOVEM B,ERRSAV
+	JRST ITRAP
+
+CPMAP:	JUMPL A,FRKMAP
+	PUSHJ P,JFNOFN##
+	 ERABRT(,<MOVEM JFN,ERRSAV>)
+	MOVE C,STS
+	AND C,[XWD READF!WRTF!XCTF,0]
+	LSH C,-1
+	TEST(NN,ASPF)
+	POPJ P,
+	PUSH P,A
+	PUSHJ P,MRPACS
+	MOVE C,A
+	POP P,A
+	AND C,[XWD 160000,0]
+	POPJ P,
+
+FRKMAP:	PUSHJ P,FKHPTN##
+	MOVSI C,160000
+	POPJ P,
+; Rhis routine is called from write copy code in pagem to reduce the
+; The map count of a page
+; Call:	1	; Ofn.pn
+;	PUSHJ P,JFNDCR
+; Returns +1 always
+
+JFNDCR::PUSHJ P,OFNJFX
+	POPJ P,
+	HLRZS A
+	LSH A,SJFN		; Convert to index
+	MOVSI B,-2
+	ADDB B,FILLFW(A)
+	TLNE B,777777
+	 POPJ P,
+	MOVSI B,FRKF
+	ANDCAM B,FILSTS(A)
+	POPJ P,
+
+; Read map
+; Call:	LH(1)	; Fork handle
+;	RH(1)	; Page number
+;	RMAP
+; Retrn
+;	+1
+;	LH(1)	; Jfn
+;	RH(1)	; Page number
+;	2	; Access read, write,execute,nonexistent in bits 2-5
+
+.RMAP::	JSYS MENTR
+	PUSHJ P,FRKMAP		; Convert frk.pn to ptn.pn
+	PUSHJ P,MRPT		; Call map routine
+	 JRST RMAPFK
+	PUSH P,B
+	PUSHJ P,OFNJFN##
+RMAP0:	 SETO A,		; Unidentifiable
+RMAP1:	POP P,B
+	UMOVEM A,1
+	UMOVEM B,2
+	JRST MRETN
+
+RMAPFK:	PUSH P,B
+	JUMPE A,RMAP0
+	PUSHJ P,PTNFKH##
+	JRST RMAP1
+
+; Read accessiblity of page
+; Call:	LH(A)	; Fork or file handle
+;	RH(A)	; Page number
+;	RPACS
+
+.RPACS::JSYS MENTR
+	TRNE 1,777000
+	SKIPGE 1
+	JRST RPACS1
+	HLRZS A
+	LSH A,SJFN		; Convert to index
+	MOVE A,FILSTS(A)
+	TLNN A,LONGF
+	JRST [	XCTUU [SETZM 2]	; File not long
+		JRST MRETN]
+	UMOVE 1,1
+RPACS1:	PUSHJ P,CPMAP
+	PUSHJ P,MRPACS
+	UMOVEM 1,2
+	TLNE A,USRLKB		; PAGE LOCKED?
+	 UMOVEM C,3		; YES, RETURN REAL CORE ADDRESS TOO
+	JRST MRETN
+
+; Set accessibility of a page
+; Call:	LH(A)	; Fork or file handle
+;	RH(A)	; Page number
+;	SPACS
+
+.SPACS::JSYS MENTR
+	TRNE 1,777000
+	SKIPGE 1
+	JRST SPACS1
+	HLRZS A
+	LSH A,SJFN		; Convert to index
+	MOVE A,FILSTS(A)
+	TLNN A,LONGF
+	 JRST MRETN
+	UMOVE 1,1
+SPACS1:	PUSHJ P,CPMAP		; Convert to ptn.pn
+	UMOVE B,1
+	JUMPL B,SPACFK
+	TEST(NN,WRTF)		; Must be able to write
+SPACER:	JRST [	MOVEI A,SPACX1
+		MOVEM A,LSTERR
+		JRST ITRAP]
+	MOVSI C,160000
+	JRST SPAC1
+
+SPACFK:	PUSH P,A		; Save page handle
+	PUSHJ P,MRPACS		; Get access of page
+	TLNN A,(1B5)
+	JRST SPACER		; Non-existent page
+	TLNE A,(1B10)
+	JRST SPACPR		; Private page
+	PUSH P,A		; Save access
+	MOVE A,-1(P)		; Get back the page handle
+	PUSHJ P,MRPT		; Get map contents
+	 JRST SPACP1		; Indirect or shared to fork
+	PUSHJ P,OFNJFN		; Convert to jfn.pn
+	JRST SPACCF		; Closed file
+	PUSHJ P,CPMAP		; Get allowable access
+	SUB P,[XWD 1,1]
+	JRST SPAC2
+
+SPACCF:	POP P,C
+	AND C,[XWD 160000,0]
+	JRST SPAC2
+
+SPACP1:	SUB P,[XWD 1,1]
+SPACPR:	MOVSI C,160000		; PERMIT RWX
+	MOVE A,CAPENB
+	TRNE A,WHEEL+MAINT	; AND IF WHEEL OR MAINT
+	 TLO C,USRLKB		; THEN USRLKB IS OK TOO
+SPAC2:	TLO C,1400		; ALSO PERMIT TRAPUB AND WRITECOPY
+	POP P,A
+SPAC1:	UMOVE B,2
+	AND B,C
+	MOVE C,MAXLOK##
+	CAMG C,LOKPGS##		; NOT TOO MANY PAGES LOCKED
+	TLNN B,USRLKB		; OR NOT TRYING TO LOCK?
+	 SKIPA			; IS OK
+	  JRST SPACER		; IS NOT OK, GENERATE ERROR
+	NOINT
+	PUSHJ P,MSPACS##
+	JRST MRETN
+
+; Find first free file page
+; Call:	1	; Jfn
+;	FFFFP
+; Return
+;	+1
+;	1	; Jfn.pn of first free page
+
+.FFFFP::JSYS MENTR
+	HRLZS A
+FFFFPL:	RPACS
+	JUMPE B,FFFFP1
+	AOJA A,FFFFPL
+
+FFFFP1:	UMOVEM A,1
+	JRST MRETN
+
+; Find first used file page
+; Call:	LH(1)	; Jfn
+;	RH(1)	; Page number to start with
+;	FFUFP
+; Returns
+;	+1	; Error
+;	+2	; Success jfn.pn of first used page in 1
+
+.FFUFP::JSYS MENTR
+FFUF0:	HLRZ JFN,1
+	PUSHJ P,CHKJFN##
+	 ERR()
+	 JFCL
+	 ERR(DESX4)		; Tty and byte no good
+	TEST(NE,ASTF)
+	 ERR(DESX7)
+	TEST(NN,OPNF)
+	ERUNLK(FFUFX1)		; Not open
+	MOVEI A,@NLUKD(DEV)
+	CAIE A,MDDNAM##
+	ERUNLK(FFUFX2)		; Not disk
+	TEST(NE,LONGF)
+	JRST FFUFPL
+	UMOVE A,1
+	TRNE A,777000
+	ERUNLK(FFUFX3)		; Page beyond 777 of short can't exist
+	HLL A,FILOFN(JFN)
+	PUSHJ P,FFUFF
+	ERUNLK(FFUFX3)		; No pages in use
+
+FFUFPX:	XCTUU [HRRM A,1]
+	PUSHJ P,UNLCKF##
+	UMOVE 1,1		; GET THE ARG BACK
+	RPACS			; CHECK ACTUAL ACCESS
+	TLNE 2,(1B5)		; EXISTS?
+	 JRST SKMRTN##		; YES, SUCCEED
+	XCTUU [AOS 1,1]		; NO, TO NEXT PAGE
+	TRNE 1,777777		; OFF THE END OF THE WORLD
+	 JRST FFUF0		; NO, FIND NEXT ONE
+	ERR(FFUFX3)
+	JRST SKMRTN
+
+FFUFPL:	UMOVE A,1
+	HRRZS A
+FFUFP1:	MOVE B,A
+	LSH B,-9		; Get ptt number
+	ADD B,FILLFW(JFN)
+	SKIPE (B)		; Check for pt existence
+	JRST FFUFP2		; Exists, scan it
+FFUFP3:	ADDI A,1000
+	ANDCMI A,777
+	TLNN A,777777
+	JRST FFUFP1
+	ERUNLK(FFUFX3)
+
+FFUFP2:	PUSH P,A
+	PUSHJ P,JFNOF1##	; Get ofn.pn for this page
+	 JRST FFUFP9		; APPARENTLY HAS A BAD PT
+	PUSHJ P,FFUFF		; Scan the pt for stuff
+FFUFP9:	 JRST [	POP P,A	; None found
+		JRST FFUFP3]
+	POP P,B
+	ANDI B,777000
+	ADD A,B
+	JRST FFUFPX		; Success
+
+FFUFF:	PUSH P,A
+	PUSHJ P,ASGPAG##	; Get a page to map the pt
+	 JRST [	POP P,A
+		POPJ P,]
+	MOVE B,A
+	HRLI B,100000
+	HLRZ A,(P)
+	PUSHJ P,SETMPG		; Map the pt
+	HRRZ A,(P)		; Get starting page number
+	ADDI A,(B)		; Location of disc address
+FFUFF0:	SKIPE (A)		; Empty?
+	JRST FFUFF1		; No, found it
+	CAIGE A,777(B)		; Whole pt scanned?
+	AOJA A,FFUFF0		; No, try next one.
+FFUFF2:	MOVEI A,0
+	PUSHJ P,SETMPG		; Unmap the pt
+	HRRZ A,B
+	PUSHJ P,RELPAG##	; Release the page
+	POP P,A
+	POPJ P,
+
+FFUFF1:	ANDI A,777		; Get pn part
+	MOVEM A,(P)
+	AOS -1(P)		; Skip return
+	JRST FFUFF2
+
+; Check for tty designator
+
+CHKTTM::MOVE JFN,1
+	PUSHJ P,CHKTTC
+	 JRST [	PUSHJ P,UNLCKF##
+		ERABRT(DESX1)]
+	PUSHJ P,UNLCKF
+	POPJ P,
+
+CHKTTY:	UMOVE JFN,1
+CHKTTC:	PUSHJ P,CHKJFN
+	 ERABRT()		;NO GOOD. THE ERROR NUMBER IS IN A
+	 JRST .+2		; TTY DESIGNATOR. STS SAYS OPEN R,W
+	 POPJ P,		; NOT TTY, BUT GOOD DESIGNATOR
+	TEST(NE,ASTF)		;FILE, MAYBE TTY. STARS IN NAME?
+	 ERABRT(DESX7)		;YES. BAD.
+	TEST(NN,OPNF)		;OPEN? (MAY NOT HAVE RIGHTS TO IT IF NO)
+	 POPJ P,0		;NOPE. FAIL.
+	HRRZ A,DEV
+	CAIE A,TTYDTB##
+	 POPJ P,0		; Not tty, no skip
+	HLRZ 2,DEV
+	JRST SKPRET##
+
+; Jsys's see jsys manual for description of calling sequences
+
+; Clear input buffer
+
+.CFIBF::JSYS MENTR
+	PUSHJ P,CHKTTY
+	 JRST UNL
+	PUSHJ P,TTCIBF##
+UNL::	PUSHJ P,UNLCKF
+	JRST MRETN
+
+; Clear file output buffer
+
+.CFOBF::JSYS MENTR
+	PUSHJ P,CHKTTY
+	 JRST UNL
+	PUSHJ P,TTCOBF##
+	JRST UNL
+
+; Skip if input buffer empty
+
+.SIBE::	JSYS MENTR
+	PUSHJ P,CHKTTY
+	 JRST SIBE1
+	PUSHJ P,TTSIBE##
+	JRST UNL1		; Return no. of bytes in buffer
+SKPUNL:	AOS (P)
+	JRST UNL
+
+SIBE1:	TEST(NE,OPNF)
+	TEST(NN,READF)
+	 JRST SKPUNL
+IFDEF PUPCHN,<
+	HRRZ A,DEV		; Device PUP:?
+	CAIE A,PUPDTB##
+	 JRST SIBE2		; No
+	PUSHJ P,PUSIBE##	; Yes, call device-dependent routine
+	 JRST UNL1		; Not empty, return count in 2
+	JRST SKPUNL		; Empty, skip
+SIBE2:>
+	SKIPLE A,FILCNT(JFN)
+	 JRST UNL1
+IFDEF NETN,<HRRZ A,DEV
+	CAIE A,NETDTB##
+	 JRST SKPUNL
+	PUSHJ P,NTSIBE##
+	 JRST UNL1>
+	JRST SKPUNL
+
+; Dismiss until input buffer is empty
+
+.DIBE::	JSYS MENTR
+	PUSHJ P,CHKTTY
+IFNDEF PUPCHN,<JRST UNL>	;GOOD JFN BUT NOT TTY. UNLOCK, RETURN.
+IFDEF PUPCHN,<JRST [HRRZ A,DEV	; Device PUP:?
+		CAIN A,PUPDTB##
+		 PUSHJ P,PUDIBE##  ; Yes, call device-dependent routine
+		JRST UNL]>
+	PUSHJ P,TTDIBE##
+	JRST UNL
+
+; Skip if output buffer full
+
+.SOBF::	JSYS MENTR
+	PUSHJ P,CHKTTY
+IFNDEF PUPCHN,<TDZA A,A>	; Return +1 with 0
+IFDEF PUPCHN,<JRST [HRRZ A,DEV	; Device PUP:?
+		CAIE A,PUPDTB##
+		 TDZA A,A	; No, return +1 with 0
+		PUSHJ P,PUSOBF##  ; Yes, call device-dependent routine
+		 JRST UNL1	; Not full
+		JRST UNL2]>	; Full
+	PUSHJ P,TTSOBF##
+	 JRST UNL1		; Return +1 with no. bytes in buffer
+UNL2:	AOS (P)
+UNL1:	UMOVEM 1,2		; Return count of bytes in buffer
+	JRST UNL
+
+; Skip if output buffer is empty
+
+.SOBE::	JSYS MENTR
+	PUSHJ P,CHKTTY
+IFNDEF PUPCHN,<JRST SOBE1>
+IFDEF PUPCHN,<JRST [HRRZ A,DEV	; Device PUP:?
+		CAIE A,PUPDTB##
+		 JRST SOBE1	; No
+		PUSHJ P,PUSOBE##  ; Yes, call device-dependent routine
+		 JRST UNL1	; Not empty, return count
+		JRST SOBE1]>	; Empty, skip
+	PUSHJ P,TTSOBE##
+	JRST UNL1
+SOBE1:	AOS (P)
+	JRST UNL
+
+; Dismiss until output buffer is empty
+
+.DOBE::	JSYS MENTR
+	PUSHJ P,CHKTTY
+IFNDEF PUPCHN,<JRST UNL>
+IFDEF PUPCHN,<JRST [HRRZ A,DEV	; Device PUP:?
+		CAIN A,PUPDTB##
+		 PUSHJ P,PUDOBE##  ; Yes, call device-dependent routine
+		JRST UNL]>
+	PUSHJ P,TTDOBE##
+	JRST UNL
+
+; Get tab settings
+
+.GTABS::JSYS MENTR
+	PUSHJ P,CHKTTY
+	 JRST [	XCTUU [SETZB A,2]
+		UMOVEM A,3
+		UMOVEM A,4
+		JRST UNL]
+	PUSHJ P,TTGTBS##
+	UMOVEM 1,2
+	UMOVEM 3,3
+	UMOVEM 4,4
+	JRST UNL
+
+; Set tab stops
+
+.STABS::JSYS MENTR
+	PUSHJ P,CHKTTY
+	 JRST UNL
+	UMOVE 1,2
+	UMOVE 3,3
+	UMOVE 4,4
+	PUSHJ P,TTSTBS##
+	JRST UNL
+
+; Read modes
+
+.RFMOD::JSYS MENTR
+	PUSHJ P,CHKTTY
+	 JRST RFMOD1
+	PUSHJ P,TTRMOD##
+	UMOVEM 1,2
+	JRST UNL
+
+RFMOD1:	MOVE A,STS
+	ANDI A,17
+	TLNN JFN,-1		; A real JFN?
+	CAIL JFN,RJFN
+	TDOA A,[^D66B10+^D72B17+^D7B3]	; No, string ptr or funny designator
+	IOR A,FILMOD(JFN)	; Yes, use default for this file
+	UMOVEM A,2
+	JRST UNL
+
+; Set file modes
+
+.SFMOD::JSYS MENTR
+	PUSHJ P,CHKTTY
+	 JRST SFMOD1
+	UMOVE 1,2
+	PUSHJ P,TTSMOD##
+	JRST UNL
+
+SFMOD1:	TLNN JFN,-1		; A real JFN?
+	CAIL JFN,RJFN
+	JRST UNL		; No, string or funny designator, ignore
+	UMOVE A,2		; Set mode word for file JFN
+	TRZ A,17
+	MOVEM A,FILMOD(JFN)
+	JRST UNL
+
+; Read file position
+
+.RFPOS::JSYS MENTR
+	PUSHJ P,CHKTTY
+	 JRST [	XCTUU [SETZM 2]
+		JRST UNL]
+	PUSHJ P,TTRPOS##
+	UMOVEM 1,2
+	JRST UNL
+
+; Set file position
+
+.SFPOS::JSYS MENTR
+	PUSHJ P,CHKTTY
+	 JRST UNL
+	UMOVE 1,2
+	PUSHJ P,TTSPOS##
+	JRST UNL
+
+; Read control character output control
+
+.RFCOC::JSYS MENTR
+	PUSHJ P,CHKTTY
+	 JRST RFCOC1
+	PUSHJ P,TTRCOC##
+	UMOVEM 1,2
+	UMOVEM 3,3
+	JRST UNL
+
+RFCOC1:	MOVE A,[BYTE (2)2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2]
+	UMOVEM A,2
+	UMOVEM A,3
+	JRST UNL
+
+; Set control character output control
+
+.SFCOC::JSYS MENTR
+	PUSHJ P,CHKTTY
+	 JRST UNL
+	UMOVE 1,2
+	UMOVE 3,3
+	LDB 4,[POINT 2,1,25]	;FIELD FOR FORMFEED
+	SKIPN FORKN		;IS THIS THE TOP FORK?
+	DPB 4,TTYFFC##		;YES. REMEMBER THIS SETTING FOR RESET.
+	PUSHJ P,TTSCOC##
+	JRST UNL
+
+; Simulate teletype input
+
+.STI::	JSYS MENTR
+	PUSHJ P,CHKTTY
+	 ERABRT(TTYX1)
+	UMOVE 1,2
+	PUSHJ P,TTSTI##
+	JRST UNL
+
+; Check device designator
+; Call:	A	; Device designator
+;	PUSHJ P,CHKDEV
+; Return
+;	+1	; Error, number in a
+;	+2	; Ok
+;	B	; Index into device tables
+;	C	; Device characteristics word
+;	A	; Unit number
+;	LH(DEV)	; Unit
+;	RH(DEV)	; Dispatch address
+
+CHKDEV::TLNN A,777777		; Left half zero means tty designator
+	JRST TTYDEV
+	TLZ A,600000		; These bits always on
+	MOVNI B,NDEV		; Movsi b,-ndev the hard way...
+	HRLZS B
+CHKDVL:	HLLZ C,DEVCHR##(B)	; Construct device designator for this dev
+	TLZ C,777000
+	HRR C,DEVUNT##(B)
+	CAME C,A		; Is it the same as user's
+	AOBJN B,CHKDVL		; No, continue scan
+	JUMPGE B,[MOVEI A,DEVX1
+		POPJ P,]	; Illegal designator
+	HLRZ A,DEVUNT(B)	; Get device assignment
+	CAME A,JOBNO
+	CAIN A,777777
+	JRST CHKDV1		; Assigned this job or unassigned
+	MOVEI A,DEVX2
+	POPJ P,			; Device not available
+
+CHKDV1:	HRRZ A,C		; Leave unit in a
+	MOVEM A,UNIT
+	MOVE DEV,DEVDSP##(B)
+	HRL DEV,A		; Dispatch in dev
+	MOVE C,DEVCHR(B)	; And characteristics in c
+	JRST SKPRET
+
+TTYDEV:	CAIN A,777777
+	JRST CTTYDV
+	TRZ A,400000		; Convert tty designator to
+	HRLI A,600000+12	; To ordinary device designator
+	JRST CHKDEV		; And try again
+
+CTTYDV:	MOVE B,JOBNO
+	HRLZI A,JOBPT(B)
+	HRRI A,DISGET##
+	SKIPGE B,JOBPT(B)
+	JSYS EDISMS##
+	HLRZ A,B
+	JRST TTYDEV
+
+; SET UP UNIT
+; CALL:	A	; BIT 17 IF NOT DEFAULT
+;	B	; DEVICE DESIGNATOR
+;	PUSHJ P,SETUNT
+; RETURNS
+;	+1	; FAIL
+;	+2	; SUCCESS, UNIT LOADED
+
+SETUNT::EXCH A,B
+	MOVE UNIT,JOBUNT
+	TLNN B,(1B17)
+	 JRST SKPRET
+	TLNE A,177777		; MUST BE A DISK
+	 POPJ P,
+	PUSHJ P,CHKDEV
+	 POPJ P,
+	JRST SKPRET
+
+; Assign device
+; Call:	1	; Device designator
+;	ASND
+; Return
+;	+1	; Error, not assignable or bad designator etc.
+;	+2	; Ok, the device specified is now assigned to this job
+
+.ASND::	JSYS MENTR
+	NOINT
+	LOCK DEVLCK##,<PUSHJ P,LCKTST##>
+	PUSHJ P,CHKDEV
+	 ERR(,<UNLOCK DEVLCK>)
+	TLNN C,(1B3)		; Is this an assignable device?
+	ERR(ASNDX1,<UNLOCK DEVLCK>)
+	LDB D,[POINT 9,C,17]
+	CAIN D,12
+	JRST [	HLRZ D,TTFORK(A)
+		CAIE D,777777
+		CAMN D,JOBNO
+		CAMN A,CTRLTT
+		ERR(DEVX2,<UNLOCK DEVLCK>)
+		MOVE D,JOBNO
+		HRLM D,TTFORK(A)
+		MOVEI C,0(A)
+		IDIVI C,2
+		ADD C,TTFRKP##(D)
+		SETO D,
+		DPB D,C		; TTY not used as a fork CTTY
+		JRST .+1]
+	MOVSI A,(1B6)
+	IORM A,DEVCHR(B)	; Mark this device as assigned by asnd
+	MOVE A,JOBNO
+	HRLM A,DEVUNT(B)	; Assign to this job
+	UNLOCK DEVLCK
+	JRST SKMRTN
+
+; Release device
+; Call:	1	; Device designator or -1 to release all devices
+;	RELD
+; Returns
+;	+1	; Error, bad designator or not assigned to this job
+;	+2	; Ok.
+
+.RELD::	JSYS MENTR
+	NOINT
+	LOCK DEVLCK,<PUSHJ P,LCKTST##>
+	CAMN 1,MINUS1
+	JRST RELDAL
+	PUSHJ P,CHKDEV
+	 ERR(,<UNLOCK DEVLCK>)
+	PUSHJ P,RELDD
+	UNLOCK DEVLCK
+	JRST SKMRTN
+
+RELDAL:	MOVNI B,NDEV##		; Movsi b,-ndev the hard way...
+	HRLZS B
+RELDA1:	HLRZ A,DEVUNT(B)
+	CAME A,JOBNO
+	JRST RELDA2
+	PUSHJ P,RELDD
+RELDA2:	AOBJN B,RELDA1
+	UNLOCK DEVLCK
+	JRST SKMRTN
+
+RELDD:	LDB D,[POINT 9,DEVCHR(B),17]
+	CAIE D,12		; TTY?
+	JRST RELDD1		; NO
+	HRRZ A,DEVUNT(B)
+       NOSKED	     	       	; GET CONSISTENT READING OF TTFORK...
+        HLRE C,TTFORK(A)        ; OWNER OF TERMINAL IN QUESTION
+        SKIPL D,C               ; COPY TO D, SKIP IF UNOWNED
+        HLRE D,JOBPT(C)         ; CONTROLLING TERM OF OWNER
+       OKSKED			; RESUME SCHEDULING
+        CAMN D,A                ; IS TERMINAL CONTROLLING TRM OF OWNER?
+        JRST RELDD1             ; YES, JUST FIX DEVUNT AND LEAVE
+        JUMPL C,CPOPJ##		; NO, DONE IF NOT OWNED
+        MOVEI C,0(A)            ; CONTINUE IF OWNED.
+	IDIVI C,2
+	ADD C,TTFRKP(D)
+	LDB C,C			; C=TTFRK1 entry for line
+	CAIE C,-1		; In use as a CTTY?
+	POPJ P,			; yes, don't release
+	HRROS TTFORK(A)
+IFDEF NETN,<
+	PUSH P,B
+	HRRZ B,A
+	CAIL B,NVTLO
+	PUSHJ P,NVTDET##
+	POP P,B
+>
+
+RELDD1:	HRROS DEVUNT(B)
+	MOVSI D,(1B6)
+	ANDCAM D,DEVCHR(B)
+	POPJ P,
+
+; Get device characteristics
+; Call:	1	; Device designator
+;	DVCHR
+; Return
+;	+1	; Ok
+;	2	; Device characteristics word
+;	LH(3)	; Job to which device is assigned
+;	RH(3)	; Unit number
+
+.DVCHR::JSYS MENTR
+	HLRZ B,1
+	TRZ B,777
+	CAIL 1,400000		; Is this a tty designator?
+	CAIL 1,400000+NLINES
+	CAIN B,600000		; Or a device designator
+	JRST DVCHR1		; Yes, do directly
+	UMOVE JFN,1		; No. translate first
+	PUSHJ P,CHKJFN
+	 ERABRT()
+	 JFCL
+	 JRST [	UMOVEM JFN,1
+		JRST DVCHR1]
+	HLRZ A,FILDDN(JFN)	; Get pointer to device name block
+	HRLI A,(<POINT 7,0,35>)
+	STDEV			; Convert string to device designator
+	ERABRT(<(2)>,<PUSHJ P,UNLCKF>)
+	PUSHJ P,UNLCKF
+	UMOVEM 2,1
+DVCHR1:	UMOVE A,1
+	PUSHJ P,CHKDEV
+	 JRST [	CAIE A,DEVX2	; Was error due to unavailablity
+		JRST ERABRD##	; No, abort
+		MOVE C,DEVCHR(B)
+		JRST .+2]
+	TLO C,(1B5)
+	UMOVEM C,2
+	MOVE A,DEVUNT(B)
+	UMOVEM A,3
+	JRST MRETN
+
+; String to device
+; Call:	1	; Device designator
+;	STDEV
+; Return
+;	+1	; Error
+;	+2	; Ok
+;	2	; Device designator
+
+.STDEV::JSYS MENTR
+	UMOVE A,1
+	PUSHJ P,CPYFUS##
+	 ERR(GJFX22)
+	PUSH P,A
+	PUSHJ P,DEVLUK##	; Look up the device name
+	 JRST [	CAIE A,GJFX16
+		JRST .+1
+		MOVEI A,STDVX1
+		UMOVEM A,2
+		JRST STDEV1]	; No such device
+	AOS -1(P)
+	HRRZ A,DEVUNT(B)
+	HLL A,DEVCHR(B)
+	TLZ A,777000
+	TLO A,600000
+	UMOVEM A,2
+STDEV1:	POP P,B
+	MOVEI A,JSBFRE
+	PUSHJ P,RELFRE##
+	JRST MRETN
+
+; Device to string
+; Call:	1	; Destination designator
+;	2	; Device designator
+;	DEVST
+; Return
+;	+1	; Ok
+
+.DEVST::JSYS MENTR
+	UMOVE A,2
+	PUSHJ P,CHKDEV
+	 JRST [	CAIE A,DEVX2
+		ERR()
+		JRST .+1]
+	MOVE C,DEVNAM##(B)
+	MOVE D,[POINT 6,C]
+DEVST0:	ILDB B,D
+	JUMPE B,SKMRTN
+	ADDI B,40
+	PUSHJ P,BOUTN##
+	TLNE D,(77B5)		;QUIT AFTER SIX CHARACTERS
+	JRST DEVST0
+	JRST SKMRTN
+
+; Mount device
+; Call:	1	; Device designator
+;	MOUNT
+; Return
+;	+1	; Error
+;	+2	; Ok
+
+.MOUNT::JSYS MENTR
+	UMOVE A,1
+	TLZN A,(1B3)		; Directory to be read?
+	TDZA B,B		; Yes
+	SETO B,			; No
+	PUSH P,B
+	PUSHJ P,CHKDEV
+	 ERR()
+	UMOVE 1,1
+	TLZ 1,(1B3)
+	TLNE C,(1B8)		; Already mounted?
+	 JRST [	DSMNT		; Attempt to dismount first
+		 ERR()		; Error if can't
+		JRST .+1]
+	TLNN C,(1B7)		; Mountable?
+	ERR(MNTX3)		; No
+	EXCH B,(P)		; Save b, get directory read flag
+	NOINT
+	PUSHJ P,@MNTD(DEV)	; Call device mount routine
+	 ERR(MNTX2)		; Not mountable
+	POP P,B
+	MOVSI C,(1B8)
+	IORB C,DEVCHR(B)	; Mark device as mounted
+	JRST SKMRTN
+
+; Dismount device
+; Call:	1	; Device designator
+;	DSMNT
+; Return
+;	+1	; Error
+;	+2	; Ok
+
+.DSMNT::JSYS MENTR
+	UMOVE A,1
+	PUSHJ P,CHKDEV
+	 ERR()			; Illegal designator or not available
+	TLNN C,(1B8)		; Mounted?
+	ERR(DEVX3)		; No, can't dismount
+	PUSH P,B
+	NOINT
+	PUSHJ P,@DSMD(DEV)	; Call device dismount
+	 ERR(DSMX1)		; Files open, can't dismount
+	MOVSI C,(1B8)
+	POP P,B
+	ANDCAM C,DEVCHR(B)	; Mark as not mounted
+	AOS (P)
+	JRST MRETN
+
+; Initialize directory
+; Call:	1	; Device designator
+;	INIDR
+; Return
+;	+1	; Error
+;	+2	; Ok
+
+.INIDR::JSYS MENTR
+	UMOVE A,1
+	PUSHJ P,CHKDEV
+	 ERR()
+	TLNN C,(1B8)
+	ERR(DEVX3)		; Not mounted
+	PUSHJ P,@INDD(DEV)
+	AOS (P)
+	JRST MRETN
+
+; Read directory
+
+.RDDIR::JSYS MENTR
+	PUSHJ P,CHKDEV
+	 JRST MRETN
+	MOVEI B,(DEV)
+IFDEF DTAN,<CAIE B,DTADTB##>
+	ERR(RDDIX1)
+IFDEF DTAN,<
+	PUSH P,A
+	PUSHJ P,DRWAIT##
+	POP P,A
+	MOVS B,DTASTS##(A)
+	TRNE B,DIRIC##
+	TLNN B,777777
+	ERR(RDDIX1)
+	UMOVE A,2
+	HRR B,A
+	XCTMU [BLT B,177(A)]
+	JRST SKMRTN>
+
+; File directory free space
+; Call:	1	; Device designator (must be dsk for now)
+;	2	; User number
+;	FDFRE
+; Returns
+;	+1	; Error
+;	+2	; Success, in 2 the space left in the specified fd
+.FDFRE::JSYS MENTR
+	PUSHJ P,CHKDEV
+	 ERR()			; Some kind of error
+	MOVEM A,UNIT
+	TLNN C,(1B4)
+	ERR(FDFRX1)		; Don't know about non-mdd stuff
+	UMOVE A,2		; Get directory number
+	PUSHJ P,GETDDB##
+	 ERR(FDFRX2)		; No such user
+	UNLOCK DIRLCK,,HIQ
+	UMOVE A,2
+	MOVEI B,-1		; Need real dsk index here
+	PUSHJ P,MAPDIR##
+	MOVE A,DIRFRE+2
+	UMOVEM A,2
+	JRST SKMRTN
+
+; Special file operation
+; Call:	1	; Jfn
+;	2	; Operation desired
+;	MTOPR
+
+.MTOPR::JSYS MENTR
+	UMOVE JFN,1
+	PUSHJ P,CHKJFN
+	 ERABRT()
+	 JFCL
+	 ERABRT(DESX4)
+	TEST(NN,OPNF)
+	ERABRT(CLSX1,<PUSHJ P,UNLCKF>)
+	TEST(Z,ERRF,EOFF)
+	UMOVE B,2
+	PUSHJ P,@MTPD(DEV)
+	PUSHJ P,UNLCKF
+	JRST MRETN
+
+; Error number to string
+; Call:	1	; Output designator
+;	2	; FORK,,ERROR NUMBER
+;	3	; -N CHARS,,BITS
+;	ERSTR
+
+.ERSTR::JSYS MENTR
+	HLRZ 1,2
+	PUSHJ P,SETLFK##	; Map psb of the fork
+	UMOVE B,3
+	HRLZI C,ERRSAV(1)
+	HRRI C,4
+	TRNN B,1B19
+	BLT C,10
+	XCTUU [HRRZ C,2]
+	CAIN C,777777
+	MOVE C,LSTERR(1)
+	PUSHJ P,CLRLFK##	; Unmap PSB, become OKINT
+	ANDI C,37777
+	CAIL C,10000
+	JRST MRETN		; Illegal error number
+; We now have error number in c, parameters in 4-10, bits and count in b
+	PUSH P,B
+	HRROI 2,[ASCIZ /DSK:<SYSTEM>ERROR.MNEMONICS/]
+	MOVSI 1,100001
+	GTJFN			; Get jfn for error mnemonics
+	JRST NOFIL
+	MOVE 2,[XWD 440000,200000]
+	PUSH P,1
+	OPENF
+	JRST [	POP P,1
+		RLJFN
+		JFCL
+		JRST NOFIL]
+	POP P,1
+	ANDI C,7777
+	RIN			; Read byte number of message
+	JUMPE 2,NOFIL2
+	PUSH P,2
+	MOVEI 2,7
+	SFBSZ
+	POP P,2
+	SFPTR			; Start reading here
+	JRST NOFIL2
+	POP P,C
+	HLRES C
+	MOVMS C			;DUE TO CODE AND MANUAL DISAGREEING
+	SKIPE C
+	SOS C
+
+CPYER1:	BIN
+	CAIN 2,"@"
+	JRST ERSTDN
+	CAIN 2,"%"
+	JRST EXPND
+	PUSHJ P,ERST9
+	 JRST [	AOS (P)
+		JRST NOFIL2]
+	JRST CPYER1
+
+ERST9:	SKIPE C
+	SOJLE C,CPOPJ
+	PUSHJ P,SAVAC##
+	UMOVE JFN,1
+	PUSHJ P,ERBOUT
+	SOS -NSAC(P)
+	TLNE JFN,-1		;ONLY IF A BYTE PTR
+	UMOVEM JFN,1
+	PUSHJ P,RESAC##
+	JRST SKPRET
+
+ERBOUT:	PUSHJ P,CHKJFN
+	POPJ P,
+	JFCL
+	 JFCL
+	TEST(NE,ENDF)
+	JRST UNLCKF
+	TEST(NE,OPNF)
+	TEST(NN,WRTF)
+	JRST UNLCKF
+	AOS (P)
+	JRST BYTOUA##
+
+NOFIL:	POP P,B
+	MOVE D,[POINT 7,[ASCIZ /CANNOT FIND ERROR MESSAGE FILE/]]
+NOFILL:	ILDB B,D
+	JUMPE B,MRETN
+	PUSHJ P,ERST9
+	 JRST MRETN
+	JRST NOFILL
+
+EXPND:	MOVEI D,0
+	BIN
+	CAIN B,"%"
+	JRST CPYER1
+EXPND1:	CAIG 2,"9"
+	CAIGE 2,"0"
+	JRST EXPNDD
+	IMULI D,^D10
+	ADDI D,-60(B)
+	BIN
+	JRST EXPND1
+
+EXPNDD:	CAIN B,"E"
+	JRST EXPEXP
+	CAIL D,5
+	JRST EXPND
+	CAIN B,"A"
+	JRST EXPASC
+	CAIN B,"O"
+	JRST EXPOCT
+	CAIN B,"D"
+	JRST EXPDEC
+	CAIN B,"H"
+	JRST EXPHLF
+	CAIN B,"F"
+	JRST EXPFLT
+	CAIN B,"L"
+	JRST EXPLOC
+	CAIN B,"N"
+	JRST EXPJFN
+	CAIE B,"@"
+	JRST EXPND
+	JRST EXPND
+
+EXPEXP:	JRST EXPND
+
+EXPASC:	MOVE B,ERRSAV(D)
+	PUSHJ P,ERST9
+	 JRST ERSTD0
+	JRST EXPND
+
+EXPOCT:	MOVE B,ERRSAV(D)
+	MOVEI D,10
+	PUSHJ P,ERNOUT
+	 JRST ERSTD0
+	JRST EXPND
+
+EXPDEC:	MOVE B,ERRSAV(D)
+	MOVEI D,12
+	PUSHJ P,ERNOUT
+	 JRST ERSTD0
+	JRST EXPND
+
+ERNOUT:	PUSH P,A
+	MOVE A,B
+	PUSHJ P,ERNOU1
+	SOS -1(P)
+	POP P,A
+	JRST SKPRET
+
+ERNOU1:	IDIV A,D
+	HRLM A+1,(P)
+	JUMPE A,.+3
+	PUSHJ P,ERNOU1
+	POPJ P,
+	HLRZ B,(P)
+	ADDI B,"0"
+	JRST ERST9
+
+EXPHLF:	MOVE D,ERRSAV(D)
+	PUSH P,D
+	HLRZ B,D
+	MOVEI D,10
+	PUSHJ P,ERNOUT
+	 JRST ERSTD1
+	POP P,D
+	MOVEI B,","
+	PUSHJ P,ERST9
+	 JRST ERSTD0
+	PUSHJ P,ERST9
+	JRST ERSTD0
+	HRRZ B,D
+	MOVEI D,10
+	PUSHJ P,ERNOUT
+	 JRST ERSTD0
+	JRST EXPND
+
+EXPFLT:
+EXPLOC:
+EXPJFN:	JRST EXPND
+
+ERSTD1:	POP P,D
+	JRST ERSTD0
+
+ERSTDN:	AOS (P)
+	AOS (P)
+ERSTD0:NOFIL2:	CLOSF
+	JFCL
+	JRST MRETN
+
+NOFIL1:	RLJFN
+	 JFCL
+	JRST MRETN
+
+; Get last error
+; Call:	1	; Fork designator
+;	GETER
+
+.GETER::JSYS MENTR
+	PUSHJ P,SETLFK
+	MOVE B,LSTERR(1)
+	XCTUU [HRL B,1]
+	UMOVEM B,2
+	MOVEI B,4
+	HRLI B,ERRSAV(1)
+	XCTMU [BLT B,10]
+	JRST MRETN
+
+
+; Set last error
+; Call: 1/ flags,, fork designator
+;		flags: B0: set ERRSAV from 4-10
+;       2/ error code
+;       4-10/ for ERRSAV if B0 of 1 is on
+
+
+.SETER::JSYS MENTR		;BECOME SLOW
+	NOINT			;PREVENT SELF FROM BEING DIDDLED
+	TLZ 1,-1		;CLEAR FLAGS
+	CALL RLJBFK##		;GET JOB FORK INDEX.
+	 RETERR FRKHX1
+	CALL SKIIF		;MUST BE SELF OR INFERIOR
+	 RETERR FRKHX2
+	PUSH P,1		;SAVE FORK'S JOB INDEX
+	CALL SETLF1		;MAP HIS PSB.
+	MOVEI 11,(1)		;SAVE OFFSET TO HIS PSB IN 11
+	POP P,1			;RESTORE HIS FORK INDEX
+	UMOVE 12,1		;FLAGS IN 12
+	TLNE 12,(1B0)		;NOT SETTING ERRSAV?
+	CAMN 1,FORKN		;OR IS HE ME?
+	 JRST SETE1		;YES.
+	MOVES PSB(11)		;NO, MUST GO NOSKED TO MAKE SETTING
+       NOSKED			;OF LSTERR AND ERRSAV "INDIVISIBLE".
+	HRRZ 7,SYSFK(1)
+	CALL CHKWT		;AND HE MUST NOT BE RUNNING.
+	 JRST SETE3		;HE IS, ERROR.
+SETE1:	UMOVE 2,2		;GET ERROR CODE FROM USER
+	MOVEM 2,LSTERR(11)
+	TLNN 12,(1B0)		;SET ERRSAV ALSO?
+	 JRST SETE2		;NO
+	MOVSI 2,4		;YES, SET UP FOR BLT OF USER'S AC4-10
+	HRRI 2,ERRSAV(11)	;TO ERRSAV.
+	XCTUM [BLT 2,ERRSAV+4(11)]
+	CAMN 1,FORKN		;OR IS HE ME?
+	 JRST SETE2		;YES.
+       OKSKED
+SETE2:	CALL CLRLFK		;UNMAP HIS PSB
+	AOS (P)			;RET +2
+	JRST MRETN
+
+SETE3: OKSKED
+	CALL CLRLFK
+	RETERR FRKHX4
+
+
+; DELETE ALL BUT N VERSIONS OF FILE
+
+; ACCEPTS: 1) JFN
+;	   2) NUMBER OF VERSIONS TO KEEP
+
+; RETURNS: +1) ERROR
+;	   +2) SUCCESS, WITH NEGATIVE NUMBER OF VERSIONS DELETED IN 2
+
+.DELNF::
+	JSYS MENTR
+	MOVE JFN,1
+	PUSHJ P,CHKJFN	;CHECK IT
+	JRST GBGJFN##
+	JFCL
+	ERUNLK DESX4	;TTY OR BYTE ILLEGAL
+	HRRZ A,NLUKD(DEV)	;CHECK IF NAME LOOKUP DISPATCH
+	CAIE 1,MDDNAM		;IS MDDNAM
+	ERUNLK GFDBX1
+	PUSHJ P,GETFDB##
+	ERUNLK DESX3
+	UMOVE E,2		;NO. VERSIONS TO KEEP
+DELNF2:
+	HLLZ C,FDBCTL(A)	;GET FLAG WORD
+	HRRZ D,A		;SAVE FDB POINTER FOR BELOW
+	HRLI A,WRTF		;ACCESS TO CHECK FOR
+	TLNN C,FDBNXF+FDBDEL+FDBTMP+FDBUND	;SKIP THESE FILE KINDS
+	CALL ACCCHK##		;CHECK ACCESS
+	 JRST DELNF1
+	SOJGE E,DELNF1
+	MOVSI C,FDBDEL
+	IORM C,FDBCTL(D)	;DELETE THE FILE
+DELNF1:
+	HRRZ A,FDBVER(D)	;GET FDB OF THE NEXT VERSION
+	JUMPE A,DELNFE
+	ADDI A,DIRORG
+	JRST DELNF2
+DELNFE:
+	UMOVEM E,2
+	UNLOCK DIRLCK,,HIQ
+	PUSHJ P,UNLCKF
+	JRST SKMRTN
+
+; Delete deleted files
+; LH 1/ FLAGS AS FOLLOWS:
+;  B17 -- ON DEVICES SPECIFIED BY AC2
+;  B16 -- TEMP (THIS JOB)
+;  B15 -- SCRATCH AND TEMP (OTHER JOBS)
+;  B14 -- PERMANENT FILES (FDBPRM SET)
+;  B13 -- DELETED FILES (FDBDEL)
+;  B12 -- NON-EXISTENT FILES ( FDBNXF AND FDBNEX)
+; B11 -- ALL FILES (EVEN IF NOT DELETED)
+
+.DELDF::JSYS MENTR
+;	UMOVE A,1		; DIRNUM & BIT
+;	UMOVE B,2		; DEVICE DESIGNATOR
+	PUSHJ P,SETUNT
+	 JRST MRETN
+	UMOVE A,1
+	HRRZS A
+	MOVE B,FORKX##
+	SKIPGE B,FKDIR##(B)
+	MOVE B,FKDIR(B)		; B=conn dir,,user dir
+	HLRZ C,B		; C=conn dir
+	CAIE A,(B)		; Expunging login directory?
+	 CAIN A,(C)		; Expunging connected directory?
+	 JRST .+3		; Yes, ok
+	MOVE C,CAPENB		; No, must be wheel or operator
+	TRNE C,WHEEL!OPER
+	PUSHJ P,GETDDB
+	 JRST MRETN
+	UMOVE JFN,1
+	HLRZ F,JFN
+	TRZ F,(1B11!1B14!1B17)	; NEVER EXPUNGE PRM/ALL, CLEAR 1B17
+	HRRZS JFN
+	TRNE F,-1		; DEFAULT WANTED?
+	 JRST DELDQ		; NO, GO DO WHAT IS ASKED
+	MOVSI A,-NFKS
+	MOVE D,FORKX
+	SKIPGE FKDIR(D)		; ARE WE A TOP GROUP FORK?
+	 HRRZ D,FKDIR(D)	; NO, GET OUR TOP GUY
+DELDQ1:	SKIPL FKPT##(A)		; Skip over fork if deleted
+	SKIPG B,FKDIR(A)	; IS THIS A TOP FORK?
+	 JRST DELDQ2		; NO, SKIP OVER HIM
+	HLRZ C,B		; YES. GET CONNECTED DIRECTORY
+	CAIE JFN,0(C)
+	CAIN JFN,0(B)
+	CAIN D,0(A)		; EXPUNGING LOGIN OR CONNECTED DIRECTORY
+				;.. AND NOT OURSELVES
+	JRST DELDQ2		; NOT THE SAME DIRECTORIES OR OURSELF
+	MOVEI F,22	; OTHER LOGINS -- DELETED AND TEMP ONLY
+	JRST DELDQ
+
+DELDQ2:	AOBJN A,DELDQ1
+	MOVEI F,66		; ELSE INCLUDE SCRATCH & NON-EX TOO
+DELDQ:	UNLOCK DIRLCK,,HIQ
+	OKINT
+	PUSHJ P,DELDEL
+	JRST MRETN
+
+DELALL::MOVEI F,777777
+DELDEL:	MOVE A,JFN
+	PUSHJ P,SETDIR##	; Map the appropriate directory
+	POPJ P,
+	SKIPGE DIREXL		; ARE EXPUNGES BEING INHIBITED?
+	 JRST DELP1X		; YES, UNLOCK AND RETURN
+	MOVE D,SYMBOT
+DELP1:	CAMGE D,SYMTOP
+	JRST DELP2
+	PUSHJ P,GCDIR##		; Collect remaining good stuff
+DELP1X:	PUSHJ P,USTDIR##
+	POPJ P,
+
+DELP2:	HRRZ A,DIRORG(D)
+	TRNE A,700000
+	JRST DELPC
+	MOVEI B,400100
+	PUSHJ P,DELCKB		; Check range and validity of block
+	 JRST DELPD		; Skip if bad
+	PUSH P,A		; Save
+	HLRZ A,DIRORG(D)	; Get pointer to name string
+	MOVEI B,400001
+	PUSHJ P,DELCKB		; Check validity
+	 JRST [	MOVEM D,0(P)
+		JRST DELP5]	; Bad -- ignore
+	EXCH D,0(P)		; Get back a to d, save d
+	PUSHJ P,DELP3
+	JUMPE D,DELP4		; No fdb's left?
+	POP P,A
+	HRRM D,DIRORG(A)
+	AOS D,A
+	JRST DELP1
+
+DELPC:	ANDI A,700000
+	CAIE A,100000
+	 AOJA D,DELP1
+	HLRZ A,DIRORG(D)
+	MOVEI B,777777
+	PUSHJ P,DELCKB		; Check block for validity
+	 JRST DELPD		; Bad, ignore
+	SKIPE DIRORG+1(A)	; Account string still used?
+	 AOJA D,DELP1		; Yes
+DELPD:	PUSH P,D
+DELP4:	MOVE D,(P)
+DELP5:	CAMG D,SYMBOT
+	JRST DELP6
+	MOVE A,DIRORG-1(D)
+	MOVEM A,DIRORG(D)
+	SOJA D,DELP5
+
+DELP6:	AOS SYMBOT
+	POP P,D
+	AOJA D,DELP1
+
+DELCKB:	PUSH P,A
+	CAIL A,DIFREE-DIRORG
+	CAML A,FRETOP
+	 JRST DELCKF		; Bad
+	HLRZ A,DIRORG(A)
+	CAME A,B
+	 JRST DELCKF
+	POP P,A
+	AOS (P)
+	POPJ P,
+
+DELCKF:	BUG(CHK,<DELDEL: BAD BLOCK TYPE IN DIRECTORY>)
+	POP P,A
+	POPJ P,
+
+DELP3:	PUSH P,ZERO		; Where first extension is
+	HRRZ A,P		; Initial value of ind pointer
+	PUSH P,A		; Onto stack too
+DELP7:	HRRZ A,DIRORG+FDBEXT(D)	; Get pointer to other extensions
+	MOVEI B,400100
+	SKIPE A
+	PUSHJ P,DELCKB		; Check validity
+	 SETZ A,		; Truncate chain if bad
+	PUSH P,A		; Save for later
+	PUSH P,ZERO		; Remember where first version is
+	HRRZ A,P		; Initial value of ind pointer
+	PUSH P,A		; Onto stack
+
+DELPA:	HRRZ A,FDBVER+DIRORG(D)	; Get pointer to other versions
+	MOVEI B,400100
+	SKIPE A
+	PUSHJ P,DELCKB		; Check validity
+	 SETZ A,		; Truncate chain if bad
+	PUSH P,A		; Save for later
+	HLRZ A,DIRORG+FDBEXT(D)
+	MOVSI B,FDBNEX
+	TDNE B,FDBCTL+DIRORG(D)
+	JUMPE A,DELPG
+	MOVEI B,400002
+	PUSHJ P,DELCKB		; Check if this has a valid extension
+	 JRST [	MOVSI A,FDBNEX
+		IORM A,FDBCTL+DIRORG(D)
+		HRRZS FDBEXT+DIRORG(D)
+		JRST .+1]	; Deletion assured
+DELPG:	PUSHJ P,DELTST		; Do we want to delete this?
+	 JRST DELP8		; No.
+	PUSHJ P,DELFIL
+	 JRST DELP8
+	JRST DELP9
+
+DELP8:	HRRM D,@-1(P)		; Put this pointer where it belongs
+	MOVEI A,FDBVER+DIRORG(D)
+	MOVEM A,-1(P)		; Save where to put next pointer
+DELP9:	POP P,D			; Get next fdb
+	JUMPN D,DELPA		; Loop for all versions
+	HRRM D,@0(P)		; End of chain
+	SUB P,[XWD 1,1]		; Flush ind pointer
+	POP P,D			; Get first version
+	JUMPE D,DELPB		; None
+	HRRM D,@-1(P)		; Store where it needs to be
+	MOVEI A,DIRORG+FDBEXT(D)
+	MOVEM A,-1(P)		; Remember where to put next one
+DELPB:	POP P,D			; Get loc of next ext
+	JUMPN D,DELP7		; Loop thru all extensions
+	HRRM D,@0(P)		; End of chain
+	SUB P,[XWD 1,1]		; Flush ind pointer
+	POP P,D			; Get first extension
+	POPJ P,
+
+DELTST:	MOVE A,FDBCTL+DIRORG(D)	; GET CONTROL BITS
+	TLNE A,FDBPRM!FDBUND	; PERMANENT AND UNDELETABLE FILES
+	TRNN F,10		; CAN ONLY BE DELETED BY CRDIR(KILL)
+	 JRST DELTS1		; OTHERWISE, MAKE FURTHER CHECKS
+	MOVSI A,FDBPRM		; REMOVE FDBPRM SO FDB WILL BE REMOVED
+	ANDCAM A,FDBCTL+DIRORG(D)
+	JRST SKPRET		; SKIP TO SAY YES, DELETE IT
+
+DELTS1:	TRNE F,100		; ALL FILES?
+	 JRST SKPRET		; YES
+	TLNE A,FDBUND		; UNDELETABLE FILE?
+	 POPJ P,		; YES, NEVER EXPUNGE IT
+	TRNE F,40		; DELETING NON-EXISTENT TYPE FILES?
+	TLNN A,FDBNXF!FDBNEX	; YES. IS THIS ONE?
+	 JRST DELTS3		; NO.
+	JRST SKPRET
+
+DELTS3:	TRNE F,20
+	TLNN A,FDBDEL		; YES, IS THIS ONE?
+	 JRST DELTS2		; NO.
+	JRST SKPRET
+
+DELTS2:	TLNN A,FDBTMP		; TEMP OR SCRATCH FILE?
+	 POPJ P,		; NO, RETURN
+	HLRZ A,FDBVER+DIRORG(D)
+	SUBI A,^D100000		; Get job number of temp file
+	CAME A,JOBNO		; Temp file of this job?
+	JRST [	TRNE F,4	; No.  Deleting scratch files?
+		AOS 0(P)	; Yes. Skip.
+		RET]
+	TRNE F,2		; This file is temp.  Deleting temp?
+	AOS 0(P)		; Yes. Skip.
+	POPJ P,			; RETURN
+
+DELFIL::PUSH P,F
+	PUSH P,E
+	PUSH P,D
+	SKIPN A,FDBADR+DIRORG(D)
+	JRST DELFI3
+	TLO A,(1B1)
+	PUSHJ P,ASOFN
+	 JRST [	CAIN A,OPNX16
+		JRST DELFI3	; Bad index block, forget it
+		JRST DELFI1]	; File is open, cannot expunge
+	MOVE D,(P)
+	PUSH P,A
+	MOVEI A,DIRORG(D)	; SET A=FDB ADDR FOR BYTE PTR
+	LDB E,PFILPC##		; GET PAGES THIS FILE
+	POP P,A
+	HRRE F,DIRDSK		; GET CURRENT COUNT
+	SUB F,E			; COMPUTE NEW CURRENT COUNT
+	HRRM F,DIRDSK		; AND SAVE IT
+	MOVE E,FDBCTL+DIRORG(D)
+	TLNE E,FDBLNG
+	JRST DELFI4		; Long file
+	PUSHJ P,DELPT
+DELFI3:	MOVE D,(P)
+	SETZM FDBADR+DIRORG(D)
+	SETZM FDBSIZ+DIRORG(D)
+	HRLOI B,7777
+	ANDCAM B,FDBBYV+DIRORG(D)
+	SKIPLE B,DIRORG+FDBACT(D)
+	SOS DIRORG+1(B)
+	MOVSI B,FDBLNG!FDBSHT
+	ANDCAB B,FDBCTL+DIRORG(D)
+	TLNN B,FDBPRM
+	AOS -3(P)
+DELFI1:	POP P,D
+	POP P,E
+	POP P,F
+	POPJ P,
+
+DELPT:	HRLZ 2,1
+	MOVEI 1,0
+	PUSHJ P,SETPT
+	AOS 2
+	TRNN 2,777000
+	JRST .-3
+	HLRZ 1,2
+	PUSHJ P,DELOFN##
+	POPJ P,
+
+DELFI4:	PUSH P,A
+	PUSHJ P,ASGPAG
+	 JRST [	POP P,A
+		PUSHJ P,RELOFN
+		JRST DELFI1]
+	PUSH P,A
+	MOVE B,A
+	HRLI B,140000
+	MOVE A,-1(P)
+	PUSHJ P,SETMPG
+	HRLI B,-1000
+DELFI6:	SKIPN A,(B)
+	JRST DELFI5
+	PUSH P,B
+	MOVE B,-2(P)		; Get ofn of pt table
+	HLLZ B,SPTH(B)		; Get class field
+	TLZ B,760017
+	TLZ A,40
+	IOR A,B
+	PUSHJ P,ASOFN
+	JRST DELFI8
+	PUSHJ P,DELPT
+DELFI7:	POP P,B
+	SETZM (B)
+DELFI5:	AOBJN B,DELFI6
+	MOVE B,(P)
+	MOVEI A,0
+	PUSHJ P,SETMPG
+	POP P,A
+	PUSHJ P,RELPAG
+	POP P,A
+	PUSHJ P,DELOFN
+	JRST DELFI3
+DELFI8:
+	CAIN A,OPNX16
+	JRST DELFI7
+	BUG(HLT,<DELFIL: ASOFN GAVE FAIL RETURN (BUSY) FOR A LONG FILE PAGE TABLE.>)
+
+	END ; OF DEVJS.MAC
+

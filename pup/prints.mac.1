@@ -1,0 +1,538 @@
+TITLE PRINTS
+SUBTTL Edward Fiala
+SEARCH STENEX
+
+; Copyright Xerox Corporation 1981
+; @CCL
+; .LOAD @PRINTS
+; ...
+; @CONN SUBSYS
+; @SSAVE <esc><esc><esc> PRINTSTATUS.SAV<cr><cr>
+
+; This program gives the print status for all files sent to the
+; printer directory in the last 24 hours by the user.
+; Status is printed as below:
+;
+;   Ears status message
+;   *Sent PALO 1 x 3 pages, NAME
+;   *Sent XGP2 4 x 2 pages, NAME
+;   *Bad font file, NAME
+;   *Haven't printed, NAME
+;   *Sending, NAME
+;
+;   Total printing in 1344 days
+;   Press 100 originals
+;   Ears 542 originals + 342 copies
+;
+; This output results from the last 10,000 chars. of <SECRETARY>PRINTHISTORY.;1
+; (printed files) and <PRINTER>LPT.USER;* (unprinted files)
+; files.  Printhistory entries are of the following forms:
+;	*Sent HOST 9 x 99 pages, FILENAME, #USER, 12-17-74 23:00
+;	*Total DEVICE 999 + 99 pages, during 1342:23, #USER, 12-17-74 23:00
+;	*...any error message...FILENAME, #USER, 12-17-74 23:00
+;	**HOST...any message..., 12-17-74 23:00
+
+
+A=1
+B=2
+C=3
+D=4
+E=5
+F=6
+G=7
+AA=10
+BB=11
+CC=12
+DD=13
+EE=14
+FF=15
+M=16
+P=17
+
+; Flags in ac 0 used by PRINTHISTORY scan
+EARSM==200000	; Ears message seen
+PRESSM==100000	; Press message seen
+GOTDAT==40000	; Gotten starting date for this user
+
+
+LOC 1000
+
+PHBUF:	BLOCK ^D2001
+MSGSTK:	BLOCK ^D250
+
+PDL:	BLOCK 20
+PFNAME:	ASCII /<PRINTER>LPT./
+	BLOCK 12
+NAMBUF:	BLOCK 14		; Buffer for accumulating file name
+USERNM:	BLOCK 20
+HOSTNM:	BLOCK 20
+
+; 1B0 = Xgp host, 1B1 = Ears host, 1B2 = previously dead, 1B3 = deferred,
+; 1B4 = busy, 1B5 = Press host
+HSTLST:	010000,,[ASCIZ /MENLO/]
+	010000,,[ASCIZ /WONDER/]
+	010000,,[ASCIZ /CHALLENGE/]
+	010000,,[ASCIZ /CLOVER/]
+	010000,,[ASCIZ /LILAC/]
+	010000,,[ASCIZ /DAISY/]
+	010000,,[ASCIZ /ROVER/]
+	010000,,[ASCIZ /CHESTER/]
+	010000,,[ASCIZ /KANJI/]
+	010000,,[ASCIZ /ROCKHOPPER/]
+	010000,,[ASCIZ /TUBORG/]
+	010000,,[ASCIZ /ADELIE/]
+	010000,,[ASCIZ /QUAKE/]
+	010000,,[ASCIZ /STINGER/]
+	010000,,[ASCIZ /VIKING/]
+	010000,,[ASCIZ /YANKEE/]
+	010000,,[ASCIZ /YODA/]
+NHOSTS==.-HSTLST
+
+CPGPG==400		; Where PSPOOL.CPG page is mapped in
+BSYMSG=CPGPG*1000+1
+
+START:	RESET
+	HRLZI A,500001		; Output use, old file only
+	HRROI B,[ASCIZ /<SYSTEM>PSPOOL.CPG;1/]
+	GTJFN
+	  PUSHJ P,JERROR
+	MOVE B,[440000,,302200]
+	OPENF
+	  PUSHJ P,JERROR
+	HRLZI A,(A)
+	MOVE B,[400000,,CPGPG]
+	HRLZI C,140000
+	PMAP
+	MOVEI A,101
+	MOVEM A,OUTJFN#
+	MOVE P,[-20,,PDL-1]
+	MOVE M,[-2000,,MSGSTK-1]	; Message stack pointer
+	GJINF
+	MOVEM A,DNLGIN#		; Login directory #
+	HRROI A,USERNM
+	MOVE B,DNLGIN
+	DIRST			; Get username
+	  PUSHJ P,JERROR
+	MOVE A,[POINT 7,PFNAME+2,20]
+	MOVE B,DNLGIN
+	DIRST
+	  PUSHJ P,JERROR
+	HRROI B,[ASCIZ /<SECRETARY>PRINTHISTORY.;1/]
+	HRLZI A,100001		; Input
+	GTJFN
+	  PUSHJ P,JERROR
+	HRRZM A,PHJFN#
+	MOVE B,[70000,,201000]	; Byte size = 7, read, wait if busy
+	OPENF
+	  PUSHJ P,JERROR
+	HRLZI B,25
+	MOVEI C,THSFDB
+	GTFDB			; Get the PRINTHISTORY fdb
+	MOVE B,THSFDB+FDBSIZ	; No. bytes in file
+	SUBI B,^D10000
+	JUMPL B,PHSHRT		; Short file--read it all
+	SFPTR			; Long file--read 10000 bytes
+	  PUSHJ P,JERROR
+	HRROI C,-^D10000
+	JUMPA .+2
+PHSHRT:	MOVN C,THSFDB+FDBSIZ	; # bytes
+	MOVE B,[POINT 7,PHBUF]
+	SIN			; Read the entire PRINTHISTORY file into PHBUF
+	CLOSF
+	  PUSHJ P,JERROR
+	GTAD
+	MOVEM A,DATIME#		; Time (days,,seconds since midnight 17 Nov 1858)
+	MOVEI 0,0		; 0 scan flags
+	MOVE E,[POINT 7,PHBUF]	; Current pointer
+	SETZM EPAGES#		; Totals for summary
+	SETZM ECOPY#
+	SETZM PPAGES#
+	SETZM PCOPY#
+	ILDB A,E
+	CAIE A,15
+	JUMPA .-2
+	ILDB A,E
+	CAIE A,12
+	PUSHJ P,BADPHS		; LF must always follow CR
+FDLOOP:	TLZ 0,PRESSM!EARSM
+	MOVE D,E		; Pointer to current message
+	ILDB A,D		; Get first char
+	JUMPE A,THSTAT		; Done?
+	CAIE A,"*"		; Must be "*"
+	PUSHJ P,BADPHS		; Bad strings in PRINTHISTORY
+	ILDB A,D
+	CAIN A,"*"		; Host down message or restart message?
+	JUMPA HSTDWN		; Yes
+	CAIE A,"S"		; Possibly a success message?
+	JUMPA ERRSTR		; No, error string
+
+	ILDB A,D
+	CAIE A,"e"
+	JUMPA ERRSTR		; No
+	ILDB A,D
+	CAIE A,"n"
+	JUMPA ERRSTR
+	ILDB A,D
+	CAIE A,"t"
+	JUMPA ERRSTR
+; Yes, success message
+	IBP D			; Skip " "
+	ILDB A,D
+	ADD D,[70000,,0]	; Backup byte pointer
+	CAIL A,"0"
+	CAILE A,"9"
+	JUMPA COLHST
+	SETZM NCPYS		; Number begins "nn briefs"
+	SETZM NPAGES
+	JUMPA NOPRNO
+
+COLHST:	PUSHJ P,RDHOST		; Read host name and set flag
+	  PUSHJ P,BADPHS	; Bad string pointed to by E
+; Byte pointer in D has been advanced to first non-blank non-comma
+; character after host namestring.
+	LDB B,[POINT 3,@HPTR,4]	; Pick up host state flags
+	ANDI B,2		; Preserve deferred, clear dead and busy flags
+	DPB B,[POINT 3,@HPTR,4]	; Set new state
+	MOVEI C,12		; Radix 10
+	MOVE A,D
+	NIN			; Read the no. copies
+	  PUSHJ P,BADPHS	; Bad string
+	MOVEM B,NCPYS#
+	IBP A
+	IBP A			; Skip over " x "
+	NIN			; Read no. pages
+	  PUSHJ P,BADPHS
+	MOVEM B,NPAGES#
+	MOVE D,A
+NOPRNO:	PUSHJ P,SKFIEL		; Skip over "pages, ", "copies," or "abstracts,"
+RELOOK:	PUSHJ P,SKFIEL		; Skip over file name
+	PUSHJ P,RDUSER		; Read user name
+	  JUMPA RELOOK		; Not user name
+	  JUMPA THSUSR		; This user!
+	JUMPA MSKIP		; Another user, advance over CR-LF
+
+; Got success message for this user, process
+THSUSR:	TLON 0,GOTDAT		; Got first date for printout?
+	MOVEM D,FDATE#		; No, save byte pointer to first date
+	PUSHJ P,DATCHK		; Get elapsed days in A
+	  PUSHJ P,BADPHS
+	JUMPN A,.+2		; No printout if .G. one day old
+	PUSH M,E		; Save message pointer for printout
+	MOVE A,NPAGES
+	SKIPE B,NCPYS
+	SUBI B,1
+	IMUL B,A
+	TLNN 0,EARSM
+	JUMPA PTOTAL
+	ADDM A,EPAGES
+	ADDM B,ECOPY
+	JUMPA MSKIP
+PTOTAL:	ADDM A,PPAGES		; Total Press printing
+	ADDM B,PCOPY
+	JUMPA MSKIP		; Skip to next message and loop
+
+; Got a file error message.
+ERRSTR:	PUSHJ P,SKFIEL		; Skip over next ", "
+	PUSHJ P,SKFIEL		; Skip over file name ", "
+	PUSHJ P,RDUSER		; This user?
+	  JUMPA .-2		; Not a user name, skip another field
+	  JUMPA TUBMSG		; This user bad file message
+; Scan the string pointed to by D across the next CR-LF
+MSKIP:	ILDB A,D
+	CAIN A,15
+	JUMPA SCNCR
+	JUMPN A,MSKIP
+	JUMPA THSTAT
+
+SCNCR:	ILDB A,D
+	CAIE A,12
+	PUSHJ P,BADPHS
+	MOVE E,D
+	JUMPA FDLOOP
+
+; Finished scanning PRINTHISTORY, type out host status
+THSTAT:	HRROI B,[ASCIZ /
+
+/]
+	PUSHJ P,TMSG
+	MOVE C,[POINT 8,BSYMSG]
+HSTALP:	ILDB B,C
+	JUMPE B,SCANPR
+	BOUT
+	CAIE B,15
+	JUMPA HSTALP
+	MOVEI B,12
+	BOUT
+	JUMPA HSTALP
+
+SCANPR:	HRROI B,[ASCIZ /
+
+/]
+	PUSHJ P,TMSG
+	HRLZI A,100101		; Old file only input file group descriptor
+	HRROI B,PFNAME
+	GTJFN
+	  JUMPA ENDDIR
+	MOVEM A,SAVJFN#
+	HRRZM A,TXTJFN#
+SPRINT:	PUSHJ P,GETNAM		; Get name from leader and prop. list
+	  JUMPA [HRROI B,[ASCIZ /*Sending /]
+		JUMPA SPRIN1]
+	MOVE E,THSFDB+FDBUSW
+	HRROI B,[ASCIZ /*Haven't printed /]
+	TLNE E,(1B1)		; Sending via Minx?
+	HRROI B,[ASCIZ /*Sending by Minx /]
+SPRIN1:	PUSHJ P,TMSG
+	HRROI B,FILNAM
+	PUSHJ P,TMSG
+	HRROI B,[ASCIZ /
+/]
+	PUSHJ P,TMSG
+NXTFIL:	MOVE A,SAVJFN
+	GNJFN
+	  JUMPA ENDDIR
+	JUMPA SPRINT
+
+; Done with <PRINTER>*.*, do history list items
+ENDDIR:	CAMN M,[-2000,,MSGSTK-1]
+	JUMPA SUMRY		; Done with print status, give summary
+	POP M,D			; Recover string pointer
+FOLOOP:	ILDB B,D
+	CAIE B,","
+	JUMPA TC0
+	ILDB E,D
+	CAIE E," "
+	JUMPA TC1
+	ILDB F,D
+	CAIE F,"#"		; Next field is user name?
+	JUMPA TC2		; No
+	HRROI B,[ASCIZ /
+/]
+	PUSHJ P,TMSG
+	JUMPA ENDDIR
+
+TC2:	PUSHJ P,TCHAR
+	MOVEI B," "
+	PUSHJ P,TCHAR
+	MOVE B,F
+TC0:	PUSHJ P,TCHAR
+	JUMPA FOLOOP
+
+TC1:	PUSHJ P,TCHAR
+	MOVE B,E
+	JUMPA TC0
+
+; Got bad file message for this user
+TUBMSG:	PUSHJ P,DATCHK		; Return elapse days in A
+	  PUSHJ P,BADPHS	; Not a date, crash
+	JUMPN A,.+2		; Last 24 hours?
+	PUSH M,E		; Yes, save for printout
+	JUMPA MSKIP		; Skip to next message
+
+
+; Looking at host change or Pspool message, update host state table
+HSTDWN:	PUSHJ P,RDHOST		; Determine host name
+	  JUMPA MSKIP		; Skip message if not a host name
+; Interesting messages are now "automatic ...", "deferred ...",
+; "crashed ...", and "down ..."
+	MOVE B,[POINT 7,F]
+	HRLZI C,-5
+	ILDB A,D
+	IDPB A,B
+	AOBJN C,.-2
+	CAMN F,[ASCII /autom/]
+	JUMPA HAUTO
+	CAMN F,[ASCII /defer/]
+	JUMPA HDEFER
+	CAME F,[ASCII /crash/]
+	CAMN F,[ASCII /down,/]
+	JUMPA HDOWN
+	CAMN F,[ASCII /busy,/]
+	JUMPA HBUSY
+	JUMPA MSKIP		; None of the above, skip it
+
+HAUTO:	MOVEI A,0		; Enter automatic printing mode
+HCHANG:	DPB A,[POINT 3,@HPTR,4]	; Clear deferred, busy, and dead
+	JUMPA MSKIP
+
+HDEFER:	MOVEI A,2		; Set deferred
+	JUMPA HCHANG
+
+HDOWN:	LDB A,[POINT 3,@HPTR,4]
+	ANDI A,2		; Preserve deferred bit
+	IORI A,4		; Set dead bit
+	JUMPA HCHANG
+
+HBUSY:	LDB A,[POINT 3,@HPTR,4]
+	ANDI A,2
+	IORI A,1
+	JUMPA HCHANG
+
+; Subroutine to read the host name pointed to by D and advance D
+; across this name and trailing blanks and commas.  HPTR is setup
+; for the host and either EARSM or PRESSM is set.  Return is caller + 1
+; on not valid host name, else caller + 2.
+RDHOST:	MOVE B,[POINT 7,HOSTNM]
+RDHLP:	ILDB A,D
+	CAIN A,","
+	JUMPA ENAME
+	CAIN A," "
+	JUMPA ENAME
+	IDPB A,B
+	JUMPN A,RDHLP
+	PUSHJ P,BADPHS
+
+ENAME:	MOVEI A,0
+	IDPB A,B
+RDHTLP:	MOVE F,D
+	ILDB A,D
+	CAIE A," "
+	CAIN A,","
+	JUMPA RDHTLP
+	MOVE D,F		; Pointer advanced across terminator
+	HRLZI F,-NHOSTS
+HSTCLP:	MOVEI B,HOSTNM
+	MOVE C,HSTLST(F)
+	PUSHJ P,STRCOM		; Compare ASCIZ strings at B and C
+	  JUMPA THSHST		; Found match
+	AOBJN F,HSTCLP
+	POPJ P,			; Return caller + 1 on no match
+
+THSHST:	MOVEI B,HSTLST(F)
+	MOVEM B,HPTR#		; Save pointer to HSTLST
+	MOVE A,(B)
+	TLNN A,(1B5)		; Press host?
+	TLOA 0,EARSM		; No, ears
+	TLO 0,PRESSM		; Yes, set flag
+	AOS (P)
+	POPJ P,
+
+
+; Subroutine to compare strings pointed at by B and C, returning
+; caller + 1 on match, caller + 2 on no match, A, B, and C clobbered
+STRCOM:	PUSH P,G
+	HRLI B,440700
+	HRLI C,440700
+STRCLP:	ILDB A,B
+	ILDB G,C
+	CAIE A,(G)
+	AOSA -1(P)
+	JUMPN A,STRCLP
+	POP P,G
+	POPJ P,
+
+
+; Subroutine to advance the string byte pointer D across the next ", "
+SKFIEL:	ILDB A,D
+	CAIN A,","
+	JUMPA COMSEN
+	JUMPN A,SKFIEL
+	PUSHJ P,BADPHS
+
+COMSEN:	ILDB A,D
+	CAIE A," "
+	JUMPA SKFIEL
+	POPJ P,
+
+; Subroutine to read over user name comparing it to the name in USERNM
+; skipping on not equal (after passing over the terminator), not
+; skipping on a match.
+RDUSER:	ILDB A,D
+	CAIE A,"#"
+	POPJ P,			; Not user name
+	AOS (P)			; Is some user's name
+	MOVE B,[POINT 7,USERNM]
+	PUSH P,G
+RDUS1:	ILDB A,D
+	ILDB G,B
+	CAIN A,(G)
+	JUMPA RDUS1
+	CAIN A,","
+	CAIE G,0
+	AOS -1(P)		; Not a match skip return
+	POP P,G
+	ILDB A,D
+	POPJ P,
+
+
+; Subroutine to read the string pointed to by D as a time and date,
+; converting it to internal format in B and returning caller + 2,
+; days elapsed since printing in A.  Returns caller + 1 if not date
+DATCHK:	MOVE A,D
+	MOVEI B,0		; Accept any input date and time format
+	IDTIM
+	  POPJ P,
+	AOS (P)
+	MOVE A,DATIME
+	SUB A,B
+	HLRZ A,A		; Elapsed days in A
+	POPJ P,
+
+; Print summary totals for this user
+SUMRY:	TLNN 0,GOTDAT		; Be sure we got something
+	HALTF
+	HRROI B,[ASCIZ /
+Total printing in /]
+	PUSHJ P,TMSG
+	MOVE D,FDATE
+	PUSHJ P,DATCHK
+	  PUSHJ P,JERROR
+	MOVEI B,1(A)
+	MOVE A,OUTJFN
+	MOVEI C,12
+	NOUT
+	  PUSHJ P,JERRC
+	HRROI B,[ASCIZ / days/]
+	PUSHJ P,TMSG
+	SKIPN PPAGES
+	JUMPA ESUMRY
+	HRROI B,[ASCIZ /
+Press /]
+	PUSHJ P,TMSG
+	MOVE B,PPAGES
+	MOVEI C,12
+	NOUT
+	  PUSHJ P,JERRC
+	HRROI B,[ASCIZ / originals + /]
+	PUSHJ P,TMSG
+	MOVE B,PCOPY
+	MOVEI C,12
+	NOUT
+	  PUSHJ P,JERRC
+	HRROI B,[ASCIZ / copies/]
+	PUSHJ P,TMSG
+ESUMRY:	SKIPN EPAGES
+	JUMPA SUMFIN
+	HRROI B,[ASCIZ /
+Ears /]
+	PUSHJ P,TMSG
+	MOVE B,EPAGES
+	MOVEI C,12
+	NOUT
+	  PUSHJ P,JERRC
+	HRROI B,[ASCIZ / originals + /]
+	PUSHJ P,TMSG
+	MOVE B,ECOPY
+	MOVEI C,12
+	NOUT
+	  PUSHJ P,JERRC
+	HRROI B,[ASCIZ / copies/]
+	PUSHJ P,TMSG
+SUMFIN:	HRROI B,[ASCIZ /
+
+/]
+	PUSHJ P,TMSG
+	HALTF
+
+BADPHS:	HRROI B,[ASCIZ /Bad string in PRINTHISTORY file/]
+	JUMPA ERROR
+
+TCHAR:	MOVE A,OUTJFN
+	BOUT
+	POPJ P,
+
+TMSG:	MOVE A,OUTJFN
+	MOVEI C,0
+	SOUT
+	POPJ P,
+     

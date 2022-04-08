@@ -1,0 +1,629 @@
+;<NORMAL>PUPPRP.MAC.7 10-Jan-81 21:01:11    Edit by SCHOEN
+; Made twenex runtime compatible
+;<PUP>PUPPRP.MAC.6    30-Jul-80 15:47:12    TECO'd by GILMURRAY
+; Remove 2 and Z and insert !, #, and + in FILQUO table
+;<PUP>PUPPRP.MAC.6, 17-Jun-80 14:51:28, Edit by SCHOEN
+; tops20: Fixed missing stack clean-up in GSTUSR,GSTDIR
+;<PUP>PUPPRP.MAC.5, 12-Jun-80 17:23:27, Edit by SCHOEN
+; Created GSTUSR routine to do RCUSR for PPUNAM, GSTDIR 
+; routine for PPCNAM (Tops20).
+;<PUP>PUPPRP.MAC;9  12-Jun-80  Edit by Schoen
+; Fixed directory # handling in PPUNAM, GSTDIR in tops20 version
+;<PUP>PUPPRP.MAC;8     15-APR-80    Edit by Schoen
+; Add Tenex/Tops20 conditional assembly
+;<PUP>PUPPRP.MAC;7     2-SEP-79 16:00:50    EDIT BY TAFT
+;<PUP>PUPPRP.MAC;6     2-JUN-77 21:32:49    EDIT BY TAFT
+; Add "Author" and "Size" property parsers
+;<PUP>PUPPRP.MAC;5    31-MAR-77 20:25:23    EDIT BY TAFT
+; Put in hooks for mail server
+; Make individual property interpreters conditionally external
+; Reinstate forcing device and directory to upper-case.
+; (I knew there was a reason.  Damn silly Tenex problem!)
+;<PUP>PUPPRP.MAC;3    19-MAR-77 20:05:26    EDIT BY TAFT
+; Add code to parse date properties
+;<PUP>PUPPRP.MAC;2    18-MAR-77 18:14:45    EDIT BY TAFT
+; Call external REFILL procedure in SCNPRP
+;<PUP>PUPPRP.MAC;1    18-MAR-77 17:06:55    EDIT BY TAFT
+; Modified to be usable in both server and user
+; Renamed PUPPRP.MAC
+; Uniformly generate "No" response before giving error return.
+; Remove device/directory name check -- it will be caught later if
+; actually used.
+;<PUP>PFUPRP.MAC;3    15-MAR-77 18:54:26    EDIT BY TAFT
+; Add Tenex-paged type
+;<PUP>PFUPRP.MAC;2    10-MAR-77 14:21:00    EDIT BY TAFT
+; Split out from PUPFTP.MAC
+
+; Copyright 1979 by Xerox Corporation
+
+	TITLE PUPPRP -- PUP FTP PROPERTY LIST PARSER
+	SUBTTL E. A. Taft / March 1977
+
+	SEARCH PUPDEF
+	SEARCH MONSYM
+
+
+; Scan and interpret property list
+;	A/ Source string pointer (first char expected to be "(" )
+;	B/ Pointer to property list storage region
+; Returns +1:  Syntax error, "No" reply already generated
+;		(caller may have to supply terminating EOC)
+;	+2:  Successful, A/ Pointer to matching ")"
+; The external REFILL procedure is called often.  It should
+; do any necessary management of the source string pointer in A.
+; Clobbers C, D
+
+SCNPRP::PUSHJ P,SAVE1##		; Protect P1
+	MOVE P1,B		; Put plist pointer in protected ac
+	TLC A,-1		; Convert -1 lh string ptr
+	TLCN A,-1		;  to standard byte ptr
+	 HRLI A,(POINT 7)
+	ILDB B,A		; Check first char
+	CAIE B,"("		; Good start of property list?
+	 FTPM(NO,10,<Malformed property list>,1)
+
+; Here to begin scanning new property
+SCNPR1:	PUSHJ P,REFILL##	; Refill buffer if necessary
+	ILDB C,A		; Get next char
+	CAIN C," "		; Permit extra spaces here
+	 JRST SCNPR1
+	CAIN C,")"		; End of property list?
+	 JRST SKPRET##		; Yes, return +2
+	CAIE C,"("		; Start of new property?
+	 FTPM(NO,10,<Malformed property list>,1)
+	MOVE B,[-NPROPS,,PLDISP]  ; Make ptr to property name table
+	PUSHJ P,FNDKEY		; Get and lookup property name
+	 FTPM(NO,10,<Malformed property name>,1)
+	 JRST [	HRROI B,TEMP##	; Unrecognized property, say so
+		DTYPE <Unrecognized property "%2S"%/>
+		MOVEI C,5000	; Max # characters to discard
+		PUSHJ P,GTPVAL	; Scan and discard property value
+		 FTPM(NO,10,<Malformed property>,1)
+		JRST SCNPR3]	; Ignore property, on to next
+	LDB C,A			; Check terminator
+	CAIE C," "		; Space?
+	 FTPM(NO,10,<Malformed property>,1)
+	MOVE D,0(B)		; Found, get dispatch
+	HLLM D,0(P)		; Save entry pointer in case error
+	TRZ F,RAISEF		; Default is not to raise lower case
+	PUSHJ P,0(D)		; Scan and store property value
+	 POPJ P,		; Failed, return +1
+SCNPR3:	LDB C,A			; Get terminator
+	CAIE C,")"		; Proper end of property?
+	 FTPM(NO,10,<Malformed property>,1)
+	JRST SCNPR1		; Yes, on to next property
+
+; Construct property name and dispatch table
+
+DEFINE X(SYM,NAME,SIZE<1>) <
+IF2,<IFNDEF PP'SYM,<EXTERN PP'SYM>>
+	[ASCIZ /NAME/] ,, PP'SYM
+>
+
+PLDISP:	PNAMES
+
+	NPROPS==.-PLDISP	; Number of properties
+
+
+
+; Subroutines to process individual properties
+; All have the following calling sequence:
+;	A/ Source string ptr
+;	P1/ Property list pointer
+; Returns +1:  Error, reply already generated
+;	+2:  Successful, A/ byte ptr to property value terminator
+; May clobber B-D
+
+
+; (Author <string>)
+
+PPAUTH:	HRROI B,P.AUTH(P1)	; Where to put string
+	MOVEI C,USRSTL		; Max # of characters
+	PUSHJ P,GTPVAL		; Collect and store string
+	 FTPM(NO,10,<Malformed property>,1)
+	JRST SKPRET##		; Return +2
+
+
+; (Byte-Size <decimal number>)
+
+PPBYTE:	MOVEI C,^D10		; Decimal radix
+	NIN			; Convert number
+	 FTPM(NO,16,<Malformed Byte-Size>,1)
+	CAIL B,1		; Check for reasonable value
+	CAILE B,^D36
+	 FTPM(NO,16,<Byte-Size not in range 1-36>,1)
+	MOVEM B,P.BYTE(P1)	; Ok, store it in property list
+	JRST SKPRET##		; Return +2
+
+
+; (Connect-Name <directory name>) - only server should receive this
+
+PPCNAM:	PUSHJ P,GSTDIR		; Collect string and check it
+	 FTPM(NO,10,<Malformed property>,1)
+	 FTPM(NO,23,<Illegal Connect-Name>,1)
+	MOVEM C,P.CNAM(P1)	; Store dir # in property list
+	JRST SKPRET##		; Return +2
+
+
+; (Connect-Password <string>) - only server should receive this
+
+PPCPSW:	HRROI B,P.CPSW(P1)	; Where to put string
+	MOVEI C,USRSTL		; Max # of characters
+	TRO F,RAISEF		; Raise lower case letters
+	PUSHJ P,GTPVAL		; Collect and store password string
+	 FTPM(NO,10,<Malformed property>,1)
+	JRST SKPRET##		; Return +2
+
+
+; (Creation-Date <date>)
+
+PPCDAT:	SETZ B,			; Permit arbitrary format
+	PUSHJ P,GDATM			; Input date and time
+	 FTPM(NO,25,<Malformed Creation-Date>,1)
+	MOVEM B,P.CDAT(P1)	; Ok, store it in property list
+	JRST SKPRET##
+
+
+; (Device <device name>)
+
+PPDEVI:	TRO F,RAISEF		; Raise lower case letters
+	HRROI B,P.DEVI(P1)	; Where to put string
+	MOVEI C,USRSTL		; Max length
+	PUSHJ P,GTPVAL		; Collect and store device name
+	 FTPM(NO,10,<Malformed property>,1)
+	JRST SKPRET##		; Return +2
+
+; Property value processing routines (cont'd)
+
+; (Directory <directory name>)
+
+PPDIRE:	TRO F,RAISEF		; Raise lower case letters
+	HRROI B,P.DIRE(P1)	; Put property value here
+	MOVEI C,USRSTL		; Max # characters
+	PUSHJ P,GTPVAL		; Get property value string
+	 FTPM(NO,10,<Malformed property>,1)
+	JRST SKPRET##		; Return +2
+
+
+; (End-Of-Line-Convention CR|CRLF|Transparent)
+
+PPEOLC:	MOVE B,[-3,,EOLTAB]	; Set pointer to keyword table
+	PUSHJ P,FNDKEY		; Get and lookup keyword
+	 FTPM(NO,17,<Illegal End-of-Line-Convention>,1)
+	 FTPM(NO,17,<Illegal End-of-Line-Convention>,1)
+	HRRZ B,0(B)		; Succeeded, get entry value
+	MOVEM B,P.EOLC(P1)	; Store in property list
+	JRST SKPRET##		; Return +2
+
+EOLTAB:	[ASCIZ /CR/] ,, 0
+	[ASCIZ /CRLF/] ,, 1
+	[ASCIZ /TRANSPARENT/] ,, 2
+
+
+; (Name-Body <name.extension>)
+
+PPNAMB:	MOVE B,[POINT 7,P.NAMB(P1)]  ; Init byte ptr
+	MOVEI C,NAMSTL		; Max length
+	TRZ F,RAISEF		; Use this as period seen flag
+PPNAM1:	ILDB D,A		; Get char from property value
+	JUMPE D,[FTPM(NO,10,<Malformed property>,1)]
+	CAIN D,PQUOTE		; Character quote?
+	 JRST [	ILDB D,A	; Yes, get next literally
+		JUMPE D,[FTPM(NO,10,<Malformed property>,1)]
+		JRST .+3]
+	CAIN D,")"		; End of property value?
+	 JRST PPNAM4		; Yes
+	SOJL C,[FTPM(NO,13,<Name-Body too long>,1)]  ; Check length
+	CAIN D,"."		; Period?
+	 JRST [	TRON F,RAISEF	; Yes, seen one already?
+		 JRST PPNAM3	; No, store literally
+		JRST PPNAM2]	; Yes, quote it
+	PUSH P,D+1		; Get another ac
+	IDIVI D,^D36		; Compute index into bit table
+	MOVE D,FILQUO(D)	; See if need to quote character
+	LSH D,(D+1)		; Set sign if so
+	POP P,D+1
+	JUMPGE D,PPNAM3		; Jump if not
+PPNAM2:	MOVEI D,"V"-100		; Insert a control-V
+	IDPB D,B
+	SOJL C,[FTPM(NO,13,<Name-Body too long>,1)]  ; Check length
+PPNAM3:	LDB D,A			; Recover character
+	IDPB D,B		; Store it
+	JRST PPNAM1		; Back for more
+
+PPNAM4:	SETZ D,			; Done, append null
+	IDPB D,B
+	JRST SKPRET##		; Return +2
+
+; Bit table of characters that must be quoted with ^V for GTJFN
+FILQUO:	777777777775		; 000-043
+	003200035600		; 044-107
+	000000104000		; 110-153
+	000007600000		; 154-177
+
+; Property value processing routines (cont'd)
+
+; (Read-Date <date>)
+
+PPRDAT:	SETZ B,			; Permit arbitrary format
+	PUSHJ P,GDATM			; Input date and time
+	 FTPM(NO,27,<Malformed Read-Date>,1)
+	MOVEM B,P.RDAT(P1)	; Ok, store it in property list
+	JRST SKPRET##
+
+
+; (Server-Filename <filename>)
+
+PPSFIL:	HRROI B,P.SFIL(P1)	; Where to put name string
+	MOVEI C,SFNSTL		; Maximum length
+	PUSHJ P,GTPVAL		; Get property value string
+	 FTPM(NO,10,<Malformed property>,1)
+	JRST SKPRET##		; Succeeded, return +2
+
+
+; (Size <decimal number>)
+
+PPSIZE:	MOVEI C,^D10		; Decimal radix
+	NIN			; Convert number
+	 FTPM(NO,10,<Malformed size>,1)
+	MOVEM B,P.SIZE(P1)	; Store in property list
+	JRST SKPRET##		; Return +2
+
+
+; (Type Text|Binary|Tenex-Paged)
+
+PPTYPE:	MOVE B,[-3,,TYPTAB]	; Set pointer to keyword table
+	PUSHJ P,FNDKEY		; Get and lookup keyword
+	 FTPM(NO,15,<Illegal Type>,1)
+	 FTPM(NO,15,<Illegal Type>,1)
+	HRRZ B,0(B)		; Succeeded, get entry value
+	MOVEM B,P.TYPE(P1)	; Store in property list
+	JRST SKPRET##		; Return +2
+
+TYPTAB:	[ASCIZ /BINARY/] ,, 2
+	[ASCIZ /TENEX-PAGED/] ,, 3
+	[ASCIZ /TEXT/] ,, 1
+
+
+; (User-Name <username>) - only server should receive this
+
+PPUNAM:	PUSHJ P,GSTUSR		; Collect string and check it
+	 FTPM(NO,10,<Malformed property>,1)
+	 FTPM(NO,20,<Illegal User-Name>,1)
+	SKIPGE B		; Make sure not files-only
+	 FTPM(NO,20,<Files-only directory illegal as User-Name>,1)
+	MOVEM C,P.UNAM(P1)	; Store dir # in property list
+	JRST SKPRET##		; Return +2
+
+
+; (User-Password <string>) - only server should receive this
+
+PPUPSW:	HRROI B,P.UPSW(P1)	; Where to put string
+	MOVEI C,USRSTL		; Max # of characters
+	TRO F,RAISEF		; Raise lower case letters
+	PUSHJ P,GTPVAL		; Collect and store password string
+	 FTPM(NO,10,<Malformed property>,1)
+	JRST SKPRET##		; Return +2
+
+; Property value processing routines (cont'd)
+
+; (User-Account <string>) - only server should receive this
+
+PPUACT:	HRROI B,P.UACT+1(P1)	; Where to put string
+	MOVEI C,USRSTL		; Max # of characters
+	TRO F,RAISEF		; Raise lower-case letters
+	PUSHJ P,GTPVAL		; Collect and store account string
+	 FTPM(NO,10,<Malformed property>,1)
+	MOVE D,A		; Preserve source string ptr
+	HRROI A,P.UACT+1(P1)	; See if account is numeric
+	MOVEI C,^D10
+	NIN
+	 JRST PPUAC1		; No, assume string
+	TLNE B,(7B2)		; Yes, make sure in range
+	 FTPM(NO,22,<Illegal User-Account>,1)
+	TLOA B,(5B2)		; Flag numeric account
+PPUAC1:	 HRROI B,P.UACT+1(P1)	; Here if string account
+	MOVEM B,P.UACT(P1)	; Store account designator
+	MOVE A,D		; Restore source string ptr
+	JRST SKPRET##		; Return +2
+
+
+; (Version <decimal number>)
+
+PPVERS:	MOVEI C,^D10		; Decimal radix
+	NIN			; Convert number
+	 FTPM(NO,14,<Malformed Version>,1)
+	CAML B,[-2]		; Check for reasonable value
+	CAILE B,777774
+	 FTPM(NO,14,<Illegal Version>,1)
+	MOVEM B,P.VERS(P1)	; Ok, store it in property list
+	JRST SKPRET##		; Return +2
+
+
+; (Write-Date <date>)
+
+PPWDAT:	SETZ B,			; Permit arbitrary format
+	PUSHJ P,GDATM			; Input date and time
+	 FTPM(NO,26,<Malformed Write-Date>,1)
+	MOVEM B,P.WDAT(P1)	; Ok, store it in property list
+	JRST SKPRET##
+
+; Collect property value and interpret it as a string dat and time
+; ... this is necessary because servers such IFS send dates as
+; ... "27-May-80 16:45:34 PDT."  Twenex IDTIM breaks on the space
+; ... after the time, so the timezone field is left hanging.
+;	A/ Source string pointer
+; Returns +1: IDTIM failure, bad date and time supplied
+;	  +2: Success, A/Updated pointer, B/Date, time in internal format
+
+GDATM:	PUSH P,A		; Save entry pointer
+	SETZ B,			; Do a normal IDTIM
+	IDTIM
+	 JRST [POP P,(P)	; Clean stack, and return with error
+	       POPJ P,]
+	LDB C,A			; See what the terminator was
+	CAIN C,")"		; If right parens, then all OK
+	 JRST [POP P,(P)
+	       JRST SKPRET##]
+	MOVEI C,"-"		; If not parens, assume time zone follows
+	DPB C,A			; Modify string to allow it
+	POP P,A			; Recover string pointer for retry
+	SETZ B,
+	IDTIM				; Retry IDTIM
+	 POPJ P,		; Fail
+	JRST SKPRET##
+
+; Collect property value and check it as a directory name
+;	A/ Source string ptr
+; Returns +1:  Illegal format property value
+;	  +2:  check failed
+;	  +3:  A/ Updated pointer, B/ flags, C/ dir #
+; Clobbers B, C
+
+GSTDIR:	PUSHJ P,GSTVAL		; Fetch the string value into TEMP+1
+	 POPJ P,		; Failed
+	AOS 0(P)		; OK, return at least +2, b = ptr to value
+	JRST GSTDR
+
+; This entry is just to convert the directory string
+; Entry:   b = str ptr to directory name
+; Return:  +1, fail
+;	   +2, success, b = flags, c = dir #
+GSTDR::	PUSH P,A		; Save source string ptr
+	PUSHJ P,.STDIR##	; Convert to directory #
+	 JRST GSTBAD		; Not found, return +2
+GSTOK:	POP P,A			; a _ string ptr to next param
+	JRST SKPRET##		; Skip return
+
+; Here for bad directory/user name
+GSTBAD:	SUB P,[1,,1]		; Reset the stack
+	POPJ P,			; No skip return
+
+
+; Collect property value and check it as a user name
+;	A/ Source string ptr
+; Returns +1:  Illegal format property value
+;	  +2:  check failed
+;	  +3:  A/ Updated pointer, B/ flags, C/ user #
+; Clobbers B, C
+GSTUSR:	PUSHJ P,GSTVAL		; Get the string value
+	 POPJ P,		; Failed, return +1
+	AOS 0(P)		; OK, return at least +2
+	JRST GSTUS
+
+; This entry is just to convert the user string
+; Entry:   b = str ptr to user name
+; Return:  +1, fail
+;	   +2, success, b = flags, c = user #
+GSTUS::	PUSH P,A		; Ok, save the ac
+	PUSHJ P,.STUSR##	; Convert string to user number
+	 JRST GSTBAD		; No go
+	JRST GSTOK		; Got it
+
+
+; Here to fetch the string parameter value for GSTDIR/USR into TEMP
+; Entry:   a = source string ptr
+; Return:  +1, fail
+;	   +2, success, a = ptr to end of param string
+;			b = ptr to start of value string
+GSTVAL:	HRROI B,TEMP##		; Buffer property value here
+	MOVEI C,USRSTL		; Max # characters
+	PUSHJ P,GTPVAL		; Get property value string
+	 POPJ P,		; Failed, return +1
+	HRROI B,TEMP##		; OK, b _ ptr to value string
+	JRST SKPRET##		; Success
+
+
+; Get property value string (up to ")" )
+;	A/ Source string ptr
+;	B/ Destination string ptr
+;	C/ Max # of characters permitted
+; Returns +1:  Error, overflowed or no terminating ")"
+;	+2:  Successful, A/ byte ptr to terminating ")"
+; Terminates destination string with null.
+; Converts lower case to upper if RAISEF is set
+; Clobbers B-D
+
+GTPVAL::TLC B,-1		; If lh is -1, convert to byte ptr
+	TLCN B,-1
+	 HRLI B,(POINT 7)
+GTPVA1:	ILDB D,A		; Get char from source
+	JUMPE D,CPOPJ##		; Fail if end of source string
+	CAIN D,PQUOTE		; Character quote?
+	 JRST [	ILDB D,A	; Yes, get next literally
+		JUMPE D,CPOPJ##	; But don't allow null
+		JRST GTPVA2]
+	CAIN D,")"		; End of property value?
+	 SETZ D,		; Yes, remember so
+	CAIL D,"a"		; Lower case?
+	CAILE D,"z"
+	 JRST GTPVA2		; No
+	TRNE F,RAISEF		; Yes, want to raise it?
+	 SUBI D,40		; Yes, do so
+GTPVA2:	SOJL C,CPOPJ##		; Fail if overflowing destination
+	IDPB D,B		; Store byte in destination
+	JUMPN D,GTPVA1		; Repeat if not end of property
+	JRST SKPRET##		; Done, return +2
+
+
+; Get and lookup name keyword string
+;	A/ Source string ptr
+;	B/ -length ,, address of lookup table (see NAMSRC)
+; Returns +1:  Error, improper format
+;	+2:  Name not found
+;	+3:  Successful, B/ pointer to matching entry
+; Clobbers B-D;  updates A appropriately on +2 and +3 returns
+
+FNDKEY::PUSH P,B		; Save table pointer
+	HRROI B,TEMP##		; Where to buffer string
+	PUSHJ P,GETNAM		; Input the name
+	 JRST [	POP P,B		; Failed, return +1
+		POPJ P,]
+	EXCH A,0(P)		; Ok, save string, get table
+	HRROI B,TEMP##		; Where the name is now
+	PUSHJ P,NAMSRC		; Look it up
+	 JRST [	POP P,A		; Not found, recover string ptr
+		JRST SKPRET##]	; Return +2
+	MOVE B,A		; Ok, copy entry pointer
+	POP P,A			; Recover string ptr
+	JRST SK2RET##		; Return +3
+
+; Get name keyword string
+;	A/ Source string ptr
+;	B/ String ptr to temp region in which to store name
+; Ignores leading blanks.  Converts lower to upper case.
+; Terminates on any character besides alphanumeric and "-".
+; Terminates temp string with null (for NAMSRC).
+; Returns +1:  Error, first char not keyword constituent
+;	+2:  Ok, A/ Byte ptr to terminator
+; Clobbers B-D
+
+GETNAM::TLC B,-1		; If lh is -1, convert to byte ptr
+	TLCN B,-1
+	 HRLI B,(POINT 7)
+	SETZ D,			; Init counter
+GETNA1:	ILDB C,A		; Get char from source
+	CAIL C,"A"		; Alphabetic?
+	CAILE C,"Z"
+	 CAIN C,"-"		; Hyphen?
+	  JRST GETNA2		; Yes, append to string
+	CAIL C,"0"		; Numeric?
+	CAILE C,"9"
+	 CAIA
+	  JRST GETNA2		; Yes, append to string
+	CAIL C,"a"		; Lower case?
+	CAILE C,"z"
+	 JRST GETNA3		; No, terminator
+	SUBI C,40		; Yes, capitalize
+GETNA2:	IDPB C,B		; Store in temp buffer
+	AOJA D,GETNA1		; Count and loop
+
+; Here when hit terminator
+GETNA3:	CAIN C," "		; Blank?
+	 JUMPE D,GETNA1		; Yes, ignore if leading
+	JUMPE D,CPOPJ##		; Fail if string empty
+	SETZ C,			; Append null to temp string
+	IDPB C,B
+	JRST SKPRET##		; Return +2
+
+; Lookup name in table
+;	A/ -length ,, address of table to search
+;	B/ String ptr to name string (all letters must be capitals)
+; Returns +1: Not found, A points to smallest entry > key
+;	+2: Found, A points to matching entry
+; In both cases, A is still in AOBJN pointer format.  In the
+;  +1 return, the lh is positive if A points past end of table.
+; Table entry format:
+;	[ASCIZ /NAME/] ,, value
+; Clobbers A-D
+
+NAMSRC::TLC B,-1		; If lh is -1, convert to byte ptr
+	TLCN B,-1
+	 HRLI B,(POINT 7)
+	JSP C,BINSRC		; Call binary search
+
+
+; Name comparison routine for binary search
+;	A/ Address of table entry to compare in rh
+;	B/ Search key (as passed to BINSRC)
+; Returns +1: Key < Entry
+;	+2: Key > Entry
+;	+3: Key = Entry
+; Additionally, if the key is an initial substring of the entry
+; (+1 return only), returns D/ string ptr to tail (else 0)
+; Clobbers C, D
+
+NAMCMP::PUSH P,A		; Save args
+	PUSH P,B
+	HLRZ A,0(A)		; Make string ptr to table entry
+	HRLI A,(POINT 7)
+NAMCM1:	ILDB C,A		; Get char from table entry
+	CAIGE C,"a"		; Make the table character uppercase
+	 JRST NAMCM5
+	CAIG C,"z"
+	 TRZ C,40
+NAMCM5:	ILDB D,B		; Get char from search key
+	CAIGE D,(C)		; Compare
+	 JRST [	JUMPN D,NAMCM3	; Key < entry; if not end return +1
+		MOVSI D,(7B5)	; If end of key make string ptr
+		ADD D,A		;  to tail of entry
+		JRST NAMCM4]	; Also return +1
+	CAILE D,(C)
+	 JRST NAMCM2		; Key > entry, return +2
+	JUMPN D,NAMCM1		; Key char = entry, look at next
+	AOS -2(P)		; End, key = entry, return +3
+NAMCM2:	AOS -2(P)
+NAMCM3:	SETZ D,			; Note not substring match
+NAMCM4:	POP P,B			; Restore args
+	POP P,A
+	POPJ P,
+
+; Perform binary search
+;	A/ -length ,, address of table to search
+;	B/ Search key
+;	C/ Routine to call to compare key to entry
+; Returns +1: Not found, A points to smallest entry > key
+;	+2: Found, A points to matching entry
+; In both cases, A is still in AOBJN pointer format.  In the
+;  +1 return, the lh is positive if A points past end of table.
+; Clobbers A-D
+
+; The comparison routine must operate as follows:
+;	A/ Address of table entry to compare in rh
+;	B/ Search key (as passed to BINSRC)
+; Returns +1: Key < Entry
+;	+2: Key > Entry
+;	+3: Key = Entry
+; C and D may be clobbered freely, others must be protected
+
+BINSRC::PUSHJ P,SAVE2##		; Need more temps
+	MOVE P2,C		; Save routine to call
+	HLRE C,A		; Get negative table length
+	MOVN C,C		; Make positive
+	JFFO C,.+2		; Find position of first 1
+	 POPJ P,		; Empty table, fail
+	MOVN D,D		; Compute largest power of 2
+	MOVSI P1,(1B0)		;  <= table length
+	LSH P1,(D)
+	HRLI P1,(P1)		; Put in both halves
+	SUB A,[1,,1]		; Backup ptr to one before table
+BINSR1:	ADD A,P1		; Add increment to table pointer
+BINSR2:	LSH P1,-1		; Halve increment (both halves)
+	TRZ P1,400000
+	JUMPGE A,BINSRL		; Jump if off end of table
+	PUSHJ P,0(P2)		; Call routine to do compare
+	 JRST BINSRL		; Key < entry
+	 JRST BINSRG		; Key > entry
+	JRST SKPRET##		; Key = entry, return +2
+
+; Here if key > entry: advance table pointer
+BINSRG:	JUMPN P1,BINSR1		; Loop if increment nonzero
+	AOBJN A,CPOPJ##		; Set pointer and fail if zero
+
+; Here if key < entry, or past end: backup table pointer
+BINSRL:	JUMPE P1,CPOPJ##	; Fail if increment zero
+	SUB A,P1		; Backup table pointer
+	JRST BINSR2		; Try again
+
+
+	END

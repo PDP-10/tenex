@@ -1,0 +1,2221 @@
+; Copyright Xerox Corporation 1981
+; This file contains subroutines for manipulating document indices and
+; building and parsing messages.  It is included in the assemblies of
+; PSPOOL, DIST, RMSG, SMSG, INDEX.
+
+; The file(s) assembled with DINDEX must define APPERR, CNOUT, DNOUT,
+; CPYSTL, CPYSTZ, CPYSTT, CPYCRL, INDJFN, DESJFN, VALJFN, SYMJFN, MESSAG,
+
+; The subroutines defined in DINDEX are as follows:
+;   OPNNIX  open new DOCGEN.INDEX file
+;   OPNOIX  open old DOCGEN.INDEX file
+;   OPNSV   open SYMBOLS and VALUES and map SYMBOLS and page 0 of VALUES.
+;   UNMAPX  unmap pages from the index area
+;
+;   PICKID  pick index position and map page of index for insert/replace.
+;    OPNDES open DOCGEN.DESn for selected index position.
+;   RDDESC  read brief from index and decompose it into standard storage.
+;   MSGDES  build a message under control of a construction table.
+;   INSMSG  replace a block of text in a file by another block.
+;   FITDES  insert the brief setup by MSGDES into a file.
+;
+;   SUTSYM  setup temporary symbol table.
+;   RINDEX  add "obsolete" key word to document being revised.
+;   UINDEX  remove symbols from inverted file for deletion.
+;   DINDEX  add temporary symbols to inverted file.
+;    KSYMST enter  keywords in string into temporary table.
+;    TSYMST enter title words in temporary table.
+;    TOSST  enter "To" phrases in temporary table.
+;    AUTST  enter author first and last names in temporary table.
+;    ARSYMT enter archive I.D. in temporary table.
+;    IDSYMT enter I.D. in temporary table.
+;    SUSYM  merge a symbol into the temporary table.
+;    FLSBLN flush trailing blanks and zero fill last word
+;
+;   XINSER  enter insignificant word in hash table.
+;   EINSER  enter thesaurus symbol in hash table.
+;   IINSER  enter/delete regular symbol, i.d., and flags in hash table.
+;    GETIDS lookup id's for word, following thesaurus items.
+;    MAPSYM get value block for symbol in hash table.
+;
+;   CALLOC  allocate value block after counting name length.
+;   MALLOC  allocate value block.
+;
+;   FUNION  construct union of two i.d. sets, merging flags of equal entries.
+;   INTERS  construct intersection of two i.d. sets
+;   ANDNOT  eliminate one i.d. set from another.
+;   UNION   construct union of two i.d. sets.
+;
+;   LUTITL  get id's matching a particular title.
+;   LUAUTH  get id's for a particular author.
+;   LUKEY   get id's for keywords or title words.
+;   LUDIR   get id's for directory
+;   LUTYPE  get id's for extension
+;   LUVER   get id's for version
+;   LUNAME  get id's for name.
+;   LUARC   get id's for archive I.D.
+
+; Symbol table is the DOCGEN.SYMBOLS file, a linear hash table with one-word
+; entries containing 0 for empty, -1 for deleted, or the first char. in
+; bits 0-6 and a 23-bit pointer to a word in DOCGEN.VALUES in bits 13-35.
+; Word 0 of the hash table contains the number of entries in the table
+; and is limited to 102399 words (200 pages).  There is no provision for
+; dynamic expansion of the symbol table.  The hash table is entirely
+; mapped in virtual memory during symbol table operations.
+
+; DOCGEN.VALUES has an 8-word descriptor in words 0-7 consisting of the
+; first unused word number in word 0, a "roving" pointer to the header
+; after the last block allocated in word 1, file pos. of first (possibly) unused
+; block in word 2, (3-7 unused so far).  Blocks consist of a one-word
+; header (sign = 1 means allocated, 0 not allocated; length of data + 1
+; in r.h.) followed by data.
+
+; Pointers in the hash table are to the first word of data in a block.
+; The first words of a data block are always the complete ASCIZ text of a
+; symbol name.  The next word has the union of entered flags in the l.h. and
+; later words are interpreted according to the flags.  The "insignificant"
+; flag indicates a meaningless word such as "a", "an", or "the".  Repeat
+; entry of an insignificant word causes no action.  The "thesaurus" flag
+; maps the symbol into the ASCIZ text following the flags.  If neither
+; "insignificant" nor "thesaurus" flags are set, then words after flags
+; consist of document i.d.'s in bits 18-35 and flags in the l.h.
+; Document i.d.'s are in increasing order, and the union of flags for a
+; particular i.d. are in a single entry, so i.d.'s are never duplicated.
+; Flags indicate symbol usage as given in the definitions below.
+; Symbols are limited to 64 chars. and are upper-cased.  Alphanumerics,
+; "/", "-", ".", and "@" are symbol constituents for author names and
+; titles.  Other characters are separators.  Author initials and abbreviations
+; (presumably an abbreviation is "Dr.", "Mr.", etc.) are flushed.  Key word
+; and to phrase symbol constituents include all characters except ",".
+
+; Briefs are in Sndmsg format with the body as follows:
+; Date: 15 MAY 1973 1346-EDT
+; From: Edward Fiala
+; Subject: How To Make a Document Index
+; To:   CSL, SSL
+; C:    Elkind
+; Bc:   Pake
+; I.D.: <FIALA>DOCINDEX.EARS;34
+; Archive I.D.: CSL-034
+; Revised by: <DOCUMENTS>DOCINDEX.EARS;131
+; Key words: CSL, technical, advanced office systems, index, documents
+; Pages: 10
+;
+; This memorandum discusses the implementation details of the document
+; index and outlines the function of all the programs which use it.
+; -------
+
+; The RDDESC routine handles omissions of any of the component parts
+; of a brief and will handle some variations such as "Cc" instead of "C".
+
+; Flags in bits 0-17 of document i.d. words.
+; Try to keep in 32 bits for Maxc/Alto transfer
+FNFLG==20000	; Author first or middle name flag
+LNFLG==10000	; Author last name flag
+KEYPHR==4000	; Key word phrase flag
+TITWRD==2000	; Title word flag
+TOPHR==1000	; To phrase flag
+LOCATF==400	; Location flag (directory)
+NAMEF==200	; Name flag (file name)
+TYPEF==100	; Type flag (extension)
+VERSF==40	; Version string flag
+ARCF==20	; Archive I.D.
+ALLFLG==37760	; Union of all flags
+
+EQSTR==4	; Word is equivalent to text in body
+INSIG==2	; Word is insignificant and should not be cross-indexed
+OVFFLG==1	; .G. about 16380 document i.d.'s, so not enumerated in .VALUES
+
+LEMJKR==400000	; "Joker" i.d. flag (r.h. of word is an i.d.
+		; such that all i.d.'s .LE. to this value match
+
+LOWVER==20	; Lowest i.d. in DOCGEN.INDEX (0-17 reserved)
+
+
+U(IDXDIR,10)		; Holds private index directory name
+U(OEDATE)		; Entry date in index
+PGU(BMSPTR,30)		; Table of byte pointers while building message
+PGU(ODATE,10)		; Creation date
+PGU(OSNDR,10)		; Sender
+PGU(OFROM,40)		; From
+PGU(OSUBJ,40)		; Subject = title not keywords
+PGU(OTO,200)
+PGU(OCC,200)
+PGU(OBCC,100)
+PGU(OID,20)		; Document i.d.
+PGU(OARCID,15)		; Archive I.D. (file cabinet location)
+PGU(OREV,20)		; I.D. of revision
+PGU(OREVS,20)		; Revises I.D.
+PGU(OREVDT,200)		; Revision dates
+PGU(OSUPID,200)		; Supplemented by I.D.'s
+PGU(OSUPS,20)		; Supplements I.D.'s
+PGU(OKEY,250)		; Key words
+PGU(OPAGES,4)		; Number of pages in document
+PGU(OHDR,137)		; Optional header items
+PGU(OCOMM,2000)		; Body of message
+
+BLKPGS==^D33		; Max. pages in an allocation block
+MAXLEN==<BLKPGS-1>*1000	; Max. length of allocation block
+PG(INDPG0)		; Page to which page 0 of DOCGEN.INDEX is mapped
+PG(INDPG)		; Page to which DESnnn file pages are mapped
+PG(SYMPG,^D200)		; Index hash table
+PG(VALPG0,BLKPGS)	; Current allocation block
+PG(VALPG2)		; Page 0 of DOCGEN.VALUES
+
+; OPNNIX opens a new index
+; OPNOIX opens an old index (arg for OPENF in C)
+; Returns are caller+1 on no-such-file error (message ptr in B),
+; caller+2 on file-busy error (message pointer in B),
+; caller+3 on fatal error (message pointer in B),
+; caller+4 on success
+OPNNIX:	MOVE C,[440000,,300200]	; Arg for OPENF
+	SKIPA A,[600000,,1]	; Open new index
+OPNOIX:	HRLZI A,100000		; Open old index
+	MOVEM A,RECBLK
+	HRROI A,[ASCIZ /INDEX/]
+	MOVEM A,RECBLK+5
+	MOVEI B,0
+	MOVEI A,RECBLK
+	GTJFN
+	  JUMPA IXGJF
+	HRRZM A,INDJFN
+	MOVE B,C
+	OPENF
+	  JUMPA IXOPF
+	HRLZI A,(A)
+	MOVE B,[400000,,INDPG0]
+	MOVEI D,(C)
+	HRLZI C,140000		; Reading, writing
+	TRNN D,100000
+	HRLZI C,100000		; Only reading if opening only for reading
+	SETOM MAPFL		; Indicate map flushing required
+	PMAP
+	MOVEI A,LOWVER
+	SKIPGE RECBLK		; If new index...
+	MOVEM A,INDPG0*1000	; Init first free position
+	JUMPA TSKPRT
+
+IXGJF:	PUSHJ P,IXJMSU		; Setup file error message
+	CAIE D,GJFX20		; No such version (deleted but not expunged)
+	CAIN D,GJFX21		; No such file
+	JUMPA IXOP2
+	CAIE D,GJFX19		; No such extension
+	CAIN D,GJFX24		; Old file required error
+	JUMPA IXOP2
+	AOS (P)
+IXOP0:	AOS (P)
+IXOP2:	MOVEI B," "
+	IDPB B,A
+	PUSHJ P,APPERR
+IXBSY1:	IDPB C,A
+	MOVEI B,MESSAG+15
+	POPJ P,
+
+IXJMSU:	MOVE D,A
+	MOVE A,[POINT 7,MESSAG+15]
+	MOVEI B,[ASCIZ /On DOCGEN./]
+	PUSHJ P,CPYSTZ
+	MOVE B,RECBLK+5
+	JUMPA CPYSTZ
+
+IXOPF:	AOS (P)
+IXOPF1:	PUSHJ P,IXJMSU
+	CAIE D,OPNX9		; File busy error?
+	JUMPA IXOP0
+	MOVEI B,[ASCIZ / file busy, wait.../]
+	PUSHJ P,CPYSTZ
+	JUMPA IXBSY1
+
+; Open DOCGEN.SYMBOLS and DOCGEN.VALUES.  At call RECBLK has 600000,,1
+; (creating new index) or 100000,,0 (old index) and A has the argument
+; for OPENF.  Map hash table into the pages starting at SYMPG and page
+; 0 of DOCGEN.VALUES at VALPG2.  Clobbers A, B, C, D.
+; Returns as for OPNNIX and OPNOIX
+OPNSV:	MOVEM A,OPNARG#
+	HRROI A,[ASCIZ /SYMBOLS/]
+	MOVEM A,RECBLK+5
+	MOVEI A,RECBLK
+	MOVEI B,0
+	GTJFN
+	  JUMPA IXGJF
+	HRRZM A,SYMJFN
+	MOVE B,OPNARG
+	OPENF
+	  JUMPA IXOPF
+	HRROI A,[ASCIZ /VALUES/]
+	MOVEM A,RECBLK+5
+	MOVEI A,RECBLK
+	MOVEI B,0
+	GTJFN
+	  JUMPA IXGJF
+	HRRZM A,VALJFN
+	MOVE B,OPNARG
+	OPENF
+	  JUMPA IXOPF
+	SETOM MAPFL#
+	MOVSI C,140000		; Read and write access
+	MOVE A,OPNARG
+	TRNN A,100000		; For writing?
+	MOVSI C,100000		; No, for reading
+	HRLZ A,VALJFN		; Handle on page 0 of VALUES
+	MOVE B,[400000,,VALPG2]
+	PMAP
+	HRLZ A,SYMJFN
+	MOVE B,[400000,,SYMPG]	; This fork,,first page of symbol table
+	PMAP
+	SKIPL RECBLK		; Creating new index?
+	JUMPA OLDIDX		; No.
+	MOVEI D,7777		; Original size of hash table = 8 pages
+	MOVEM D,SYMPG*1000
+	MOVEI D,20000		; Start with 16-page allocator
+	MOVEM D,VALPG2*1000
+	MOVEI D,10
+	MOVEM D,VALPG2*1000+1	; First block at word 8
+	MOVEI D,10
+	MOVEM D,VALPG2*1000+2	; Init first free block checked on wraparound
+	MOVEI D,20000-10
+	MOVEM D,VALPG2*1000+10	; And is of length 20000-10 deallocated
+OLDIDX:	MOVE D,SYMPG*1000	; Get length of table
+	ADDI D,1000
+	LSH D,-11		; Get number of pages in table
+	MOVEM D,SYMLEN#
+	CAIL D,^D200
+	JUMPA [	MOVEI B,[ASCIZ /Strangely, hash table .G. 102399 words/]
+		JUMPA DSKPRT]
+	SOJLE D,TSKPRT
+	ADDI A,1
+	ADDI B,1
+	PMAP
+	JUMPA .-4
+
+
+; Subroutine to remove pages from index area
+UNMAPX:	SKIPN MAPFL		; Have there been any pages mapped?
+	POPJ P,			; No, nothing to do
+	HRLZI D,INDPG0-VALPG2-1
+	MOVE B,[400000,,INDPG0]	; Place to put it
+	MOVEI C,0		; No access
+	HRROI A,-1
+	PMAP
+	ADDI B,1
+	AOBJN D,.-2
+	SETZM MAPFL		; Indicate map flushed
+	POPJ P,
+
+; PICKID accepts:
+; A/ index position (0 = choose)
+; INDJFN/ Jfn for DOCGEN.INDEX opened appropriately
+; Returns caller+1 on file busy error, message pointer in B
+; caller+2 on bad error, message pointer in B
+; caller+3 on success with DESPOS and DWNPOS setup for insertion
+; or replacement, i.d. assigned in VERNUM, DESn file opened for
+; reading and writing (if replace) or appending (new entry),
+; DOCGEN.INDEX page for DESn mapped in INDPG.
+
+; Note that the 0th index entry isn't used
+PICKID:	JUMPE A,PCKID1		; Jump if free choice
+	MOVEI B,[ASCIZ /Index position for replacement is illegal/]
+	CAIL A,LOWVER
+	CAML A,INDPG0*1000
+	JUMPA SKPRET
+	MOVE B,[70000,,300200]	; Read, write, output use
+	PUSHJ P,RDDESC		; Setup appropriate DOCGEN.DES, etc.
+	  POPJ P,		; File busy error, return it
+	  JUMPA REPXER		; Bad error, pointer in B
+; Success, add "Revised" date to list
+	MOVE A,[POINT 7,OREVDT]
+	LDB B,[POINT 7,OREVDT,6]
+	JUMPE B,ADDRDT
+	ILDB B,A
+	JUMPN B,.-1
+	ADD A,[70000,,0]	; Backup byte pointer
+	MOVEI B,[ASCIZ /, /]
+	PUSHJ P,CPYSTZ
+ADDRDT:	HRROI B,-1		; Current date and time
+	HRLZI C,(1B7!1B9!1B17)	; "13 APR 70"
+	ODTIM
+	MOVEI B,0
+	IDPB B,A
+	JUMPA DSKPRT
+
+REPXER:	PUSH P,B
+	MOVEI B,[ASCIZ /On brief being replaced:  /]
+	MOVE A,[POINT 7,MESSAG+15]
+	PUSHJ P,CPYSTZ
+	POP P,B
+	PUSHJ P,CPYSTT
+	MOVEI B,MESSAG+15
+	JUMPA SKPRET
+
+PCKID1:	SKIPLE A,INDPG0*1000
+	CAILE A,-1
+	JUMPA [	MOVEI B,[ASCIZ /Word 0 of DOCGEN.INDEX fouled up/]
+		JUMPA SKPRET]
+	AOS INDPG0*1000
+	MOVE B,[70000,,20200]	; Append, never wait
+	PUSHJ P,OPNDES		; Try old file first
+	  PUSHJ P,OPNNDS	; Non-existent file error
+	  POPJ P,		; File busy error
+	  JUMPA SKPRET		; Other error (pointer in B)
+	MOVE A,VERNUM
+	ANDI A,777
+	MOVEI B,[ASCIZ /Word 0 of DOCGEN.INDEX pointed at position already in use/]
+	SKIPLE INDPG*1000(A)	; Negative=deleted, 0=empty
+	JUMPA SKPRET
+	MOVE A,DESJFN
+	RFPTR
+	  PUSHJ P,JERROR
+	MOVEM B,DESPOS
+	MOVEM B,DWNPOS
+	JUMPA DSKPRT
+
+; Call here from PCKID1 when OPNDES fails to create a new DESn file.
+OPNNDS:	MOVE A,[600000,,1]
+	MOVEM A,RECBLK
+	MOVEI A,RECBLK
+	MOVEI B,0
+	GTJFN
+	  JUMPA IXOPF1
+	HRRZM A,DESJFN
+	MOVE B,[70000,,20200]
+	OPENF
+	  JUMPA IXOPF1
+	JUMPA DSKPRT
+
+PPSTEF:	MOVEI B,[ASCIZ /Brief preceding new insertion  extends beyond EOF/]
+	JUMPA SKPRET
+
+
+; OPNDES accepts at call:
+; A/ index position of pointer to brief
+; B/ arg for OPENF (70000,,300200 for writing, 70000,,200200 for reading,
+;    or 70000,,20200 for appending)
+; It returns caller+1 on non-existent file error (message pointer in B)
+; caller+2 on file busy error (message pointer in B)
+; caller+3 on bad error (message pointer in B)
+; caller+4 on success with DESPOS containing the address of the first
+; byte of the brief, VERNUM the index position, INDPG mapping the page
+; of DOCGEN.INDEX with pointers to this file.
+OPNDES:	EXCH A,VERNUM#		; Save new index position, get old
+	EXCH B,DESOPF#
+	SKIPN DESJFN		; Some DOCGEN.DES file open?
+	JUMPA OPNDS1		; No, new OPENF required
+	CAME B,DESOPF		; Opened the way we want to this time?
+	JUMPA OPNDS0		; No, close it and open new file
+	XOR A,VERNUM
+	TRNN A,777000		; The same file that we have open?
+	JUMPA TSKPRT		; Yes, succeed
+OPNDS0:	MOVEI A,DESJFN		; No, close it and open new DESn file
+	PUSHJ P,CLSFIL
+OPNDS1:	HRLZI C,100000
+	MOVEM C,RECBLK
+	MOVE B,DESOPF
+	MOVE D,VERNUM
+	HRLZI C,100000
+	TRNE B,120000		; Opening for writing or appending?
+	HRLZI C,140000		; Yes, map index page for reading and writing
+	LDB A,[POINT 9,D,26]
+	HRL A,INDJFN
+	MOVE B,[400000,,INDPG]
+	PMAP
+	MOVE A,[POINT 7,DESEXT,20]
+	LDB B,[POINT 9,D,26]
+	PUSHJ P,CNOUT		; Build the "DESnnn" extension
+	MOVEI B,0
+	IDPB B,A
+	MOVE A,[POINT 7,DESEXT]
+	MOVEM A,RECBLK+5
+	MOVEI A,RECBLK
+	MOVEI B,0
+	GTJFN
+	  JUMPA IXGJF
+	HRRZM A,DESJFN
+	MOVE B,DESOPF
+	OPENF
+	  JUMPA .+2
+	JUMPA TSKPRT
+	PUSH P,A
+	MOVEI A,DESJFN
+	PUSHJ P,CLSFIL
+	POP P,A
+	JUMPA IXOPF
+
+; RDDESC accepts:
+; INDJFN/ Jfn of DOCGEN.INDEX opened appropriately
+; A/ index i.d.
+; B/ arg for OPENF (70000,,300200 for writing or 70000,,200200 for reading)
+; It returns caller+1 on file busy with message pointer in B,
+; caller+2 on other error with pointer to error message in B,
+; (Note: if no such brief B=NODESC), caller+3 on success
+; with brief read into the "O" locations.
+; The version number is left in VERNUM, DESPOS and DWNPOS are set up
+; for the brief.
+
+MPSTEF:	MOVEI B,RMEOFM
+	JUMPA BADDES
+
+RMEOFM:	ASCIZ /Message extends beyond end-of-file/
+
+NODESC:	ASCIZ /No pointer to brief in index/
+
+NODSFX:	MOVE C,VERNUM
+	ANDI C,777
+	SKIPE INDPG*1000(C)	; Supposed to be a file there?
+NODESX:	MOVEI B,NODESC		; No, be sure to give NODESC error
+	JUMPA SKPRET
+
+RDDESC:	PUSHJ P,OPNDES		; Open the relevant DESnnn file
+	  JUMPA NODSFX		; No such file error
+	  POPJ P,		; File busy error
+	  JUMPA SKPRET		; Other error, pointer in B
+	MOVE B,VERNUM
+	ANDI B,777
+	SKIPN B,INDPG*1000(B)
+	JUMPA NODESX		; Non-existent brief error
+	TLZ B,777740		; Clear junk
+	SUBI B,1		; Offset by 1 so value of 0=no brief
+RDMSG:	PUSH P,E
+	PUSH P,F
+	PUSH P,G
+	PUSH P,AA
+	PUSH P,BB
+	MOVEI G,MSRDX		; Point at standard table
+	MOVEM B,DESPOS#		; Location of first brief byte
+	PUSHJ P,GETSIZ		; Get the file size into B
+	MOVE D,B
+	MOVE E,B
+	MOVE B,DESPOS
+	SUB E,B
+	CAIGE E,^D50
+	JUMPA MPSTEF		; Past EOF
+	SFPTR
+	  PUSHJ P,JERROR
+	HRLZI B,(1B8)		; Require seconds in date
+	IDTIM
+	  JUMPA [MOVEI B,[ASCIZ /Leader of message does not begin with date/]
+		JUMPA BADDES]
+	MOVEM B,@0(G)		; Save entry date and time
+	MOVEI C,12
+	NIN
+	  JUMPA [MOVEI B,[ASCIZ /Leader of message does not have length/]
+		JUMPA BADDES]
+	MOVEM B,MSGLEN#		; Save length
+	CAILE B,4000*5-1
+	JUMPA [	MOVEI B,[ASCIZ /Cannot handle message longer than 10235 bytes/]
+		JUMPA BADDES]
+	MOVEI C,[ASCIZ /
+/]
+	PUSHJ P,RTOSTR		; Read file past <cr><lf>
+	ADD B,MSGLEN
+	CAMLE B,D
+	JUMPA MPSTEF		; Past EOF
+	MOVEM B,DWNPOS#		; File position of last byte of brief+1
+
+	MOVE B,[POINT 7,MESSAG]
+	MOVN C,MSGLEN
+	SIN			; Read message into MESSAG buffer
+	MOVEI C,0
+	IDPB C,B		; Terminate
+	MOVE A,1(G)
+	IDPB C,A		; Null body
+	MOVE A,2(G)
+	IDPB C,A		; Null optional header items
+; Setup byte pointers for building message components in BMSPTR table
+	MOVEI F,BMSPTR		; Pointer to table of byte pointers
+	MOVE E,3(G)
+RBPTRL:	HLRZ A,0(E)		; Next pointer to buffer
+; Allow consecutive entries to have same buffer (e.g., "C" and "Cc")
+; 0 in the l.h. of the table entry indicates this
+	JUMPE A,RDNOPR		; No byte pointer if using previous
+	SETZM 0(A)		; No text in buffer
+	HRLI A,440700
+	MOVEM A,0(F)
+	ADDI F,1
+RDNOPR:	AOBJN E,RBPTRL
+	MOVE A,[POINT 7,MESSAG]
+; Loop over the header items building the components until a blank line
+; is encountered
+BHDRLP:	MOVEI C,[ASCIZ /
+/]
+	PUSHJ P,RMATCH		; Blank line separates header from body
+	  JUMPA RCHKH		; Done if blank line
+	MOVE C,1(G)		; Byte pointer where body is built
+	MOVEI F,[ASCIZ /-------
+/]
+	PUSHJ P,RDTOST
+	  CAI 0			; OK if no "-------<cr><lf>" at end
+	AOS -5(P)
+BADDES:	POP P,BB
+	POP P,AA
+	POP P,G
+	POP P,F
+	POP P,E
+	JUMPA SKPRET
+
+RCHKH:	MOVEI AA,BMSPTR-1		; Point at table of byte pointers
+	MOVE BB,3(G)		; AOBJN pointer to template table
+RCHKTL:	HLRZ C,0(BB)
+	JUMPE C,.+2
+	ADDI AA,1
+	HRRZ C,0(BB)
+	PUSHJ P,RMATCH		; Match this template?
+	  JUMPA RCHKNM		; No match.
+	MOVE C,(AA)		; Pick up byte pointer
+	PUSHJ P,RDCRLF		; Copy up to <cr><lf> and pass over <cr><lf>
+	  JUMPA BADDES
+	MOVEM C,(AA)		; Save byte pointer for more
+	JUMPA BHDRLP
+
+RCHKNM:	AOBJN BB,RCHKTL		; Loop over all templates
+	MOVEI B,15
+	MOVE C,2(G)		; Byte pointer for undefined header items
+	IDPB B,C
+	MOVEI B,12
+	IDPB B,C
+	PUSHJ P,RDCRLF		; Copy to <cr><lf>
+	  JUMPA BADDES
+	MOVEM C,1(AA)
+	JUMPA BHDRLP
+
+; Subroutine accepting byte pointer in A, pointer to ASCIZ string in C,
+; Match the strint pointed to by A with the string C,
+; returning to caller+1 on no match (A unchanged),
+; caller+2 on match (A advanced past string).
+RMATCH:	MOVEM A,RMASV#
+	HRLI C,440700
+RMAT1:	ILDB D,C
+	JUMPE D,SKPRET
+	ILDB B,A
+	XORI B,(D)		; Compare equating upper/lower case
+	TRNE B,777737
+	SKIPA A,RMASV
+	JUMPA RMAT1
+	POPJ P,
+
+; RDCRLF may only be used by RDDESC.  It accepts:
+; A/ read byte pointer
+; C/ build byte pointer
+; Copies characters from the read string to the build string up to a
+; <cr><lf> sequence.  Passes over the <cr><lf> without copying it,
+; terminates the build string and returns the byte pointer to the
+; last character in C.
+; RDTOST is like RDCRLF except that a byte pointer to the string
+; to be matched is passed in F.
+RDCRLF:	MOVEI F,[ASCIZ /
+/]
+RDTOST:	HRLI F,440700		; Byte pointer to template
+	MOVEM F,RMASV
+	ILDB D,F
+RTOS1:	ILDB B,A
+	CAIN B,(D)
+	JUMPA RTOS0
+RTOS3:	IDPB B,C
+	JUMPN B,RTOS1
+	MOVEI B,[ASCIZ /End of message inside header component/]
+	POPJ P,
+
+RTOS0:	MOVEM A,RMASV1#		; Save A for no match
+	MOVEI B,0
+	MOVE D,C
+	IDPB B,D		; Terminate in case this is the match
+RTOS2:	ILDB D,F
+	JUMPE D,SKPRET		; Done--have match
+	ILDB B,A
+	CAIN B,(D)
+	JUMPA RTOS2
+	MOVE A,RMASV1
+	MOVE F,RMASV
+	ILDB D,F
+	LDB B,A
+	JUMPA RTOS3
+
+
+; Subroutine to read text from the Jfn in A past the string pointed to
+; by C, returning file pos. in B.
+RTOSTR:	HRLI C,440700
+	PUSH P,C
+RTOSR1:	ILDB E,C
+	BIN
+RTOSR0:	CAIE B,(E)
+	JUMPA .-2
+	RFPTR
+	  PUSHJ P,JERROR
+	PUSH P,B
+	ILDB E,C
+	JUMPE E,RTOSR2
+	BIN
+	CAIN B,(E)
+	JUMPA .-4
+	POP P,B
+	SFPTR
+	  PUSHJ P,JERROR
+	MOVE C,0(P)
+	JUMPA RTOSR1
+
+RTOSR2:	SUB P,[1,,1]
+	RFPTR
+	  PUSHJ P,JERROR
+	POP P,C
+	POPJ P,
+
+; Table for building message from the "O" locations
+MSFRO:	0,,OEDATE
+	-20,,.+1
+	ODATE,,[ASCIZ /Date: /]
+	OSNDR,,[ASCIZ /Sender: /]
+	OFROM,,[ASCIZ /From: /]
+	OSUBJ,,[ASCIZ /Subject: /]
+	OTO,,[ASCIZ /To:   /]
+	OCC,,[ASCIZ /C:    /]
+	OBCC,,[ASCIZ /Bc:   /]
+	OID,,[ASCIZ /I.D.: /]
+	OARCID,,[ASCIZ /Archive I.D.: /]
+	OREVS,,[ASCIZ /Revises: /]
+	OREVDT,,[ASCIZ /Revised: /]
+	OSUPID,,[ASCIZ /Supplemented by: /]
+	OSUPS,,[ASCIZ /Supplements: /]
+	OKEY,,[ASCIZ /Key words: /]
+	OPAGES,,[ASCIZ /Pages: /]
+	OREV,,[ASCIZ /Revised by: /]
+	POINT 7,OHDR
+	POINT 7,OCOMM
+
+; Table for reading messages/briefs
+MSRDX:	0,,OEDATE
+	POINT 7,OCOMM		; Byte pointer for body of message
+	POINT 7,OHDR		; Byte pointer for undefined header items
+	-22,,.+1
+	ODATE,,[ASCIZ /Date: /]
+	OSNDR,,[ASCIZ /Sender: /]
+	OFROM,,[ASCIZ /From: /]
+	OSUBJ,,[ASCIZ /Subject: /]
+	OTO,,[ASCIZ /To:   /]
+	OCC,,[ASCIZ /Cc:   /]
+	0,,[ASCIZ /C:    /]
+	OBCC,,[ASCIZ /Bcc:  /]
+	0,,[ASCIZ /Bc:   /]
+	OID,,[ASCIZ /I.D.: /]
+	OARCID,,[ASCIZ /Archive I.D.: /]
+	OREVS,,[ASCIZ /Revises: /]
+	OREVDT,,[ASCIZ /Revised: /]
+	OSUPID,,[ASCIZ /Supplemented by: /]
+	OSUPS,,[ASCIZ /Supplements: /]
+	OKEY,,[ASCIZ /Key words: /]
+	OPAGES,,[ASCIZ /Pages: /]
+	OREV,,[ASCIZ /Revised by: /]
+
+; Subroutine to build a message at MESSAG.  At call:
+; A/ pointer to table for building message.  The first two items in
+;   the table must be as follows:
+; 0,,pointer to entry date and time (pointer to -1 uses current time)
+; -number of header items in the table,,pointer to first one
+; The items in the table are of the form pointer to string,,pointer
+; to header string.  The word after the last header item is a byte
+; pointer to other header items not explicitly handled.  The word
+; after that is a byte pointer to the body of the message.
+; Returns complete message built at MESSAG, length in DESLEN.
+MSGDES:	PUSH P,E
+	PUSH P,F
+	MOVE F,A		; Preserve table pointer for building header
+	MOVE D,1(A)		; - number of table entries,,pointer to first
+	MOVE A,[POINT 7,MESSAG+400]
+BMSGLP:	HLRZ B,0(D)		; Pointer to next item
+	JUMPE B,NMSGIT
+	HRLI B,350700
+	LDB C,B
+	JUMPE C,NMSGIT		; Skip item if null
+	PUSHJ P,CPYCRL
+	HLRZ B,0(D)
+	HRLI B,440700		; Byte pointer to item
+	MOVEM B,ITMPTR#
+	JUMPA CPYITB
+
+CPYITX:	MOVE A,CBLDPT
+CPYILP:	PUSHJ P,CPYCRL
+CPYITB:	HRRZ B,0(D)
+	HRLI B,440700		; Byte pointer to header
+	MOVEI E,0		; Zero line length
+CPYIHL:	ILDB C,B
+	JUMPE C,.+3
+	IDPB C,A		; Build output
+	AOJA E,CPYIHL		; Count line length and loop
+	MOVE B,ITMPTR
+	ILDB C,B
+	CAIN C," "		; Flush leading blanks
+	JUMPA .-2
+	JUMPA .+2
+CPYWRD:	ILDB C,B		; Always do one phrase
+	JUMPE C,NMSGIT		; Jump when done
+	IDPB C,A
+	CAIE C,","		; Possible line break after ","
+	AOJA E,CPYWRD
+	AOJA E,.+3
+CPYITY:	CAIL E,^D65		; Beyond end-of-line?
+	JUMPA CPYITX		; Yes, start with new header and continue
+	MOVEM B,ITMPTR
+	MOVEM A,CBLDPT#
+	JUMPE C,NMSGIT
+CPYWRT:	ILDB C,B
+	JUMPE C,.+4
+	IDPB C,A
+	CAIE C,","
+	AOJA E,CPYWRT
+	AOJA E,CPYITY
+
+NMSGIT:	AOBJN D,BMSGLP
+	MOVE B,0(D)		; Byte pointer to other header items
+	PUSHJ P,CPYSTL
+	MOVEI B,[ASCIZ /
+
+/]
+	PUSHJ P,CPYSTZ
+	MOVE B,1(D)		; Byte pointer to body
+	ILDB C,B
+	JUMPE C,NMSGNB		; Is there a body to message?
+	CAIE C,15		; Flush first <cr><lf> if any
+	JUMPA [	IDPB C,A
+		JUMPA .+2]
+	IBP A
+	PUSHJ P,CPYSTL
+	LDB C,A
+	CAIE C,12		; Already end with <cr><lf>?
+	PUSHJ P,CPYCRL		; No, add it
+NMSGNB:	MOVEI B,[ASCIZ /-------
+/]
+	PUSHJ P,CPYSTT
+; Compute length of message
+	PUSHJ P,GMSGLN		; Compute length in B
+	EXCH B,F
+	MOVE B,@0(B)		; Get entry date and time
+	MOVSI C,(1B13)		; In form "28-OCT-75 09:05:33-PST"
+	MOVE A,[POINT 7,MESSAG]
+	ODTIM			; Output entry date and time
+	MOVEI B,","
+	IDPB B,A
+; Note that the <cr><lf> after ;000000000000 is not counted in
+; the message length.
+	MOVEI B,-400*5-2(F)
+	PUSHJ P,DNOUT		; Output message length
+	MOVEI B,[ASCIZ /;000000000000/]
+	PUSHJ P,CPYSTT		; Funny flags for MSG
+	PUSHJ P,GMSGLN		; Compute length
+	ADDI B,-400*5(F)
+	MOVEM B,DESLEN#
+	ADD A,[70000,,0]
+	MOVEI B,MESSAG+400
+	POP P,F
+	POP P,E
+	JUMPA CPYSTT		; Append body of message and return
+
+
+; Compute length of message constructed beginning at MESSAG to the
+; byte pointer in A
+GMSGLN:	LDB B,[POINT 6,A,5]	; Bits to the right
+	IDIVI B,7
+	MOVN B,B
+	MOVEI C,-MESSAG(A)
+	IMULI C,5
+	ADDI B,4(C)
+	POPJ P,
+
+
+; Subroutine to insert the brief setup by MSGDES into the file whose
+; jfn is in DESJFN, replacing the text from DESPOS to DWNPOS-1.
+; The index position is in VERNUM and the correct page of DOCGEN.INDEX
+; is mapped in INDPG.
+FITDES:	MOVE A,DESJFN
+	PUSHJ P,INSMSG		; Insert MESSAG into file
+	MOVE C,VERNUM
+	ANDI C,777
+	ADDI C,1
+	AOS B,DESPOS
+	MOVEM B,INDPG*1000-1(C)	; Pos. of new/modified descriptor
+INFIXL:	TRNN C,777
+	POPJ P,
+	SKIPLE INDPG*1000(C)
+	ADDM F,INDPG*1000(C)	; Size change left in F by INSMSG
+	AOJA C,INFIXL
+
+; Replace the text from DESPOS to DWNPOS-1 for the Jfn in A by the
+; text in MESSAG of length DESLEN.  File is open for appending if DWNPOS=EOF,
+; else it is open for both reading and writing in correct byte size.
+INSMSG:	PUSHJ P,GETSIZ		; Get file size
+	MOVEM B,LASTDB#
+	RFBSZ			; Read byte size
+	MOVEI E,44
+	IDIVI E,(B)		; Get bytes/word
+	IMULI E,40000		; Bytes/forty pages
+	LSH B,30
+	ADD B,[440000,,PD]	; Construct byte pointer for SIN/SOUT
+	PUSH P,B
+	MOVE F,DESLEN		; Length in MESSAG
+	SUB F,DWNPOS
+	ADD F,DESPOS		; Number of bytes being added
+	MOVE C,DWNPOS		; Current SIN position
+	JUMPL F,.+2		; Jump if shrinking
+	MOVE C,LASTDB
+	PUSH P,C
+	MOVE D,LASTDB
+	CAMN D,DESPOS
+	JUMPA APPINS
+	SUB D,DWNPOS		; Total bytes being moved
+	JUMPE F,INSINS		; If an exact fit, go finish
+	JUMPE D,INSINS
+; D/ bytes left to move
+; E/ bytes per four pages
+; F/ number of bytes being added
+; -1(P)/ byte pointer for SIN/SOUT
+; 0(P)/ current SIN position
+INSMLP:	MOVEI C,(E)		; Bytes/buffer
+	CAILE C,(D)
+	MOVEI C,(D)
+	SUBI D,(C)		; New bytes left to do
+	MOVNI C,(C)		; - Bytes to SIN
+	MOVE B,0(P)		; Current SIN position
+	JUMPL F,.+3		; Correct if shrinking
+	ADD B,C			; Fix now if expanding
+	MOVEM B,0(P)
+	SFPTR
+	  PUSHJ P,JERROR
+	MOVE B,-1(P)		; Byte pointer for SIN/SOUT
+	PUSH P,C
+	SIN
+	POP P,C
+	MOVE B,0(P)		; Current SIN position
+	ADD B,F			; Delta
+	SFPTR
+	  PUSHJ P,JERROR
+	JUMPGE F,.+3		; Fix SIN position now if shrinking
+	MOVN B,C
+	ADDM B,0(P)
+	MOVE B,-1(P)		; Byte pointer for SIN/SOUT
+	SOUT
+	JUMPG D,INSMLP		; Loop until done
+; Here to SOUT data in MESSAG to file
+INSINS:	MOVE B,DESPOS
+	SFPTR
+	  PUSHJ P,JERROR
+	MOVN C,DESLEN
+	JUMPE C,INSDON		; Done, if nothing inserted
+	MOVE B,-1(P)
+	HRRI B,MESSAG
+	SOUT
+INSDON:	HRLI A,400000
+	CLOSF			; Close preserving jfn
+	  PUSHJ P,JERROR
+	HRLI A,FDBSIZ
+	HRROI B,-1		; Bits to be changed
+	MOVE C,LASTDB
+	ADD C,F
+	CHFDB
+	SUB P,[2,,2]
+	POPJ P,
+
+APPINS:	MOVE B,-1(P)
+	HRRI B,MESSAG
+	MOVN C,DESLEN
+	SOUT
+	SUB P,[2,,2]
+	POPJ P,
+
+; Table of byte pointers, etc. for insertion/removal after RDDESC
+OSYMST:	POINT 7,OFROM
+	POINT 7,OSUBJ
+	POINT 7,OKEY
+	POINT 7,OTO
+	POINT 7,OID
+	POINT 7,OARCID
+
+
+; Setup temporary symbol table (don't smash A)
+SUTSYM:	SETZM SNDHDR
+	MOVEI B,SENDTO
+	MOVEM B,SNDPTR#
+	POPJ P,
+
+
+; Add "obsolete" key word
+RINDEX:	MOVE A,[KEYPHR,,[ASCIZ /obsolete/]]
+	JUMPA IINSER
+
+
+; Have byte pointers (like in OSYMST above) in table pointed to by A.
+; Remove these for VERNUM from the hash table.
+UINDEX:	SETOM REMVAL#		; Indicate removing symbols
+	JUMPA UIND1
+
+
+; Have byte pointers (like in OSYMST above) in table pointed to by A.
+; Insert these in the hash table for VERNUM.
+DINDEX:	SETZM REMVAL		; Indicate adding symbols
+UIND1:	PUSHJ P,SUTSYM
+	MOVEM A,XBLPTR#		; Save pointer to byte pointers
+	MOVE A,0(A)		; Get "from" byte pointer
+	PUSHJ P,AUTST		; Put author names in temporary table
+	  POPJ P,		; Error
+	MOVE A,XBLPTR
+	MOVE A,1(A)		; Get "subject" byte pointer
+	PUSHJ P,TSYMST		; Enter title words
+	  POPJ P,		; Error
+	MOVE A,XBLPTR
+	MOVE A,2(A)		; Get "key words" byte pointer
+	PUSHJ P,KSYMST		; Put key words in temporary table
+	  POPJ P,
+	MOVE A,XBLPTR
+	MOVE A,3(A)		; Get "to" byte pointer
+	PUSHJ P,TOSST		; Enter "to" phrases
+	  POPJ P,
+	MOVE A,XBLPTR
+	MOVE A,4(A)
+	PUSHJ P,IDSYMT		; Enter directory, name, extension, version
+	  POPJ P,
+	MOVE A,XBLPTR
+	MOVE A,5(A)
+	PUSHJ P,ARSYMT		; Enter Archive I.D.
+	  POPJ P,
+; Insert or remove symbols in the temporary table from the hash table.
+; Have symbol table mapped starting at SYMPG, page 0 of VALUES at VALPG2.
+	MOVN E,SNDHDR		; Number of symbols in table
+	HRLZI E,-1(E)		; AOBJP pointer to table
+SINSLP:	AOBJP E,SKPRET		; Done yet?
+	MOVE A,SRTTBL-1(E)
+	PUSHJ P,IINSER		; Insert symbol in A in index
+	  POPJ P,		; Error message pointer in B
+	JUMPA SINSLP
+
+; Character flag table for use with KSYMST, TSYMST, TOSST, AUTST, and IDSYMT
+STKEY==400000	; Char is ok to begin key word phrase
+KEYOK==200000	; Ok in body of key word phrase
+KEYSEP==100000	; Terminates key word phrase
+
+STTIT==40000	; OK to begin title
+TITOK==20000	; OK in body of title word
+TITSEP==10000	; Terminates title word
+
+STTO==4000	; OK to begin to word
+TOOK==2000	; OK in body of to word
+TOSEP==1000	; Terminates to word
+
+STAUT==400	; OK to begin author word
+AUTOK==200	; OK in body of author word
+AUTSEP==100	; Terminates author word
+
+STID==40	; OK to begin field of I.D.
+IDOK==20	; OK in body of directory, name, or extension
+IDSEP==10	; Terminates field of I.D.
+VEROK==4	; OK in body of version
+
+CHSTAB:	KEYSEP!TITSEP!TOSEP!AUTSEP!IDSEP,,0
+	REPEAT 10,<0>		; ^A to ^H illegal
+	REPEAT 2,<KEYSEP!TITSEP!TOSEP!AUTSEP!IDSEP,,0>	; TAB, LF
+	0
+	REPEAT 2,<KEYSEP!TITSEP!TOSEP!AUTSEP!IDSEP,,0>	; FF, CR
+	REPEAT 22,<0>		; ^N to ^Z, other junk illegal
+	KEYOK!TITSEP!AUTSEP!TOSEP!IDSEP,,0	; Blank
+	REPEAT 2,<KEYOK!TITSEP!TOSEP!AUTSEP!IDOK,,0>	; ! "
+	REPEAT 5,<KEYOK!STKEY!TITOK!STTIT!AUTOK!STAUT!TOOK!STTO!IDOK!STID,,0>	; # $ % & '
+	REPEAT 2,<KEYSEP!TITSEP!TOSEP!AUTSEP!IDSEP,,0>	; ( )
+	KEYOK!STKEY!TITOK!STTIT!AUTOK!STAUT!TOOK!STTO,,0	; *
+	KEYOK!STKEY!TITOK!STTIT!AUTOK!STAUT!TOOK!STTO!IDOK!STID,,0	; +
+	KEYSEP!TITSEP!TOSEP!AUTSEP!IDSEP,,0	; ,
+	KEYOK!TITOK!AUTOK!TOOK!IDOK!STID,,0	; "-"
+	KEYOK!TITOK!AUTSEP!TOOK!IDSEP!STID,,0	; "."
+	KEYOK!STKEY!TITSEP!AUTOK!TOOK!STID!IDOK,,0	; "/"
+	REPEAT 12,<STKEY!KEYOK!STTIT!TITOK!STAUT!AUTOK!STTO!TOOK!VEROK!STID!IDOK,,0>	; 0 - 9
+	KEYOK!TITOK!AUTSEP!STTO!TOOK!IDSEP!STID,,0	; ":"
+	KEYSEP!TITSEP!AUTSEP!TOSEP!IDSEP!STID,,0	; ";"
+	KEYSEP!TITSEP!AUTSEP!TOSEP!IDSEP!STID,,0	; "<"
+	KEYSEP!TITSEP!AUTSEP!TOSEP!IDOK,,0	; "="
+	KEYSEP!TITSEP!AUTSEP!TOSEP!IDSEP!STID,,0	; ">"
+	KEYSEP!TITSEP!AUTSEP!TOSEP!IDOK,,0	; "?"
+	KEYOK!STKEY!TITOK!STTIT!AUTOK!STAUT!TOOK!STTO!IDOK!STID,,0	; "@"
+	REPEAT 32,<KEYOK!STKEY!TITOK!STTIT!TOOK!STTO!AUTOK!STAUT!IDOK!STID,,0>	; A - Z
+	REPEAT 6,<KEYOK!TITSEP!TOSEP!AUTSEP!IDOK!STID,,0> ; Junk chars
+	REPEAT 32,<KEYOK!STKEY!TITOK!STTIT!TOOK!STTO!AUTOK!STAUT!IDOK!STID,,0>	; a - z
+	REPEAT 5,<0>
+
+; Put the symbols in the keyword list pointed at by the byte pointer
+; in A into the temporary symbol table.
+KSYMST:	MOVE C,[POINT 7,NAMBUF-1,34]
+	MOVEI E,5*15-1		; Length limit
+KSYMS0:	ILDB B,A
+	JUMPE B,SKPRET		; Done?
+	MOVE D,CHSTAB(B)	; Pick up character flags
+	TLNN D,STKEY		; OK to start key word phrase?
+	JUMPA KSYMS0		; No, flush
+KSYMS1:	IDPB B,C		; Build key word in NAMBUF
+	SOJL E,[MOVEI B,[ASCIZ /Key word phrase exceeded 64 chars./]
+		POPJ P,]	; Fail return
+KSYMS2:	ILDB B,A
+	MOVE D,CHSTAB(B)	; Character flags
+	TLNE D,KEYOK		; OK in body of key word phrase?
+	JUMPA KSYMS1		; Yes, build
+	TLNN D,KEYSEP		; Separator or null?
+	JUMPA KSYMS2		; No, flush junk
+	MOVEI B,KEYPHR
+	PUSHJ P,SUSYM		; Zero fill to make ASCIZ and enter
+	JUMPA KSYMST		; Loop
+
+TSKPRT:	AOS (P)
+DSKPRT:	AOS(P)
+SKPRET:	AOS(P)
+CPOPJ:	POPJ P,
+
+
+; Subroutine to put title words in temporary table
+TSYMST:	MOVE C,[POINT 7,NAMBUF-1,34]
+	MOVEI E,5*15-1		; Length limit
+TSYMS0:	ILDB B,A
+	JUMPE B,SKPRET
+	MOVE D,CHSTAB(B)
+	TLNN D,STTIT		; OK to start title?
+	JUMPA TSYMS0		; No, flush
+TSYMS1:	IDPB B,C
+	SOJL E,[MOVEI B,[ASCIZ /Title word exceeded 64 chars./]
+		POPJ P,]
+TSYMS2:	ILDB B,A
+	MOVE D,CHSTAB(B)
+	TLNE D,TITOK		; OK to be in body of title word?
+	JUMPA TSYMS1		; Yes, build
+	TLNN D,TITSEP		; Separator or null?
+	JUMPA TSYMS2		; No, junk--flush.
+	MOVEI B,TITWRD
+	PUSHJ P,SUSYM		; Zero fill and put in temporary table
+	JUMPA TSYMST
+
+; Subroutine to put "To" phrases in temporary table
+TOSST:	MOVE C,[POINT 7,NAMBUF-1,34]
+	MOVEI E,5*15-1
+TOSS0:	ILDB B,A
+	JUMPE B,SKPRET
+	MOVE D,CHSTAB(B)
+	TLNN D,STTO		; OK for char to start "To" phrase?
+	JUMPA TOSS0		; No, flush
+TOSS1:	IDPB B,C
+	SOJL E,[MOVEI B,[ASCIZ /"To" phrase exceeded 64 chars./]
+		POPJ P,]
+TOSS2:	ILDB B,A
+	MOVE D,CHSTAB(B)
+	TLNE D,TOOK		; OK to appear in body of "to" phrase?
+	JUMPA TOSS1		; Yes, build symbol.
+	TLNN D,TOSEP		; Separator or null?
+	JUMPA TOSS2		; No, flush junk
+	MOVEI B,TOPHR		; Indicate "To" phrase
+	PUSHJ P,SUSYM		; Put in temp table
+	JUMPA TOSST		; Loop
+
+; Subroutine to put author words in temporary table
+AUTST:	MOVE C,[POINT 7,NAMBUF-1,34]
+	MOVEI E,5*15-1		; Length limit
+AUTS0:	ILDB B,A
+	JUMPE B,SKPRET
+	MOVE D,CHSTAB(B)
+	TLNN D,STAUT		; Char ok to start author?
+	JUMPA AUTS0		; No, flush
+AUTS1:	IDPB B,C
+	SOJL E,[MOVEI B,[ASCIZ /Author word exceeded 64 chars./]
+		POPJ P,]
+AUTS2:	ILDB B,A
+	MOVE D,CHSTAB(B)
+	TLNE D,AUTOK		; OK to build author name?
+	JUMPA AUTS1		; Yes, build
+	CAIN B,"."		; Abbreviation?
+	JUMPA AUTST		; Yes, flush symbol
+	TLNN D,AUTSEP		; Separator?
+	JUMPA AUTS2		; No, flush junk
+	CAMN C,[POINT 7,NAMBUF,6]
+	JUMPA AUTST		; Flush one char names
+	MOVE E,NAMBUF
+	XOR E,[ASCII /AND/]	; Flush connective "and"
+	TDNN E,[137B6+137B13+137B20+137B27+137B34]
+	JUMPA AUTST
+	MOVEI E,(B)
+	MOVEI B,FNFLG		; Indicate author first or middle name
+	JUMPN E,.+2
+	MOVEI B,LNFLG		; Last word of authors must be last name
+	CAIN E,","
+	MOVEI B,LNFLG		; "," termination--assume last name
+	CAIE E," "		; Assume blank after name indicates first
+	JUMPA AFINS0		; or middle name unless next word is AND
+	PUSH P,A
+	ILDB E,A
+	ANDCMI E,40		; Upper case
+	CAIE E,"A"
+	JUMPA AFINS2
+	ILDB E,A
+	ANDCMI E,40		; Upper case
+	CAIE E,"N"
+	JUMPA AFINS2
+	ILDB E,A
+	ANDCMI E,40		; Upper case
+	CAIE E,"D"
+	JUMPA AFINS2
+	ILDB E,A
+	CAIN E," "
+	MOVEI B,LNFLG
+AFINS2:	POP P,A
+AFINS0:	PUSHJ P,SUSYM
+	JUMPA AUTST
+
+
+; Put the Archive I.D. in the temporary symbol table
+ARSYMT:	MOVE B,[POINT 7,NAMBUF-1,34]
+	EXCH A,B
+	PUSHJ P,CPYSTL
+	IDPB C,A
+	MOVEI B,ARCF
+	PUSHJ P,SUSYM
+	JUMPA SKPRET
+
+; Subroutine to partition a complete file name and enter the directory,
+; name, extension, and version in the temporary symbol table.
+IDSYMX:	PUSHJ P,SUSYM
+IDSYMT:	MOVE C,[POINT 7,NAMBUF-1,34]	; Place to build name string
+	MOVEI E,5*15-1
+IDS0:	ILDB B,A
+	JUMPE B,SKPRET
+	MOVE D,CHSTAB(B)
+	TLNN D,STID		; OK to start I.D. field?
+	JUMPA IDS0		; No, flush
+	CAIN B,"<"		; Starting directory?
+	JUMPA IDDIR
+	CAIN B,"."		; Starting extension?
+	JUMPA IDEXT
+	CAIN B,";"		; Starting version?
+	JUMPA IDVER
+	CAIN B,">"		; Starting name?
+	JUMPA IDS2		; Yes
+IDS1:	IDPB B,C
+	SOJL E,[MOVEI B,[ASCIZ /Name field of I.D. exceeded 64 chars./]
+		POPJ P,]
+IDS2:	ILDB B,A
+	MOVE D,CHSTAB(B)
+	TLNE D,IDOK		; Char ok in directory, name, extension?
+	JUMPA IDS1		; Yes, build
+	TLNN D,IDSEP		; Separator?
+	JUMPA IDS2		; No, flush junk
+	MOVEI B,NAMEF
+	JUMPA IDSYMX
+
+IDVER0:	IDPB B,C
+	SOJL E,[MOVEI B,[ASCIZ /Version number of I.D. exceeded 64 chars./]
+		POPJ P,]
+IDVER:	ILDB B,A
+	MOVE D,CHSTAB(B)
+	TLNE D,VEROK		; OK to build version?
+	JUMPA IDVER0		; Yes, build
+	TLNN D,IDSEP		; Separator or null?
+	JUMPA IDVER		; No, flush junk
+	MOVEI B,VERSF
+	JUMPA IDSYMX
+
+IDDIR0:	IDPB B,C
+	SOJL E,[MOVEI B,[ASCIZ /Directory name exceeded 64 chars in I.D./]
+		POPJ P,]
+IDDIR:	ILDB B,A
+	MOVE D,CHSTAB(B)
+	TLNE D,IDOK		; Ok to build directory name
+	JUMPA IDDIR0		; Yes, build
+	TLNN D,IDSEP		; Field terminator or null?
+	JUMPA IDDIR		; No, flush junk
+	MOVEI B,LOCATF
+	JUMPA IDSYMX
+
+IDEXT0:	IDPB B,C
+	SOJL E,[MOVEI B,[ASCIZ /Extension exceeded 64 chars in I.D./]
+		POPJ P,]
+IDEXT:	ILDB B,A
+	MOVE D,CHSTAB(B)
+	TLNE D,IDOK
+	JUMPA IDEXT0
+	TLNN D,IDSEP
+	JUMPA IDEXT
+	MOVEI B,TYPEF
+	JUMPA IDSYMX
+
+; Flush trailing blanks and zero fill last word, byte pointer in C
+FLSBLN:	LDB B,C			; Get last char.
+	CAIN B,40		; A blank?
+	JUMPA FLSBLX		; Yes
+	MOVEI B,0
+	IDPB B,C
+	TLNE C,760000
+	JUMPA .-2
+	POPJ P,
+
+FLSBLX:	ADD C,[70000,,0]	; Backup byte pointer
+	TLNE C,400000
+	SUB C,[430000,,1]
+	JUMPA FLSBLN
+
+
+; Subroutine to add (or merge) a symbol into the temporary symbol table.
+; Accepts the flag(s) in the r.h. of B, symbol in NAMBUF.  Merges flags
+; if the symbol is already in the table.  Returns caller+1.  Clobbers C, E.
+SUSYM:	ADD A,[70000,,0]
+	PUSH P,A
+	PUSH P,B		; Save flags
+	PUSHJ P,FLSBLN		; Flush trailing blanks and zerofill last word
+	MOVN E,SNDHDR		; - number of symbols in table
+	HRLZI E,-1(E)		; Setup for AOBJP
+NBLDLP:	AOBJP E,BLDSYM		; Checked all existing symbols?
+	MOVEI A,NAMBUF		; Pointer to new symbol
+	MOVE B,SRTTBL-1(E)	; Pointer to symbol already in table
+SCMPLP:	MOVE C,(A)
+; The following compare equates upper and lower case.  1-37 have been
+; eliminated in building symbols, so only possible confusion is between
+; 73-77 and 173-177, but this is ignored (the possible confusions are
+; ";" with "{", "<" with "|", "=" with "}", ">" with "~", and "?" with DEL).
+	XOR C,(B)
+	TDNE C,[137B6+137B13+137B20+137B27+137B34]
+	JUMPA NBLDLP		; No match.
+	MOVE C,(A)
+	TRNN C,376		; Last word of symbol?
+	JUMPA [	HRLZ B,0(P)	; Merge flags and return
+		IORM B,SRTTBL-1(E)
+		JUMPA SUSFIN]
+	ADDI A,1
+	AOJA B,SCMPLP		; Compare next words
+
+BLDSYM:	MOVEI A,NAMBUF		; Pointer to new symbol
+	MOVE B,SNDPTR
+	HRL B,0(P)
+	MOVEM B,SRTTBL-1(E)
+	MOVE C,(A)
+	MOVEM C,(B)
+	ADDI A,1
+	TRNE C,376
+	AOJA B,.-4
+	ADDI B,1
+	HRRZM B,SNDPTR
+	AOS SNDHDR		; Count symbols in table
+SUSFIN:	POP P,B
+	POP P,A
+	POPJ P,
+
+; Subroutine accepting flags and text pointer in A.  Searches hash table
+; for match and follows equivalent symbol (if any) until symbol containing
+; i.d.'s is obtained.  Returns caller+1 on error, caller+2 on no match,
+; caller+3 on match with A pointing at the first i.d., B containing the
+; number of i.d.'s, and C containing the flags.
+GETIDS:	PUSHJ P,MAPSYM
+	  POPJ P,
+	  JUMPA SKPRET
+	MOVE C,-1(A)		; Get flags
+	TLNN C,INSIG!OVFFLG	; Word insignificant or .G. 16384 words?
+	TLNN C,EQSTR		; No, mapped into another symbol?
+	JUMPA DSKPRT		; Done.
+	MOVEI D,NAMBUF		; Yes, copy equivalent into NAMBUF
+	HLL D,TXTPTR#		; Pick up original flags
+	EXCH A,D
+	HRLZI C,-15		; Max length of symbol
+GETCLP:	MOVE B,(D)
+	MOVEM B,NAMBUF(C)
+	TRNN B,376		; Last word?
+	JUMPA GETIDS		; Yes, search again
+	ADDI D,1
+	AOBJN C,GETCLP
+	MOVEI B,[ASCIZ /Program bug--equivalent symbol .G. 64 chars in hash table/]
+	POPJ P,
+
+
+; Subroutine to insert the insignificant symbol pointed to by A in the
+; hash table.  Clobbers B.
+XINSER: PUSH P,C
+	PUSH P,D
+	PUSH P,E
+	PUSH P,F
+	PUSHJ P,MAPSYM		; Look up symbol
+	  JUMPA XINFLD		; Error
+	  JUMPA XINALC		; No match
+	HRLZI C,INSIG
+	IORM C,-1(A)		; Set insignificant flag
+	HRRZM B,(A)		; Deallocate tail
+	HRRZ C,VALPG0*1000(E)
+	SUBI C,(B)
+	HRRM C,VALPG0*1000(E)	; Change length of part still allocated
+	JUMPA XINDON
+
+XINALC:	MOVE B,TXTPTR		; Pointer to name
+	HLLZ E,(B)
+	TLZ E,3777		; Isolate first char. of name
+	MOVEI A,2		; Compute block size as name length + 1
+	PUSHJ P,CALLOC		; Allocate block for symbol
+	  JUMPA XINFLD		; Error
+	IOR A,E
+	MOVEM A,SYMPG*1000+1(D)
+	MOVE C,TXTPTR
+	MOVE A,(C)
+	MOVEM A,VALPG0*1000+1(B)
+	ADDI B,1
+	TRNE A,376
+	AOJA C,.-4
+	HRLZI C,INSIG
+	MOVEM C,VALPG0*1000+1(B)	; Flags
+IINDON:
+XINDON:	AOS -4(P)
+	JUMPA XINFLD
+
+; Subroutine to insert a thesaurus symbol in the hash table.  Have
+; ASCIZ pointers to a symbol and its replacement in A and B (i.e.,
+; insert/remove for A actually affects B).  Assumes hash table is mapped
+; starting at SYMPG and page 0 of allocator at VALPG2.
+EINSER:	PUSH P,C
+	PUSH P,D
+	PUSH P,E
+	PUSH P,F
+	PUSH P,G
+	PUSH P,B
+	PUSH P,A
+; Get i.d.'s for symbol being suppressed, if any
+	PUSHJ P,MAPSYM
+	  JUMPA EINFLD		; Error
+	  JUMPA EINALC		; No such symbol in table
+	MOVEM D,SYMPOS#		; Save symbol table pos.
+	MOVE G,-1(A)		; Pick up flags
+	TLNE G,INSIG!OVFFLG	; Already insignificant or overflowed?
+	JUMPA EINDON		; Yes, take no action.
+	TLNE G,EQSTR		; Already mapped to another symbol?
+	JUMPA EINF1		; Can't handle because i.d.'s no longer
+				; distinguishable from those of other symbols
+; Collect i.d.'s in logic buffer
+	JUMPLE B,EINF3		; No i.d.'s is program bug
+	MOVEM B,BUFSIZ#
+	MOVEI C,PD		; "To"
+	HRLI C,(A)		; "From"
+	BLT C,PD-1(B)		; Accumulate i.d.'s in PD buffer
+	HRRZS VALPG0*1000(E)	; Deallocate the old block
+; Now get union of i.d.'s for symbol pointed to by B, if any.
+	MOVE A,-1(P)
+	PUSHJ P,MAPSYM
+	  JUMPA EINFLD		; Error
+	  JUMPA EUNALC		; No match
+	IOR G,-1(A)		; Get flags
+	TLNE G,INSIG!OVFFLG	; Insignificant symbol or overflowed?
+	JUMPA EINALC		; Yes, no union
+	TLNE G,EQSTR		; Another thesaurus symbol?
+	JUMPA EINF2		; Have to prevent circularity
+	PUSHJ P,FUNION		; Construct union of i.d.'s in PD buffer
+	  JUMPA EINFLD		; Error
+; Allocate a block for the symbol pointed to by B to contain the i.d.'s
+; in the PD buffer and the flags in G.
+EUNALC:	MOVE A,BUFSIZ		; Number of i.d.'s
+	MOVE B,-1(P)		; Pointer to symbol name
+	ADDI A,2		; For the flags
+	PUSHJ P,CALLOC		; Count name length and allocate block for result
+	  JUMPA EINFLD		; Error
+; Have newly allocated block of correct size at VALPG0*1000(B) and file
+; pos. of block in A.
+	MOVE C,-1(P)		; Pointer to symbol name
+	HLLZ F,(C)
+	TLZ F,3777		; Isolate leading name char.
+	IOR A,F			; Symbol table entry
+	MOVEM A,SYMPG*1000+1(D)
+	MOVE D,(C)		; Copy symbol name to block
+	MOVEM D,VALPG0*1000+1(B)
+	ADDI B,1
+	TRNE D,376
+	AOJA C,.-4
+	MOVEM G,VALPG0*1000+1(B)	; Save flags
+	MOVEI D,VALPG0*1000+2(B)	; "To"
+	HRLI D,PD		; "From"
+	MOVEI C,VALPG0*1000+2(B)
+	ADD C,BUFSIZ
+	BLT D,-1(C)		; Transfer i.d.'s to new block for B
+
+; Have now taken care of the stuff related to the symbol B and have
+; deallocated the old A block (if any).  Allocate a new A block
+; and setup the equivalence.
+	MOVE D,SYMPOS		; Recover symbol table pos.
+EINALC:	MOVEI A,3		; Count 1 for flag word
+	MOVE B,-1(P)		; Pointer to B symbol
+	MOVE C,(B)
+	TRNE C,376
+	AOJA A,.-3
+	MOVE B,0(P)
+	PUSHJ P,CALLOC		; Count name length and allocate block
+	  JUMPA EINFLD		; Error
+	MOVE C,0(P)		; Pointer to A symbol
+	HLLZ E,(C)
+	TLZ E,3777		; Isolate first char. of name
+	IOR A,E
+	MOVEM A,SYMPG*1000+1(D)	; Fix up symbol table entry
+	MOVE A,(C)
+	MOVEM A,VALPG0*1000+1(B)	; Copy text of A's name
+	ADDI B,1
+	TRNE A,376
+	AOJA C,.-4
+	HRLZI C,EQSTR		; Setup equivalence flag
+	MOVEM C,VALPG0*1000+1(B)
+	MOVE C,-1(P)		; Pointer to B's name
+	MOVE A,(C)		; Copy text of B's name
+	MOVEM A,VALPG0*1000+2(B)
+	ADDI B,1
+	TRNE A,376
+	AOJA C,.-4
+EINDON:	AOS -7(P)
+EINFLD:	SUB P,[2,,2]
+ALFLD:	POP P,G
+IINFLD:
+XINFLD:
+LOGICR:	POP P,F
+	POP P,E
+	POP P,D
+	POP P,C
+	POPJ P,
+
+EINF3:	MOVE A,[POINT 7,MESSAG+15]
+	MOVEI B,[ASCIZ /Program bug--/]
+	PUSHJ P,CPYSTZ
+	HRRZ B,0(P)
+	PUSHJ P,CPYSTZ
+	MOVEI B,[ASCIZ / in hash table without any i.d.'s./]
+	JUMPA EINFX
+
+EINF2:	HRRZ D,-1(P)
+	JUMPA EINF0
+
+EINF1:	HRRZ D,0(P)
+EINF0:	MOVE A,[POINT 7,MESSAG+15]
+	MOVEI B,[ASCIZ /Tried to map /]
+	PUSHJ P,CPYSTZ
+	HRRZ B,0(P)
+	PUSHJ P,CPYSTZ
+	MOVEI B,[ASCIZ /into /]
+	PUSHJ P,CPYSTZ
+	HRRZ B,-1(P)
+	PUSHJ P,CPYSTZ
+	MOVEI B,[ASCIZ / but /]
+	PUSHJ P,CPYSTZ
+	MOVEI B,(D)
+	PUSHJ P,CPYSTZ
+	MOVEI B,[ASCIZ / already mapped./]
+EINFX:	PUSHJ P,CPYSTT
+	MOVEI B,MESSAG+15
+	JUMPA EINFLD
+
+; Subroutine to insert a symbol and flags into the index symbol table.
+; Accepts i.d. of document in VERNUM, flags in l.h. of A, pointer
+; to ASCIZ text of name in r.h. of A.
+IINSER:	PUSH P,C
+	PUSH P,D
+	PUSH P,E
+	PUSH P,F
+IINS1:	PUSHJ P,GETIDS		; Search hash table
+	  JUMPA IINFLD		; Error
+	  JUMPA NINHT		; No match
+; Have a match with an existing symbol.  A points at the first i.d., B
+; holds the number of i.d.'s, C the flags, VALPG0*1000(E) is the block
+; header, SYMPG*1000+1(D) is the hash table entry, VERNUM contains
+; the i.d., TXTPTR the flags being inserted and text pointer.
+	HLLZ C,TXTPTR		; Pick up new flags
+	IORB C,-1(A)		; Merge with old
+	TLNE C,INSIG!OVFFLG	; Insignificant symbol?
+	JUMPA IINDON		; Yes, no action necessary
+; Here for addition or removal to existing symbol.
+	SKIPE REMVAL		; Removing or inserting?
+	JUMPA REMENT		; Removing.
+	MOVEM C,TFLAGS#
+	MOVEI C,1
+	MOVEM C,BUFSIZ		; Setup number of items for UNION
+	HLLZ C,TXTPTR		; New item's flags
+	IOR C,VERNUM		; and i.d.
+	MOVEM C,PD
+	JUMPLE B,[MOVEI B,[ASCIZ /Symbol value has no i.d.'s/]
+		JUMPA IINFLD]
+	PUSHJ P,FUNION		; Construct union
+	  JUMPA IINFLD		; Error
+	HRRZS VALPG0*1000(E)	; Deallocate the old block
+	MOVE A,BUFSIZ
+	ADDI A,2		; Partial length computation
+	HRRZ B,TXTPTR		; Text pointer
+	PUSHJ P,CALLOC		; Allocate space
+	  JUMPA IINFLD
+	DPB A,[POINT 23,SYMPG*1000+1(D),35]	; Fix up symbol table pointer
+	MOVE A,VALPG0*1000(B)
+	ADDI A,VALPG0*1000-1(B)	; Pointer to last word in block
+	HRRZ E,TXTPTR		; Pointer to text name
+	MOVE C,(E)
+	MOVEM C,VALPG0*1000+1(B)	; Copy name
+	ADDI B,1
+	TRNE C,376
+	AOJA E,.-4
+	MOVE E,TFLAGS
+	MOVEM E,VALPG0*1000+1(B)
+	MOVEI E,VALPG0*1000+2(B)	; "To"
+	HRLI E,PD		; "From"
+	BLT E,(A)		; Copy i.d.'s into value block
+	JUMPA IINDON
+
+; Remove i.d. from entry for this symbol.
+REMENT:	JUMPLE B,DELSYM		; 0 i.d.'s is impossible but check anyway
+	CAIE B,1		; Precisely one item?
+	JUMPA REMLP		; No, symbol will remain in hash table
+	HRRZ C,(A)		; Yes, get i.d.
+	CAME C,VERNUM		; Match?
+	JUMPA IINDON		; No, no action.
+; Remove symbol from hash table
+DELSYM:	HRRZS VALPG0*1000(E)	; Deallocate the block
+	MOVEI C,1(D)
+	CAML C,SYMPG*1000
+	MOVEI C,0
+	MOVE C,SYMPG*1000+1(C)	; Get symbol table entry after this one
+	MOVEI B,0
+	TLNE C,774000		; Following entry empty?
+	MOVEI B,177		; No, mark as deleted
+	DPB B,[POINT 7,SYMPG*1000+1(D),6]	; Indicate deleted or empty
+	JUMPN B,IINDON		; Done, if marked as deleted
+DCOLPS:	JUMPG D,.+2
+	MOVE D,SYMPG*1000
+	LDB C,[POINT 7,SYMPG*1000(D),6]	; Previous entry's first char
+	CAIE C,177		; Deleted?
+	JUMPA IINDON		; No, finished.
+	DPB B,[POINT 7,SYMPG*1000(D),6]	; Yes, change to empty
+	SOJA D,DCOLPS
+
+REMLP:	HRRZ C,(A)		; Get i.d.
+	ADDI A,1
+	CAML C,VERNUM		; Passed or at pos. of match?
+	JUMPA REMLID		; Yes, check for match
+	SOJG B,REMLP
+	JUMPA IINDON		; Not found--no action
+
+REMLID:	CAME C,VERNUM
+	JUMPA IINDON		; Not found--no action
+	SOJLE B,SHRTSY
+	MOVEI C,-1(A)		; TO
+	HRLI C,(A)		; FROM
+	ADDI B,(A)
+	BLT C,-2(B)		; Squeeze out deleted i.d.
+SHRTSY:	SOS B,VALPG0*1000(E)	; Shorten block
+	ADDI E,(B)
+	MOVEI B,1
+	MOVEM B,VALPG0*1000(E)	; Header for deallocated one-word tail
+	JUMPA IINDON
+
+; Symbol is not in hash table, insert it at SYMPG*1000+1(D).  Have
+; version number at 0(P) and flags and new symbol pointer in -1(P).
+NINHT:	SKIPE REMVAL		; Removing or inserting?
+	JUMPA IINDON		; Removing.
+	MOVEI A,3		; Count block size as 2 + words of text
+	HRRZ B,TXTPTR		; Pointer to new symbol name
+	PUSHJ P,CALLOC		; Allocate a block
+	  JUMPA IINFLD		; Allocation failed
+	HRRZ C,TXTPTR		; Pointer to new text
+	HLLZ E,(C)
+	TLZ E,3777		; Isolate first character
+	IOR A,E			; First character + pointer
+	MOVE E,(C)		; Copy the text
+	MOVEM E,VALPG0*1000+1(B)
+	ADDI B,1
+	TRNE E,376		; Last word of text?
+	AOJA C,.-4		; No, loop
+	HLLZ C,TXTPTR
+	MOVEM C,VALPG0*1000+1(B)		; Save union of flags
+	IOR C,VERNUM		; Flags union i.d.
+	MOVEM C,VALPG0*1000+2(B)
+	MOVEM A,SYMPG*1000+1(D)	; Hash table entry
+	JUMPA IINDON
+
+; Subroutine to search the hash table for a symbol.  Accepts ASCIZ text
+; pointer in A.  Smashes C, F.  Returns caller+1 on error (pointer in B),
+; caller+2 on no match with pos. for insert at SYMPG*1000+1(D),
+; caller+3 on match at SYMPG*1000+1(D) with value block at VALPG0*1000(E),
+; -1(A) points at flags, B contains the number of words after the flags.
+MAPSYM:	MOVEM A,TXTPTR
+	SETZB C,HSHPOS#		; Indicate no deleted entry encountered
+				; and initialize for hash computation
+	HRLI A,440700		; Byte pointer before first character
+IINHLP:	ILDB B,A		; Add-multiply for 1st through last chars.
+	JUMPE B,ENDHSH
+	ANDCMI B,40		; Upper/lower cases equivalent
+	ADD C,B
+	IMUL C,[^D21559051525]	; Hash address
+	JUMPA IINHLP
+
+ENDHSH:	TLZ C,400000		; Make positive
+	IDIV C,SYMPG*1000	; Divide by length of hash table (n*1000-1)
+	MOVEM D,HSHFUL#		; Save starting address for h.t. full check
+CKHLP:	MOVE C,TXTPTR		; Get pointer to new symbol
+	MOVE A,SYMPG*1000+1(D)
+	TLCN A,774000		; First char=0 means not in H.T.
+	JUMPA [	SKIPE HSHPOS
+		MOVE D,HSHPOS
+		JUMPA SKPRET]	; Return pos. for insert
+	TLCN A,774000		; First char=177 means deleted
+	JUMPA NXTHT
+	XOR A,(C)		; Compare to first char of string
+	TLNE A,574000		; First char matches string?
+	JUMPA NXTHT1		; No, keep looking
+; Pmap in page of .VALUES pointed to by hash table entry, then more pages
+; if block crosses page boundaries.  Then compare text in block to text
+; pointed to by C.
+	MOVE A,SYMPG*1000+1(D)
+	TLZ A,777740		; Get pure pointer into .VALUES
+	SUBI A,1
+	MOVEM A,VALPTR#
+	LSH A,-11
+	HRL A,VALJFN
+	MOVE B,[400000,,VALPG0]	; This fork,,first page of 17-page block
+	MOVSI C,140000		; Read and write access
+	PMAP
+	LDB E,[POINT 9,VALPTR,35]	; Displacement into VALPG0 of header
+	HRRZ F,VALPG0*1000(E)	; Get header = length of (block + header)
+	CAILE F,MAXLEN+1
+	JUMPA [	MOVEI B,[ASCIZ /Allocation block size .G. 16384/]
+		POPJ P,]
+	ADD F,E
+	SUBI F,1		; Displacement of last word in block
+	LSH F,-11		; Number of additional pages to PMAP
+	JUMPE F,EPMAP		; More to do?
+	ADDI A,1
+	ADDI B,1
+	PMAP
+	SOJG F,.-3		; PMAP in the rest of the block
+EPMAP:	MOVE F,TXTPTR		; Pointer to new symbol
+	MOVEI A,VALPG0*1000+3(E)	; Pointer to text in .VALUES buffer
+	HRRZ B,VALPG0*1000(E)
+	SUBI B,3
+HCMLOP:	MOVE C,(F)
+	XOR C,-2(A)		; Differences
+	TDNE C,[137B6+137B13+137B20+137B27+137B34]
+	JUMPA NXTHT1		; If no match, try next entry
+	MOVE C,(F)
+	TRNN C,376		; Last word?
+	JUMPA DSKPRT		; Yes, got a match, succeed
+	SUBI B,1
+	ADDI A,1
+	AOJA F,HCMLOP
+
+NXTHT:	SKIPN HSHPOS		; Already got place for insert?
+	MOVEM D,HSHPOS		; Yes, save pos. in case search fails
+NXTHT1:	ADDI D,1
+	CAML D,SYMPG*1000	; Wrap around?
+	MOVEI D,0		; Yes
+	CAME D,HSHFUL		; Wrapped around the hash table
+	JUMPA CKHLP
+	MOVEI B,[ASCIZ /Hash table overflowed/]
+	POPJ P,
+
+; Allocate block of size in A.  Non-skip on failure with message pointer in B.
+; Skip on success with pages of block mapped at VALPG0 to VALPG0+16,
+; block header at VALPG0*1000(B), and file position of the data part of the
+; block in A.  Header has the sign bit set to indicate allocated and the
+; length of the block in the r.h.  The allocator has slow growth properties.
+
+; Deallocation is simply HRRZS HEADER.
+
+; The DOCGEN.VALUES file is structured with the total storage so far
+; created in word 0 and a roving pointer in word 1.  Whevever an
+; allocate fails, the file is grown by 16 or 64-page increments.
+
+; Special entry to count words of symbol name - 1 before allocate
+CALLOC:	MOVE C,(B)		; Pick up next word of text
+	ADDI B,1		; Index text pointer
+	TRNE C,376		; Last word?
+	AOJA A,.-3		; No, loop
+MALLOC:	MOVEI A,1(A)		; Increase by size of header
+	CAILE A,MAXLEN+1
+	JUMPA [	MOVEI B,[ASCIZ /Attempt to allocate block .G. 16384 words/]
+		POPJ P,]
+	PUSH P,C
+	PUSH P,D
+	PUSH P,E
+	PUSH P,F
+	PUSH P,G
+	PUSH P,A
+	SETOM PRPAGE#		; Indicate no previous page mapped
+	SETOM WRPFLG#		; Indicate no wraparound on search for block
+	MOVSI C,140000		; Read and write access for PMAPs
+	MOVE D,VALPG2*1000+1	; Roving pointer
+MALLA:	CAML D,VALPG2*1000	; Roving pointer .L. length?
+	JUMPA [	MOVEI B,[ASCIZ /Allocator roving pointer .G. storage/]
+		JUMPA MALL7]
+MALL9:	MOVEI G,0
+; Here with file pos. of next block in D, expansion value in G
+MALL3:	LDB A,[POINT 18,D,26]	; Page number
+	HRL A,VALJFN
+	MOVE B,[400000,,VALPG0]	; This fork at VALPG0
+	CAME A,PRPAGE		; Same as last page?
+	PMAP
+	MOVEM A,PRPAGE
+	LDB F,[POINT 9,D,35]	; Position within VALPG0 of header
+	ADDM G,VALPG0*1000(F)	; Expand block size if indicated
+	MOVE G,(P)		; Length of (block + header)
+	SKIPGE E,VALPG0*1000(F)	; Next block free?
+	JUMPA MALL1		; No
+	CAIGE E,(G)		; Yes.  Big enough?
+	JUMPA MALL2		; No
+	SUBI E,(G)		; Yes.  Get length of tail
+	TLO G,400000		; Indicate allocated
+	MOVEM G,VALPG0*1000(F)	; Header for newly allocated block = sign,,length
+	TLZ G,400000		; Indicate not allocated
+	MOVEM D,VALPG2*1000+1	; Roving pointer for next search
+	ADDI D,1		; File pos. of first data word in block
+	MOVEM D,(P)		; Will be returned in A
+	MOVE D,G
+	ADDI D,(F)		; Displacement from VALPG0*1000 to word after block
+	LSH D,-11
+	JUMPE D,MALL5		; More pages to PMAP?
+	ADDI B,1
+	ADDI A,1
+	PMAP
+	SOJG D,.-3
+MALL5:	JUMPE E,.+4		; Any words left over?
+	ADDM G,VALPG2*1000+1	; Yes, point roving pointer at tail
+	ADDI G,(F)		; Point at header for tail
+	MOVEM E,VALPG0*1000(G)	; Yes.  Header for tail
+	MOVEI B,(F)		; Pointer to header rel. to VALPG0*1000
+	AOS -6(P)		; Success return
+MALL7:	POP P,A			; File pointer to first data word of block
+	JUMPA ALFLD		; Restore AC's and return
+
+; Current block is allocated
+MALL1:	ADDI D,(E)		; File pos. of next header
+MALL4:	CAMGE D,VALPG2*1000	; Beyond current storage?
+	JUMPA MALL9		; No, loop
+	MOVE E,D		; Yes
+MALL8:	CAME E,VALPG2*1000
+	JUMPA [	MOVEI B,[ASCIZ /Allocator headers screwed up/]
+		JUMPA MALL7]
+	SKIPL WRPFLG		; Second wrap around?
+	JUMPA MALL0		; Yes, expand
+MALL6:	SETZM WRPFLG		; No, indicate wraparound
+	MOVE D,VALPG2*1000+2	; Pointer to first (possibly) free block in .VALUES
+	JUMPA MALLA		; Loop
+
+; Last block is allocated and no block is big enough--expand.
+MALL0:	MOVEI G,20000		; Small size increment
+	CAIL E,400000		; Small index?
+	MOVEI G,100000		; No, big size increment
+	ADDM G,VALPG2*1000
+	MOVE E,VALPG2*1000
+	CAMG E,[37,,777777]
+	JUMPA MALL3
+	MOVEI B,[ASCIZ /DOCGEN.VALUES .G. 8388608 words long/]
+	JUMPA MALL7
+
+; Block not big enough
+MALL2:	ADD E,D			; Pointer to next block
+	CAML E,VALPG2*1000	; Beyond current storage?
+	JUMPA MALL8		; Yes, expand or wrap around
+	LDB A,[POINT 18,E,26]	; No, get page number of next header
+	HRL A,VALJFN
+	MOVE B,[400000,,VALPG0+1]
+	PMAP
+	LDB G,[POINT 9,E,35]	; Displacement of new header in VALPG0+1
+	SKIPL G,<VALPG0+1>*1000(G)	; Get header of next block.  Allocated?
+	JUMPA MALL3		; No, increment previous block size
+	MOVE D,E		; Yes, advance file pos.
+	ADDI D,(G)
+	JUMPA MALL4
+
+; Subroutine called by JSP C,LOGSU which sets up registers for
+; logic operations as follows:
+; At call:
+; A/ pointer to table of new i.d.'s
+; B/ acceptable flags,,length of new i.d. table
+; BUFSIZ/ number of old i.d.'s in PD buffer
+; At return:
+; Old i.d.'s moved to upper end of buffer.
+; C/ AOBJN pointer to loop over old i.d.'s
+; D/ AOBJN pointer to loop over new i.d.'s
+; E/ acceptable flags
+; F/ AOBJN pointer to fill PD with result
+LOGSU:	PUSH P,D
+	PUSH P,E
+	PUSH P,F
+	PUSH P,C		; Save return for LOGSU
+	MOVNI D,(B)
+	HRLZI D,(D)
+	HRRI D,(A)
+	HLLZ E,B
+	HRLZI F,-40000
+	MOVN C,BUFSIZ
+	JUMPE C,CPOPJ
+; Setup for POP, JUMPL loop in AC's as follows:
+; A/ 377777+BUFSIZ,,PD-1+BUFSIZ
+; B/ POP A,40000-BUFSIZ(A)
+; C/ JUMPL A,B
+; D/ JUMPA LOGSU1
+	MOVE B,C
+	ADD B,[POP A,40000(A)]
+	MOVE A,BUFSIZ
+	HRLI A,377777(A)
+	ADDI A,PD-1
+	PUSH P,D
+	MOVE C,[JUMPL A,B]
+	MOVE D,[JUMPA LOGSU1]
+	JUMPA B
+
+LOGSU1:	POP P,D
+	MOVN C,BUFSIZ
+	HRLI C,(C)
+	HRRI C,40000+PD(C)
+	POPJ P,
+
+
+; Special union which merges the flags of equal entries
+FUNION:	JUMPE B,SKPRET		; Done if no new i.d.'s
+	PUSH P,C
+	JSP C,LOGSU		; Setup for logic operation
+	JUMPGE C,FCPYN1		; Copy new if no old i.d.'s
+FUNN0:	HRRZ A,(C)		; I.D. of old
+FUNN1:	MOVE B,(D)		; I.D. and flags of new
+FUNN2:	AOBJP F,LOGOVF
+	CAIGE A,(B)		; Old .GE. new?
+	JUMPA FUNN3		; No.
+	CAIE A,(B)		; Equal?
+	JUMPA FUNN4
+	IOR B,(C)		; Union of flags
+	MOVEM B,PD-1(F)
+	AOBJP D,FCPYO
+	AOBJN C,FUNN0
+FCPYN1:	MOVE B,(D)
+FUNN5:	AOBJP F,LOGOVF
+	MOVEM B,PD-1(F)
+	AOBJN D,FCPYN1
+	JUMPA LOGICC
+
+FUNN3:	MOVE A,(C)
+	MOVEM A,PD-1(F)
+	AOBJP C,FUNN5
+	HRRZ A,(C)
+	JUMPA FUNN2
+
+FUNN4:	MOVEM B,PD-1(F)
+	AOBJN D,FUNN1
+FCPYO1:	MOVE A,(C)
+	AOBJP F,LOGOVF
+	MOVEM A,PD-1(F)
+FCPYO:	AOBJN C,FCPYO1
+	JUMPA LOGICC
+
+; Subroutine to construct intersection.
+INTERS: PUSH P,C
+	JSP C,LOGSU		; Setup for logic operation
+	JUMPGE C,LOGICC		; Done if no old i.d.'s
+	JUMPGE D,LOGICC		; or if no new i.d.'s
+INTBTH:	MOVE A,(C)		; Next old i.d.
+INTNEW:	TDNN E,(D)		; Got one or more good flags?
+	JUMPA INXNEW		; No, skip to next
+	HRRZ B,(D)		; Get new i.d.
+INTC0:	TLNE A,LEMJKR		; Joker matching?
+	JUMPA IJOKER		; Yes, special
+	CAIGE B,(A)		; New .GE. old?
+	JUMPA INXNEW		; No, next new
+	CAIE B,(A)		; New .E. old?
+	JUMPA INOLD		; No, next old
+	AOBJP F,LOGOVF
+	MOVEM B,PD-1(F)
+	AOBJP C,LOGICC
+	AOBJN D,INTBTH
+; Here when all done
+LOGICC:	HRRZM F,BUFSIZ
+	AOS -4(P)
+	JUMPA LOGICR
+
+INOLD:	AOBJP C,LOGICC
+	MOVE A,(C)
+	JUMPA INTC0
+
+; Got a joker in A
+IJOKER:	CAILE B,(A)		; Yes, still match?
+	JUMPA INOLD		; No, get next old
+	AOBJP F,LOGOVF
+	MOVEM B,PD-1(F)
+INXNEW:	AOBJN D,INTNEW
+	JUMPA LOGICC
+
+
+; Subroutine to construct OLD AND NOT NEW.
+ANDNOT:	SKIPE BUFSIZ
+	TRNN B,-1
+	JUMPA SKPRET		; Done if no new or no old i.d.'s
+	PUSH P,C
+	JSP C,LOGSU		; Set up for logic operation
+ANBTH:	MOVE A,(C)
+ANNEW:	TDNN E,(D)		; Got one or more good flags?
+	JUMPA ANXNEW		; No, get next new
+	HRRZ B,(D)		; Yes, get i.d.
+ANC0:	TLNE A,LEMJKR
+	JUMPA ANJKR		; Complicated for joker
+	CAIGE B,(A)		; New .GE. old?
+	JUMPA ANXNEW		; No, get next new
+	CAIN B,(A)		; New .E. old?
+	JUMPA ANXEQL
+; New .G. old--copy old
+ANKJKR:	AOBJP F,LOGOVF
+	MOVEM A,PD-1(F)
+	AOBJP C,LOGICC
+	MOVE A,(C)
+	JUMPA ANC0
+
+ANXEQL:	AOBJP C,LOGICC		; Finished?
+	MOVE A,(C)
+ANXNEW:	AOBJN D,ANNEW
+	JUMPA CPYO1
+
+ANJKR:	CAILE B,(A)		; Is new inside range of joker?
+	JUMPA ANKJKR		; No, copy joker
+; very complicated here--finish later
+
+; Subroutine to construct the union.
+UNION:	TRNN B,-1
+	JUMPA SKPRET		; Done if no new i.d.'s
+	PUSH P,C
+	JSP C,LOGSU		; Setup for logic operation
+	JUMPGE C,CPYN1		; Copy new i.d.'s if no old
+UNNC1:	MOVE A,(C)		; Next old i.d.
+UNNC2:	TDNN E,(D)		; One or more good flags with new i.d.?
+	JUMPA UNXN1		; No, loop
+	HRRZ B,(D)		; Yes, get new i.d.
+UNNC0:	AOBJP F,LOGOVF		; Check for overflow
+	TLNE A,LEMJKR		; Joker matching?
+	JUMPA UJOKER		; Yes, special
+	CAIGE B,(A)		; New .GE. old?
+	JUMPA UNXNEW		; No, copy new i.d.
+UNXOLD:	MOVEM A,PD-1(F)		; Yes, copy old
+	CAIN B,(A)		; New .E. old?
+	JUMPA CPYN0
+	AOBJP C,CPYNEW
+	MOVE A,(C)
+	JUMPA UNNC0
+
+CPYN0:	AOBJP D,CPYOLD
+	AOBJN C,UNNC1
+CPYN1:	TDNN E,(D)
+	JUMPA CPYN2
+	HRRZ B,(D)
+CPYNEW:	AOBJP F,LOGOVF		; Check for overflow
+	MOVEM B,PD-1(F)		; Copy the new i.d.
+CPYN2:	AOBJN D,CPYN1
+	JUMPA LOGICC
+
+UNXNEW:	MOVEM B,PD-1(F)
+UNXN1:	AOBJN D,UNNC2
+CPYO1:	AOBJP F,LOGOVF		; Check for overflow
+	MOVEM A,PD-1(F)
+CPYOLD:	AOBJP C,LOGICC
+	MOVE A,(C)
+	JUMPA .-4
+
+UJOKER:	CAILE B,(A)
+	JUMPA UNXOLD
+	HRRZ B,(D)
+	AOBJN D,UJOKER
+	JUMPA UNXOLD
+
+LOGOVF:	MOVEI B,[ASCIZ /Logic buffer overflowed 16384 i.d.'s/]
+	JUMPA LOGICR
+
+; Subroutine to setup for lookup operation called by JSP D,LOOKSU
+; At call:
+; A/ byte pointer to string to be looked up
+; B/ instruction to be executed for each matching i.d. (LUTITL only)
+;    This should be CAIA or a call to a subroutine returning caller+1
+;    on error, caller+2 on success.
+; If BUFSIZ is 0 at the call, then it is reinitialized.  Otherwise, the
+; intersection of the i.d.'s already in PD and the new result is computed.
+; Returns from the caller to LOOKSU should be as follows:
+;    caller+1 on error (message pointer in B)
+;    caller+2 on no match (message pointer in B)
+;    caller+3 on success (i.d.'s in PD)
+LOOKSU:	PUSH P,E
+	PUSH P,F
+	PUSH P,G
+	PUSH P,AA
+	PUSH P,BB
+	PUSH P,B		; Save execute instruction
+	PUSH P,A		; Save byte pointer
+	SKIPN MAPFL
+	JUMPA [	MOVEI B,SVNOPN
+		JUMPA LUBAD]
+	PUSHJ P,SUTSYM		; Setup temporary symbol table
+	SKIPE BUFSIZ		; Something in PD?
+	JUMPA (D)		; Yes, take intersection
+	MOVE A,[LEMJKR,,-1]	; No, reinitialize
+	MOVEM A,PD
+	MOVEI A,1
+	MOVEM A,BUFSIZ
+	JUMPA (D)
+
+SVNOPN:	ASCIZ 'DOCGEN.SYMBOLS or DOCGEN.VALUES not open at call to lookup routine'
+
+NOXSYM:	ASCIZ /No symbols in string/
+
+NOSSMB:	ASCIZ /No such symbol in index/
+
+SINSIG:	ASCIZ /No significant symbols in string/
+
+LUGOOD:	AOS -7(P)
+LUNOM:	AOS -7(P)
+LUBAD:	SUB P,[2,,2]
+	POP P,BB
+	POP P,AA
+	POP P,G
+	POP P,F
+	POP P,E
+	POPJ P,
+
+; Subroutine to lookup a title.
+LUTITL:	JSP D,LOOKSU		; Setup for lookup
+	MOVE A,0(P)		; Recover title byte pointer
+	PUSHJ P,TSYMST		; Put title symbols in temp. table
+	  JUMPA LUBAD
+	MOVN BB,SNDHDR
+	HRLZI BB,-1(BB)		; AOBJN pointer for symbols
+	AOBJP BB,[MOVEI B,NOXSYM
+		JUMPA LUNOM]
+LUTLP:	MOVE A,SRTTBL-1(BB)
+	PUSHJ P,GETIDS		; Lookup next symbol
+	  JUMPA LUBAD		; Error
+	  JUMPA NOTITL		; No match= no such title
+; Match.  Have value block at VALPG0*1000(E).  A points at first i.d.
+; SYMPG*1000+1(D) is the location of the hash table entry.
+	TLNE C,INSIG!OVFFLG	; Insignificant symbol or overflow?
+	JUMPA NOTLLC		; Yes, match if TITWRD set
+	HRLI B,TITWRD		; Select i.d.'s with TITWRD set
+	PUSHJ P,INTERS		; Intersection with others
+	  JUMPA LUBAD
+	SKIPN BUFSIZ		; Still have something?
+	JUMPA NOTITL		; No.
+ELUTLP:	AOBJN BB,LUTLP
+	MOVN BB,BUFSIZ		; Now verify the titles
+	HRLZI BB,(BB)
+CHKTIL:	MOVE A,PD(BB)
+	TLNE A,LEMJKR		; Joker still set?
+	JUMPA SYMINS
+	MOVE B,[70000,,200200]	; Byte size 7, read, never wait
+	PUSHJ P,RDDESC		; Read descriptor for full check
+	  JUMPA LUBAD		; File busy
+	  JUMPA LUBAD		; Error
+	MOVEI A,DESJFN
+	PUSHJ P,CLSFIL
+	MOVEI C,OSUBJ
+	MOVE A,0(P)
+	PUSHJ P,RMATCH		; Compare with given title
+	  JUMPA TIDFLS		; No match, flush i.d.
+	XCT -1(P)		; Call subroutine for matching titles
+	  JUMPA LUBAD		; Error
+CHKTL1:	AOBJN BB,CHKTIL		; Check any others, too.
+	JUMPA LUGOOD
+
+NOTLLC:	TLNE C,TITWRD		; Was insig. symbol used in title?
+	JUMPA ELUTLP		; Yes, treat as match
+NOTITL:	MOVEI B,NOMTTL
+	JUMPA LUNOM
+
+TIDFLS:	SOSG A,BUFSIZ		; More than one matching i.d.?
+	JUMPA NOTITL		; No, no matching titles
+	MOVE B,[PD+1,,PD]
+	BLT B,PD-1(A)
+	SOJA BB,CHKTL1
+
+NOMTTL:	ASCIZ /No such title in index/
+
+
+; Subroutine to lookup key words (also accepts title)
+LUKEY:	JSP D,LOOKSU		; Setup for lookup
+	MOVE A,0(P)		; Byte pointer to string
+	PUSHJ P,KSYMST
+	  JUMPA LUBAD
+	MOVN BB,SNDHDR
+	HRLZI BB,-1(BB)
+	HRLZI B,TITWRD
+	AOBJP BB,LUTEMP
+	IORM B,SRTTBL-1(BB)
+	AOBJN BB,.-1
+	JUMPA LUTEMP
+
+; Subroutine to look up a list of authors
+LUAUTH:	JSP D,LOOKSU		; Setup for lookup
+	MOVE A,0(P)
+	PUSHJ P,AUTST		; Put author symbols in temp table
+	  JUMPA LUBAD
+LUTEMP:	MOVN BB,SNDHDR
+	HRLZI BB,-1(BB)
+	AOBJP BB,[MOVEI B,NOXSYM
+		JUMPA LUNOM]
+LUALP:	MOVE A,SRTTBL-1(BB)
+	PUSHJ P,GETIDS		; Lookup next symbol
+	  JUMPA LUBAD
+	  JUMPA NOAUTH		; No matches
+	TLNE C,INSIG!OVFFLG	; Insignificant symbol or overflow?
+	JUMPA AUINSG
+	HLL B,SRTTBL-1(BB)	; Get flags
+	PUSHJ P,INTERS		; Intersection with others
+	  JUMPA LUBAD
+	SKIPN BUFSIZ		; Still have something?
+	JUMPA NOAUTH		; No.
+ELUALP:	AOBJN BB,LUALP
+	MOVE A,PD
+	TLNN A,LEMJKR
+	JUMPA LUGOOD
+SYMINS:	MOVEI B,SINSIG
+	JUMPA LUNOM
+
+AUINSG:	HLLZ B,SRTTBL-1(BB)	; Get desired flags
+	TDNE C,B		; Some of them must be set
+	JUMPA ELUALP		; Yes
+NOAUTH:	MOVEI B,NOSSMB
+	JUMPA LUNOM
+
+
+; Subroutine to lookup directory
+LUDIR:	JSP D,LOOKSU		; Setup for lookup
+	MOVE A,0(P)		; Byte pointer to directory name
+	MOVE C,[POINT 7,NAMBUF]
+	MOVEI E,5*15-1
+	PUSHJ P,IDDIR
+	  JUMPA LUBAD
+	JUMPA LUTEMP
+
+
+; Subroutine to lookup file type
+LUTYPE:	JSP D,LOOKSU
+	MOVE A,0(P)
+	MOVE C,[POINT 7,NAMBUF]
+	MOVEI E,5*15-1
+	PUSHJ P,IDEXT
+	  JUMPA LUBAD
+	JUMPA LUTEMP
+
+
+; Subroutine to lookup file version
+LUVER:	JSP D,LOOKSU
+	MOVE A,0(P)
+	MOVE C,[POINT 7,NAMBUF]
+	MOVEI E,5*15-1
+	PUSHJ P,IDVER
+	  JUMPA LUBAD
+	JUMPA LUTEMP
+
+
+; Subroutine to lookup file name
+LUNAME:	JSP D,LOOKSU
+	MOVE A,0(P)
+	PUSHJ P,IDSYMT
+	  JUMPA LUBAD
+	JUMPA LUTEMP
+
+
+; Subroutine to lookup Archive I.D. string
+LUARC:	JSP D,LOOKSU
+	MOVE A,0(P)
+	PUSHJ P,ARSYMT
+	  JUMPA LUBAD
+	JUMPA LUTEMP
+
+	LIT
+CODEND:
+RECBLK:	100000,,0		; Old file, current version
+	377777,,377777
+	0
+	POINT 7,IDXDIR
+	POINT 7,[ASCIZ /DOCGEN/]
+	REPEAT 3,<0>
+
+DESEXT:	ASCII /DES/
+	BLOCK 2
+      

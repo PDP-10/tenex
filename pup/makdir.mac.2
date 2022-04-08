@@ -1,0 +1,1766 @@
+;<PUP>MAKDIR.MAC;2	1/6/81			EDIT BY RINDFLEISCH
+; Note no output generated if input errors encountered.
+;<PUP>MAKDIR.MAC;6     2-SEP-79 15:56:38    EDIT BY TAFT
+;<PUP>MAKDIR.MAC;5    19-JUN-79 09:43:57    EDIT BY TAFT
+; Append checksum to directory file
+;<PUP>MAKDIR.MAC;4     2-MAR-79 10:33:33    EDIT BY TAFT
+; Increase table size parameters
+
+; Copyright 1979 by Xerox Corporation
+
+	TITLE MAKDIR -- MAKE PUP NETWORK DIRECTORY
+	SUBTTL E. A. Taft, April 1975
+
+	SEARCH STENEX
+	TWOSEG
+	RELOC 400000
+
+; Accumulator assignments
+
+	A=1	; Temporaries
+	B=2
+	C=3
+	D=4
+	E=5	; Saved by subroutines
+	F=6
+	CH=10	; Current character
+	BP=11	; Byte ptr to TXTBUF
+	P=17	; Stack
+
+; Parameters
+
+	NLTLEN==^D2000	; Max length of name lookup table
+	ALTLEN==^D2000	; Max length of address lookup table
+	ATRLEN==^D2000	; Max length of attribute lookup table
+	ENTLEN==^D5000	; Max length of entry table
+	NAMLEN==^D39	; Max # chars in name, attribute name
+	ATVLEN==^D255	; Max # chars in attribute value
+	STKLEN==100	; Stack length
+	IOBLEN==1000	; I/O buffer length
+	TXTLEN==1000	; Text buffer length
+	EADLEN==^D50	; Length of emitted address table
+	TATLEN==^D50	; Length of temp attribute table
+	HDRLEN==20	; Length of header zone in directory
+
+
+; Input file syntax:
+
+; Each line may be either an <entry> or a <comment> followed by
+;  a cr/lf.  cr/lf's in an <entry> are ignored if they immediately
+;  follow "=", ",", or ";".  Tabs and spaces are ignored.
+
+; <entry> ::= <name list> = <address list> ; <attribute list>
+; <comment> ::= ; <arbitrary string>
+; <name list> ::= <name> | <name list> , <name>
+; <name> ::= <string composed of alphanumerics, "-", "/">
+; <address list> ::= <address> | <address list> , <address>
+; <address> ::= <expression> | <expression> ( <attribute list> )
+; <expression> ::= <term> | <expression> + <term>
+; <term> ::= <name> | <address constant>
+; <address constant> ::= <element> | <element> # <element> |
+;			 <element> # <element> # <element>
+; <element> ::= <octal number> | empty
+; <attribute list> ::= <attribute> | <attribute list> , <attribute>
+; <attribute> ::= <name> : " <attribute value> "
+; <attribute value> ::= <arbitrary string with any " doubled>
+
+; Format of Network Directory:
+; The directory consists of the highest-numbered version of
+; file <SYSTEM>PUP-NETWORK.DIRECTORY, which is a file written
+; in 16-bit bytes (for the sake of Altos and Novas) and mapped
+; into monitor space starting at NETDIR for the purpose of doing
+; lookups by means of the PUPNM Jsys.  All "pointers" in the
+; directory refer to 16-bit bytes relative to the start of the
+; directory.  All "strings" are BCPL-style, i.e. an 8-bit
+; byte count followed by that number of 8-bit bytes.  All
+; "blocks" and "tables" start at Maxc word boundaries, i.e.
+; "pointers" to them are always even.
+; The last byte of the file is a ones-complement add-and-left-cycle
+; checksum (i.e., the Pup checksum algorithm) over the file's contents.
+
+; Header block (starts at word 0 of the directory):
+;  # of name blocks
+;  Pointer to name lookup table
+;  # of address blocks
+;  Pointer to address lookup table
+;  # words occupied by entry blocks
+;  Pointer to first entry block
+;  Directory version number (= Maxc directory file version)
+
+; Name lookup table (ordered alphabetically by name):
+;  Pointer to name block
+;  Pointer to name block
+;   ...
+;  Pointer to name block
+
+; Address lookup table (ordered by value of <net,host,socket>):
+;  Pointer to address block
+;  Pointer to address block
+;   ...
+;  Pointer to address block
+
+; Entry block:
+;  Pointer to first name block for entry
+;  Pointer to first address block for entry
+;  Number of attributes
+;  Pointer to first attribute name
+;  Pointer to first attribute value
+;   ...
+;  Pointer to last attribute name
+;  Pointer to last attribute value
+
+; Name block:
+;  Pointer to next name block for same entry, or 0
+;  Pointer to owning entry block
+;  Name string
+
+; Address block:
+;  Pointer to next address block for same entry, or 0
+;  Pointer to owning entry block
+;  Net (8 bits), Host (8 bits)
+;  Socket (32 bits)
+;  Number of attributes
+;  Pointer to first attribute name
+;  Pointer to first attribute value
+;   ...
+;  Pointer to last attribute name
+;  Pointer to last attribute value
+
+; Attribute block (name or value):
+;  Attribute string
+
+; Initialize
+
+MAKDIR:	RESET
+	MOVE P,[IOWD STKLEN,STACK]  ; Initialize stack
+	MOVE A,[BZERO,,BZERO+1]	; Clear variables and tables
+	SETZM BZERO
+	BLT A,EZERO-1
+	MOVEI A,100		; Get control char output bits
+	RFCOC
+	ANDCM B,[3B3+3B35]	; Turn off control-A, control-Q
+	SFCOC
+
+; Get and process the input file
+GETINP:	HRROI A,[ASCIZ /Input file: /]
+	PSOUT
+	MOVEI A,[1B2+1B4	; Old file, confirm
+		100,,101	; TTY i/o
+		0		; Device
+		0		; Directory
+		POINT 7,[ASCIZ /PUP-NETWORK/]  ; Name
+		POINT 7,[ASCIZ /TXT/]  ; Extension
+		0		; Protection
+		0]		; Account
+	SETZ B,			; No main string
+	GTJFN			; Get JFN for input file
+	 JRST [	PUSHJ P,EROUT	; Failed, complain
+		JRST GETINP]	; Try again
+	MOVEM A,JFN		; Ok, store JFN
+	MOVE B,[7B5+1B19]	; 7-bit, input
+	OPENF			; Open file
+	 JRST [	PUSHJ P,EROUT	; Failed, print message
+		MOVE A,JFN	; Release JFN
+		RLJFN
+		 PUSHJ P,SCREWUP
+		JRST GETINP]	; Start over
+	MOVE B,[1,,7]		; Get input FDBVER
+	MOVEI C,C
+	GTFDB
+	HLRM C,OUTABL		; Save the file version # for output
+	HRROI A,DIRNAM		; Ok, save name string
+	MOVE B,JFN
+	MOVSI C,(1B8)		; Name only, no punctuation
+	JFNS
+
+	PUSHJ P,PARSE		; Parse the input
+
+	MOVE A,JFN		; Close input file
+	CLOSF
+	 PUSHJ P,EROUT
+	SKIPE B,ERRORS		; Any errors
+	 JRST [	MOVEI A,101	; Yes, print number of errors
+		MOVEI C,^D10
+		NOUT
+		 PUSHJ P,SCREWUP
+		HRROI A,[ASCIZ / errors detected -- no output generated...
+/]
+		PSOUT
+		JRST DONE]	; Bypass writing output
+
+; Generate the new directory
+GETOUT:	HRROI A,[ASCIZ /Output file: /]
+	PSOUT
+	MOVEI A,OUTABL		; Set for output name
+	SETZ B,			; No main string
+	GTJFN			; Get JFN for output file
+	 JRST [	PUSHJ P,EROUT	; Failed, complain
+		JRST GETOUT]	; Try again
+	MOVEM A,JFN		; Ok, store JFN
+	MOVE B,[^D16B5+1B20]	; 16-bit bytes, write
+	OPENF
+	 JRST [	PUSHJ P,EROUT	; Failed, say why
+		MOVE A,JFN	; Release JFN
+		RLJFN
+		 PUSHJ P,SCREWUP
+		JRST GETOUT]	; Ask for another name
+	SETZM IOBCNT		; Init buffer count
+	SETZM IOBUF		; Clear output buffer
+	MOVE A,[IOBUF,,IOBUF+1]
+	BLT A,IOBUF+IOBLEN-1
+	SETZM CHKSUM		; Initialize checksum
+
+	PUSHJ P,WRITE		; Write the directory
+
+	PUSHJ P,DOSOUT		; Write last bufferful
+	MOVE A,JFN		; Append checksum
+	MOVE B,CHKSUM
+	BOUT
+	CLOSF			; Close output file
+	 PUSHJ P,EROUT
+
+; Exit
+DONE:	HALTF
+
+; Parse input file
+; Builds in-core data structures corresponding to network directory
+; Clobbers most everything
+
+PARSE:	PUSHJ P,GETTXT		; Get text of statement
+	 POPJ P,		; End, done
+	MOVE A,[NAMLTP,,NAMSAV]	; Save copies of current pointers
+	BLT A,NAMSAV+NSAVED-1
+
+; Translate name(s) and build name block(s)
+	PUSHJ P,BLDNAM		; Get name, build name block
+	 JRST EPARSE		; Error
+	MOVE B,ENTUSE		; Get index for next entry block
+	DPB A,[POINT 16,ENTTBL(B),15]  ; Store name blk tbl index
+PARSE1:	PUSHJ P,GETTRM		; Get terminator
+	CAIE CH,","		; More names?
+	 JRST PARSE2		; No
+	HRLM A,0(P)		; Yes, preserve name tbl index
+	PUSHJ P,BLDNAM		; Get next name, build name block
+	 JRST EPARSE		; Error
+	HLRZ B,0(P)		; Ok, recover old name tbl index
+	HRRZ B,NAMTBL(B)	; Get NETDIR index of name block
+	DPB A,[POINT 16,NETDIR(B),15]  ; Chain
+	JRST PARSE1		; Loop
+
+; Here when no more names
+PARSE2:	CAIE CH,"="
+	 JRST [	HRROI A,[ASCIZ /Syntax error, = expected/]
+		JRST EPARSE]
+
+; Translate address(es) and their associated attributes
+	MOVE F,ENTUSE		; Get entry pointer
+	ADD F,[POINT 16,ENTTBL,31]  ; Pointer to store first adr
+PARSE3:	PUSHJ P,PNMNTA		; Translate address expression
+	 JRST EPARSE		; Error
+	MOVE E,A		; Save emitted address table ptr
+	SETZ A,			; Assume no attributes
+	PUSHJ P,GETTRM		; Get terminator
+	CAIE CH,"("		; Attributes follow?
+	 JRST PARSE4		; No
+	PUSHJ P,IATLST		; Yes, input attribute list
+	 JRST EPARSE		; Error
+	PUSHJ P,GETTRM		; Get terminator
+	CAIE CH,")"		; Proper termination?
+	 JRST [	HRROI A,[ASCIZ /Syntax error, ) expected/]
+		JRST EPARSE]
+	PUSHJ P,IGSPAC		; Skip terminator and blanks
+	ILDB CH,BP		; Get next char
+PARSE4:	HRLM A,0(P)		; Save # attributes
+PARSE5:	MOVE A,EADTBL(E)	; Get an address
+	MOVE B,EADTBL+1(E)
+	HLRZ C,0(P)		; Get # attributes
+	PUSHJ P,BLDADR		; Build address block
+	 JRST EPARSE		; Error
+	DPB A,F			; Ok, store its index in predecessor
+	HRRZ A,ADRTBL(A)	; Get NETDIR offset of adr block
+	ADD A,[POINT 16,NETDIR,15]  ; Make pointer to store next
+	MOVE F,A		; Save it
+	AOBJN E,.+1		; Advance to next address
+	AOBJN E,PARSE5		; Loop if have more
+	CAIN CH,","		; More addresses?
+	 JRST PARSE3		; Yes, go handle them too
+
+; PARSE (cont'd)
+
+; Done translating addresses, see if we have entry-global
+;  attribute list
+	SETZ A,			; Assume no attributes
+	CAIE CH,";"		; Start of attribute list?
+	 JRST PARSE6		; No
+	PUSHJ P,IATLST		; Yes, input attribute list
+	 JRST EPARSE		; Error
+PARSE6:	JUMPN CH,[HRROI A,[ASCIZ /Syntax error, end of statement expected/]
+		JRST EPARSE]
+	MOVE D,ENTUSE		; Get entry pointer
+	ADD D,[POINT 16,ENTTBL+1,15]  ; Make ptr to # attributes
+	DPB A,D			; Store # attributes
+	JUMPE A,PARSE8		; Any attributes?
+	MOVN A,A		; Yes, make AOBJN ptr
+	MOVSI A,(A)
+PARSE7:	HLRZ B,TMPATR(A)	; Get attribute name index
+	IDPB B,D		; Store
+	HRRZ B,TMPATR(A)	; Get attribute value index
+	IDPB B,D		; Store
+	AOBJN A,PARSE7		; Repeat for all attributes
+PARSE8:	MOVEI D,-ENTTBL+1(D)	; Compute new free start
+	MOVEM D,ENTUSE
+
+; Finished this statement, on to next
+	JRST PARSE
+
+
+; Here on error.  Revert to state at beginning of current statement.
+EPARSE:	PUSHJ P,SYNERR		; Publish syntax error message
+EPARS1:	MOVS A,[NAMLTP,,NAMSAV]	; Restore current pointers
+	BLT A,NAMLTP+NSAVED-1
+	JRST PARSE		; Begin next statement
+
+; Write new network directory
+; Depends on data structures compiled by PARSE
+; Clobbers most everything
+
+; First, compute the origins of all the various regions
+;  (16-bit addresses)
+WRITE:	MOVEI A,HDRLEN		; Init to header length (constant)
+	MOVEM A,NLTORG		; Set name lookup table origin
+	ADD A,NAMLTP		; Add length of table
+	TRNE A,1		; Make even length
+	 ADDI A,1
+	MOVEM A,ALTORG		; Set address lookup table origin
+	ADD A,ADRLTP		; Add length of table
+	TRNE A,1		; Make even length
+	 ADDI A,1
+	MOVEM A,ENTORG		; Set entry block region origin
+	ADD A,ENTUSE		; Add length of entry region
+	ADD A,ENTUSE		; Want 16-bit byte address
+	MOVEM A,NAMORG		; Set name block region origin
+	ADD A,NAMUSE		; Add length of name region
+	ADD A,NAMUSE		; Want 16-bit byte address
+	MOVEM A,ADRORG		; Set address block region origin
+	ADD A,ADRUSE		; Add length of address region
+	ADD A,ADRUSE		; Want 16-bit byte address
+	MOVEM A,ATRORG		; Set attribute block region origin
+
+; Sort the name and address lookup tables
+	MOVN A,NAMLTP		; Make AOBJN ptr to name table
+	MOVSI A,(A)
+WRIT01:	HRRZ B,NAMTBL(A)	; Make duplicate table for sorting
+	HRLI B,NAMTBL(A)	; Plant back-pointer
+	MOVEM B,NAMSRT(A)
+	AOBJN A,WRIT01
+	MOVN A,NAMLTP		; Make AOBJN ptr to name table
+	MOVSI A,(A)
+	HRRI A,NAMSRT		; Sorted version
+	MOVEI C,CMPNAS		; Comparison routine
+	PUSHJ P,SORT		; Sort names
+
+	MOVN A,ADRLTP		; Make AOBJN ptr to address table
+	MOVSI A,(A)
+WRIT02:	HRRZ B,ADRTBL(A)	; Make duplicate table for sorting
+	HRLI B,ADRTBL(A)	; Plant back-pointer
+	MOVEM B,ADRSRT(A)
+	AOBJN A,WRIT02
+	MOVN A,ADRLTP		; Make AOBJN ptr to address table
+	MOVSI A,(A)
+	HRRI A,ADRSRT		; Sorted version
+	MOVEI C,CMPADS		; Comparison routine
+	PUSHJ P,SORT		; Sort addresses
+
+; Compute relocated addresses for all name, address, and
+;  attribute blocks, and store them in the lh of the respective
+;  table entries
+	MOVN A,NAMLTP		; Make AOBJN ptr to name table
+	MOVSI A,(A)
+	HRRI A,NAMSRT		; Sorted version
+	MOVE B,NAMORG		; Origin of name block region
+	PUSHJ P,GENRLS		; Generate relocated addresses
+
+	MOVN A,ADRLTP		; Make AOBJN ptr to address table
+	MOVSI A,(A)
+	HRRI A,ADRSRT		; Sorted version
+	MOVE B,ADRORG		; Origin of address block region
+	PUSHJ P,GENRLS		; Generate relocated addresses
+
+	MOVN A,ATRLTP		; Make AOBJN ptr to attribute table
+	MOVSI A,(A)
+	HRRI A,ATRTBL
+	MOVE B,ATRORG		; Origin of attribute block region
+	PUSHJ P,GENRLU		; Generate relocated addresses
+
+; WRITE (cont'd)
+
+; Output the header
+	MOVE CH,NAMLTP		; Output # of names
+	PUSHJ P,PUTCHR
+	MOVE CH,NLTORG		; Origin of name lookup table
+	PUSHJ P,PUTCHR
+	MOVE CH,ADRLTP		; # of addresses
+	PUSHJ P,PUTCHR
+	MOVE CH,ALTORG		; Origin of address lookup table
+	PUSHJ P,PUTCHR
+	MOVE CH,ENTUSE		; # words occupied by entry blocks
+	LSH CH,1		; Make 16-bit words
+	PUSHJ P,PUTCHR
+	MOVE CH,ENTORG		; Origin of entry blocks
+	PUSHJ P,PUTCHR
+	HRRZ CH,OUTABL		; Get file version number
+	PUSHJ P,PUTCHR		; Put in file
+
+; Output the name and address lookup tables
+	MOVN B,NAMLTP		; Make AOBJN ptr to name table
+	MOVSI B,(B)
+	HRRI B,NAMSRT		; Sorted version
+	MOVE A,NLTORG		; Origin of name lookup tbl
+	PUSHJ P,PUTTAB		; Output the table
+	MOVN B,ADRLTP		; Make AOBJN ptr to address table
+	MOVSI B,(B)
+	HRRI B,ADRSRT		; Sorted version
+	MOVE A,ALTORG		; Origin of address lookup tbl
+	PUSHJ P,PUTTAB		; Output the table
+
+; Output the entry blocks
+	MOVE A,ENTORG		; Establish origin
+	PUSHJ P,PUTFIL
+	SETZ A,			; Init offset
+WRITE1:	ADD A,[POINT 16,ENTTBL]	; Init byte ptr
+	ILDB CH,A		; Get name block ptr
+	HLRZ CH,NAMTBL(CH)	; Relocate
+	PUSHJ P,PUTCHR		; Output it
+	ILDB CH,A		; Get address block ptr
+	HLRZ CH,ADRTBL(CH)	; Relocate
+	PUSHJ P,PUTCHR		; Output it
+	ILDB CH,A		; Get # attributes
+	PUSHJ P,PUTCHR
+	JUMPE CH,WRITE3		; Jump if none
+	MOVE B,CH		; Copy # attributes
+	LSH B,1			; Double (1 name, 1 value each)
+WRITE2:	ILDB CH,A		; Get attribute name or value
+	HLRZ CH,ATRTBL(CH)	; Relocate
+	PUSHJ P,PUTCHR		; Output it
+	SOJG B,WRITE2		; Repeat for all attributes
+WRITE3:	PUSHJ P,PUTEVN		; Advance to even byte address
+	MOVEI A,-ENTTBL+1(A)	; Advance to next entry in core
+	CAMGE A,ENTUSE		; Reached end?
+	 JRST WRITE1		; No, loop for next entry
+
+; Output the name blocks
+	MOVE A,NAMORG		; Establish origin
+	PUSHJ P,PUTFIL
+	MOVN D,NAMLTP		; Make AOBJN ptr to name lookup tbl
+	MOVSI D,(D)
+WRITE4:	HLRZ A,NAMSRT(D)	; Follow ptr to unsorted version
+	HLRZ B,(A)		; Make sure at right place
+	CAME B,IOBBYN
+	 PUSHJ P,SCREWUP
+	HRRZ A,(A)		; Get NETDIR offset of block
+	ADD A,[POINT 16,NETDIR]	; Make byte ptr
+	ILDB CH,A		; Get next block pointer
+	CAIE CH,0		; Skip if none
+	 HLRZ CH,NAMTBL(CH)	; Relocate
+	PUSHJ P,PUTCHR		; Output it
+	ILDB CH,A		; Get owning entry pointer
+	LSH CH,1		; Make byte address
+	ADD CH,ENTORG		; Relocate
+	PUSHJ P,PUTCHR		; Output it
+	PUSHJ P,PUTSTR		; Output string
+	AOBJN D,WRITE4		; Repeat for all name blocks
+
+; WRITE (cont'd)
+
+; Output the address blocks
+	MOVE A,ADRORG		; Establish origin
+	PUSHJ P,PUTFIL
+	MOVN D,ADRLTP		; Make AOBJN ptr to adr lookup tbl
+	MOVSI D,(D)
+WRITE5:	HLRZ A,ADRSRT(D)	; Follow ptr to unsorted version
+	HLRZ B,(A)		; Make sure at right place
+	CAME B,IOBBYN
+	 PUSHJ P,SCREWUP
+	HRRZ A,(A)		; Get NETDIR offset of block
+	ADD A,[POINT 16,NETDIR]	; Make byte ptr
+	ILDB CH,A		; Get next block pointer
+	CAIE CH,0		; Skip if none
+	 HLRZ CH,ADRTBL(CH)	; Relocate
+	PUSHJ P,PUTCHR		; Output it
+	ILDB CH,A		; Get owning entry pointer
+	LSH CH,1		; Make byte address
+	ADD CH,ENTORG		; Relocate
+	PUSHJ P,PUTCHR		; Output it
+	ILDB CH,A		; Get net/host
+	PUSHJ P,PUTCHR		; Output it
+	ILDB CH,A		; High socket
+	PUSHJ P,PUTCHR		; Output it
+	ILDB CH,A		; Low socket
+	PUSHJ P,PUTCHR		; Output it
+	ILDB CH,A		; # attributes
+	PUSHJ P,PUTCHR		; Output it
+	JUMPE CH,WRITE7		; Jump if none
+	MOVE B,CH		; Copy # attributes
+	LSH B,1			; Double (1 name, 1 value each)
+WRITE6:	ILDB CH,A		; Get attribute name or value
+	HLRZ CH,ATRTBL(CH)	; Relocate
+	PUSHJ P,PUTCHR		; Output it
+	SOJG B,WRITE6		; Repeat for all attributes
+WRITE7:	PUSHJ P,PUTEVN		; Advance to even byte address
+	AOBJN D,WRITE5		; Repeat for all address blocks
+
+; Output the attribute blocks
+	MOVE A,ATRORG		; Establish origin
+	PUSHJ P,PUTFIL
+	MOVN D,ATRLTP		; Make AOBJN ptr to attribute tbl
+	MOVSI D,(D)
+	JUMPGE D,WRITE9		; Bypass if no attributes
+WRITE8:	HLRZ A,ATRTBL(D)	; Make sure at right place
+	CAME A,IOBBYN
+	 PUSHJ P,SCREWUP
+	HRRZ A,ATRTBL(D)	; Get NETDIR offset of block
+	ADD A,[POINT 16,NETDIR]	; Make byte ptr
+	PUSHJ P,PUTSTR		; Output string
+	AOBJN D,WRITE8		; Repeat for all attribute blocks
+
+; Done, exit
+WRITE9:	POPJ P,
+
+; Get text of statement from input file
+; Returns +1:  End of file
+;	+2:  BP/ byte ptr to text in TXTBUF.
+; TXTBUF terminated by null.
+; cr/lf's ignored in appropriate contexts.
+
+GETTXT:	MOVE BP,[POINT 7,TXTBUF]  ; Init byte ptr
+GETTX1:	PUSHJ P,GETCHR		; Get a char
+	 POPJ P,		; End
+	CAIE CH,15		; Start over on cr/lf's
+	CAIN CH,12
+	 JRST GETTXT
+	CAIN CH,14		; Start over on formfeeds
+	 JRST GETTXT
+	CAIE CH,11		; Ignore tabs and spaces
+	CAIN CH," "
+	 JRST GETTX1
+	CAIN CH,";"		; Comment?
+	 JRST [	PUSHJ P,GETCHR	; Yes, skip rest of line
+		 POPJ P,
+		CAIE CH,12	; Line feed?
+		 JRST .		; No, continue
+		JRST GETTXT]	; Yes, start over
+GETTX2:	CAIN CH,12		; End of line?
+	 JRST GETTX5		; Yes, done
+	CAIE CH,","		; No, separator?
+	CAIN CH,";"
+	 JRST GETTX3		; Yes
+	CAIE CH,"="
+	CAIN CH,"+"
+	 JRST GETTX3		; Yes
+	PUSHJ P,GETCHR		; No, get next
+	 JRST GETTX5		; Eof, treat as end of line
+	JRST GETTX2		; Loop
+
+; Here if have special separator.  Ignore following crlf
+GETTX3:	PUSHJ P,GETCHR		; Get a char
+	 JRST GETTX5		; End of file
+	CAIE CH,15		; Ignore cr/lf's
+	CAIN CH,12
+	 JRST GETTX3
+	CAIE CH,11		; Ignore tabs and spaces
+	CAIN CH," "
+	 JRST GETTX3
+	JRST GETTX2		; Other, resume normal scanning
+
+; Here at end of statement
+GETTX5:	SETZ CH,		; Put null on end
+	IDPB CH,BP
+	MOVE BP,[POINT 7,TXTBUF]  ; Reset byte ptr
+	JRST SKPRET		; Skip return
+
+; Get a character from the input file
+;	BP/ Byte ptr to TXTBUF to store input
+; Returns +1:  End of file
+;	+2:  CH/ the character
+; Character also stored in TXTBUF via BP
+; No other ac's clobbered
+
+GETCHR:	SOSGE IOBCNT		; Have any buffered bytes?
+	 JRST GETCH1		; No
+	ILDB CH,IOBBYT		; Yes, get one
+	IDPB CH,BP		; Store in text buffer
+SKPRET:	AOS 0(P)		; Skip return
+CPOPJ:	POPJ P,
+
+; Here when buffer empty
+GETCH1:	PUSH P,A		; Save some ac's
+	PUSH P,B
+	PUSH P,C
+	MOVE A,JFN		; Get input JFN
+	DVCHR			; Return device type
+	LDB A,[POINT 9,A,17]
+	CAIN A,12		; TTY?
+	 JRST GETCH2		; Yes, handle specially
+	MOVE A,JFN		; No, normal file
+	MOVE B,[POINT 7,IOBUF]	; Init byte ptr
+	MOVEM B,IOBBYT
+	MOVNI C,5*IOBLEN	; Set byte count
+	SIN			; Input from file
+	ADDI C,5*IOBLEN		; Compute # bytes input
+	MOVEM C,IOBCNT
+GETCH4:	POP P,C			; Restore ac's
+	POP P,B
+	POP P,A
+	SKIPE IOBCNT		; Any input?
+	 JRST GETCHR		; Yes, go return it
+	POPJ P,			; No, take eof return
+
+; Here to handle TTY files specially
+GETCH2:	SETZM IOBCNT		; Zero count
+	MOVE B,[POINT 7,IOBUF]	; Set buffer ptr
+	MOVEM B,IOBBYT
+GETCH3:	MOVE A,JFN		; Get input JFN
+	BIN			; Get a char
+	CAIN B,37		; Eol?
+	 MOVEI B,12		; Yes, substitute line feed
+	CAIN B,32		; Control-Z?
+	 JRST [	SKIPE IOBCNT	; Yes, any previous input?
+		 BKJFN		; Yes, backup so see ^Z next time
+		  CAI
+		JRST GETCH5]
+	CAIN B,"A"-100		; Control-A?
+	 JRST [	SKIPG IOBCNT	; Yes, any characters?
+		 JRST [	MOVEI A,7  ; No, ding
+			PBOUT
+			JRST GETCH3]
+		SOS IOBCNT	; Yes, decrement
+		MOVEI A,"\"	; Type erased character
+		PBOUT
+		LDB A,IOBBYT
+		PBOUT
+		MOVE A,IOBBYT	; Backup byte ptr
+		BKJFN
+		 PUSHJ P,SCREWUP
+		MOVEM A,IOBBYT	; Store backed up ptr
+		JRST GETCH3]
+	CAIN B,"Q"-100		; Control-Q?
+	 JRST [	HRROI A,[ASCIZ /_
+/]				; Yes, delete line
+		PSOUT
+		JRST GETCH2]
+	IDPB B,IOBBYT		; No, store
+	AOS C,IOBCNT		; Count it
+	CAIE B,12		; Line feed
+	CAIL C,5*IOBLEN		; Or buffer full?
+GETCH5:	 JRST [	MOVE B,[POINT 7,IOBUF]  ; Yes, reset pointer
+		MOVEM B,IOBBYT
+		JRST GETCH4]	; Go pick up first byte
+	JRST GETCH3		; No, continue input
+
+
+; Input string and build name block
+;	BP/ input byte ptr
+; Returns +1:  Error, A/ string ptr to message
+;	+2:  Successful, A/ NAMTBL index of new name block
+;		BP, CH/ updated
+; Clobbers A-D
+
+BLDNAM:	MOVE A,FREUSE		; Get start of free storage
+	MOVE B,ENTUSE		; Store pointer to owning entry
+	LSH B,4
+	MOVEM B,NETDIR(A)
+	ADD A,[POINT 8,NETDIR+1]  ; Start string at second word
+	PUSHJ P,BLDSTR		; Build string
+	 JRST [	HRROI A,[ASCIZ /Syntax error, name expected/]
+		POPJ P,]
+	CAILE C,NAMLEN		; Reasonable length?
+	 JRST [	HRROI A,[ASCIZ /Name too long/]
+		JRST BACKBP]
+	MOVEI B,-NETDIR+1(A)	; Ok, compute new free ptr
+	EXCH B,FREUSE		; Get start of block
+	ADD B,[POINT 8,NETDIR+1]  ; Make string ptr
+	MOVN A,NAMLTP		; Make AOBJN ptr to name table
+	MOVSI A,(A)
+	HRRI A,NAMTBL
+	MOVEI C,CMPNAM		; Set comparison routine
+	PUSHJ P,LINSRC		; Search for this name
+	 JRST BLDNA1		; Not found, insert it
+	HRROI A,[ASCIZ /Multiply-defined name/]
+	JRST BACKBP		; Found, error
+
+BLDNA1:	MOVEI B,-<NETDIR+1>(B)	; Compute offset again
+	AOS A,NAMLTP		; Advance name table index
+	CAILE A,NLTLEN		; Make sure not overflowing
+	 PUSHJ P,SCREWUP
+	MOVEM B,NAMTBL-1(A)	; Store offset of name block
+	SUB B,FREUSE		; Compute space used by block
+	MOVN B,B
+	HRLM B,NAMTBL-1(A)	; Store for write pass
+	ADDM B,NAMUSE		; Add to total name block usage
+	SOJA A,SKPRET		; Skip return
+
+; Input attribute list
+;	BP/ input byte ptr
+; Returns +1:  Error, A/ string ptr to message
+;	+2:  A/ # of attributes (in TMPATR table in form name,,value)
+;		BP, CH/ updated
+; Clobbers A-D
+
+IATLST:	PUSH P,E		; Save another ac
+	MOVSI E,-TATLEN		; Init table
+IATLS1:	PUSHJ P,BLDATN		; Build attribute name block
+	 JRST IATLSX		; Error
+	HRLZM A,TMPATR(E)	; Ok, store attribute tbl index
+	PUSHJ P,GETTRM		; Get terminator
+	CAIE CH,":"		; Check terminator
+	 JRST [	HRROI A,[ASCIZ /Syntax error, : expected/]
+		JRST IATLSX]
+	PUSHJ P,BLDATV		; Ok, build attribute value block
+	 JRST IATLSX		; Error
+	HRRM A,TMPATR(E)	; Ok, store attribute tbl index
+	PUSHJ P,IGSPAC		; Get char after value
+	ILDB CH,BP
+	CAIN CH,","		; More attributes coming?
+	 AOBJN E,IATLS1		; Yes, input them
+	JUMPGE E,[HRROI A,[ASCIZ /Attribute list too long/]
+		JRST IATLSX]
+	MOVEI A,1(E)		; No, return # of attributes
+	AOS -1(P)		; Set skip return
+IATLSX:	POP P,E			; Restore ac
+	POPJ P,
+
+
+; Input string and build attribute name block
+;	BP/ input byte ptr
+; Returns +1:  Error, A/ string ptr to message
+;	+2:  Successful, A/ ATRTBL index of new attribute block
+;		BP, CH/ updated
+; Clobbers A-D
+
+BLDATN:	MOVE A,FREUSE		; Get start of free storage
+	ADD A,[POINT 8,NETDIR]	; Start string at first word
+	PUSHJ P,BLDSTR		; Build string
+	 JRST [	HRROI A,[ASCIZ /Syntax error, attribute expected/]
+		POPJ P,]
+	CAILE C,NAMLEN		; Reasonable length?
+	 JRST [	HRROI A,[ASCIZ /Attribute name too long/]
+		JRST BACKBP]
+	JRST BLDAT3		; Do common finishing up code
+
+; Input string and build attribute value block
+;	BP/ input byte ptr
+; Returns +1:  Error, A/ string ptr to message
+;	+2:  Successful, A/ ATRTBL index of new attribute block
+;		BP, CH/ updated
+; Clobbers A-D
+
+BLDATV:	MOVE A,FREUSE		; Get start of free storage
+	ADD A,[POINT 8,NETDIR,7]  ; Start string at first word
+	MOVE B,A		; Save byte ptr
+	SETZ C,			; Init byte count
+	PUSHJ P,IGSPAC		; Ignore leading spaces
+	ILDB CH,BP		; Get next char
+	CAIE CH,42		; Double quote?
+	 JRST [	HRROI A,[ASCIZ /Syntax error, " expected/]
+		POPJ P,]
+BLDAT1:	ILDB CH,BP		; Get a char
+	JUMPE CH,[HRROI A,[ASCIZ /Unterminated "/]
+		JRST BACKBP]
+	CAIN CH,42		; Double quote?
+	 JRST [	MOVE D,BP	; Yes, peek at next
+		ILDB CH,BP
+		CAIN CH,42	; Double double quote?
+		 JRST .+1	; Yes, continue
+		MOVE BP,D	; No, done
+		JRST BLDAT2]
+	IDPB CH,A		; Store char
+	AOJA C,BLDAT1		; Count and repeat
+
+BLDAT2:	DPB C,B			; Store byte count
+	MOVE B,A		; Copy byte ptr
+	SETZ D,			; Ensure rest of word null
+	IDPB D,B
+	IDPB D,B
+	IDPB D,B
+	CAILE C,ATVLEN		; Reasonable length?
+	 JRST [	HRROI A,[ASCIZ /Attribute value too long/]
+		JRST BACKBP]
+
+; Attribute name code enters here
+BLDAT3:	MOVEI B,-NETDIR+1(A)	; Ok, set new free ptr
+	EXCH B,FREUSE		; Get start of block
+	ADD B,[POINT 8,NETDIR]	; Make string ptr
+	MOVN A,ATRLTP		; Make AOBJN ptr to attribute tbl
+	MOVSI A,(A)
+	HRRI A,ATRTBL
+	MOVEI C,CMPATR		; Comparison routine
+	PUSHJ P,LINSRC		; Search for attribute string
+	 JRST [	MOVEI B,-NETDIR(B)  ; Not found, compute offset
+		AOS A,ATRLTP	; Append to table
+		CAILE A,ATRLEN	; Make sure not overflowed
+		 PUSHJ P,SCREWUP
+		MOVEM B,ATRTBL-1(A)  ; Store new entry
+		SUB B,FREUSE	; Compute space used
+		MOVN B,B
+		HRLM B,ATRTBL-1(A)  ; Store block size in table
+		SOJA A,SKPRET]	; Skip return
+	MOVEI A,-ATRTBL(A)	; Found, return matching index
+	MOVEI B,-NETDIR(B)	; Discard duplicate block
+	MOVEM B,FREUSE
+	JRST SKPRET		; Skip return
+
+; Build string for name or attribute name
+;	A/ 8-bit byte ptr to store string (BCPL-style)
+;	BP/ input byte ptr
+; Returns +1:  No characters input before terminator
+;	+2:  At least one char input
+;		A/ Updated byte ptr
+;		C/ # characters
+;		BP, CH/ updated
+; Clobbers A-D
+
+BLDSTR:	IBP A			; Advance past byte count byte
+	MOVE B,A		; Save byte ptr
+	SETZ C,			; Init byte count
+	PUSHJ P,IGSPAC		; Ignore leading spaces
+BLDST1:	ILDB CH,BP		; Get a char
+	CAIL CH,"A"		; Letter?
+	CAILE CH,"Z"
+	CAIA
+	 JRST BLDST2		; Yes
+	CAIL CH,"a"		; No, lower case?
+	CAILE CH,"z"
+	CAIA
+	 JRST BLDST2		; Yes
+	CAIL CH,"0"		; No, digit?
+	CAILE CH,"9"
+	CAIA
+	 JRST BLDST2		; Yes
+	CAIE CH,"-"		; No, special?
+	CAIN CH,"/"
+	 JRST BLDST2		; Yes
+	JUMPE C,CPOPJ		; No, exit if no chars input
+	DPB C,B			; Store byte count
+	MOVE B,A		; Copy byte ptr
+	SETZ D,			; Ensure rest of word null
+	IDPB D,B
+	IDPB D,B
+	IDPB D,B
+	JRST SKPRET		; Skip return
+
+BLDST2:	IDPB CH,A		; Here to append another char
+	AOJA C,BLDST1		; Count char and repeat
+
+; Get terminating character (skipping blanks if any)
+;	BP/ input byte ptr
+; Returns +1:
+;	CH/ First non-blank character
+;	BP/ positioned such that ILDB will read next char after
+;	    terminator
+
+GETTRM:	CAIE CH,11		; Ignore tabs and spaces
+	CAIN CH," "
+	 JRST GETTR1
+	CAIE CH,15		; Ignore cr's and lf's
+	CAIN CH,12
+	 JRST GETTR1
+	POPJ P,			; Something else, return it
+
+GETTR1:	ILDB CH,BP		; Get next
+	JRST GETTRM		; Test it
+
+
+; Ignore leading spaces, tabs, and cr/lf's
+;	BP/ TXTBUF byte ptr
+; Returns +1:  BP/ advanced such that the next ILDB will
+;		   fetch the first non-space, tab, etc.
+; Clobbers CH
+
+IGSPAC:	ILDB CH,BP		; Get a char
+
+; Enter here if already have char in CH
+IGSPA1:	CAIE CH,11		; Ignore tabs and spaces
+	CAIN CH," "
+	 JRST IGSPAC
+	CAIE CH,15		; Ignore cr's and lf's
+	CAIN CH,12
+	 JRST IGSPAC
+	ADD BP,[7B5]		; Something else, backup byte ptr
+	POPJ P,
+
+; Build address block
+;	A/ net ,, host
+;	B/ socket
+;	C/ # of attributes (in TMPATR table)
+; Returns +1:  Error, A/ string ptr to message
+;	+2:  Success, A/ NETDIR offset of address block
+
+BLDADR:	MOVE D,FREUSE		; Get free storage offset
+	LSH B,4			; Reformat and store address
+	LSHC A,^D<18-8>
+	HLLZM A,NETDIR+1(D)
+	LSHC A,6
+	LSH A,4
+	IORM A,NETDIR+1(D)
+	MOVEM B,NETDIR+2(D)
+	MOVE A,ENTUSE		; Store owning entry ptr
+	LSH A,4
+	MOVEM A,NETDIR(D)
+	ADD D,[POINT 16,NETDIR+2,31]  ; Make byte ptr to #attributes
+	DPB C,D			; Store # attributes
+	JUMPE C,BLDAD2		; Jump if none
+	MOVN C,C		; Make AOBJN ptr
+	MOVSI C,(C)
+BLDAD1:	HLRZ A,TMPATR(C)	; Get attribute name index
+	IDPB A,D		; Store
+	HRRZ A,TMPATR(C)	; Get attribute value index
+	IDPB A,D		; Store
+	AOBJN C,BLDAD1		; Repeat for all attributes
+BLDAD2:	MOVEI A,-NETDIR+1(D)	; Compute new free start
+	EXCH A,FREUSE		; Restore start of block
+	HRLM A,0(P)		; Save it
+	MOVEI B,NETDIR+1(A)	; Make ptr to address words
+	MOVN A,ADRLTP		; Make AOBJN ptr to adr tbl
+	MOVSI A,(A)
+	HRRI A,ADRTBL
+	MOVEI C,CMPADR		; Set comparison routine
+	PUSHJ P,LINSRC		; Search for this address
+	 JRST BLDAD3		; Not found, continue
+	HRRZ B,(A)		; Found, get ptr to first def
+	LDB B,[POINT 16,NETDIR(B),31]  ; Extract entry ptr
+	LDB B,[POINT 16,ENTTBL(B),15]  ; Get first name block index
+	HRRZ B,NAMTBL(B)	; Get NETDIR pointer of name block
+	ADD B,[POINT 8,NETDIR+1]  ; Make byte ptr
+	ILDB C,B		; Get # chars
+	MOVN C,C		; Negate for SOUT
+	HRROI A,[ASCIZ /Multiply-defined address; first def was "/]
+	PSOUT			; Print error message
+	MOVEI A,101		; Now print name of previous def
+	SOUT
+	HRROI A,[ASCIZ /"/]
+	JRST BACKBP		; Take error return
+
+BLDAD3:	HLRZ B,0(P)		; Recover address block ptr
+	AOS A,ADRLTP		; Advance lookup table ptr
+	MOVEM B,ADRTBL-1(A)	; Store ptr to new address block
+	SUB B,FREUSE		; Compute # words used
+	MOVN B,B
+	HRLM B,ADRTBL-1(A)	; Store in table entry
+	ADDM B,ADRUSE		; Accumulate sum
+	SOJA A,SKPRET		; Return
+
+
+; Do name to address conversion
+;	BP/ source byte ptr (TXTBUF)
+; Returns +1:  A/ string ptr to error message
+;	+2:  A/ AOBJN ptr to EADTBL (emitted address table)
+
+PNMNTA:	PUSH P,F
+	MOVEI F,TMPADR		; Make AOBJN pointer to temp
+	HRLI F,-6		;  address region
+PNMNT1:	SETZM 0(F)		; Init address
+	SETZM 1(F)
+	PUSHJ P,PNMSIN		; Get a string
+	 JRST [	HRROI A,[ASCIZ /String too long/]
+		PUSHJ P,BACKBP
+		JRST PNMNTX]
+	 JRST [	CAIN CH,"#"	; None, start of octal constant?
+		 JRST PNMNT2	; Yes
+		HRROI A,[ASCIZ /Syntax error, address expected/]
+		JRST PNMNTX]
+	JUMPGE D,PNMNT3		; Jump if numeric
+	MOVN A,NAMSAV		; Make AOBJN ptr to name lookup tbl
+	MOVSI A,(A)
+	HRRI A,NAMTBL
+	MOVE B,[POINT 8,TMPSTR]	; Key
+	MOVEI C,CMPNAM		; Name comparison routine
+	PUSHJ P,LINSRC		; Lookup name
+	 JRST [	HRROI A,[ASCIZ /Undefined name/]
+		PUSHJ P,BACKBP
+		JRST PNMNTX]
+	HRRZ A,(A)		; Get ptr to name block
+	LDB A,[POINT 16,NETDIR(A),31]  ; Get entry ptr
+	HRROM A,0(F)		; Store entry pointer
+	JRST PNMNT4		; On to next
+
+; Here to do octal constants
+PNMNT2:	PUSHJ P,PNMSIN		; Get next field
+	 JRST [	HRROI A,[ASCIZ /String too long/]
+		PUSHJ P,BACKBP
+		JRST PNMNTX]
+	 TDZA D,D		; Empty means zero
+	JUMPL D,[HRROI A,[ASCIZ /Syntax error, octal number expected/]
+		PUSHJ P,BACKBP
+		JRST PNMNTX]
+PNMNT3:	EXCH D,1(F)		; Store new socket, get old
+	MOVE A,0(F)		; Get old net/host
+	TLNN A,-1		; Error if already had net
+	CAILE D,377		; Error if new host too big
+	 JRST [	HRROI A,[ASCIZ /Malformed address constant/]
+		PUSHJ P,BACKBP
+		JRST PNMNTX]
+	HRLI A,(D)		; Net_Host, Host_Socket
+	MOVSM A,0(F)
+	CAIN CH,"#"		; More numbers?
+	 JRST PNMNT2		; Yes, continue
+
+; Repeat if necessary for next field
+PNMNT4:	ADD F,[2,,2]		; Advance field pointer
+	CAIN CH,"+"		; More fields?
+	 JUMPL F,PNMNT1		; Yes, go process
+	CAIE CH,"+"		; Error if have special char now
+	CAIN CH,"#"
+	 JRST [	HRROI A,[ASCIZ /Malformed address/]
+		JRST PNMNTX]
+
+; Now check all input fields for consistency, and return all
+;  possible addresses by iterating names over all their values
+	SUBI F,TMPADR		; Compute # words input
+	HRLOI F,-1(F)		; Reset AOBJN pointer
+	EQVI F,TMPADR
+	PUSH P,E		; Save another ac
+	MOVSI E,-EADLEN		; Init emitted address list
+	SETZB A,B		; Init merged address to zero
+	PUSHJ P,PNMEAD		; Emit address(es)
+	MOVNI A,(E)		; Make AOBJN ptr to address list
+	MOVSI A,(A)
+	POP P,E
+	JUMPE A,[HRROI A,[ASCIZ /Inconsistent address expression/]
+		PUSHJ P,BACKBP
+		JRST PNMNTX]
+	AOS -1(P)		; Done, skip return
+PNMNTX:	POP P,F
+	POPJ P,
+
+; Get string or octal number
+;	BP/ TXTBUF byte ptr
+; Returns +1:  Error, string too long
+;	+2:  No characters input before terminator
+;	+3:  At least one character input before terminator
+;	CH/ Terminating character (on either return)
+;	D/ Numeric value if all chars were digits, or -1 if not
+; String returned in TMPSTR
+; Clobbers A-D
+
+PNMSIN:	MOVE B,[POINT 8,TMPSTR,7]  ; Init storage byte ptr
+	SETZB D,A		; Init number, # chars
+	PUSHJ P,IGSPAC		; Ignore leading blanks
+PNMSI1:	ILDB CH,BP		; Get next char
+	CAIL CH,"A"		; Letter?
+	CAILE CH,"Z"
+	CAIA
+	 JRST PNMSI3		; Yes
+	CAIL CH,"a"		; No, lower case?
+	CAILE CH,"z"
+	CAIA
+	 JRST PNMSI3		; Yes
+	CAIL CH,"0"		; No, digit?
+	CAILE CH,"9"
+	CAIA
+	 JRST PNMSI3		; Yes
+	CAIE CH,"-"		; No, special?
+	CAIN CH,"/"
+	 JRST PNMSI3		; Yes
+	JUMPE A,SKPRET		; No, exit if no chars input
+	DPB A,[POINT 8,TMPSTR,7]  ; Store byte count
+	SETZ C,			; Ensure rest of word null
+	IDPB C,B
+	IDPB C,B
+	IDPB C,B
+SK2RET:	AOS 0(P)		; Return +3
+	JRST SKPRET
+
+; Here to store new char
+PNMSI3:	IDPB CH,B		; Ok, store char
+	CAIL CH,"0"		; An octal digit?
+	CAILE CH,"7"
+	 JRST PNMSI2		; No, try other things
+	LSH D,3			; Yes, shift previous number
+	TLNN D,740000		; Skip if too big or not number
+	 TROA D,-"0"(CH)	; Ok, add value of new digit
+PNMSI2:	SETO D,			; Not ok, remember can't be number
+	CAIGE A,NAMLEN		; Check length
+	 AOJA A,PNMSI1		; Back for more
+	POPJ P,			; Error, string too long
+
+; Emit address(es) and do consistency checking (recursively)
+;	A/ Net,,Host so far compiled
+;	B/ Socket so far compiled
+;	F/ AOBJN ptr to address table
+;		Entries are 2 words each,
+;		Net,,Host and Socket, or
+;		-1,,Dir entry ptr and 0
+;	E/ AOBJN ptr to block to return addresses in (EADTBL)
+; Returns +1:  E/ Updated AOBJN pointer
+; This routine iterates recursive calls of itself over all
+;  possible addresses corresponding to fields which are names.
+;  Each branch is followed until either (a) an address is
+;  encountered with a nonzero field that conflicts with the
+;  address so far compiled, in which case that branch is
+;  terminated, or (b) the end of the branch is reached (i.e.
+;  all fields have been used up), in which case the compiled
+;  address is passed back (and E is advanced).
+; Clobbers A-D, F
+
+PNMEAD:	JUMPGE F,PNMEA7		; Emit address if at terminal node
+	SKIPGE C,0(F)		; Numeric field?
+	 JRST PNMEA2		; No, symbolic
+
+; Here for numeric field
+	MOVE D,1(F)		; Get socket too
+	PUSHJ P,PNMMRG		; Merge and check consistency
+	 POPJ P,		; Inconsistent, terminate branch
+	ADD F,[2,,2]		; Ok, advance to next field
+	JRST PNMEAD		; Merge it in too
+
+; Here for symbolic field
+PNMEA2:	PUSH P,A		; Save current address
+	PUSH P,B
+	LDB A,[POINT 16,ENTTBL(C),31]  ; Get index of first address block
+PNMEA3:	HRRZ A,ADRTBL(A)	; Get address block ptr
+	HRLM A,-2(P)		; Save address block pointer
+	MOVE C,NETDIR+1(A)	; Get address from block
+	MOVE D,NETDIR+2(A)
+	LSH C,-4		; Reformat to net,,host and socket
+	LSHC C,-^D16
+	LSH D,-4
+	MOVE A,C
+	LSH A,^D<18-8>
+	ANDI C,377
+	HLL C,A
+	MOVE A,-1(P)		; Restore current address
+	MOVE B,0(P)
+	PUSHJ P,PNMMRG		; Merge and check consistency
+	 JRST PNMEA4		; Inconsistent, omit branch
+	PUSH P,F		; Save current field pointer
+	ADD F,[2,,2]		; Advance to next field
+	PUSHJ P,PNMEAD		; Recursive call to process it
+	POP P,F			; Restore field pointer
+PNMEA4:	HLRZ A,-2(P)		; Recover address block adr
+	LDB A,[POINT 16,NETDIR(A),15]  ; Get index of next address block
+	JUMPN A,PNMEA3		; Loop if more
+	SUB P,[2,,2]		; Done, fix stack and return
+	POPJ P,
+
+; Here to emit address in A,B
+PNMEA7:	MOVEM A,EADTBL(E)	; Store in table
+	AOBJP E,.+3
+	MOVEM B,EADTBL(E)
+	AOBJN E,CPOPJ
+	PUSHJ P,SCREWUP		; Table overflowed
+
+; Merge addresses and check consistency
+;	A,B/ Current address
+;	C,D/ Address to be merged in
+; Returns +1:  Inconsistent, ac's unchanged
+;	+2: Consistent, A,B/ Combined address
+
+PNMMRG:	PUSH P,A		; Save current address
+	PUSH P,B
+	XORM C,-1(P)		; Compute differences
+	XORM D,0(P)
+	TLNE A,-1		; Unspecified net?
+	TLNN C,-1
+	 HRRZS -1(P)		; Yes, scratch that difference
+	TRNE A,-1		; Unspecified host?
+	TRNN C,-1
+	 HLLZS -1(P)		; Yes, that's a match
+	SKIPE B			; Unspecified socket?
+	SKIPN D
+	 SETZM 0(P)		; Yes, match
+	SKIPN -1(P)		; Any inconsistencies?
+	SKIPE 0(P)
+	 JRST PNMMR1		; Yes, give fail return
+	IOR A,C			; No, now do the merge
+	IOR B,D
+	AOS -2(P)		; Set skip return
+PNMMR1:	SUB P,[2,,2]		; Fix stack
+	POPJ P,			; Return
+
+; Binary search comparison routines for network directory lookup.
+; See BINSRC for further details of calling sequence.
+
+; Compare network address
+;	rh A/ address of address lookup table entry,
+;		which is in turn the NETDIR offset of the
+;		address block itself (which is guaranteed to start
+;		on a 36-bit word boundary)
+;	B/ (key) pointer to address being looked up, in the form
+;		BYTE(8) net, host (16) high 16 bits of socket
+;		BYTE(16) low 16 bits of socket
+
+; Enter here for SORT
+CMPADS:	HRRZ B,(B)		; Make address block ptr
+	ADDI B,NETDIR+1		; Point to address itself
+
+; Enter here for LINSRC, BINSRC
+CMPADR:	HRRZ C,(A)		; Fetch address block ptr
+	MOVE D,0(B)		; Compare first word of key
+	CAMGE D,NETDIR+1(C)
+	 POPJ P,		; Key < entry, return +1
+	CAMLE D,NETDIR+1(C)
+	 JRST SKPRET		; Key > entry, return +2
+	HLRZ D,1(B)		; Key = entry, compare second word
+	HLRZ C,NETDIR+2(C)	; Just first 16 bits
+	TRZ D,3
+	TRZ C,3
+	CAMGE D,C
+	 POPJ P,		; Key < entry, return +1
+	CAMLE D,C
+	 JRST SKPRET		; Key > entry, return +2
+	JRST SK2RET		; Key = entry, return +3
+
+; Compare attribute string
+;	rh A/ address of attribute lookup table entry,
+;		which in turn contains the NETDIR offset of
+;		the attribute block itself (which is guaranteed to start
+;		on a 36-bit word boundary)
+;	B/ (key) Byte pointer to string being looked up.
+; Note lower-case letters are treated the same as upper case.
+
+; Enter here for LINSRC, BINSRC
+CMPATR:	HRRZ D,(A)		; Fetch attribute block ptr
+	ADD D,[POINT 8,NETDIR]	; Make byte ptr to attribute string
+	JRST CMPNA0		; Rest same as CMPNAM
+
+
+; Compare network name
+;	rh A/ address of name lookup table entry,
+;		which in turn contains the NETDIR offset of
+;		the name block itself (which is guaranteed to start
+;		on a 36-bit word boundary)
+;	B/ (key) Byte pointer to string being looked up.
+; Note lower-case letters are treated the same as upper case.
+
+; Enter here for SORT
+CMPNAS:	HRRZ B,(B)		; Make byte ptr
+	ADD B,[POINT 8,NETDIR+1]
+
+; Enter here for LINSRC, BINSRC
+CMPNAM:	HRRZ D,(A)		; Fetch name block ptr
+	ADD D,[POINT 8,NETDIR+1] ; Make byte ptr to name string
+CMPNA0:	PUSH P,A		; Need more ac's
+	PUSH P,B
+	PUSH P,E
+	ILDB C,B		; Get byte count from key string
+	PUSH P,C		; Save
+	ILDB C,D		; Get byte count from entry string
+CMPNA1:	SOJGE C,.+2		; Name string exhausted?
+	 TDZA A,A		; Yes, use null
+	ILDB A,D		; No, get char from name string
+	CAIL A,"a"		; Lower case letter?
+	CAILE A,"z"
+	 CAIA			; No
+	SUBI A,40		; Yes, make upper case
+	SOSGE 0(P)		; Key string exhausted?
+	 TDZA E,E		; Yes, use null
+	ILDB E,B		; Get char from string being looked up
+	CAIL E,"a"		; Lower case letter?
+	CAILE E,"z"
+	 CAIA			; No
+	SUBI E,40		; Yes, make upper case
+	CAIGE E,(A)		; Compare characters
+	 JRST CMPNA4		; Key < entry, return +1
+	CAILE E,(A)
+	 JRST CMPNA2		; Key > entry, return +2
+	JUMPN E,CMPNA1		; Key char = entry, look at next
+	AOS -4(P)		; End, matched, return +3
+CMPNA2:	AOS -4(P)
+CMPNA4:	SUB P,[1,,1]		; Fix stack
+	POP P,E			; Restore ac's
+	POP P,B
+	POP P,A
+	POPJ P,
+
+COMMENT \
+; Perform binary search
+;	A/ -length ,, address of table to search
+;	B/ Search key
+;	C/ Routine to call to compare key to entry
+; Returns +1: Not found, A points to smallest entry > key
+;	+2: Found, A points to matching entry
+; In both cases, A is still in AOBJN pointer format.  In the
+;  +1 return, the lh is positive if A points past end of table.
+; Clobbers A-D
+
+; The comparison routine must operate as follows:
+;	A/ Address of table entry to compare in rh
+;	B/ Search key (as passed to BINSRC)
+; Returns +1: Key < Entry
+;	+2: Key > Entry
+;	+3: Key = Entry
+; C and D may be clobbered freely, others must be protected
+
+BINSRC:	PUSH P,C		; Save routine to call
+	PUSH P,E		; Save another temp
+	HLRE C,A		; Get negative table length
+	MOVN C,C		; Make positive
+	JFFO C,.+2		; Find position of first 1
+	 JRST BINSRF		; Empty table, fail
+	MOVE E,BITS##(D)	; Compute largest power of 2 <= table length
+	HRLI E,(E)		; Put in both halves
+	SUB A,BHC##+1		; Back pointer to 1 before table
+BINSR1:	ADD A,E			; Add increment to table pointer
+BINSR2:	LSH E,-1		; Halve increment (both halves)
+	TRZ E,400000
+	JUMPGE A,BINSRL		; Jump if off end of table
+	PUSHJ P,@-1(P)		; Call routine to do compare
+	 JRST BINSRL		; Key < entry
+	 JRST BINSRG		; Key > entry
+	AOSA -2(P)		; Key = entry, set skip return
+
+; Here to add 1 to pointer and fail return
+BINSR3:	AOBJN A,.+1
+
+; Here to fail return
+BINSRF:	POP P,E			; Restore ac's
+	POP P,C
+	POPJ P,
+
+; Here if key < entry, or past end: backup table pointer
+BINSRL:	JUMPE E,BINSRF		; Fail if increment zero
+	SUB A,E			; Backup table pointer
+	JRST BINSR2		; Try again
+
+; Here if key > entry: advance table pointer
+BINSRG:	JUMPE E,BINSR3		; Fail if increment zero
+	JRST BINSR1		; Advance pointer and try again
+\ ; End COMMENT
+
+; Perform linear search
+;	A/ -length ,, address of table to search
+;	B/ Search key
+;	C/ Routine to call to compare key to entry
+; Returns +1: Not found
+;	+2: Found, A points to matching entry
+; Clobbers A-D
+
+; The comparison routine must operate as follows:
+;	A/ Address of table entry to compare in rh
+;	B/ Search key (as passed to LINSRC)
+; Returns +1: Key < Entry
+;	+2: Key > Entry
+;	+3: Key = Entry
+; C and D may be clobbered freely, others must be protected
+
+LINSRC:	JUMPGE A,CPOPJ		; Fail immediately if empty
+	PUSH P,C		; Save routine to call
+	PUSHJ P,@0(P)		; Do comparison with this entry
+	 CAI			; Key < Entry, try next
+	 AOBJN A,.-2		; Key > Entry, try next
+	POP P,C			; Fix stack
+	JUMPL A,SKPRET		; Skip return if Key = Entry
+	POPJ P,			; Fail if no match found
+
+
+; Sort table in ascending order
+;	A/ -length ,, address of table to sort
+;	C/ Routine to call to compare key to entry
+; Returns +1 always
+; Clobbers A-D
+
+; The comparison routine must operate as follows:
+;	A/ Address of table entry to compare in rh
+;	B/ Address of "key" table entry
+; Returns +1: Key < Entry
+;	+2: Key > Entry
+;	+3: Key = Entry
+; B-D may be clobbered freely, others must be protected
+
+SORT:	PUSH P,C		; Save comparison routine address
+	PUSH P,E		; Save another ac
+	MOVE E,A		; Save table ptr
+SORT1:	MOVE A,E		; Set starting point
+	AOBJP E,[POP P,E	; Exit if last entry
+		POP P,C
+		POPJ P,]
+	MOVE B,E		; Init scan ptr
+SORT2:	PUSH P,B		; Save it
+	PUSHJ P,@-2(P)		; Call comparison routine
+	 MOVE A,0(P)		; Key < Entry, set new minimum
+	 CAI			; Key > Entry, ignore
+	POP P,B			; Restore scan ptr
+	AOBJN B,SORT2		; Loop thru table
+	CAMGE A,E		; New minimum found?
+	 JRST SORT1		; No, loop
+	MOVE B,-1(E)		; Yes, exchange entries
+	EXCH B,0(A)
+	MOVEM B,-1(E)
+	JRST SORT1		; Loop
+
+; Generate relocated addresses for table entries
+;	A/ AOBJN ptr to sorted version of table
+;	B/ Origin for relocation (16-bit byte address)
+; Returns +1
+; At call, each table entry should contain:
+;	length (Maxc words) ,, NETDIR offset (Maxc words) of block
+; This routine puts the relocated 16-bit byte address in the lh.
+; Clobbers A-D
+
+GENRLS:	JUMPGE A,CPOPJ		; In case empty table
+GENRL1:	HLRZ D,(A)		; Get ptr to unsorted entry
+	HLRZ C,(D)		; Get block size (Maxc words)
+	LSH C,1			; Compute size in 16-bit bytes
+	HRLM B,(D)		; Store relocated address
+	ADDI B,(C)		; Compute next address
+	AOBJN A,GENRL1		; Repeat for all entries in table
+	POPJ P,			; Done
+
+
+; Same except works on (unsorted) table directly
+
+GENRLU:	JUMPGE A,CPOPJ		; In case empty table
+GENRL2:	HLRZ C,(A)		; Get block size (Maxc words)
+	LSH C,1			; Compute size in 16-bit bytes
+	HRLM B,(A)		; Store relocated address
+	ADDI B,(C)		; Compute next address
+	AOBJN A,GENRL2		; Repeat for all entries in table
+	POPJ P,			; Done
+
+
+; Output lookup table
+;	A/ Table origin in file
+;	B/ AOBJN ptr to sorted version of table in memory
+; Returns +1
+; Clobbers A, B, CH
+
+PUTTAB:	PUSHJ P,PUTFIL		; Zero-fill to desired origin
+	JUMPGE B,CPOPJ		; Forget it if table empty
+PUTTA1:	HLRZ CH,(B)		; Get ptr to unsorted entry
+	HLRZ CH,(CH)		; Get byte address of block
+	PUSHJ P,PUTCHR		; Output it
+	AOBJN B,PUTTA1		; Repeat for all entries in table
+	POPJ P,			; Done
+
+
+; Output string
+;	A/ 16-bit byte ptr set such that the next ILDB will
+;	   return the byte containing the char count and
+;	   the first char
+; Returns +1:
+; Zero-fills to even byte boundary
+; Clobbers A, B, CH
+
+PUTSTR:	ILDB CH,A		; Get byte containing byte count
+	PUSHJ P,PUTCHR		; Output it
+	MOVEI B,(CH)		; Compute char count / 2
+	LSH B,-9
+	JUMPE B,PUTST2		; Jump if no more
+PUTST1:	ILDB CH,A		; Get next byte
+	PUSHJ P,PUTCHR		; Output it
+	SOJG B,PUTST1		; Repeat for all of string
+PUTST2:	PUSHJ P,PUTEVN		; Fill to even byte boundary
+	POPJ P,			; Done
+
+; Put zeroes in output file up to some byte address
+;	A/ Byte address to fill to
+; Returns +1
+; Clobbers A, CH
+
+PUTFIL:	SUB A,IOBBYN		; Compute # bytes needed
+	JUMPE A,CPOPJ		; Forget it if none
+	JUMPG A,.+2		; Error if negative
+	 PUSHJ P,SCREWUP
+	SETZ CH,		; Use nulls
+	PUSHJ P,PUTCHR		; Put null in output file
+	SOJG A,.-1		; Repeat as needed
+	POPJ P,
+
+
+; Put zero in output file if necessary to reach even byte address
+; Returns +1
+; Clobbers CH
+
+PUTEVN:	MOVEI CH,1		; Test byte position
+	TDNN CH,IOBBYN
+	 POPJ P,		; Already even, do nothing
+	SETZ CH,		; Odd, zero byte, fall into PUTCHR
+
+
+; Put byte in output file
+;	CH/ the byte
+; Returns +1 always
+; No ac's clobbered
+
+PUTCHR:	SOSGE IOBCNT		; Room for more bytes in buffer?
+	 JRST PUTCH1		; No
+	IDPB CH,IOBBYT		; Yes, store byte
+	AOS IOBBYN		; Count it
+	POPJ P,
+
+; Here when buffer full
+PUTCH1:	AOS IOBCNT		; Fix count
+	PUSH P,A		; Save some ac's
+	PUSH P,B
+	PUSH P,C
+	PUSHJ P,DOSOUT		; SOUT the buffer
+	POP P,C			; Restore ac's
+	POP P,B
+	POP P,A
+	JRST PUTCHR		; Now buffer the byte
+
+
+; Do SOUT for output file
+; Returns +1 always
+; Clobbers A-C
+
+DOSOUT:	MOVE A,JFN		; Get output JFN
+	MOVE B,[POINT 16,IOBUF]	; Set byte ptr
+	MOVEM B,IOBBYT
+	MOVEI C,2*IOBLEN	; Init byte count
+	EXCH C,IOBCNT		; Get bytes remaining in buffer
+	SUB C,IOBCNT		; Compute - bytes used
+	SKIPG IOBBYN		; Any bytes output yet?
+	 POPJ P,		; No
+	PUSH P,C
+	SOUT			; Yes, output bufferful
+	MOVE A,CHKSUM		; Current checksum
+	MOVEI B,IOBUF
+	MOVN C,0(P)		; Positive byte count
+	MOVEM D,0(P)		; Preserve D
+	PUSHJ P,PUPCKS		; Update checksum to cover this block
+	MOVEM A,CHKSUM
+	POP P,D
+	POPJ P,
+
+; Compute Pup checksum over a block in memory
+;	A/ initial checksum
+;	B/ pointer to block to be checksummed
+;	C/ number of 16-bit words in block
+; Returns +1:
+;	A/ 16-bit checksum, right-justified
+; Clobbers B-D
+
+PUPCKS:	LSHC C,-1		; Compute # 32-bit words to checksum
+	PUSH P,D		; Sign bit set if leftover 16-bits
+	ROT C,-3		; Divide # full words by 8
+	MOVEI D,1(C)		; # 8-fold cycles +1
+	LSH C,-^D<18-3>		; # leftover bytes in lh
+	MOVN C,C		; Make AOBJN pointer to block
+	HRRI C,0(B)
+	TLNN C,-1		; Use leftover count first
+	 JRST PUPCK4		; None, start full 8-fold cycles
+PUPCK2:	MOVE B,0(C)		; Get a word
+	ANDCMI B,17		; Clear garbage bits
+	ROT B,^D16		; High 16 bits to B20-35, clear B18-19
+	ADDI A,(B)		; Add to checksum
+	LSH A,2			; Shift checksum twice
+	LSH B,-^D<36-16-1>	; Justify previous low 16 bits to B34
+	ADDI A,(B)		; Add to checksum (pre-shifted)
+	AOBJN C,PUPCK2		; Repeat for this group
+	PUSHJ P,CKFOLD		; Fold 36 bits to 16
+PUPCK4:	HRLI C,-8		; Set to do next group
+	SOJG D,PUPCK2		; Repeat if more to do
+	POP P,D			; Done, have a leftover 16 bits?
+	JUMPGE D,PUPCK5
+	MOVE B,0(C)		; Yes, add it in
+	LSH B,-^D<36-16>
+	ADDI A,(B)
+	LSH A,1
+	PUSHJ P,CKFOLD		; Fold to 16 bits
+PUPCK5:	CAIN A,177777		; Minus zero?
+	 SETZ A,		; Yes, make plus zero
+	POPJ P,
+
+
+; Fold 36-bit add-and-left-shift checksum into 16-bit
+;  ones-complement add-and-left-cycle checksum
+;	A/ 36-bit checksum
+; Returns +1:
+;	A/ 16-bit checksum, right-justified
+; Clobbers B
+
+CKFOLD:	CAIG A,177777
+	 POPJ P,		; No more folding to do
+	LSHC A,-^D16		; Overflow bits in A, low 16 in B
+	LSH B,-^D<36-16>
+	ADDI A,(B)		; Fold
+	JRST CKFOLD		; Check again
+
+; Give syntax error message
+;	A/ string ptr to message
+;	BP/ byte ptr to current byte in TXTBUF
+; Returns +1 always
+; Clobbers A-D
+
+SYNERR:	PSOUT			; Print message
+SYNER1:	HRROI A,[ASCIZ /
+/]
+	PSOUT
+	MOVE B,[POINT 7,TXTBUF]	; Init scan of statement text
+SYNER2:	MOVE C,B		; Copy scan pointer
+SYNER3:	ILDB A,B		; Get a char
+	CAMN B,BP		; At point of error?
+	 JRST SYNER4		; Yes
+	CAIN A,12		; No, at end of line?
+	 JRST SYNER2		; Yes, recopy scan pointer
+	JUMPN A,SYNER3		; No, keep scanning
+	PUSHJ P,SCREWUP		; Should never get here
+
+; Now print line of text in error
+; C/ Byte ptr to start of line
+SYNER4:	SETZ B,			; Init char position
+SYNER5:	ILDB A,C		; Get a char
+	CAMN C,BP		; Position of error?
+	 MOVE D,B		; Yes, freeze count
+	CAIE A,15		; End of line?
+	CAIN A,12
+	 JRST SYNER6		; Yes
+	JUMPE A,SYNER6
+	PBOUT			; No, print char
+	CAIN A,11		; Tab?
+	 IORI B,7		; Yes, advance to stop
+	AOJA B,SYNER5		; Count char and continue
+
+; Now line printed, position cursor underneath
+SYNER6:	HRROI A,[ASCIZ /
+/]
+	PSOUT
+	MOVEI A," "		; Space
+	JUMPE D,.+3		; Don't if first char
+	PBOUT
+	SOJG D,.-1		; Print spaces out to pos of error
+	HRROI A,[ASCIZ /^
+
+/]
+	PSOUT			; Print cursor
+	AOS ERRORS		; Count errors
+	POPJ P,
+
+
+; Backup byte ptr BP
+; Returns +1
+; Clobbers nothing else
+
+BACKBP:	EXCH A,BP		; Put in ac for jsys
+	BKJFN			; Back it up
+	 PUSHJ P,SCREWUP
+	EXCH A,BP
+	POPJ P,
+
+; Output error message for JSYS error number in A
+; Returns +1
+; Clobbers A-C
+
+EROUT:	HRRZ B,A		; Copy error code
+	HRROI A,[ASCIZ /
+? /]				; Error header
+	PSOUT
+	HRLI B,400000		; This fork
+	MOVEI A,101		; Output to tty
+	SETZ C,			; Expand fully
+	ERSTR			; Convert error number to string
+	 JRST [	HRROI A,[ASCIZ /Undefined JSYS error /]
+		PSOUT
+		MOVEI A,101	; Print undefined error in octal
+		HRRZS B
+		MOVEI C,10
+		NOUT
+		 PUSHJ P,SCREWUP
+		JRST .+2]
+	 PUSHJ P,SCREWUP	; +2 from ERSTR is impossible
+	HRROI A,[ASCIZ /
+/]
+	PSOUT
+	POPJ P,
+
+
+; Routine to call on impossible errors
+; Does not return
+
+SCREWUP:PUSH P,A		; Save some ac's
+	PUSH P,B
+	PUSH P,C
+	HRROI A,[ASCIZ /An impossible error has occurred at /]
+	PSOUT
+	MOVEI A,101		; Output pc of error
+	HRRZ B,-3(P)
+	SUBI B,1
+	MOVEI C,10
+	NOUT
+	 CAI
+	HRROI A,[ASCIZ /
+/]
+	PSOUT
+	POP P,C			; Restore ac's
+	POP P,B
+	POP P,A
+	HALTF
+	POPJ P,			; In case resumed
+
+
+; Variables and buffers (low segment)
+
+	RELOC 0
+
+; GTJFN table to use for output file
+OUTABL:	1B1+1B3+1B4	; New file, confirm,,version
+	100,,101	; TTY i/o
+	0		; Device
+	0		; Directory
+	POINT 7,DIRNAM	; Name (defaulted from input)
+	POINT 7,[ASCIZ /DIRECTORY/]  ; Extension
+	0		; Protection
+	0		; Account
+	0		; Desired JFN
+
+BZERO:		; Beginning of region zeroed at startup
+
+NAMLTP:	BLOCK 1			; # entries in name lookup table
+ADRLTP:	BLOCK 1			; # entries in address lookup tbl
+ATRLTP:	BLOCK 1			; # attribute strings
+ENTUSE:	BLOCK 1			; # words used in entry table
+FREUSE:	BLOCK 1			; # words of free storage used
+NAMUSE:	BLOCK 1			; # words used by name blocks
+ADRUSE:	BLOCK 1			; # words used by address blocks
+
+NSAVED==.-NAMLTP	; # of things that must be saved
+
+; Saved copies of the above.  Do not change order
+NAMSAV:	BLOCK 1
+ADRSAV:	BLOCK 1
+ATRSAV:	BLOCK 1
+ENTSAV:	BLOCK 1
+FRESAV:	BLOCK 1
+	BLOCK NSAVED-<.-NAMSAV>
+
+NLTORG:	BLOCK 1			; Name lookup table origin
+ALTORG:	BLOCK 1			; Address lookup table origin
+ENTORG:	BLOCK 1			; Entry region origin
+NAMORG:	BLOCK 1			; Name block region origin
+ADRORG:	BLOCK 1			; Address block region origin
+ATRORG:	BLOCK 1			; Attribute block region origin
+
+TMPADR:	BLOCK 6			; Temp address region
+TMPSTR:	BLOCK <NAMLEN+3>/4	; Temp string region
+TMPATR:	BLOCK TATLEN		; Temp attribute table
+
+JFN:	BLOCK 1			; I/O JFN
+CHKSUM:	BLOCK 1			; Checksum of output file
+IOBCNT:	BLOCK 1			; # bytes in i/o buffer
+IOBBYT:	BLOCK 1			; Byte ptr to i/o buffer
+IOBBYN:	BLOCK 1			; Byte count (output only)
+IOBUF:	BLOCK IOBLEN		; I/O buffer
+DIRNAM:	BLOCK 10		; Default directory name
+
+TXTBUF:	BLOCK TXTLEN		; Statement text buffer
+
+ERRORS:	BLOCK 1			; Number of errors encountered
+
+STACK:	BLOCK STKLEN		; Stack
+
+EZERO:		; End of region zeroed at startup
+
+	RELOC
+	LOC 100000
+NAMTBL:	BLOCK NLTLEN		; Name lookup table
+NAMSRT:	BLOCK NLTLEN		; Sorted version of same
+ADRTBL:	BLOCK ALTLEN		; Address lookup table
+ADRSRT:	BLOCK ALTLEN		; Sorted version of same
+ATRTBL:	BLOCK ATRLEN		; Attribute lookup table
+ENTTBL:	BLOCK ENTLEN		; Entry table
+EADTBL:	BLOCK EADLEN		; Emitted address table
+NETDIR:	BLOCK 0			; Free storage region
+
+	RELOC
+	END MAKDIR

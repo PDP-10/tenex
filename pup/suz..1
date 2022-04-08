@@ -1,0 +1,170 @@
+BEGIN "suz"
+
+# convert an LDA file into MOSTEK loader format, with a wrinkle.  You
+# select either high order or low order bytes to include
+
+
+
+BITS	curWord; 	# current word from the file
+INTEGER	curPos,		# postion within the byte
+	binaryMode;	# fromat of file, 0 = binary, 1 = image.
+
+INTEGER	offSet;		# start of the module
+
+
+BITS PROCEDURE ldaByte ( POINTER ( dataFile ) f; 
+			 MODIFIES OPTIONAL BITS checkSum );
+BEGIN
+BITS	b;
+
+CASE binaryMode OFB
+[0]	BEGIN
+	b _ '0;
+	CASE curPos OFB
+	[ 0 ] b _ ( curWord SHR 18 ) MSK '377;
+	[ 1 ] b _ ( curWord SHR 26 ) MSK '377;
+	[ 2 ] b _ curWord MSK '377;
+	[ 3 ] b _ ( curWord SHR 8 ) MSK '377;
+	[] errmsg ( "Mode error in curPos ", cvs ( curPos ) ) END;
+	IF (curPos .+ 1) > 3 THENB
+		read ( f, curWord );
+		curPos _ 0;
+		END;
+	END;
+
+[ 1 ]	read ( f, b );
+[]	BEGIN
+	errMsg ( "LDA binary mode error = ", cvs ( binaryMode ) );
+	b _ '0;
+	END END;
+checkSum _ cvb ( cvi (checkSum) - cvi (b) ) MSK '377;
+RETURN ( b );
+END;
+
+BITS PROCEDURE ldaWord ( POINTER ( dataFile ) f;
+			 MODIFIES OPTIONAL BITS checkSum );
+	RETURN (ldaByte ( f,checkSum ) IOR (ldaByte ( f, checkSum ) SHL 8));
+
+
+PROCEDURE openLda ( MODIFIES POINTER ( dataFile ) f; OPTIONAL STRING name );
+BEGIN
+INTEGER i;
+
+
+IF name THEN open ( f, name, random!input )
+EL open ( f, "LDA file: ", prompt!random!input );
+
+read ( f, i );		# find out if this is binary or image
+setPos ( f, 0L );	# reset the file position
+IF i = 1 THEN binaryMode _ 1	# the file is image
+EB
+	binaryMode _ 0;		# the file is binary
+	read ( f, curWord );	# get the current word;
+	curPos _ 0;		# and set the position
+	END;
+END;
+STRING PROCEDURE cHex ( BITS b );
+BEGIN
+STRING s;
+s _ cvs ( b, hex );
+IF length ( s ) = 1 THEN RETURN ( "0" & s )
+EL RETURN ( s );
+END;
+BITS PROCEDURE cCheckSum ( BITS curCheckSum; INTEGER i );
+BEGIN
+# what a yucky routine. This takes the 16 bit integer in i, breaks it
+# into to 8 bit bits fields, and makes the mess a bits checksum.. ych
+INTEGER	highI,
+	lowI;
+highI _ cvi ( cvb ( i ) SHR 8 );
+lowI _ cvi ( cvb ( i ) MSK '377 );
+RETURN ( cvb ( cvi ( curCheckSum ) - (lowI + highI) ) );	# get all that?
+END;
+
+
+BOOLEAN PROCEDURE cvRecord ( 	POINTER ( dataFile ) lda; 
+				POINTER ( textFile ) hexOut;
+				BOOLEAN highOrder );
+BEGIN
+# this routine reads a record from the lda file, and converts it to
+# the hex output format.  It returns false on end of file
+	
+INTEGER byteCount,
+	startAddr,
+	i;
+BITS	b,
+	checkSum;
+BOOLEAN lastRec,
+	wierdRec;
+
+DEFINE lowByte ( x ) = [ ( cvb (x) MSK '377) ],
+	highByte (x) = [ ( (cvb (x) SHR 8) MSK '377) ];
+
+i _ 0;
+DO IF (i.+1) >10 THEN 
+	write ( logFile, "Real long pause between records", eol )
+UNTIL ldaByte ( lda ) = '1;	# scan for record header 
+ldaByte ( lda ); 		# toss the extra byte
+
+byteCount _ (cvi ( ldaWord ( lda ) ) - 6) DIV 2;
+checkSum _ cCheckSum ( '0, byteCount );
+startAddr _ (cvi ( ldaWord( lda )) - offSet ) DIV 2;
+IF wierdRec _ (byteCount < 0 ) THEN
+	write ( logFile, "Omigod, a wierd record BC = ", byteCount, 
+		"start = ", startAddr, eol );
+
+checkSum _cCheckSum ( checkSum, startAddr );
+write ( hexOut, ":", cHex ( cvb ( byteCount )), 
+	cHex ( highByte ( startAddr) ), cHex ( lowByte ( startAddr ) ) );
+IF byteCount THEN write ( hexOut, "00" )	# data type record
+EB	write ( hexOut, "01" );		# transfer address type record
+	checkSum _ cvb ( cvi ( checkSum ) - 1) MSK '377;
+	END;
+FOR i _ 1 UPTO byteCount DOB
+	IF highOrder THENB
+		ldaByte ( lda );	# toss low order
+		write ( hexOut, cHex ( b _ ldaByte ( lda, checkSum ) ));
+		END
+	EB
+		write ( hexOut, cHex ( b _ ldaByte ( lda, checkSum ) ));
+		ldaByte ( lda );	# toss high order
+		END;
+	IF wierdRec THEN write ( logFile, b, eol );
+	END;
+write ( hexOut, cHex ( checkSum ), eol );
+ldaByte ( lda ); # toss the checksum on the record
+RETURN ( byteCount NEQ 0 );
+END;
+INITIAL PROCEDURE;
+BEGIN
+
+POINTER ( dataFile ) lda;
+POINTER ( textFile ) hexOut;
+
+INTEGER byteCount,
+	byteOffset;
+
+BITS	startAddr,
+	b;
+BOOLEAN	highOrder;
+STRING	s;
+
+DOB
+	openLda( lda );
+	write ( logFile, "Module start address: " );
+	read ( cmdFile, s );
+	b_ cvb ( s );
+	offSet _ cvi ( b );
+	open ( hexOut, "Output file: ", create!output!prompt );
+	highOrder _ confirm ( "High order bytes?" );
+	WHILE cvRecord ( lda, hexOut, highOrder ) DO;
+	close ( lda );
+	close ( hexOut );
+	END
+UNTIL NOT confirm ( "Another file?" );
+
+END;
+
+
+
+END "suz"

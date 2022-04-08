@@ -1,0 +1,458 @@
+# include "version.h"
+/****************************************************************************
+
+	ether net particular stuff.
+	   e0_NetInit ()			Net0 init.
+	   e1_NetInit ()			Net1 init.
+****************************************************************************/
+# ifdef PDP11
+# define EncapSize 4				/* Ether encap. size-8BIT  */
+# endif						/* bytes. */
+# ifndef PDP11
+# define EncapSize 2				/* Ether encap. size-36BIT */
+# endif
+
+int e_EtherEncap (), e_s0input (), e_s0output ();
+short int *e_getMapPTR ();
+extern int p_0out ();
+extern int l1_sQ, l0_FreeQ, l0_rawIQ, l0_discards;
+# ifdef PDP11	        
+extern int TODlow;
+# endif
+int l0_Oe[256];
+int l1_Oe[] {0,4,0,0,0,0,5,0,1,0,-1};
+int dum;
+int l0_Ie,l1_Ie,l0_CX,l1_CX,l0_LP,l1_LP,l0_TP,l1_TP;
+int TODHRS,TODMIN,TODSEC;
+int l0_H0,l0_H1,l0_H2,l0_H3,l0_H4,l0_H5;
+int *Iptr {l0_H0};
+/* initialize the default net */
+int e0_NetInit (NDB) l0_NDB *NDB;
+	{int i;
+# ifdef debug
+	cprint (" e0_NetInit - Initing net data block at: %o\n", NDB);
+# endif
+	for (i=0; i<6; i++) *Iptr++ = i+1;
+	for (i=0; i<255; i++) l0_Oe[i] = i;
+	l0_Oe[255] = -1;
+	TODHRS = 10; TODMIN = 11; TODSEC = 12;
+	l0_Ie = 100; l0_CX = 101; l0_LP = 111;	/* phony error stuff */
+	l0_TP = 103; 
+	NDB->localHost = e0_I0init ();		/* init interface 0 */
+	NDB->localNet = sumex;
+	NDB->encap = e_EtherEncap;		/* encapsulation */
+	NDB->l0trans = p_0out;			/* output routine */
+	NDB->l0sInput = e_s0input;		/* input startup  */
+	NDB->l0sOutput = e_s0output;		/* output   "     */
+
+	/* stuff such as below must also be initiazed - HERE AND BELOW */
+	NDB->ETHOWC = 0;		/* address of output word count */
+	NDB->ETHOBL = 0;		/* output buffer location */
+	NDB->ETHOCS = &dum;		/*    "   control and status */
+	NDB->ETHOSD = 0;		/*    "   start delay	     */	
+	NDB->ETHIWC = 0;		/* address of input word count */
+	NDB->ETHIBL = 0;		/* input buffer location */
+	NDB->ETHICS = 0;		/*    "   control and status */
+	NDB->BitMap = l1_GetMEM (BitMapSize); /* pointer to bit map */
+	l_zero (NDB->BitMap, BitMapSize);     /* clear the map */
+	}
+int e1_NetInit (NDB) l0_NDB *NDB;
+	{
+# ifdef debug
+	cprint (" e1_NetInit - Initing net data block at: %O\n", NDB);
+# endif
+	l1_Ie = 200; l1_CX = 201; l1_LP = 222;	/* phony error stuff */
+	l1_TP = 203; 
+	NDB->localHost = e1_I0init ();		/* init interface 0 */
+	NDB->localNet = NET2;
+	NDB->encap = e_EtherEncap;		/* encapsulation */
+	NDB->l0trans = p_0out;			/* output routine */
+	NDB->l0sInput = e_s0input;		/* input startup  */
+	NDB->l0sOutput = e_s0output;		/* output   "     */
+	NDB->ETHOWC = 0;		/* address of output word count */
+	NDB->ETHOBL = 0;		/* output buffer location */
+	NDB->ETHOCS = &dum;		/*    "   control and status */
+	NDB->ETHOSD = 0;		/*    "   start delay	     */	
+	NDB->ETHIWC = 0;		/* address of input word count */
+	NDB->ETHIBL = 0;		/* input buffer location */
+	NDB->ETHICS = 0;		/*    "   control and status */
+	NDB->BitMap = l1_GetMEM (BitMapSize); /* pointer to bit map */
+	l_zero (NDB->BitMap, BitMapSize);     /* clear the map */
+	}
+int e0_I0init () {return (0111);}
+int e1_I0init () {return (077);}
+int e_EtherEncap (PAK, dHOST) l0_smlPak *PAK; int dHOST;
+	{PAK->Encap1 = (dHOST << 8) | (PAK->ndbPTR)->localHost;
+	PAK->Encap2 = TypePUP;
+	/* and finally, length in words for transmission */
+# ifdef PDP11
+	PAK->PAKlen = (PAK->PUPlen + 1 + EncapSize) >> 1;
+# endif
+# ifndef PDP11
+	PAK->PAKlen = (PAK->PUPlen  + EncapSize);
+
+# endif
+	}
+int e_s0Input (NDB) l0_NDB *NDB;
+    {/* start ETHER net input */
+     /* for now, just create a Packet */
+    int *p;
+    if (NDB->pakin) /* then we have an input packet */
+	createPAK (NDB, NDB->pakin);
+    else /* see if we can get one! */
+	if (p = p_Dequeue (l0_FreeQ)) createPak (NDB, p);
+	else
+	    cprint ("\n Couldn't get an input PACKET \n");
+    }
+int e_s0output (NDB) l0_NDB *NDB;
+    {/* start ETHER output */
+    /* for now, just print the next packet to be output */
+    l0_smlPak *Pak; 
+
+    Pak = p_Dequeue (&NDB->OQhead);
+    /* We will have to run all that follows at PRI6 on 11s */
+    NDB->pakOUT = 0;		/* this guy is usually set to Pak */
+    if (!Pak) 
+	{cprint ("From start Output - nothing to output\n"); return;}
+    cprint ("OUTPUT PAK from e_s0output\n");
+    explodePak (Pak);
+    /* toss it out for the giggles if necessary - really done at interrupt */
+    /* on output complete */
+    PAK->intent &= ~outputPENDING;
+    PAK->intent |= outputCOMPLETE;	/* DONE! */
+    q_SetTagStat (PAK, PAK->intent);
+    if (!(Pak->intent & KeepPUP)) p_Enqueue (l0_discards, Pak);
+    }
+# define dstruc struct _dstruc
+# ifndef PDP11
+dstruc {char c1, c2;};
+# endif
+# ifdef PDP11
+dstruc {char c2, c1;};
+# endif
+int explodePak (Pak) l0_smlPak *Pak;
+    {int i, *p, *ics; char *cs;
+    p = Pak;
+    cprint("\nFor Packet at: %O\n", p - 3);
+    i = Pak->Encap1;
+    cprint("   Encapsulation:  %o,, %o  Type = %o\n", (i & 0177400) >> 8,
+	   i & 0377, Pak->Encap2);
+    cprint("   Length = %d\n", Pak->PUPlen);
+    cprint("     Hops = %d\n", Pak->transport >> 4);
+    cprint("     type = %o\n", Pak->PUPtype);
+    cprint("     dNet = %o  dHost = %o\n", Pak->dNet, Pak->dHost);
+    cprint("    dSoc# = %o  %o\n", Pak->dSoc1, Pak->dSoc2);
+    cprint("     sNet = %o  sHost = %o\n", Pak->sNet, Pak->sHost);
+    cprint("    sSoc# = %o  %o\n", Pak->ssoc1, Pak->sSoc2);
+    /* see if any data */
+    if (PAK->PUPlen > PUPoverhead)  /* then we have data */
+	{int nchar; dstruc *d; 
+	nchar = PAK->PUPlen - PUPoverhead;
+	cprint(" %d data bytes follow:\n", nchar);
+	d = &PAK->data[0];
+	while (nchar > 0)
+	    {if (nchar != 1) cprint ("%O, %O\n", d->c1, d->c2);
+	    else  
+		cprint("%O\n", d->c1);
+	    nchar -= 2; *d++;
+	    }
+	}
+    /* dump check sum */
+    cs = Pak;
+# ifdef PDP11
+    cs =+ (((Pak->PUPlen + 1) >> 1) << 1) + PakOverHead - 2;
+# endif
+# ifndef PDP11
+    cs =+ (Pak->PUPlen + PakOverHead - 1);
+# endif
+    ics = cs; i = *ics;
+    cprint(" checksum =	%O\n", i);
+    }
+int createPak (NDB, pak) l0_NDB *NDB; l0_smlPak *pak;
+	{/* make an input packet for this Net work */
+	char *cs, buff[80]; 
+	int *ics, force, forUS, PUPl, gate, size, gent, l;
+	l0_Q *Q; l1_sock *soc;
+        cprint("Getting input for Net %d\n", NDB->localNet);
+	while (1)
+	    {ttyread ("\nMake an input Packet (Y or N)? ", buff);
+	    switch (buff[0])
+	        {case 'n': 
+	        case 'N': 
+		    p_Enqueue (l0_Freeq, Pak);
+		    NDB->Pakin = 0;	/* toss out buffer */
+		    return;
+	        case 'Y':
+	        case 'y': break;
+	        default: cprint("\nI don't understand %s", buff); continue;
+		}
+	    break;
+	    }
+	size = -1;
+	while (size < 0)
+	    {ttyread ("How many data bytes? ", buff);
+            size = ATOI (buff);
+	    if (size < 0) {cprint ("%d too small!\n", size); continue;}
+	    if (size > ndatabytes) 
+	        {cprint ("%d too big!\n", size); size = -1;}
+	    }
+	gent = size/4;
+	PUPl = size + PUPoverHead;
+# ifdef PDP11
+	size = ((sizePakHead + size + 1) >> 1) + 1;	/* in words */
+# endif
+# ifndef PDP11
+	size = sizePakHead + size + 1;			/* in words */
+# endif
+	/* Now for some defaults */
+	Pak->Link = 0;
+	Pak->ndbPTR = NDB;
+	Pak->PAKlen = size - (PAKxtra/sizeof(size));
+	if (confirm ("Broadcast?")) Pak->Encap1 = 0;
+	else  
+	    Pak->Encap1 = (NDB->localHost << 8);
+	ttyread ("Enter source Host# ", buff);
+	l = ATOI (buff);
+	if (l == 0) force = 1; else force = 0;
+	l &= 0377;
+	Pak->Encap1 |= l;
+	Pak->Encap2 = TypePUP;
+	Pak->PUPlen = PUPl;
+	Pak->sNet = NDB->localNet;
+	Pak->sHost = NDB->localHost + 1;	/* reasonable default */
+	if (confirm("For local Net?"))
+            {Pak->transport = 0;		
+	    forUS = 1;
+	    }
+	else
+            {ttyread (" Enter Hop count: ", buff);
+	    Pak->transport = ATOI (buff) << 4;
+	    ttyread  (" Enter dest Net: ", buff);
+	    Pak->dNet = ATOI (buff);
+	    Pak->dHost = Pak->dNet + 1;
+	    Pak->sHost = 17;
+	    Pak->sNet =  99;
+	    forUS = 0;
+	    }
+	Pak->ID1 = 0;
+	Pak->ID2 = 0;
+	/* select source and destination sockets */
+	cprint ("Build source socket...");
+	if (!forUS || !confirm ("\nGateway socket? "))
+	    {Pak->sSoc1 = Pak;
+# ifdef PDP11	        
+	    Pak->sSoc2 = TODlow;
+# endif
+# ifndef PDP11	        
+	    Pak->sSoc2 = s_gtime ();
+# endif
+	    if (!forUS)		/* not for us */
+		{Pak->dSoc1 = Pak->sSoc1 + 1;
+		Pak->dSoc2 = Pak->sSoc2 + 1;
+		}
+	    gate = 0;
+	    }
+	else  /* assign gateway socket */
+	    {Pak->sSoc1 = 0; Pak->sSoc2 = 2;
+	    gateWayPak (Pak, gent);
+	    gate = 1;
+	    }
+	/* build dest socket */
+	if (!gate && forUS) cprint ("Build dest socket: \n");
+	Q = l1_sQ; soc = Q->qHead;
+	while (soc)
+	    {if (!forUS) break;
+	    if (gate)
+		if (soc->sock1 == 0 && soc->sock2 == 2)  /* gateway */
+		    {Pak->dSoc1 = 0; Pak->dSoc2 = 2;
+            	    Pak->dNet = soc->lNet;	
+	    	    Pak->dHost = soc->lHost;
+		    break;
+		    }
+		else 
+	            {soc = soc->link;
+		    if (!soc) 
+			{cprint("NO gateway socket!\n");
+			l1_RelMEM (Pak); break;
+			}
+		    continue;
+		    }
+	    cprint ("How about lNet: %d, lHost: %d\n", soc->lNet, soc->lhost);
+	    cprint ("       lSocket: %d %d\n", soc->Sock1, soc->sock2);
+	    cprint ("          fNet: %d, fHost: %d\n", soc->fNet, soc->fhost);
+	    cprint ("       fSocket: %d %d\n", soc->fSock1, soc->fsock2);
+	    if (!confirm ("OK? "))
+	        {soc = soc->link;
+		if (!soc) soc = Q->qHead;
+	        continue;
+	        }
+	    Pak->dSoc1 = soc->Sock1; Pak->dSoc2 = soc->Sock2;
+            Pak->dNet = soc->lNet;		
+	    Pak->dHost = soc->lHost;
+	    Pak->sNet = soc->fNet;
+	    if (force) Pak->sHost = 0;
+	    else
+	        if (soc->fHost) Pak->sHost = soc->fHost;
+	    soc = 0;
+	    }
+	if (!gate) z_buildType (Pak);
+	if (Confirm ("Check sum packet?")) p_CXsumPak (Pak);
+	else
+	    {cs = Pak;
+# ifdef PDP11
+            cs =+ (((Pak->PUPlen + 1) >> 1) << 1) + PakOverHead - 2;
+# endif
+# ifndef PDP11
+            cs =+ (Pak->PUPlen + PakOverHead - 1);
+# endif
+	    ics = cs; *ics = -1;
+	    }
+	Pak->intent = input+OnRawQ;
+	p_Enqueue(l0_rawIQ, Pak);
+	(Pak->NDBptr)->pakin = 0;	/* set to 0 so start input will */
+					/* get a NEW buffer for testing */
+	}	
+# define request 0200
+# define reply 0201
+# define _TabEntry struct g_TabEntry  /* overlays the data in RIF PUP */
+# ifndef PDP11
+_TabEntry {char target, gwNet, gwHost, Hops;};
+# endif
+
+# ifdef PDP11  /* then need to reverse byte order for RIF data */
+_TabEntry {char gwNET, target, Hops, gwHOST;};
+# endif
+
+int gateWayPAK (PAK, entries) l0_smlPak *PAK; int entries;
+	{/* make either GIrequest, or GIreply PAK */
+	char buff[80]; int n, type; _TabEntry *data;
+	type = 0;
+	while (!type)
+	    {ttyread ("Reply or Request (1 or 2)?", buff);
+	    switch (buff[0])
+		{case '1': type = reply; break;
+		 case '2': type = request; break;
+		 default: cprint ("?? %s\n", buff); 
+		}
+	    }
+	PAK->PUPtype = type;
+	if (type == request) 
+	    {Pak->sSoc1 = 1; Pak->sSoc2 = 2;
+	    return;
+	    }
+	/* need some data */
+	data = PAK->data;		/* pointer to data */
+	while (entries--)
+	    {/* get data until done */
+	    ttyread ("   target Net: ", buff);
+	    data->target = ATOI (buff);
+
+	    ttyread ("   gateway Net(0 for NDB default): ", buff);
+	    n = ATOI (buff);
+	    if (!n) data->gwNET = PAK->sNet;	/* gateway Net */
+	    else data->gwNET = n;
+
+	    ttyread ("   gate way Host: ", buff);
+	    type = ATOI (buff);
+	    data->gwHOST = type;
+	    Pak->sHost = type;
+	    if (!n) data->Hops = 0;		/* hopcount for DC */    
+	    else
+		{ttyread ("   Hops: ", buff);
+		data->Hops = ATOI (buff);
+		}
+	    data++;				/* next chunk */
+	    }
+	}
+
+char *ztype {"EchoMe, ImAnEcho, BadEcho, NdirV, TimeReply, RouteIP, Other(E,I,B,N,T,R,O)"};
+#define ipoverhead (16+pupoverhead)	/* n-chars to skip to IP address */
+#define ip_add struct ipaddress		/* our structure */
+ip_add {char net, subnet, fill, enhost;};
+int z_buildType (PAK) l0_smlPak *Pak; 
+    {/* get some kind of type */
+    int Echo, type, ndata, i, j;
+    cprint("We need a PUP type:");
+    type = 0;
+    while (!type)
+        {char buff[80]; 
+	ttyread (ztype, buff);
+	Echo = 1;
+	switch (buff[0])
+	    {case 'E':
+	    case 'e':
+		type = 1; Echo = 0; break;
+	    case 'I':
+	    case 'i':
+		type = 2; break;
+	    case 'B':
+	    case 'b':
+		type = 3; break;
+	    case 'N':
+	    case 'n':
+		type = 0240; Echo = 0; break;
+	    case 'T':
+	    case 't':
+		type = 0201; 
+		/* get data */
+	        nData = PAK->PUPlen - PUPoverhead;
+		ttyread ("Enter time HH:MM:SS  MON-DD-YY", buff);
+		for (i=0; i < ndata; i++)
+		    {if (buff[i] == '\0') {ndata = ndata - i; break;}
+		    PAK->data[i] = buff[i];
+		    }
+		for (j=0; j<ndata; j++) {PAK->data[i] = ' '; i++;}
+		Echo = 0; break;
+	    case 'R': case 'r':
+    		{ip_add *ip;
+    		char *ipak; 
+		PAK->encap2 = 01001; Echo = 0; 
+	    	ipak = pak;	  	/* for lack of typecasting */
+	    	ip = (ip_add *)((char *)ipak + ipoverhead); /* the ip add */
+		ip->net = 036; ip->subnet = pak->dnet;
+		ip->fill = 0; ip->enhost = pak->dhost;
+		type = 01001;
+		break; 
+		}
+	    case 'O':
+	    case 'o':
+		type = 030; Echo = 0; break;
+	    default:    cprint("? %s\n", buff);
+	    }
+	}
+    Pak->PUPtype = type;
+    if (Echo) {Pak->sSoc1 = 0; Pak->sSoc2 = 5;}
+    }	
+/* :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+ *
+ *	e_getMapPTR (NDB, host)		Given host number, returns
+ *					a pointer to its bit map WORD 
+ *
+ * ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::: */
+short int *e_getMapPTR (NDB, host) l0_NDB *NDB; short int host;
+    {char *i;
+    i = (char *)NDB->BitMap;		/* point to the bit map */
+    i += ((host >> 4) << (sizeof(host)-1));	/* DIV 16 */
+                            		/* with short int addressing */
+    return((short int *)i);		/* point to the bit map */
+    }
+
+/* :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+ *
+ *	e_MapSet (MapWord, host)	Given host number, and MapWord
+ *					pointer, turns on bit in map word
+ *					corresponding to that host.
+ * ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::: */
+e_MapSet (MapWord, host) short int *MapWord, host;
+    {*MapWord |= (0100000 >> (host & 017));}
+
+
+/* :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+ *
+ *	e_TestBit (MapWord, host)	Given host number, and MapWord
+ *					pointer, returns 0 or 1 corresponding
+ *					to host bitmap bit.
+ * ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::: */
+int e_TestBit (MapWord, host) short int *MapWord, host;
+    {return (*MapWord & (0100000 >> (host & 017)));}
+

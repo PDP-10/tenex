@@ -1,0 +1,535 @@
+
+	TITLE PUPSPL
+	SUBTTL Ethernet Spooler Protocol/Eric Schoen
+
+	SEARCH SYSDEF,PUPDEF,PSVDEF
+tops20,<SEARCH MONSYM>
+tenex,< SEARCH STENEX >
+	
+	USEVAR TOPVAR,TOPPVR
+
+;AC defn's not in PUPSRV
+S==6
+
+; Definitions specific to the Experimental Spooler Protocol
+; Transfers are done via EFTP protocols
+
+; EFTP Abort codes
+AC.ESA==1	; External Sender Abort
+AC.ERA==2	; External Receiver Abort
+AC.RBA==3	; Receiver Busy Abort
+AC.OSA==4	; Out of Sync Abort
+; ESP abort codes (in addition to EFTP codes)
+PA.BSY==10		; Printer server busy
+PA.CLS==11		; Printer not spooling
+PA.NSD==12		; No such device
+
+; ESP state machine codes
+PS.FRE==0		; Free connection
+PS.INI==1		; Connection being initialized
+PS.XFR==2		; Transfer in progress
+PS.END==3		; Connection being closed
+
+; Parameters and byte pointers defining the structure of a Packet Buffer (PB)
+
+PBHEAD==0	; Start of Pup Header
+ PUPLEN: POINT 16,PBHEAD(PB),15	; Pup Length
+ PUPTCB: POINT 8,PBHEAD(PB),23	; Transport Control Byte
+ PUPTYP: POINT 8,PBHEAD(PB),31	; Pup Type
+
+; PBHEAD+1
+ ; B0-31			; Pup ID
+
+; PBHEAD+2
+ PPUPDN: POINT 8,PBHEAD+2(PB),7	; Destination Network
+ PPUPDH: POINT 8,PBHEAD+2(PB),15  ; Destination Host
+ PPUPD0: POINT 16,PBHEAD+2(PB),31  ; High 16 bits of Destination Socket
+
+; PBHEAD+3
+ PPUPD1: POINT 16,PBHEAD+3(PB),15  ; Low 16 bits of Destination Socket
+ PPUPSN: POINT 8,PBHEAD+3(PB),23  ; Source Network
+ PPUPSH: POINT 8,PBHEAD+3(PB),31  ; Source Host
+
+; PBHEAD+4
+ PPUPSS: POINT 32,PBHEAD+4(PB),31  ; Source Socket
+
+PBCONT==PBHEAD+5  ; Start of Pup Contents
+
+MNPLEN==^D22	; Minimum Pup Length (bytes), incl header and checksum
+MXPLEN==^D554	; Maximum Pup Length
+MNPBLN==<MNPLEN+3>/4  ; Minimum size of PB, in words
+MXPBLN==<MXPLEN+3>/4  ; Maximum size of PB, in words
+LPTINT==^D60	; Spooling connection times out in 60 seconds
+
+; Structure of the local EFTP socket
+
+SOCJFN==0	; Pup JFN opened in raw packet mode
+SOCSEQ==1	; Current sequence number
+SOCFRK==2	; Inferior timer fork
+SOCCHN==3	; Interrupt channel number
+SOCTIM==4	; Timeout interval (ms)
+SOCTC==5	; Timeout countdown
+SOCLTT==6	; Long-term timeout expiration time
+SOCSTM==7	; Starting time for round-trip delay measurement
+SOCLNH==10	; Local net/host
+SOCLSK==11	; Local socket
+SOCFNH==12	; Foreign net/host
+SOCFSK==13	; Foreign socket
+;Extensions to the EFTP socket info block
+SOCSTT==14		; Finite machine state
+ ;flags in LH of SOCSTT
+ ;b0 - retransmitted packet
+ ;b1 - seen the 1st EFTPend
+SCOJFN==15		; JFN of output device
+SIBLEN==.-SOCJFN
+
+LS LPTSOC,NLPTS		; Table of pointers to socket info blocks
+LS LPTTIM,NLPTS		; Table of last service time for sockets
+LS LPTBUF,NLPTS*SIBLEN  ; Space for socket info blocks
+LS LACKPB,MNPLEN+20	; Send acknowledgement/abort packet
+LS OUTNAM,USRSTL/5+1
+LS OUTUSR,USRSTL/5+1
+LS SPLJFN
+
+; Pup Types
+
+PT.DAT==30	; EFTP Data
+PT.ACK==31	; EFTP Acknowledgment
+PT.END==32	; EFTP End
+PT.ABT==33	; EFTP Abort
+; Timer to check for dead connections
+; Accepts P1/Current TIME
+
+SPLCHK::MOVSI D,-NLPTS
+SPLCH0:	SKIPN A,LPTTIM(D)	;Free socket?
+	 JRST SPLCH1		;Yes, loop for more
+	CAML P1,A
+	 PUSHJ P,SPLABT		;Expired, abort the connection
+SPLCH1:	AOBJN D,SPLCH0
+	POPJ P,
+
+SPLABT:	PUSH P,FX
+	MOVE FX,D
+	PUSHJ P,DOPABT
+	LOG <Spooling connection %16O timed out>
+	POP P,D
+	POPJ P,
+; Once-only initialization:
+; called with jfn of input socket in A
+SPLINI::SETOM SPLJFN		;Say not initialized
+	POPJ P,
+
+START:	MOVE A,SRVJFN(SV)
+	MOVEM A,SPLJFN		;Save the jfn of the input socket
+	MOVSI A,-NLPTS		;Set up LPTSOC table
+START1:	MOVEI B,LPTBUF
+	MOVEM B,LPTSOC(A)
+	ADDI B,SIBLEN
+	AOBJN A,START1
+	SETZM LPTTIM		;Clear out the timer table
+	MOVE A,[LPTTIM,,LPTTIM+1]
+	BLT A,LPTTIM+NLPTS-1
+	POPJ P,
+
+; Routine to handle incoming PUPs.  PUP already read into
+; User address space
+;  A/PUP type
+;  PB/Pointer to PUP in user address space
+; Returns +1 always, or fails and bombs out
+LPTSRV::SKIPGE SPLJFN	;Initialized?
+	 PUSHJ P,START	;No, initialize the spooler
+	PUSHJ P,FNDSOC	; Look for this socket in our service table
+	 JRST [PUSHJ P,NEWSOC	;Make a new socket
+		JRST LPTSRF	;Some error, handle it
+	       JRST .+1]
+	PUSHJ P,CHKSEQ
+	 JRST LPTSRF		;Out of synch
+	PUSHJ P,DOPUP		;Handle the packet
+	POPJ P,			;And leave
+
+; Look for a socket in our service table
+; Accepts A/ Pup type of incoming packet
+;	  PB/ Pointer to incoming packet
+;	  SV/ Service table index
+
+;Returns +1: Can't find this entry in the table
+;	 +2: Found socket
+;	     FX/Index into connection table for this connection
+
+; Structure of service table is table NLPTS long with pointers to 
+; ESP socket info block
+
+FNDSOC:	PUSH P,A
+	MOVSI D,-NLPTS
+FNDSC1:	MOVE A,LPTSOC(D)	;Get address of this socket info block
+	JUMPE A,FNDSC2		;Skip if it's a free socket info block
+	LDB C,PPUPSN		;Get source net
+	LDB B,PPUPSH		;Source host
+	HRLI B,(C)		;Make it net,,host in B
+	LDB C,PPUPSS		;Socket in C
+	CAMN B,SOCFNH(A)	;Same net and host?
+	CAME C,SOCFSK(A)	;Yes, same socket
+	 JRST FNDSC2
+	SKIPN SOCSTT(A)		;Make sure connection is for open socket
+	 JRST FNDSC2		;Connection is closed
+	POP P,A			;Found it, recover pup type
+	MOVEI FX,(D)		;save fork index
+	AOS 0(P)
+	POPJ P,			;return good
+
+FNDSC2:	AOBJN D,FNDSC1		;Not the same sender, look for more
+	POP P,A			;Recover pup type
+	POPJ P,			;And leave
+
+; Routine to find a new socket for new service 
+; Accepts PB/Pointer to incoming packet
+; Returns +1: Can't initiate a spooling connection
+;	  +2: Successful
+;	      FX/Index into connection table for this connection
+
+NEWSOC:	PUSH P,A
+	PUSHJ P,CHKENT##	;See if we're accepting connections
+  	 JRST [MOVEI B,PA.CLS	;Not spooling now
+	       JRST NEWSCF]
+	MOVSI D,-NLPTS
+NEWSC1:	MOVE A,LPTSOC(D)	;Get address of this socket info block
+	JUMPE A,NEWSC2		;Skip if it's a free socket info block
+	SKIPE SOCSTT(A)		;Get the state of this socket
+	 JRST NEWSC2		;Not free, try the next one
+	MOVEI FX,(D)		;Got a free socket, save index
+	PUSHJ P,SOCINI		;Initialize the socket
+	POP P,A			;Recover PUP type
+	AOS 0(P)
+	POPJ P,			;Leave good
+	
+NEWSC2:	AOBJN D,NEWSC1		;Not the same sender, look for more
+	MOVEI B,PA.BSY		;Say the server is busy
+NEWSCF:	POP P,A			;Failed - recover pup type
+	POPJ P,			;Leave bad
+
+; Routine to initialize a socket info block
+; Accepts A/Address of socket info block
+;	  PB/Pointer to incoming packet
+
+; Clobbers B,C
+; Returns +1 always
+SOCINI:	MOVEI B,PS.INI		;Say initializing
+	MOVEM B,SOCSTT(A)
+	SETZM SOCSEQ(A)		;Zero the sequence number
+	SETZM SCOJFN(A)		;Zero the output jfn for this socket
+	MOVE B,SPLJFN		;Get the jfn on the local port
+	MOVEM B,SOCJFN(A)
+	PUSH P,A
+	MOVE A,B
+	CVSKT
+	 PUSHJ P,SCREWUP##	;Shouldn't fail
+	POP P,A
+	MOVEM B,SOCLNH(A)
+	MOVEM C,SOCLSK(A)	;Save local net, host, and socket
+	LDB C,PPUPSN		;Get foreign net
+	LDB B,PPUPSH		;And host
+	HRLI B,(C)
+	MOVEM B,SOCFNH(A)	;Save them
+	LDB B,PPUPSS		;Also save foreign socket
+	MOVEM B,SOCFSK(A)
+	PUSHJ P,SPLSNT		;Init timeout for this socket
+	POPJ P,			;And return
+
+; Routine to check sequence of incoming packet
+
+; Accepts A/PUP type
+;	  FX/Pointer to connection table for this connection
+;	  PB/Pointer to incoming packet
+; Returns +1: Incoming packet not in sequence
+;	  +2: Packet in sequence
+
+CHKSEQ:	PUSH P,A		;Save pup type
+	MOVE A,LPTSOC(FX)	;Get address of ESP block
+	MOVE B,PBHEAD+1(PB)	;Get sequence number
+	LSH B,-4		;Right justify it
+	MOVE C,SOCSEQ(A)	;Get stored sequence number
+	MOVE D,B		;Save the sequence number from the packet
+	SUB B,C			;Should be zero or -1
+	JUMPE B,CHKSE0		;Sequence is good
+	AOJE B,CHKSE1		;Retransmit
+	JUMPE C,CHKSEZ		;Stored seq is zero -- initializing?
+	
+; Here if sequence is bad
+
+	POP P,A			;Recover the pup type
+	MOVEI B,AC.OSA		;Out of synch abort
+	POPJ P,			;Leave bad
+
+CHKSE0:	TLZA B,(1B0)		;Say packet is in sequence
+CHKSE1:	TLO B,(1B0)		;Say packet is retransmission
+	IORM B,SOCSTT(A)	;Store flag in state word
+	POP P,A			;Recover PUP type
+	AOS 0(P)
+	POPJ P,			;And leave good
+
+; Here if sequence is bad, but sender sent sequence #0 (restart request)
+CHKSEZ:	MOVEI B,-4		;Prepare to give sequence error abort
+	POP P,A			;Recover pup type
+	CAIN A,PT.DAT		;Is it data?
+	 POPJ P,		;No, just return bad
+	MOVEI B,-3		;Is reset, abort with reset message
+	 POPJ P,
+
+; Routine to handle incoming data
+; A finite state machine
+
+; states are:
+;
+; state		next
+; -----		----
+; fre		ini  (can't reach here, though)
+; ini		xfr
+; xfr		xfr,end
+; end		fre
+;
+
+; Accepts A/Pup type
+;	  FX/Index into LPTSOC
+;	  PB/Pointer to incoming packet
+; Returns +1 always
+DOPUP:	PUSHJ P,SAVE1##
+	MOVE P1,A		;Save the pup type
+	CAIN P1,PT.ABT		;An abort packet?
+	 JRST DOPABT		;Abort gracefully (don't spool file)
+	CAIE P1,PT.DAT		;Is it a data?
+	 CAIN P1,PT.END		;No, maybe an end?
+	CAIA			;Ok, go to dispatch
+	 CAIN P1,PT.ACK		;Neither. Finally, is it an ACK?
+	CAIA
+	 JRST CPOPJ##
+	PUSHJ P,SPLSNT		;Set socket timeout
+	MOVE A,LPTSOC(FX)	;Get the pointer to ESP socket info block
+	HRRZ B,SOCSTT(A)	;Get the socket state
+	JRST @DOPTAB(B)		;Dispatch to proper routine
+
+DOPTAB:	CPOPJ##			;Can't get here in this state
+	DOPINI			;Handle initializing
+	DOPXFR			;Handle transfer
+	DOPND2			;Can't reach here either
+
+; Here to handle initialization
+; Format for file in <printer> is:
+;
+;	<PRINTER>QUEUE-JOBNAM.USER;UNIQUE-VERSION-NUMBER
+;
+DOPINI: CAIE P1,PT.DAT
+	 JRST DOPABT			;Abort if not a data packet
+	MOVE C,A
+	MOVE B,[POINT 8,PBCONT(PB),-1]  ;Copy device,user,filename
+	MOVE A,[POINT 7,OUTNAM,-1]	;Get the queue
+	PUSHJ P,CPYSTR
+	PUSH P,B			;Save the source pointer
+	MOVEI B,"-"			;Clobber the null with a dash
+	DPB B,A
+	POP P,B				;Retrieve source
+	PUSHJ P,CPYSTR			;Append the jobnam
+	MOVE A,[POINT 7,OUTUSR,-1]
+	PUSHJ P,CPYSTR			;Copy the user
+	MOVE A,[100000,,0		;Get the jfn for the spooler
+		377777,,377777
+		0
+		POINT 7,[ASCIZ/PRINTER/]
+		POINT 7,OUTNAM
+		POINT 7,OUTUSR
+		0
+		0
+		0]
+	SETZ B,
+	GTJFN			
+	 PUSHJ P,SCREWUP##		;Better not fail
+	MOVEM A,SCOJFN(C)		;Save the output jfn
+	MOVE B,[7B5+1B20+1B22]
+	OPENF				;Open the file
+	 PUSHJ P,SCREWUP##		;Shouldn't fail
+	MOVE 6,C			;"S" in EFTP parlance
+	PUSHJ P,SNDACK			;Send the ack
+	 PUSHJ P,SCREWUP##
+	HRRZI A,PS.XFR
+	HRRM A,SOCSTT(C)		;Say no longer initializing
+	POPJ P,				;Leave
+
+; Routines to handle transfer
+DOPXFR:	HLLZ B,SOCSTT(A)		;Check for retransmission
+	TLZE B,(1B0)			;Retransmitting?
+	 JRST  [SOS SOCSEQ(A)		;Decrement the sequence count
+		PUSH P,A		;Save the pointer
+		PUSHJ P,SNDACK		;And acknowledge the previous packet
+		 PUSHJ P,SCREWUP##	;Shouldn't fail
+		POP P,A			;Recover the info block pointer
+		AOS SOCSEQ(A)		;Increment the seq count now
+		HLLM B,SOCSTT(A)	;Clear retransmit state
+		JRST CPOPJ##]		;And return to get more packets
+	HLLM B,SOCSTT(A)		;Clear retransmit state
+	CAIN P1,PT.DAT			;Data?
+	 JRST DO.DAT			;Add to file
+	CAIN P1,PT.END			;End?
+	 JRST DO.END			;Close the spooled file
+	JRST CPOPJ##			;Otherwise ignore the packet
+
+DO.DAT:	MOVE 6,A			;Store the info block pointer
+	MOVE B,[POINT 8,PBCONT]		;Get byte ptr into data
+	ADD B,PB			;KI10 can't compute EA from monitor
+	LDB C,PUPLEN			;Compute length of data block
+	SUBI C,MNPLEN
+	MOVNS C
+	MOVE A,SCOJFN(A)		;Output to file
+	SOUT				;Output here
+	PUSHJ P,SNDACK			;And ackowledge for the sender
+	 PUSHJ P,SCREWUP##		;Shouldn't happen
+	POPJ P,				;Leave
+
+; Routine to finish a transfer
+DO.END:	MOVE 6,A			;Save the info block pointer
+	MOVE A,SCOJFN(6)
+	CLOSF
+	 JFCL				;Shouldn't fail, but may
+	MOVSI B,PS.END			;Also say this is in end state
+	TLO B,(1B1)			;Say seen the first end
+	MOVEM B,SOCSTT(6)		;Store in the state block
+	PUSHJ P,SNDACK			;And acknowledge receiving the end
+	 JFCL				;This error isn't fatal
+	POPJ P,
+
+DOPND2:	SETZM SOCSTT(A)			;Clean out the state machine
+	SETZM SCOJFN(A)			;Clean out the output JFN
+	SETZM LPTTIM(FX)		;And clear the service time table
+	POPJ P,
+
+DOPABT:	MOVE A,LPTSOC(FX)		;Get info block pointer
+	SETZM SOCSTT(A)			;Clear state and output jfn
+	SETZ A,
+	EXCH A,SCOJFN(A)
+	DELF				;Delete the file
+	 JFCL
+	CLOSF
+	 JFCL
+	SETZM LPTTIM(FX)		;Clear timer
+	SETZM SCOJFN(A)
+	LOG <Aborted spooling connection %16O>
+	POPJ P,
+
+; Routine for failure code
+; Accepts error code in B
+
+; Table of error text, indexed by error code
+ERTEXT:	[ASCIZ/Transfer aborted by sender/]
+	[ASCIZ/Transfer aborted by receiver/]
+	[ASCIZ/Receiver busy, wait.../]
+	[ASCIZ/Last packet out of sequence/]
+	REPEAT PA.BSY-AC.OSA,<0> ;No defined error codes
+	[ASCIZ/Spooler busy, wait.../]
+	[ASCIZ/Receiver not accepting data/]
+	[ASCIZ/No such spooling device/]
+
+LPTSRF:	MOVE C,B			;Prepare esabt
+	HRRO B,ERTEXT(C)		;Pointer to text string
+	SETO A,				;Reply to what's in pb
+	PUSHJ P,ESABT			;Do the abort
+	POPJ P,				;Leave
+
+; Routine to copy a string.  Stops after copying a null byte
+; Accepts 1/Source byte pointer (NOT Tenex default)
+;	  2/Destination pointer (NOT Tenex default)
+CPYSTR:	PUSH P,C
+CPYST1:	ILDB C,A
+	IDPB C,B
+	JUMPN C,CPYST1
+	POP P,C
+	POPJ P,
+
+
+; Abort routine
+; Since this can be called before a local connection is established,
+; we respond to the packet pointed to by PB
+
+ESABT:	PUSHJ P,SAVE1##		;Save p1 for pb
+	MOVE P1,PB
+	MOVEI PB,LACKPB		;Start forming a packet
+	DPB C,[POINT 16,PBCONT(PB),15] ;Store the abort code
+	MOVEI A,PBCONT(PB)	;Form pointer to store abort text
+	HRLI A,(POINT 8,,15)
+	MOVEI C,4*<LACKPB-MNPBLN>-2 ;Max number of bytes in text
+	SETZ D,			;Terminate on a null byte
+	SOUT			;Store the text
+	SKIPE C			;Stored it all?
+	 SUBI C,1		;No, don't include the terminator
+	MOVEI A,4*<LACKPB-MNPBLN>-2+MNPLEN ;Compute pup length
+	SUBI A,(C)
+	DPB A,PUPLEN
+	MOVEI A,PT.ABT
+	DPB A,PUPTYP
+	MOVE A,PBHEAD+1(P1)	;Store the sequence number (from packet)
+	MOVEM A,PBHEAD+1(PB)
+	PUSHJ P,EXCPRT
+	HRRZ A,SPLJFN		;Get the jfn for the spooling socket
+	TLO A,(1B1)		;Generate a checksum
+	MOVEI B,(PB)		;Pointer to outgoing packet
+	HRLI B,MXPBLN		;Max length
+	PUPO			;Send it
+	 JFCL			;Ignore errors
+	MOVE PB,P1		;Recover coorect pb pointer
+	POPJ P,			;Leave
+	
+; Routine to acknowledge a packet
+; Accepts 6/pointer to socket info block
+;	  PB/Pointer to incoming packet
+SNDACK:	PUSH P,PB		;Save the incoming packet addr
+	MOVEI PB,LACKPB		;Point to acknowledgement packet
+	SETZM PBHEAD(PB)	;Zero transport control
+	MOVEI A,MNPLEN		;Set pup length
+	DPB A,PUPLEN
+	MOVEI A,PT.ACK		;Say this is an ack packet
+	DPB A,PUPTYP
+	MOVE A,SOCSEQ(S)	;Send ack with current sequence number
+	LSH A,4			;Left-justify
+	MOVEM A,PBHEAD+1(PB)
+	HRRZ A,SOCJFN(S)	;Send the pup to the sender
+	TLO A,(1B1)		;Have the system generate the checksum
+	MOVEI B,(PB)		;Addr of ack packet
+	HRLI B,MNPBLN		;Minimum length
+	PUPO			;Send it off
+	 JRST .+2		;Set to return +1 if it fails
+	AOS -1(P)
+	POP P,PB		;Recover old packet buffer
+	POPJ P,
+	
+		
+; Routine to exchange copy and exchange source and dest ports from
+; packet pointed to by P1 to packet pointed to by PB
+; Returns +1 always
+; Clobbers A,B
+EXCPRT:	MOVE A,PBHEAD+2(P1)	;Get dest net/host/high socket
+	MOVE B,PBHEAD+3(P1)	;Get dest low socket
+	LSH A,-4
+	LSHC A,-^D16		;Concat socket and right justify net/host
+	MOVEM B,PBHEAD+4(PB)	;Store new source socket
+	MOVE B,PBHEAD+4(P1)	;Get old source socket
+	LSH A,^D20		;Left justify dest net/host
+	LSH B,-4		;Right justify soure socket
+	ROTC A,-^D16		;Concat src low sock to dst net/host
+	MOVEM A,PBHEAD+3(PB)	;Store the new source net/host
+	MOVE A,PBHEAD+3(P1)	;Get old combo
+	LSH A,-4		;Right justify
+	LSH B,^D20		;Left just source high socket
+	LSHC A,-^D16		;Concat src net/host to high skt
+	MOVEM B,PBHEAD+2(PB)	;Store in new header
+	POPJ P,
+
+; Routine to set timeout for socket
+; Accepts FX/Connection index
+; Returns +1 always
+
+SPLSNT:	PUSH P,A
+	TIME
+	 PUSHJ P,SCREWUP##
+	ADD A,[LPTINT*^D1000]	;Interval until next check
+	MOVEM A,LPTTIM(FX)	;Save the last service time for connection
+	POP P,A
+	POPJ P,
+
+	END START

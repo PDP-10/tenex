@@ -1,0 +1,191 @@
+# include </ps/s/yeager/version.h>
+/****************************************************************************
+
+	Memory allocation and deallocation stuff
+	    l1_FreeSpaceInit ()		initializes free core area.
+	    *l1_GetMEM (nWords)		returns pointer to an area of
+					at least n Words or 0
+	    l1_RelMEM (ptr)		release memory associated with ptr.
+		NOTE: 32767 words is the largest piece it will attempt.
+****************************************************************************/
+# define l1_chunk struct chunk
+l1_chunk {/* memory chunk structure */
+	l1_chunk *previous;	/* previous free chunk or 0 */
+	l1_chunk *next;		/* next free or 0	    */
+	short int size;		/* bit 15 = 0 if free, 1 if taken */
+			        /*     14 - 0  size in words	  */
+	};
+
+extern l1_chunk l_firstfree;		/* first available core location */
+					/* defined in PUPl0.mac		 */
+
+# ifndef cc68 /* THEN circa '74 a la Alan Snyder cc */
+# define chunkhead 3			/* number of 16 bit words */
+l1_chunk *l1_memhead {l_firstfree};	/* Head of the memory list */
+# endif
+
+# ifdef cc68
+# define chunkhead 5			/* number of 16 bit words */
+l1_chunk *l1_memhead= &l_firstfree; 	/* Head of the memory list */
+# endif
+
+# define biggest 32767			/* 15 bits only */
+short int l1_coreleft;			/* free core available in words  */
+
+/****************************************************************************
+
+	int l1_FreeSpaceInit ()		Initialize free space .
+
+****************************************************************************/
+int l1_freespaceinit ()
+	{l1_coreleft = l_memcount () - chunkhead;
+	l1_memhead->previous = 0;
+	l1_memhead->next = 0;
+	l1_memhead->size = l1_coreleft;
+	}
+# define inuse 0100000
+
+int *zzpri (value, oldpsw) l1_chunk *value, oldpsw;
+	{
+# ifdef pdp11
+	l_opri (oldpsw);		/* restore old priority */
+# endif	
+	return((int *)value);
+	}
+
+
+/****************************************************************************
+
+	increment/decrement a pointer by d 16 bit words correctl.  
+	 vz: On PDP10 just add d. On 11's and 68000's add 2*d 
+
+****************************************************************************/
+
+# ifdef cc68		/* CASTING is really the way to go */
+l1_chunk *a_adjustshort (p, d) l1_chunk *p; short int d; 
+    {return((l1_chunk *)((short int *)p+d));}
+# endif
+
+# ifndef cc68		/* Can't cast on this compiler - but can */
+			/* return integers for pointers...hack..hack...*/
+l1_chunk *a_adjustshort (p, d) short int *p; int d; {return(p+d);}
+# endif
+/****************************************************************************
+
+	l1_GetMem	return pointer to n 16 bit words
+
+****************************************************************************/
+int *l1_getmem (nwords) int nwords;
+	{/* get a chunk of memory of size nWords */
+	 /* return(0) if none available */
+	short int x, leftover;
+	l1_chunk *rover, *redrover;
+	int oldpsw;
+# ifdef pdp11
+	oldpsw = l_6pri ();
+# endif
+	if (nwords <= 0) return(zzpri((l1_chunk *)0, oldpsw)); /* need something to do!*/
+	if (nwords > biggest) return(zzpri((l1_chunk *)0,oldpsw));
+	redrover = 0;			/* No before in the beginning */
+	rover = l1_memhead;		/* The beginning of Free Space */
+	while (rover->next)		/* =0 at end of list */
+	    {int taken;
+	    taken = rover->size & inuse;
+	    /* see if this chunk is "taken" */
+	    if (taken) {redrover = rover; rover = rover->next; continue;}   
+	    if (rover->size >= nwords)
+		{int remaining;
+		/* take this guy */
+		remaining = rover->size - nwords;
+		if (remaining > chunkhead)
+		    {/* make new chunk at end of Rover*/
+		    l1_chunk *new; short int disp;
+		    disp = chunkhead + nwords;		/* In 16 bit words */
+		    new = a_adjustshort (rover, disp);	/* Rover + disp */
+		    rover->size = nwords;		/* lessen */
+		    new->size = remaining - chunkhead;
+	            l1_coreleft -= chunkhead;
+		    new->next = rover->next;  /* new points ahead to next */
+		    new->previous = rover;    /* back to rover */
+		    rover->next = new;	      /* Rover to new  */
+		    (new->next)->previous = new;
+		    }
+		else /* sucking up ALL of whats left */
+		    nwords = rover->size;
+	        l1_coreleft -= nwords;
+		rover->size |= inuse; 
+		rover->previous = redrover;
+		++rover; 
+		return(zzpri(rover, oldpsw));	     /* pol1_chunk to THE space */
+		}
+	     else 
+		{redrover = rover; rover = rover->next; continue;}
+            }
+	/* end of list - see if enough room at end */
+	x = rover->size;
+	if (x & inuse) return(zzpri((l1_chunk *)0, oldpsw));   /* last space taken */
+	if (x < nwords) return(zzpri((l1_chunk *)0, oldpsw));  /* too small!! */
+	leftover = x - nwords;
+	if (leftover > chunkhead)		/* make NEW tail */
+	    {l1_chunk *new; 
+	    /* short int addressing */
+	    x = chunkhead + nwords; 
+	    new = a_adjustshort (rover, x);	/* Rover + x(short int) */
+	    rover->next = new;			/* ahead to new tail */
+	    new->previous = rover; 		/* back to Rover */
+	    new->next = 0;			/* dead end */
+	    rover->size = nwords;		/* lessen   */
+	    new->size = leftover - chunkhead;   /* what's left */
+	    l1_coreleft -= chunkhead;
+	    }
+        else
+	    nwords = rover->size;		/* take em all */
+	rover->size |= inuse;			/* taken */
+	l1_coreleft -= nwords;
+	++rover;
+	return(zzpri(rover, oldpsw));	
+	}
+
+# define freedmask 077777			/* 15 bits worth */
+
+/****************************************************************************
+
+	int l1_RelMEM (ptr) int *ptr;  Release allocated memory.
+
+****************************************************************************/
+int l1_relmem (ptr) l1_chunk *ptr;
+	{l1_chunk *piece, *pred, *succ; 
+	/* release chunk of memory, and Union any Free neighbors */
+	int oldpsw;
+# ifdef pdp11
+	oldpsw = l_6pri ();
+# endif
+	piece = ptr;
+	--piece;
+	piece->size &= freedmask;		/* free piece of Mem */
+	l1_coreleft += piece->size;		/* add back to our count */
+	succ = piece->next;			/* can This piece grow? */
+	if (succ)	/* possibility */
+	    if (!(succ->size & inuse))		/* successor free? */
+		{piece->size += (succ->size + chunkhead); /* growing */
+		piece->next = succ->next;	/* skip successor */
+		l1_coreleft += chunkhead;	/* add Head to our count */
+		if (piece->next)  /* then, we have a new successor */
+		    /* new succ point back to curr */
+		    (piece->next)->previous = piece; 
+		}
+	pred = piece->previous;			/* predecessor growth? */
+	if (pred)				/* predecessor exist? */
+	    if (!(pred->size & inuse)) 		/* union predecessor */
+		{pred->size += (piece->size + chunkhead);
+		l1_coreleft += chunkhead;	/* add Head to our count */
+		pred->next = piece->next; /* skip over piece just freed */
+		if (pred->next)	/* then, there is a forward link */
+	            (pred->next)->previous = pred; /* back link to pred */
+		}
+	zzpri (0, oldpsw);		/* see if we have to mess with it */
+	}
+
+
+
+

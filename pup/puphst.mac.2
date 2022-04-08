@@ -1,0 +1,464 @@
+;<PUP>PUPHST.MAC;2	5/13/81			EDIT BY RINDFLEISCH
+; Map HOSTS2.BIN instead of HOSTSL.BIN
+;<PUP>PUPHST.MAC;1	3/1/81			EDIT BY RINDFLEISCH
+; Code for mapping <SYSTEM>HOSTSL.BIN and searching for hosts/routes.
+
+	TITLE PUPHST -- HOST NAME/ROUTING UTILITIES FOR  PUP FTP SERVER
+	SUBTTL T. C. Rindfleisch / March 1981
+
+	SEARCH PUPDEF,PSVDEF
+
+tenex,< SEARCH STENEX >
+tops20,<SEARCH MONSYM>
+
+	USEVAR FTPVAR,FTPPVR
+
+
+; Following are definitions for accessing the HOSTS2 tables of network
+; hosts and addresses.  Details are found in the source file HOSTS2.MID
+; Each table has a 2-word header consisting of:
+;
+; 	wd 0	Number of entries in table.
+; 	wd 1	Number of words per entry.
+
+; Pointers to various tables in the HOSTS2 file:
+HSTSID==:0	; wd 0	SIXBIT /HOSTS2/
+HSTFN1==:1	; wd 1	SIXBIT /HOSTS/
+HSTVRS==:2	; wd 2	Type of system HOSTS file was compiled on
+HSTDIR==:3	; wd 3  SIXBIT directory name of source file
+HSTMCH==:4	; wd 4  SIXBIT system name of source file
+HSTWHO==:5	; wd 5	Name of person who compiled this
+HSTDAT==:6	; wd 6	Date of compilation as sixbit YYMMDD
+HSTTIM==:7	; wd 7	Time of compilation as sixbit HHMMSS
+NAMPTR==:10	; wd 10 Address in file of NAME table.
+SITPTR==:11	; wd 11	Address in file of SITE table.
+NETPTR==:12	; wd 12 Address in file of NETWORK table.
+		;....expandable....
+
+;NETWORK table
+;Each entry contains:
+NETNUM==:0	; wd 0	network number
+NTLNAM==:1	; wd 1 LH - address in file of name of network
+NTRTAB==:1	; wd 1 RH - address in file of network's address table
+ NETLEN==:2
+
+;ADDRESS table(s)
+;Each entry contains:
+ADDADR==:0	; wd 0	Network address of this entry (including network
+		;	number).
+ADLSIT==:1	; wd 1 LH - address in file of SITE table entry
+ADRCDR==:1	; wd 1 RH - address in file of next ADDRESS entry for
+		;	    this site (0 = end of list)
+ ADDLEN==:2
+
+;SITE table
+;Each entry looks like:
+STLNAM==:0	; wd 0 LH - address in file of official host name
+STRADR==:0	; wd 0 RH - address in file of first ADDRESS table entry
+		;	    for this site.  Successive entries are
+		;	    threaded together through ADRCDR.
+STLSYS==:1	; wd 1 LH - address in file of system name (ITS, TIP,
+		;	    TENEX, etc.) May be 0 => not known.
+STRMCH==:1	; wd 1 RH - address in file of machine name (PDP10,
+		;	    etc.)  May be 0 => not known.
+STLFLG==:2	; wd 2 LH - flags:
+STFSRV==:400000	;	bit 0 = 1 => server site (according to NIC)
+		; wd 2 RH - not used
+ SITLEN==:3
+
+;NAMES table:
+;Each entry looks like:
+NMLSIT==:0	; wd 0 LH - address in file of SITE table entry for this
+		;	    host.
+NMRNAM==:0	; wd 0 RH - address in file of host name.  This name is
+		;	    official if NMRNAM = STLNAM of NMLSIT.
+ NAMLEN==:1
+
+
+; Routine to load in network server name file, <SYSTEM>HOSTS2.BIN.
+; Entry:   n/a
+; Call:    CALL GTHSTL
+; Return:  +1, failure
+;          +2, file mapped to HSTLOC
+GTHSTL::MOVSI A,100001		; Try for HOSTS2 file - shrt, str input
+	HRROI B,[ASCIZ /<SYSTEM>HOSTS2.BIN/]
+	GTJFN
+	 JRST GTHSLX		; No go
+	HRRZM A,OKHSTL		; Save the jfn
+	MOVE B,[440000,,200000]	; Open it 36-bit, read
+	OPENF
+	 JRST [	EXCH A,OKHSTL	; a _ input jfn, save error
+		RLJFN		; Release it
+		 CALL SCREWUP##	; Huh?
+		EXCH A,OKHSTL	; a _ error code
+		JRST GTHSLX ]	; Bomb out
+	HRRZ A,OKHSTL		; a _ input jfn
+	SIZEF			; Fetch file size
+	 CALL SCREWUP##		; Oops
+	CAILE C,NHLPGS		; Room to map it?
+	 JRST [ HRRZ A,OKHSTL	; No, a _ file jfn
+		CLOSF		; Close it
+		 CALL SCREWUP##
+		JSP A,GTHSLE
+		ASCIZ /HOSTS2.BIN file too big/ ]
+	MOVE D,C		; d _ page counter
+	HRLM D,OKHSTL		; Also save it for unmapping
+	HRLZ A,OKHSTL		; a _ jfn,,0
+	MOVE B,[400000,,<HSTLOC/1000>]	; Place to map the file
+	MOVSI C,100000		; Read access
+GTHSL0:	PMAP			; Map the next page
+	ADDI A,1		; Bump the ptrs
+	ADDI B,1
+	SOJG D,GTHSL0		; Do them all
+	MOVE A,HSTSID+HSTLOC	; a _ file type id
+	CAME A,[SIXBIT /HOSTS2/]  ; Right format?
+	 JRST [ JSP A,GTHSLF	; No
+		ASCIZ /HOSTS2.BIN file has wrong format/ ]
+	HRROI A,LCLHST##	; a _ local PUPNM host name
+	CALL HSTLUK		; Look it up in HOSTS2
+	 JRST [ JSP A,GTHSLF	; No go
+		ASCIZ /Local PUPNM host name not in HOSTS2/ ]
+	MOVEM C,LCLSTN		; Save the site tbl entry
+	JRST SKPRET##		; OK, return +2
+
+; Here for JSYS errors while loading HOSTS2.BIN
+; Entry:   a = error code.
+GTHSLX:	ELOG <GTHSTL: Cannot load <SYSTEM>HOSTS2.BIN - %1J>
+	SETZM OKHSTL		; Clear "HOSTS2 loaded" flag 
+	RET
+
+; Here for non-JSYS errors while loading HOSTS2.BIN
+; Entry:   a = ptr to error string
+GTHSLF:	SAVE A			; Save the error string
+	CALL UMHSTL		; Unmap the file
+	RSTR A
+GTHSLE:	HRROS A			; a _ TENEX dest ptr
+	ELOG <GTHSTL: %1S>
+	SETZM OKHSTL		; Clear "HOSTS2 loaded" flag 
+	RET
+
+
+; Routine to unmap HOSTS2 file
+; Entry:   File mapped to HSTLOC
+;	   okhstl = number of pages mapped,,file jfn
+; Call:    CALL UMHSTL
+; Return:  +1
+UMHSTL::SKIPN D,OKHSTL		; Page count available?
+	 RET			; No, just return
+	SETO A,			; Set to unmap pages
+	MOVE B,[400000,,<HSTLOC/1000>]	; Place file is mapped
+	SETZ C,			; For TOPS-20
+	HLRZS D			; d _ page count
+UMHSL0:	PMAP			; Map the next page
+	ADDI B,1		; Bump page adr
+	SOJG D,UMHSL0		; Do them all
+	HRRZ A,OKHSTL		; a _ HOSTS2 file jfn
+	CLOSF			; Close it out
+	 CALL SCREWUP##
+	SETZM OKHSTL		; Clear the page count
+	RET
+
+; Routine to look up a server host name for exact match.
+; Entry:   a = ptr to host string
+; Call:    CALL HSTLUK
+; Return:  +1, failure, name not found or host not a server
+;	   +2, success, a = core adr of name tbl entry
+;			b = index into name table
+;			c = file adr of site tbl entry
+HSTLUK::HRROI B,HSTRBF		; Prepare the string
+	SKIPE OKHSTL		; HOSTS2.BIN loaded?
+	 CALL PREPST		; Yes, prepare the string - null?
+	  RET			; Fail
+	HRROI A,HSTRBF		; a _ prepared input string
+	CALL HLUKUP		; Look it up in the HOSTS2 NAMES table
+	 RET			; +1, no exact match
+	HLRZ C,NMLSIT(A)	; +2, OK - c _ file adr of site tbl
+	SKIPL STLFLG+HSTLOC(C)	; Server site?
+	 RET			; No, fail return
+	JRST SKPRET		; Yes, success
+
+; Routine to prepare a host name string for search.  The string is
+; copied to a new buffer starting at a word boundary, lower case chars
+; are raised to upper case, the string is zero-filled to a word
+; boundary, its length is measured and a mask (STRMSK) is prepared for
+; finding substrings.
+; Entry:   a = ptr to input string
+;	   b = ptr to dest string buffer
+; Call:    CALL PREPST
+; Return:  +1, null string
+;	   +2, success
+PREPST:	TLC A,-1		; Convert TENEX ptrs to valid str ptrs
+	TLCN A,-1
+	 HRLI A,(<POINT 7,0>)
+	TLC B,-1
+	TLCN B,-1
+	 HRLI B,(<POINT 7,0>)
+	SAVE D			; Save ac
+	SETO D,			; Init input string length counter
+PREPS0:	ADDI D,1		; Bump the string length
+	ILDB C,A		; c _ next char
+	CAIL C,"a"		; Lower case?
+	 CAILE C,"z"
+	  SKIPA			; No
+	   SUBI C,<"a"-"A">	; Yes, lower it
+PREPS1:	IDPB C,B		; Store it in the output string
+	JUMPN C,PREPS0		; If non-null, do another
+	TLNE B,760000		; Filled to word boundary?
+	 JRST PREPS1		; No, add another 0
+
+; Now compute a mask covering the non-null chars in the last word of
+; the output string.  The mask is right-shifted 1 bit to align with
+; words as compared in STRCMW
+	MOVE A,D		; a _ input string length
+	IDIVI A,5		; b _ # bytes in last wd
+	IMULI B,-7		; b _ - # bits to cover
+	MOVSI A,400000		; a _ seed for mask
+	ASH A,0(B)		; a _ mask (right-shifted 1 bit loc)
+	MOVEM A,STRMSK		; Save it
+	CAIE D,0		; Null string?
+	 AOS -1(P)		; No, skip return
+	RSTR D			; Recover ac
+	RET
+
+
+; Routine to do a binary search for a string in the HOSTS2 NAMES table.
+; Entry:   a = ptr to zero-filled string
+; Call:    CALL HLUKUP
+; Return:  +1, name not found, a = core adr of entry just > input
+;	   +2, a = core adr of matching name entry
+;	       b = matching name tbl entry index
+HLUKUP::SKIPN OKHSTL		; Host tables loaded?
+	 RET			; No
+	HRRZS A			; a _ core adr of string
+	MOVE B,NAMPTR+HSTLOC	; b _ adr of NAME table
+	MOVEI C,LKNAMC		; c _ name comparison routine adr
+	JRST LUKUP		; Look it up
+
+; Host name comparison routine for use with binary search LUKUP
+; Entry:   a = ptr to name being looked up
+;          b = core adr of next table probe
+; Call:    CALL LKNAMC
+; Return:  +1, enttmp < probe
+;	   +2, enttmp subset of probe
+;	   +3, enttmp = probe
+;	   +4, enttmp > probe
+LKNAMC:	HRRZ B,NMRNAM(B)	; b _ file adr for table entry name ptr
+	ADDI B,HSTLOC		; Convert to ptr to core adr of string
+	JRST STRCMW		; Compare the strings wordwise
+
+
+; Routine to do a binary search for an address in the appropriate
+; network ADDRESS table.
+; Entry:   a = INTERNET address
+; Call:    CALL ALUKUP
+; Return:  +1, address not found, a = 0
+;	   +2, a = core adr of matching address entry
+ALUKUP::SKIPN OKHSTL		; Host tables loaded?
+	 RET			; No
+	SAVE A			; Save a
+	LDB A,[POINT 8,A,11]	; a _ network number
+	CALL GTNTIX		; Fetch the network tbl entry adr
+	 JRST [ SETZ B,		; No such network
+		SUB P,[1,,1]	; Reset the stack
+		JRST LUKRET ]	; Fail return
+	HRRZ B,NTRTAB(A)	; b _ adr of NETWORK address table
+	RSTR A			; Recover INTERNET address
+	JUMPE B,LUKRET		; LUKUP fail return
+	MOVEI C,LKADRC		; c _ address comparison routine adr
+	JRST LUKUP		; Look it up
+
+
+; INTERNET address comparison routine for use with binary search LUKUP
+; Entry:   a = internet address being looked up
+;          b = core adr of next table probe
+; Call:    CALL LKADRC
+; Return:  +1, enttmp < probe
+;	   +2, enttmp subset of probe (same as +1 for numbers)
+;	   +3, enttmp = probe
+;	   +4, enttmp > probe
+LKADRC:	MOVE B,ADDADR(B)	; b _ table entry network address
+	JRST NUMCMW		; Compare the values
+
+; Routine to do a binary search in a table.
+; Entry:   a = item to be found
+;	   b = file adr of table:  # entries, wds/entry, entry 0, ...
+;	   c = adr of comparison routine
+; Return:  +1, failure
+;		a = core adr of nearest entry > input
+;		b = table index of nearest entry > input
+;	   +2, success
+;		a = core adr of matching entry
+;		b = table index of matching entry
+LUKUP:	SAVE <P1,P2>		; Save working ac's
+	MOVEM A,ENTTMP		; Save the item
+	HRRZM C,CMPFCT		; Save the comparison function adr
+	HRRZI B,HSTLOC+2(B)	; b _ core adr of start of table data
+	MOVEM B,TABASE		; Save as the table base
+	MOVE A,-1(B)		; a _ # wds/entry
+	MOVEM A,ENTLEN
+	MOVE P1,-2(B)		; p1 _ # entries in table
+	MOVEM P1,TABLEN		; Save it
+	JFFO P1,.+2		; p2 _ top "1" bit
+	 JRST LUKRET		; Null table, quit
+	MOVSI P1,400000		; p1 _ largest power of 2 <= tbl length
+	MOVNS P2
+	LSH P1,0(P2)
+	SETO P2,		; Init item index into table
+
+; Here we move up a notch in the table
+LUKUPU:	JUMPE P1,LUKRB1		; Quit if increment 0
+	ADD P2,P1		; p2 _ new higher probe index
+	LSH P1,-1		; Halve increment for next time
+	CAMGE P2,TABLEN		; New probe past end of table?
+	 JRST LUKGO		; No, go try the lookup
+
+; Here we move down a notch in the table
+LUKUPD:	JUMPE P1,LUKRET		; Quit if increment 0
+	SUB P2,P1		; p2 _ new lower probe index
+	LSH P1,-1		; Halve increment for next time
+	CAML P2,TABLEN		; New probe above top of table?
+	 JRST LUKUPD		; Yes, move down another notch
+	JUMPGE P2,LUKGO		; If in table at all, try the lookup
+	ELOG <LUKUP: Table search screwed up>
+	SETZ P2,		; Fail return
+	JRST LUKRET
+
+; Here to check on this entry for match
+LUKGO:	MOVE B,P2		; b _ current tbl entry probe index
+	IMUL B,ENTLEN		; b _ core adr of entry in table
+	ADD B,TABASE
+	MOVE A,ENTTMP		; a _ item being sought
+	CALL @CMPFCT		; Invoke the comparison function
+	 JRST LUKUPD		; +1, item < entry, move down
+	 JRST LUKUPD		; +2, item subset of entry, move down
+	 JRST [	AOS -2(P)	; +3, item = entry, skip return
+		JRST LUKRET ]
+	 JRST LUKUPU		; +4, item > entry, move up
+
+; Here for lookup returns.
+; Entry:  b = index to nearest entry
+LUKRB1:	ADDI P2,1		; Bump index to next higher entry
+LUKRET:	MOVE A,P2		; a _ nearest index
+	IMUL A,ENTLEN		; a _ core adr of entry in table
+	ADD A,TABASE
+	MOVE B,P2		; b _ nearest entry index
+	RSTR <P2,P1>		; Restore ac's
+	RET
+
+; Temp storage for table lookup
+LS ENTTMP		; Temp storage for item being sought in table
+LS ENTLEN		; Length of each table entry
+LS TABASE		; Bottom of lookup table
+LS TABLEN		; Length of lookup table
+LS CMPFCT		; Address of comparison function to invoke
+
+; Routine to compare two numbers
+; Entry:   a, b = input numbers
+; Call:    CALL NUMCMW
+; Return:  +1, a < b
+;	   +2, never happens
+;	   +3, a = b
+;	   +4, a > b
+NUMCMW:	CAMGE A,B		; a < b?
+	 RET			; Yes, return +1
+	CAME A,B		; a > b?
+	 JRST SK3RET##		; Yes, return +4
+	JRST SK2RET##		; a = b, return +3
+
+
+; Routine to compare two zero-filled strings
+; Entry:   a, b = adrs of strings
+;	   strmsk = mask for non-0 chars in last wd of a
+; Call:    CALL STRCMW
+; Return:  +1, a < b
+;	   +2, a substring of b
+;	   +3, a = b
+;	   +4, a > b
+STRCMW:	MOVE C,0(A)		; c _ word from 1st input
+	LSH C,-1		; Clear bit 35
+	MOVE D,0(B)	  	; d _ word from 2nd input
+	LSH D,-1		; Clear bit 35
+	CAMGE C,D		; a < b?
+	 JRST STRCW0		; Yes, check on substring
+	CAME C,D		; a > b?
+	 JRST SK3RET##		; Yes, return +4
+	TRNN C,177		; a = b, end of string?
+	 JRST SK2RET##		; Yes, return +3
+	AOS A			; Bump adrs
+	AOJA B,STRCMW		; And carry on
+
+; Here a < b.  See if it is a substring
+STRCW0:	AND D,STRMSK		; Reduce d to non-0 chars of 1st input
+	TRNN C,177		; 1st input done?
+	 CAME C,D		; Yes, a proper substring of b?
+	  RET			; No, return +1
+	JRST SKPRET##		; Substring, return +2
+
+; Routine to convert a network number to a name
+; Entry:   a = network number
+; Call:    CALL GTNTNM
+; Return:  +1, failure, no such network
+;          +2, a = ptr to network name string
+GTNTNM::CALL GTNTIX		; Fetch the core adr of NETWORK tbl entry
+	 RET			; No go
+	HLRZ A,NTLNAM(A)	; a _ TENEX ptr to name
+	HRROI A,HSTLOC(A)	; Make it a core ptr
+	JRST SKPRET##
+
+; Routine to convert a network number to a core address for the
+; corresponding NETWORK table entry.
+; Entry:   a = network number
+; Call:    CALL GTNTIX
+; Return:  +1, failure, no such network
+;          +2, a = core address of matching network table entry
+GTNTIX::SKIPN OKHSTL		; Host tables loaded?
+	 RET			; No
+	SAVE <P1,P2,A>		; Save ac's
+	MOVE A,NETPTR+HSTLOC	; a _ file adr of network table
+	CALL SETABL		; Set up to scan the table
+	RSTR A			; a _ network number
+GTNTI0:	CAMN A,NETNUM(P1)	; Right network number?
+	 JRST [ AOS -2(P)	; Yes, skip return
+		JRST GTNTI1 ]
+	ADD P1,P2		; No, bump ptr
+	AOBJN P1,GTNTI0		; Try them all
+
+; Here when network entry found
+GTNTI1:	MOVEI A,0(P1)		; a _ core adr of entry
+	RSTR <P2,P1>		; Recover old table params
+	RET
+
+
+; Routine to set up for scanning a file table
+; Entry:   a = file adr of the table header:
+;		wd 0 - # table entries
+;		wd 1 - length of each entry
+; Call:    CALL SETABL
+; Return:  +1, P1 = aobjn ptr into table data area
+;	       P2 = length-1 of table
+SETABL::SKIPN OKHSTL		; Host tables loaded?
+	 JRST [ SETZB P1,P2	; No
+		RET ]
+	MOVN P1,HSTLOC(A)	; p1 _ aobjn ptr through table
+	HRLS P1
+	HRRI P1,HSTLOC+2(A)
+	MOVE A,HSTLOC+1(A)	; a _ table length
+	SUBI A,1		; Decrement so aobjn works
+	MOVE P2,A		; p2 _ tbl length - 1
+	RET
+
+
+; Storage for HOSTS2 processing functions
+; Per word storage
+LS OKHSTL		; HOSTS2 flag: 0 if file not mapped
+			;	       # pages,,jfn if mapped
+LS LCLSTN		; Local host site table entry (HOSTS2.BIN)
+LS STRMSK		; Mask of non-null chars in last wd of string
+LS HSTRBF,20		; Buffer for preparing host name str for lookup
+
+; Per page storage
+   NHLPGS==20		; Page allocation for HOSTS2.BIN
+LSP HSTLOC,NHLPGS	; Area for mapping HOSTS2.BIN
+
+	END
+

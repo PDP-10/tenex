@@ -1,0 +1,486 @@
+	.nlist	bex
+	.title	NEW ether-net board service test.
+	.sbttl	definitions
+	.sbttl	vector addresses and registers.
+E0OCV = 400					; Output complete vector
+E0ICV = E0OCV+4					; Input  complete vector
+E0OEV = E0OCV+10				; Output ERROR vector
+E0OWC = 160000					; output word count
+E0OBL = E0OWC+2					; output buffer location
+E0OCS = E0OWC+4					; output control and status
+E0ODE = E0OWC+6					; output delay.
+E0IWC = E0OWC+10				; input word count
+E0IBL = E0OWC+12				; input buffer location
+E0ICS = E0OWC+14				; input control and status
+E0RHA = E0OWC+16				; RAM HOST stuff.
+
+	.sbttl	input cs bits
+; INPUT control status register  (16xx14)
+; Some bit definitions:	      bit
+inGO  = 1		;	0		  Input GO bit
+inPR  = 2		;	1		  Promiscuous bit
+inRWE = 4		;	2		  Ram WRITE enable
+inRWV = 10		;	3		  Ram WRITE value (0, 1)
+inRCR = 20		;	4		  Receiver reset.
+inLBK = 40		;	5		  Loop back
+inENA = 100		;	6		  enable
+inDON = 200		;	7		  input DONE
+			;	8-9		  N/A	
+inCAR = 2000		;      10		  carrier on = 1
+
+	; ERROR BITS FOLLOW 
+inWOV = 4000		;      11		  word count overflow
+inFOR = 10000		;      12		  FIFO over-run
+inCRC = 20000		;      13		  CRC error
+inNXM = 40000		;      14		  NXM (if NXMok = 1)
+inERR = 100000		;      15		  ERROR bit(See 11 - 14)
+
+	.sbttl	output CS bits.
+; OUTPUT control status register  (16xx04)
+; Some bit definitions:	      bit
+outGO  = 1		;	0		  output GO - active/idle
+outWC  = 2		;	1		  Set if word count = 0
+outIOR = 4		;	2		  I/O reset.
+outMER = 10		;	3		  Memory error reset
+outTRR = 20		;	4		  transmiter reset
+           		;	5		  N/A
+outENA = 100		;	6		  enable
+outDON = 200		;	7		  output DONE
+	
+	;  ERROR BITS FOLLOW
+outNXM = 400		;	8		  NXM: SSYN NOT received.
+			;			  BIT11 ALSO SET.
+			;       9		  N/A
+outCAR = 2000		;      10		  compliment of BIT1
+outBGN = 4000		;      11		  Bus grant not received.
+			;			  BIT11 and NOT BIT8.
+outFOR = 10000		;      12		  output word count overflow.
+outRET = 20000		;      13		  Retry. Couldn't output
+			;			  because carrier detected.
+outCOL = 40000		;      14		  jammed or Collision detect.
+outERB = 100000		;      15		  ERROR bit (See 8 - 14)
+
+	.sbttl	local host and destination host
+; Local HOST defined as...
+lHOST = 111		; 	For the heck of it.
+dHOST = 111		;	Looping back - ta dah...
+	.sbttl	DATA area.
+	jmp	mini	;	For boots to 1000.
+	.globl	WDcnt,delay,nGOES,nOint,nIint,nOerr,nTO,TOcnt,timCNT
+	.globl	xIN,xOUT
+hosts:	.byte lHOST,dHOST	; ENCAP word.
+WDcnt:	20.			; 	WORD count for output.
+WDSout: 0			;	Actual words output.
+delay:	100			; 	output delay.
+done:	0
+donVAL:	3			; 	for i/o finished.
+nGOES:	0
+nOint:	0
+nIint:	0
+nOerr:	0
+nTO:	0
+xIN:	0
+xOUT:	0
+xOnDon:	0			;	xtra out. int, no done
+xInDon:	0			;	xtra input, NO done.
+iPRO:	0
+oPRO:	0			;	in progress flags...
+pTOC:	0			;	previous time out count.
+TOcnt:	0			;	time out counter
+timCNT:	0			;	Actual most recent time out count.
+clokON:	0			;	=1 if clock is interrupting.
+INwin:	0			;	counts input before output.
+;	DEFINITIONS:
+wait6=0			;	10t if we wait 6tic in setup. Need clock.
+clock=1			; 	No clocking here...
+pclock=0		;	=1 if we are using programmable clock.
+fakeIN=0		;	=1 if extra output int forces DONE.
+poll7=0			;	=1 if POLL input for done and go to PI7
+			;
+psw=177776
+consol=177570
+KW11P=172540
+KW11PB=KW11P+2
+
+.IF EQ <clock>
+timOUT:	40			;	timeout when exceeded...simulate clk.
+.ENDC
+	.sbttl	The least of 5 evils!
+	.globl	mini
+;
+;	NON interrupt driven interface test-polls for done.
+;	bit 0 SET on console causes a halt at end of pass.     01
+;	bit 1 SET then turn on CLOCK interrupt if clock=0      02
+;	bit 2 SET then skip reset in time out loop.	       04
+;	bit 3 SET then skip input on ether net.		       10
+;
+;	Loopback - promiscuous mode...			       
+;	
+mini:
+	mov	#1000,SP		; set up the stack
+	clr	@#177776		; we run at 0.
+	jsr	pc,MINini		; initialize interface, etc...
+	clr	clokON			; Start w/o interruping:
+;	Processing loop below
+process:
+;	Set up output and input
+	mov	TOcnt,pTOC		; for bench mark.
+	CLR	TOcnt			; Time Out Count.
+	CLR	done
+	NOP
+	bit	#1,@#consol
+	beq	1$
+	 HALT
+1$:
+	.IF EQ <clock+poll7>
+	bit	#2,@#consol		; TURN on clock?
+	beq	2$			; NO on branch.
+	 tst	clokON			; is it interrupting?
+	 bne	3$			; Yes...
+	  mov	#100,@#177546		;  INT on.
+	  inc	clokON			;  flag SET.
+	  br	3$			;  and continue...
+2$:
+;	Here: turn of clock
+	tst	clokON			;  Is it off
+	beq	3$			;   YES.
+	 mov	#0,@#177546		;   NO, but is now.
+	 clr	clokON			;   So is flag.
+3$:
+	.ENDC
+
+	jsr	pc,setup		; for next try.
+
+;	Here we WAIT until input AND output are DONE.
+Owait:	
+      .IF NE <poll7>
+	tstb	@#E0ICS		;	Done with input yet?
+	bge	Owait		;	NO.
+	 clr	@#psw		;	down to 0.
+	 br	process		;	and try again.
+      .ENDC
+      .IF EQ <poll7>	;	BEGIN 7
+	mov	done,r0
+	cmp	r0,donVal		; 
+	beq	process			; done.
+	 inc 	TOcnt			; psuedo-time out
+	.IF NE <clock>
+	 jsr	pc,TIMout		; Time out ?
+	 bcc	Owait			; NO.
+
+         .IF NE <wait6>
+	   HALT
+         .ENDC
+
+	.ENDC
+
+	.IF EQ <clock>
+	 cmp	TOcnt,timOUT		; time out?
+	 blt    Owait			; NO on higher
+	  inc	nTO			;  number of time outs
+	  mov	TOcnt,timCNT		;  save it.
+	.ENDC
+
+	  bit	#4,@#consol		;  do we reset?
+	  bne	1$			;  NO on branch
+	   jsr	pc,RESETi		;   reset interface
+1$:
+	  br	process			; NOTHING WORKING...SO TRY AGAIN 
+	.ENDC		;	BEGIN 7
+	.globl 	oIN,oERR,inINT1
+oIN:	; interrupt stuff
+	bis	#1,done			;	the usual done...
+	INC	nOint
+	tst	oPRO			;	output in progress?
+	beq	1$			;	YES on branch.
+	 inc	xOUT			;	 NO, an extra one.
+	 .IF NE <fakeIN>		;	 treat as input! Weird HUH?
+	 mov	donVAL,done		;
+	 .ENDC
+1$:
+	tstb	@#E0OCS			;	Do we have a done?
+	blt	2$			;	Yes
+	 inc	xOnDon			;	 NO count it.
+2$:
+	inc	oPRO			;	We have done the output.
+	NOP
+	RTI
+
+
+oERR:	
+	INC	nOerr
+	NOP
+	JSR	pc,RESETi	        ;	reset interface.
+	mov	donVal,done		;	BOTH done.
+	RTI
+
+
+inINT1: 
+	INC	nIint
+	tst	iPRO			;	output in progress?
+	beq	10$			;	Yes on branch.
+	 inc	xIN			;	 NO, an extra one.
+	 RTI
+10$:
+	inc	iPRO
+	NOP
+	tst	@#E0ICS			;	input error?
+	bge	1$			;	NO>
+	 bis	#3,done			;	 Yes, output too.
+	 RTI
+1$:	 
+	tstb	@#E0ICS			;	Do we have a done?
+	blt	2$			;	Yes
+	 inc	xInDon			;	 NO count it.
+2$:
+	bit	#1,done			;	HAS output finished?
+	bne	3$
+	 inc	INwin			;	 It lost...
+3$:
+	bis	#2,done
+	RTI
+RESETi:
+	mov	#inRCR,@#E0ICS			; reset receiver.
+	mov	#outIOR+outMER+outTRR,@#E0OCS   ; reset transmitter
+	rts	pc
+pri7=340
+setup:
+;	jsr	pc,BufINI		; initialize buffers:
+;	Set up io on interface:
+;	    set up OUTput registers
+
+       .IF NE <wait6>
+	mov	#6,r0			; 1/10th of a second...
+	jsr	pc,setTIM		; set timer for time out
+stimO:
+	jsr	pc,timOUT
+	bcc	stimO
+       .ENDC
+
+	mov	WDcnt,r0		; word count.
+	mov	r0,WDSout		; save so we can check.
+	neg	r0			; two's compliment
+	bic	#174000,R0		; 11 bits only...
+	mov	r0,@#E0OWC		; word count
+	NOP
+	mov	#OUTBUF,@#E0OBL		; buffer location.
+	mov	delay,r0		; set delay.
+	neg	r0			; 2's compliment.
+	mov	r0,@#E0ODE		; set delay - 16 bits
+
+;	Set up input (We will be doing loopback, so don't start output yet)
+	mov	#-1777,@#E0IWC		; input word count(2's compliment)
+	mov	#INbuff,@#E0IBL		; input buffer location
+	NOP
+	mov	#pri5,@#psw		;  for changing some params.
+	clr	iPRO
+	clr	oPRO			;  We are in progress on i/o.
+	inc	nGOES			;  GO counter
+	tst	nGOES			;  Wrap around?
+	bne	1$			;  NO.
+	 mov	#1,nGOEs		;   One go.
+	 clr	nIint
+	 clr	nOint
+	 clr	xOnDon
+	 clr	xInDon
+	 clr	nTO
+	 clr	xIn
+	 clr	xOut
+1$:
+	clr	@#psw			;  Back to zero...
+
+;	GO + loopback + inENA : INPUT-
+       .IF EQ <poll7>			;  with poll7 always use i/o.
+	mov	#1,donVal		;  How we finish...Output only.
+	bit	#10,@#consol		;  Skip INput?
+	bne	skipIT			;   YES.
+       .ENDC
+	 mov	#inGO+inLBK+inPR+inENA,@#E0ICS
+	 mov	#3,donVal		;   input and output for a finish.
+skipIT:
+	NOP
+	NOP
+	NOP
+       .IF NE <poll7>
+	mov	#pri7,@#psw		; UP we go to block until input done.
+       .ENDC
+	mov	#outGO+outENA,@#E0OCS	; OUTPUT off and running.
+	NOP
+	rts	pc
+TRAP4:
+	halt
+	br	TRAP4
+	4
+TRAP10:
+	halt
+	br	TRAP10
+	10
+.IF NE <clock>
+	.sbttl 	timer stuff here.
+chkHI:	0
+chkLOW:	0	; TIMER double word.
+
+
+	.globl	TIMout,chkLOW,chkHI
+;	Compare timer to current time, and return true (sec)
+;	if timer LEQ current time. Double word UNsigned compares...
+TIMout:
+	cmp	chkHI,timHI		; HIGH ORDER compare
+	blo	TIMup			; timer(H) < current(H). Times UP.
+	bhi	NOTup			; timer(H) > current(H).
+	cmp	chkLOW,timLOW		; high =, check LOW ORDER
+	bhi	NOTup			; timer(L) > current(L)
+TIMup:
+;	[T(H),T(L)] LEQ [C(H),C(L)]
+	sec				; timed out...
+	rts	pc
+NOTup:
+	clc
+	rts	pc
+
+
+;	16 2/3 milliseconds timer - 1/10th second time out.
+	.globl	setTIM
+;	r0=n tics to wait.
+setTIM:
+	mov	timHI,chkHI
+	mov	timLOW,chkLOW
+	add	r0,chkLOW
+	adc	chkHI
+	rts	pc
+.ENDC
+
+	.sbttl	timer interrupt server-stuff.
+	.globl	timINT,timHI,timLOW
+timHI:	0
+timLOW: 0	; CURRENT time double word.
+timINT:
+	add	#1,timLOW
+	adc	timHI
+	RTI
+.IF NE <pclock>
+pint=100
+prep=10
+prun=1
+pVec=104
+pVal:	10
+kW11:	0,0
+pINTR:
+	tst	@#KW11P
+	bge	1$		; NO error
+	 bic	#prun,@#KW11P	;  clear run to clear error.
+	 bis	#prun,@#KW11P	;  OFF again, ON again.
+1$:
+	inc	KW11+2
+	adc	KW11
+	RTI
+.ENDC
+	.sbttl	MINI - initialization routine.
+	.globl	MINini
+pri5=240			; Do these at pri. 5
+MINini:
+	clr	INwin
+	clr	nGOES
+	clr	nOint
+	clr	nTO
+	clr	nIint
+	clr	xOnDon
+	clr	xInDon
+	clr	nOERR
+	clr	iPRO
+	clr	oPRO
+	clr	xIN
+	clr	xOUT
+
+;	Initialize clock-but leave interrupt off unless in clock mode.
+	clr	timHI
+	clr	timLOW
+	mov	#timINT,@#100		; vector for clock
+	mov	#300,@#102		; pri 6.
+	.IF NE <clock>
+ 	MOV	#100,@#177546		; turn on interrupt
+	.ENDC
+
+	.IF EQ <clock>
+	bic	#100,@#177546		; clock off.
+	.ENDC
+	.IF NE <pclock>
+;	Set up programmable clock:
+	mov	pVal,@#KW11PB
+	mov	#pINTR,@#pVEC
+	mov	#300,@#pVEC+2
+	mov	#pint+prep+prun,@#KW11P
+	.ENDC
+	jsr	pc,BufINI		; initialize buffers:
+;	Initialize interface, and vector
+;	First output
+	mov	#outIOR+outMER+outTRR,@#E0OCS	 ; resest the world!
+	clr	@#E0OCS			; clear it.
+	mov	#oIN,@#E0OCV		; output complete vector
+	mov	#pri5,@#E0OCV+2		; priority
+	mov	#oERR,@#E0OEV		; out error vector
+	mov	#pri5,@#E0OEV+2		; priority
+
+;	input...							
+	mov	#inRCR,@#E0ICS		; reset receiver
+;	Now clear the RAM for address selection
+	mov	#255.,r0
+	clr	r1
+1$:
+	mov	r1,@#E0RHA		; CLEAR Ram host address.
+	mov	#inRWE,@#E0ICS		; write a 1 in ALL addresses.
+	inc	r1			; next address
+	dec	r0			; our count
+	bge	1$			; 256 times.
+
+;	broad Cast
+	clr	@#E0RHA
+	mov	#inRWE+inRWV,@#E0ICS	; write a 1 
+
+;	local host
+	mov	#lHOST,@#E0RHA
+	mov	#inRWE+inRWV,@#E0ICS	; write a 1 
+
+	clr	@#E0ICS			; and clear CS bits.
+;	Now intialize input vector.
+	mov	#inINT1,@#E0ICV		; vector location
+	mov	#pri5,@#E0ICV+2		; and priority.
+
+;	For trap to 4-10
+	mov	#TRAP4,@#4
+	mov	#340,@#6
+	mov	#TRAP10,@#10
+	mov	#340,@#12
+
+	rts	pc
+	.sbttl	initialize buffers.
+bufINI:
+;	initialize outBuf, and clear input Buf:
+;	outBUF has first tw0 bytes of dHOST,sHOST for bSize+1 words.
+	mov	hosts,ENCAP		; re-init encapsulation.
+	mov	#OUTdat,r0
+	mov	#1,r1
+	mov	#INbuff,r2
+1$:
+	mov	r1,(r0)+		; store 1,...,bSize
+	clr	(r2)+			; clear input buffer
+	inc	r1
+	cmp	r1,#bSize
+	ble	1$
+	clr	(r2)			; last word.
+	rts	pc
+	.nlist	meb
+	.sbttl	buffer areas.
+	.globl	OUTBUF,inBUFF
+bSize = 1000.
+OUTBUF:
+ENCAP:	.byte	lHOST,dHOST		; Source, and dest HOST(lHOST..)
+OUTdat:
+	.BLKW	bSize
+; Data buffer area:
+INbuff:	.BLKW bSize+1
+	.end	mini
+
+
+
+

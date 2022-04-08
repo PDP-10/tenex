@@ -1,0 +1,694 @@
+SUBTTL E. A. Taft / October, 1976	; Modifications by E. Fiala
+
+; Copyright Xerox Corporation 1981
+; Accumulator assignments
+
+	S=6		; Pointer to EFTP socket
+	PB=7		; Pointer to packet buffer
+
+
+; Parameters and byte pointers defining the structure of a Packet Buffer (PB)
+
+PBHEAD==0	; Start of Pup Header
+ PUPLEN: POINT 16,PBHEAD(PB),15	; Pup Length
+ PUPTCB: POINT 8,PBHEAD(PB),23	; Transport Control Byte
+ PUPTYP: POINT 8,PBHEAD(PB),31	; Pup Type
+
+; PBHEAD+1
+ ; B0-31			; Pup ID
+
+; PBHEAD+2
+ PPUPDN: POINT 8,PBHEAD+2(PB),7	; Destination Network
+ PPUPDH: POINT 8,PBHEAD+2(PB),15  ; Destination Host
+ PPUPD0: POINT 16,PBHEAD+2(PB),31  ; High 16 bits of Destination Socket
+
+; PBHEAD+3
+ PPUPD1: POINT 16,PBHEAD+3(PB),15  ; Low 16 bits of Destination Socket
+ PPUPSN: POINT 8,PBHEAD+3(PB),23  ; Source Network
+ PPUPSH: POINT 8,PBHEAD+3(PB),31  ; Source Host
+
+; PBHEAD+4
+ PPUPSS: POINT 32,PBHEAD+4(PB),31  ; Source Socket
+
+PBCONT==PBHEAD+5  ; Start of Pup Contents
+
+MNPLEN==^D22	; Minimum Pup Length (bytes), incl header and checksum
+MXPLEN==^D554	; Maximum Pup Length
+MNPBLN==<MNPLEN+3>/4  ; Minimum size of PB, in words
+MXPBLN==<MXPLEN+3>/4  ; Maximum size of PB, in words
+
+; Structure of the local EFTP socket
+
+SOCJFN==0	; Pup JFN opened in raw packet mode
+SOCSEQ==1	; Current sequence number
+SOCFRK==2	; Inferior timer fork
+SOCCHN==3	; Interrupt channel number
+SOCTIM==4	; Timeout interval (ms)
+SOCTC==5	; Timeout countdown
+SOCLTT==6	; Long-term timeout expiration time
+SOCSTM==7	; Starting time for round-trip delay measurement
+SOCLNH==10	; Local net/host
+SOCLSK==11	; Local socket
+SOCFNH==12	; Foreign net/host
+SOCFSK==13	; Foreign socket
+
+
+; EFTP parameters
+
+MINTIM==^D250	; Minimum timeout interval (ms)
+MAXTIM==^D5000	; Maximum timeout interval (ms)
+INITIM==^D1000	; Initial timeout interval (ms)
+DLYTIM==^D5000	; Dally timeout interval (ms)
+LACKPB==^D25	; Space allocated for Ack PB (words)
+
+; Pup Types
+
+PT.DAT==30	; EFTP Data
+PT.ACK==31	; EFTP Acknowledgment
+PT.END==32	; EFTP End
+PT.ABT==33	; EFTP Abort
+
+; EFTP Abort codes
+
+AC.ESA==1	; External Sender Abort
+AC.ERA==2	; External Receiver Abort
+AC.RBA==3	; Receiver Busy Abort
+AC.OSA==4	; Out of Sync Abort
+
+; EFTP Send Data
+;	A/ Pointer to EFTP socket info block
+;	B/ Pointer to PB containing data to be sent
+;	C/ Number of data bytes to be sent
+;	D/ Timeout in ms
+; Returns +1:  Unsuccessful, code in A[rh] says why:
+;		-1: timed out
+;		0-177777: Abort received, this is the Abort code
+;		>177777: unaccountable Tenex jsys error
+;		In the Abort case, the abort is copied into PB,
+;		a byte pointer to the abort text is returned in B,
+;		and the length of the abort text returned in C.
+;	+2:  Successful
+; Clobbers A-D
+
+ESDATA::HRLI B,PT.DAT		; Remember Pup type = EFTP Data
+ESDAT0:	PUSH P,S		; Enter here from End code
+	PUSH P,PB
+	ADD P,[LACKPB,,LACKPB]	; Reserve space for received ack
+	MOVEI S,(A)
+	MOVEI PB,(B)
+	SETZM PBHEAD(PB)	; Zero transport control
+	ADDI C,MNPLEN		; Compute Pup length
+	DPB C,PUPLEN		; Store in Pup
+	HLRZ A,B		; Set Pup type
+	DPB A,PUPTYP
+	MOVE A,SOCSEQ(S)	; Set Pup ID = sequence #
+	LSH A,4
+	MOVEM A,PBHEAD+1(PB)
+	PUSHJ P,DEFPRT		; Default ports
+	TIME			; Get now
+	MOVEM A,SOCSTM(S)	; Set starting time
+	ADD A,D			; Set long-term timeout
+	MOVEM A,SOCLTT(S)
+	MOVSI PB,(PB)		; Put outgoing PB ptr in lh
+	HRRI PB,-LACKPB+1(P)	; Where to put reply Pup
+
+; Loop here to retransmit
+ESDAT1:	TIME			; Get now
+	CAML A,SOCLTT(S)	; Long-term timeout expired?
+	 JRST [	MOVEI A,-1	; Yes, error code = -1
+		JRST ESDATX]	; Fail return
+	HRRZ A,SOCJFN(S)	; Get port JFN
+	HRLI A,(1B1)		; Generate Pup checksum
+	HLRZ B,PB		; Pointer to outgoing Pup
+	HRLI B,MXPBLN
+	PUPO			; Send the Pup
+	 JRST ESDATX		; Failed, give fail return
+
+; Wait for a reply
+ESDAT2:	MOVEI A,2		; Reset timeout counter, get old
+	EXCH A,SOCTC(S)
+	JUMPGE A,ESDAT3		; Timer fork already active?
+	HRRZ A,SOCFRK(S)	; No, restart it
+	HFORK
+	SOS SOCTC(S)
+	MOVEI B,TIMPUP
+	SFORK
+
+ESDAT3:	HRRZ A,SOCJFN(S)	; Get port JFN
+	HRLI A,(1B1+1B2)	; Check checksum and source address
+	MOVEI B,-LACKPB+1(P)	; Where to put received packet
+	HRLI B,LACKPB
+	PUSHJ P,XPUPI		; Wait for reply
+	 JRST [	CAIE A,PUPX3	; Failed, timed out?
+		 JRST ESDAT3	; No, keep waiting
+		PUSHJ P,UPDTIM	; Yes, update timeout interval
+		JRST ESDAT1]	; Retransmit
+
+; ESDATA (cont'd)
+
+; Here when got a reply
+	MOVE A,PBHEAD+1(PB)	; Get Pup ID
+	LSH A,-4		; Right-justify
+	CAME A,SOCSEQ(S)	; Correct sequence number?
+	 JRST ESDAT3		; No, ignore
+	LDB A,PUPTYP		; Yes, get type
+	CAIN A,PT.ACK		; EFTP Ack?
+	 JRST [	AOS -LACKPB-2(P)  ; Yes, preset skip return
+		AOS SOCSEQ(S)	; Increment sequence number
+		PUSHJ P,UPDTIM	; Update timeout interval
+		JRST ESDATX]	; Go return
+	CAIE A,PT.ABT		; EFTP Abort?
+	 JRST ESDAT3		; No, ignore
+	PUSHJ P,UPDTIM		; Yes, update timeout interval
+	MOVSS A,PB		; Copy Abort into caller's PB
+	BLT A,LACKPB-1(PB)
+	LDB A,[POINT 16,PBCONT(PB),15]  ; Return Abort type
+	MOVEI B,PBCONT(PB)	; Make byte ptr to abort text
+	HRLI B,(POINT 8,,15)
+	LDB C,PUPLEN		; Return text length
+	CAILE C,4*LACKPB
+	 MOVEI C,4*LACKPB
+	SUBI C,MNPLEN+2
+
+; Here to return
+ESDATX:	SETZM SOCTC(S)		; Disable timeout interrupt
+	SUB P,[LACKPB,,LACKPB]	; Flush junk off stack
+	POP P,PB
+	POP P,S
+	POPJ P,
+
+
+
+; EFTP Send End
+;	A/ Pointer to EFTP socket info block
+;	D/ Timeout in ms
+; Returns +1:  Unsuccessful, code in A[rh] says why:
+;		-1: timed out
+;		0-177777: Abort received, this is the Abort code
+;		>177777: unaccountable Tenex jsys error
+;		In the Abort case, the abort text is lost.
+;	+2:  Successful
+; Clobbers A-D
+
+ESEND::	PUSH P,S
+	ADD P,[LACKPB,,LACKPB]
+	MOVEI S,(A)
+	MOVEI B,-LACKPB+1(P)	; Place to build EFTP End Pup
+	HRLI B,PT.END		; Specify Pup type
+	SETZ C,			; Zero data bytes
+	PUSHJ P,ESDAT0		; Send the End, wait for Ack
+	 JRST ESEND2		; Failed, give up
+	MOVEI B,-LACKPB+1(P)	; Succeeded, make pointer to Pup
+	MOVE A,SOCSEQ(S)	; Get updated seq no.
+	LSH A,4			; Put in End Pup
+	MOVEM A,PBHEAD+1(B)
+	HRRZ A,SOCJFN(S)	; Prepare to send second End
+	HRLI A,(1B1)		; Generate Pup checksum
+	HRLI B,MXPBLN
+	PUPO			; Send it to terminate dally
+	 CAI			; Ignore failure
+	AOS -LACKPB-1(P)	; Preset skip return
+ESEND2:	SUB P,[LACKPB,,LACKPB]	; Flush junk off stack
+	POP P,S
+	POPJ P,
+
+; EFTP Send Abort
+;	A/ Pointer to EFTP socket info block
+;	B/ Tenex string pointer to abort text
+;	C/ Abort code
+; If B0 of A is set, then PB points to a Pup in response to which
+; an abort should be generated.  Normally the abort is sent to
+; the foreign port given in the EFTP socket info block.
+; Returns +1 always
+; Clobbers A-D
+
+ESABT::	PUSH P,S
+	PUSH P,PB
+	ADD P,[LACKPB,,LACKPB]	; Reserve space for PB
+	MOVEI PB,-LACKPB+1(P)	; Make pointer to it
+	SETZM PBHEAD(PB)	; Zero transport control
+	MOVE S,A
+	DPB C,[POINT 16,PBCONT(PB),15]  ; Store Abort code
+	MOVEI A,PBCONT(PB)	; Where to put Abort text
+	HRLI A,(POINT 8,,15)
+	MOVEI C,4*<LACKPB-MNPBLN>-2  ; Max number of bytes
+	SETZ D,			; Terminate on null
+	SOUT			; Copy abort string into Pup
+	SKIPE C			; Was string smaller than max?
+	 SUBI C,1		; Yes, don't include terminator
+	MOVEI A,4*<LACKPB-MNPBLN>-2+MNPLEN  ; Compute Pup length
+	SUBI A,(C)
+	DPB A,PUPLEN
+	MOVEI A,PT.ABT		; Pup Type = EFTP Abort
+	DPB A,PUPTYP
+	MOVE A,SOCSEQ(S)	; Use current sequence number
+	LSH A,4
+	MOVEM A,PBHEAD+1(PB)
+	JUMPL S,[MOVE A,-LACKPB(P)  ; Get Pup we are responding to
+		MOVSI A,PBHEAD+1(A)  ; Copy its ID and ports into
+		HRRI A,PBHEAD+1(PB)  ;  the new PB
+		BLT A,PBHEAD+4(PB)
+		PUSHJ P,EXCHPT	; Exchange source and dest ports
+		JRST .+2]
+	PUSHJ P,DEFPRT		; In normal case, default ports
+	HRRZ A,SOCJFN(S)	; Get port JFN
+	HRLI A,(1B1)		; Generate Pup checksum
+	MOVEI B,(PB)		; Pointer to outgoing Pup
+	HRLI B,MXPBLN
+	PUPO			; Send the Pup
+	 CAI			; Ignore failure
+	SUB P,[LACKPB,,LACKPB]	; Flush junk from stack
+	POP P,PB
+	POP P,S
+	POPJ P,
+
+; EFTP Receive Data
+;	A/ Pointer to EFTP socket info block
+;	B/ Pointer to PB in which to receive data
+;	D/ Timeout in ms
+; Returns +1:  Unsuccessful, code in A[rh] says why:
+;		-4: Abort sent
+;		-3: Reset received
+;		-2: EFTP End received
+;		-1: timeout
+;		0-177777: Abort received, this is the Abort code
+;		>177777: unaccountable Tenex jsys error
+;		The Abort sent case occurs if we receive a Data or
+;		End Pup with an improper sequence number.  In this
+;		case, an "Out of Sequence" Abort has been sent.
+;		In the Reset case, a Data Pup was received with
+;		sequence number zero when we were expecting a
+;		nonzero sequence number.  This suggests that
+;		the sender aborted and restarted transmission.
+;		In the Abort received case the abort is copied into PB,
+;		a byte pointer to the abort text is returned in B,
+;		and the length of the abort text returned in C.
+;	+2:  Successful
+;		The number of data bytes received is returned in C.
+
+ERDATA::PUSH P,S
+	PUSH P,PB
+	MOVEI S,(A)		; Lh _ 0 (used for flags)
+	MOVEI PB,(B)
+	LSH D,-1		; Divide timeout by 2
+	MOVEM D,SOCTIM(S)	; Store as timeout interval
+	MOVEI A,3		; Reset timeout counter to use
+	EXCH A,SOCTC(S)		;  between 2 and 3 of these
+	JUMPGE A,ERDAT1		; Timer fork already active?
+	HRRZ A,SOCFRK(S)	; No, restart it
+	HFORK
+	SOS SOCTC(S)
+	MOVEI B,TIMPUP
+	SFORK
+
+; Wait for a packet to arrive or timeout to occur
+ERDAT1:	HRRZ A,SOCJFN(S)	; Get port JFN
+	HRLI A,(1B1+1B2)	; Check checksum and source address
+	MOVEI B,(PB)
+	HRLI B,MXPBLN
+	PUSHJ P,XPUPI
+	 JRST [	CAIE A,PUPX3	; Failed, timed out?
+		 JRST ERDAT1	; No, keep waiting
+		MOVEI A,-1	; Yes, failure code = -1
+		TLNE S,(1B1)	; Were we in dally state?
+		 MOVEI A,-2	; Yes, normal end code
+		JRST ERDATX]	; Fail return
+
+; See if the packet is from the correct source
+	LDB B,PPUPSN		; Get source net
+	LDB A,PPUPSH		; Get source host
+	HRLI A,(B)		; Make net,,host
+	LDB B,PPUPSS		; Get source socket
+	SKIPN SOCSEQ(S)		; Have we seen any data yet?
+	 JRST [	LDB C,PUPTYP	; No, is it an EFTP Data Pup?
+		CAIE C,PT.DAT
+		 JRST ERDAT3	; No, go send Out of Sequence abort
+		MOVEM A,SOCFNH(S)  ; Yes, remember foreign port
+		MOVEM B,SOCFSK(S)
+		LDB A,PPUPDN	; Get net/host sender sent to
+		LDB B,PPUPDH
+		HRLI B,(A)
+		MOVEM B,SOCLNH(S)  ; Use that for local port
+		JRST ERDAT2]
+	CAMN A,SOCFNH(S)	; Is it from the correct source?
+	CAME B,SOCFSK(S)
+	 JRST [	MOVEI A,(S)	; No, send Receiver Busy Abort
+		HRLI A,(1B0)	; To source of PB
+		HRROI B,[ASCIZ /EFTP Receiver busy/]
+		MOVEI C,AC.RBA
+		PUSHJ P,ESABT
+		JRST ERDAT1]	; Keep waiting
+
+; ERDATA (cont'd)
+
+; Got packet from correct source.  Now see if in sequence
+ERDAT2:	MOVE A,PBHEAD+1(PB)	; Get Pup ID
+	LSH A,-4		; Right-justify
+	MOVE B,A		; Copy it
+	SUB A,SOCSEQ(S)		; Compare to expected sequence no
+	JUMPE A,ERDAT4		; Jump if equal
+	AOJE A,ERDAT5		; Jump if retransmission
+	JUMPE B,[LDB A,PUPTYP	; Perhaps a reset, check type
+		CAIE A,PT.DAT	; Is it EFTP Data?
+		 JRST ERDAT1	; No, ignore
+		MOVEI A,-3	; Yes, return code -3: Reset
+		JRST ERDATX]
+ERDAT3:	MOVEI A,(S)		; Send Out Of Sequence Abort
+	HRLI A,(1B0)		; To source of PB
+	HRROI B,[ASCIZ /EFTP packet out of sequence/]
+	MOVEI C,AC.OSA
+	PUSHJ P,ESABT
+	MOVEI A,-4		; Return code -4: Abort sent
+	JRST ERDATX
+
+; Packet in sequence.  Now see what it is
+ERDAT4:	TLZA S,(1B0)		; This is a new packet
+ERDAT5:	 TLO S,(1B0)		; This is a retransmission
+	LDB A,PUPTYP		; Get Pup type
+	CAIN A,PT.ABT		; Abort?
+	 JRST [	LDB A,[POINT 16,PBCONT(PB),15]  ; Yes, get type
+		MOVEI B,PBCONT(PB)  ; Make byte ptr to text
+		HRLI B,(POINT 8,,15)
+		LDB C,PUPLEN	; Return text length
+		SUBI C,MNPLEN+2
+		JRST ERDATX]
+	CAIN A,PT.DAT		; EFTP Data?
+	 JRST ERDAT6		; Yes
+	CAIE A,PT.END		; EFTP End?
+	 JRST ERDAT1		; No, discard
+	MOVEI A,-2		; Yes, set End code
+	TLNE S,(1B1)		; Second End?
+	 JUMPGE S,ERDATX	; Yes, return if not retransmission
+
+ERDAT6:	TLNE S,(1B0)		; Retransmission?
+	 SOS SOCSEQ(S)		; Yes, back up sequence number
+	PUSHJ P,SNDACK		; Send acknowledgment
+	 JRST ERDATX		; Failed
+	AOS SOCSEQ(S)		; Advance sequence number
+	JUMPL S,ERDAT1		; Await new Pup if retransmission
+	LDB A,PUPTYP		; Check type
+	CAIN A,PT.END		; End?
+	 JRST [	TLO S,(1B1)	; Yes, remember End seen
+		HRRZ A,SOCFRK(S)  ; Stop timer fork
+		HFORK
+		MOVEI B,DLYTIM	; Set dally timeout
+		MOVEM B,SOCTIM(S)
+		MOVEI B,1	; Reset timeout counter
+		MOVEM B,SOCTC(S)
+		MOVEI B,TIMPUP	; Restart timer fork
+		SFORK
+		JRST ERDAT1]	; Await second End
+
+; Have new Data packet, return it
+	LDB C,PUPLEN		; Get Pup length
+	SUBI C,MNPLEN		; Compute data bytes
+	AOS -2(P)		; Preset skip return
+
+; Here to return
+ERDATX:	SETZM SOCTC(S)		; Disable timeout interrupt
+	POP P,PB
+	POP P,S
+	POPJ P,
+
+; Send acknowledgment
+;	S/ Pointer to EFTP socket info block
+; Returns +1:  Unsuccessful, A/ jsys error code
+;	+2:  Successful
+; Clobbers A-D
+
+SNDACK:	PUSH P,PB
+	ADD P,[MNPBLN,,MNPBLN]	; Reserve space for Ack
+	MOVEI PB,-MNPBLN+1(P)	; Make pointer to it
+	SETZM PBHEAD(PB)	; Zero transport control
+	MOVEI C,MNPLEN		; Set Pup length
+	DPB C,PUPLEN
+	MOVEI C,PT.ACK		; Set Pup type
+	DPB C,PUPTYP
+	MOVE A,SOCSEQ(S)
+	LSH A,4			; Set Pup ID
+	MOVEM A,PBHEAD+1(PB)
+	PUSHJ P,DEFPRT		; Default source and dest ports
+	HRRZ A,SOCJFN(S)	; Send off the Pup
+	HRLI A,(1B1)
+	MOVEI B,(PB)
+	HRLI B,MNPBLN
+	PUPO
+	 JRST .+2		; Failed
+	AOS -MNPBLN-1(P)	; Succeeded, return +2
+	SUB P,[MNPBLN,,MNPBLN]	; Flush stuff from stack
+	POP P,PB
+	POPJ P,
+
+
+
+; Default source and destination ports in Pup
+;	S/ Pointer to EFTP socket info block
+;	PB/ Pointer to Pup
+; Returns +1
+; Clobbers A
+
+DEFPRT:	HLRZ A,SOCFNH(S)	; Set dest net
+	DPB A,PPUPDN
+	HRRZ A,SOCFNH(S)	; Set dest host
+	DPB A,PPUPDH
+	MOVE A,SOCFSK(S)	; Set dest socket
+	DPB A,PPUPD1
+	LSH A,-^D16
+	DPB A,PPUPD0
+	HLRZ A,SOCLNH(S)	; Set source net
+	DPB A,PPUPSN
+	HRRZ A,SOCLNH(S)	; Set source host
+	DPB A,PPUPSH
+	MOVE A,SOCLSK(S)	; Set source socket
+	DPB A,PPUPSS
+	POPJ P,
+
+
+; Exchange source and destination ports
+;	PB/ Pointer to Pup
+; Returns +1
+; Clobbers A, B
+
+EXCHPT:	MOVE A,PBHEAD+2(PB)	; Get dest net/host/high socket
+	MOVE B,PBHEAD+3(PB)	; Get dest low socket
+	LSH A,-4		; Concatenate socket
+	LSHC A,-^D16		;  and right-justify dest net/host
+	EXCH B,PBHEAD+4(PB)	; Exchange source and dest sockets
+	LSH A,^D20		; Left-justify dest net/host
+	LSH B,-4		; Right-justify source socket
+	ROTC A,-^D16		; Concatenate src low skt to dest net/host
+	EXCH A,PBHEAD+3(PB)	; Exchange for dst low skt, src net/host
+	LSH A,-4		; Right-justify
+	LSH B,^D20		; Left-justify source high socket
+	LSHC A,-^D16		; Concatenate src net/host/high skt
+	MOVEM B,PBHEAD+2(PB)	; Store in header
+	POPJ P,
+
+; The PUPI known about by the timeout mechanism
+XPUPI:	SKIPG SOCTC(S)		; Already timed out?
+	JUMPA XPUPIF
+	PUPI			; No, do the PUPI
+XPUPIE:	POPJ P,			; Failed, return +1
+	AOSA 0(P)
+XPUPIF:	MOVEI A,PUPX3		; Timeout forces control here
+	POPJ P,
+
+
+
+; Update timeout interval
+;	S/ EFTP socket info block
+; Returns +1
+; Clobbers A, B
+
+UPDTIM:	TIME			; Get now
+	SUB A,SOCSTM(S)		; Compute delay interval
+	CAIG A,MINTIM		; Limit to reasonable bounds
+	 MOVEI A,MINTIM
+	CAIL A,MAXTIM
+	 MOVEI A,MAXTIM
+	MOVE B,SOCTIM(S)	; Get old timeout interval
+	LSH B,3			; Compute 7 * old interval
+	SUB B,SOCTIM(S)
+	ADD B,A			; + new interval
+	LSH B,-3		; / 8
+	MOVEM B,SOCTIM(S)	; Store new timeout interval
+	POPJ P,
+
+; Send abort message to foreign host with
+; B/ Tenex string pointer to abort text
+; C/ Abort code
+SNDABO:	MOVEI A,EFTBLK
+	SKIPE SOCSEQ+EFTBLK	; Skip abort if haven't started transmitting
+	PUSHJ P,ESABT		; Call subroutine in EFTP.MAC
+	SKIPE TRANSM		; Skip if haven't "connected" yet
+	JUMPA CLSHST
+	POPJ P,
+
+
+; BLT 1000 bytes from l.h. B to EFTMSG+EFTHDR and send
+; Return original B + 1000,,0
+SNDRCM:	MOVEM B,NEWBP#
+	HRRI B,EFTMSG+EFTHDR
+	BLT B,EFTMSG+EFTHDR+177
+; Send 1000-byte message at EFTMSG+EFTHDR
+SNDREC:	AOS MSGS0
+SNDRPT:	MOVEI A,EFTBLK
+	MOVEI B,EFTMSG
+	MOVEI C,1000		; Number of data bytes to be sent
+	MOVEI D,^D30000		; Timeout interval 30 seconds
+	PUSHJ P,ESDATA		; Call subroutine in EFTP.MAC
+	  JUMPA SNDFAI		; Failed
+	AOS MSGS1		; Count messages transmitted
+	HRLZI B,(1B2)
+	ANDCAM B,@HLPTR		; Clear host dead
+	HRLZI B,200
+	ADD B,NEWBP		; Updated block pointer
+	POPJ P,
+
+; Send failed, have in r.h. of A
+; -1:  timed out
+; 0-177777:  abort received, this is the abort code
+; > 177777:  unaccountable Tenex Jsys error
+; In the abort case, the abort is copied into PB, and a byte pointer to the
+; abort text is returned in B, and the length of the aobrt text returned in C.
+SNDFAI:	CAIN A,-1		; Timeout?
+	JUMPA RTIMEO		; Yes, receiver nonresponsive > 30 sec.
+	CAIL A,20000
+; ***Got Put address error here***
+	PUSHJ P,JERROR		; JSYS error if .ge. 2^16
+	MOVN C,C
+	PUSH P,A
+	MOVE A,[POINT 8,BSYMSG]
+	SOUT			; Store away busy message
+	MOVEI C,0
+	IDPB C,A
+	POP P,A
+EOFFAI:	CAIN A,2		; Receiver abort?
+	JUMPA RREJC		; Yes, receiver rejected file
+	CAIN A,3
+	JUMPA RBUSY		; Receiver busy abort
+	CAIN A,4
+	JUMPA ROSYNC		; Out-of-sync abort??
+	MOVEI B,[ASCIZ / sent undefined abort type to PSPOOL/]
+	JUMPA RECBAD
+
+RTIMEO:	SKIPE EFTBLK+SOCSEQ	; Connection message?
+	JUMPA RTIMO1		; No, receiver must have crashed
+	SETOM SOCTC+EFTBLK
+	SOSLE FRSTMS		; Yes, more persistence
+	JUMPA SNDRPT
+	AOSA MSGS2		; Count connection message timeouts
+; Unable to complete transmission of file, connection broken
+RTIMO1:	AOS MSGS7		; Count abortions
+	HRLZI D,(1B3)
+	TDNN D,@HLPTR		; Deferred?
+	JUMPA HSTDWN		; No, auto
+	HRLZI D,(1B0)		; Yes, clear request bit
+	HRRZ C,HLPTR
+	ANDCAM D,HSTCON-HSTLST(C)
+HSTDWN:	MOVEI B,[ASCIZ / down/]
+RECBAD:	HRLZI D,(1B2)		; Previously dead bit
+BSYREP:	MOVE A,[POINT 7,MESSAG]
+	MOVE C,@HLPTR
+	PUSHJ P,BHSTMS		; Construct "**HOST message, DAY DATE TIME"
+	HRROI B,MESSAG
+	TLNN D,(1B2)		; Only dead messages go in PRINTHISTORY
+	JUMPA .+3
+	TDNN D,@HLPTR		; No PRINTHISTORY message if already down
+	PUSHJ P,PHSEND		; Put it in PRINTHISTORY
+	TRO 0,UNSNTF		; Indicate hosts dead or busy this pass
+	IORM D,@HLPTR		; Indicate host down or busy
+	MOVE B,HLPTR
+	IORM D,HSTCON-HSTLST(B)	; Indicate dead or busy this pass
+SNDBRP:	TLZ 0,SNDMN		; Don't give busy messages via SNDMSG
+	MOVE A,THSFDB+FDBUSW
+	TLNE A,BSYMSN		; Already sent busy message?
+	JUMPA NEXT		; Yes, finish up
+	MOVE A,TXTJFN
+	HRLI A,FDBUSW		; Word to change
+	HRLZI C,BSYMSN		; Value for bits changed
+	HRLZI B,BSYMSN		; Bits affected
+	CHFDB			; Mark busy message sent
+	MOVE A,G
+	PUSHJ P,MSGFIN
+	TLNE 0,BSYNOT		; TTY report on busy?
+	TLO 0,TERNOT		; Yes
+	JUMPA RPMSG		; Give terminal report if requested
+
+ROSYNC:	AOS MSGS6		; Count out-of-sync replies =
+	JUMPA RTIMEO		; Maxc timed-out or Ears crash-restart
+
+; Retry for about 30 seconds if Ears is busy
+RBUSY:	SKIPE EFTBLK+SOCSEQ	; Connection message?
+	JUMPA RWAIT		; No--must be out of space
+	AOS MSGS9		; Count receiver busy for a long time events
+	MOVEI B,[ASCIZ / is busy/]
+	HRLZI D,(1B4)
+	SETOM OLDALC
+	JUMPA BSYREP
+
+; Wait 1 minute, then retry this message
+RWAIT:	AOS MSGS5		; Count "Receiver busy in middle of file" events
+	MOVEI A,^D60000
+	DISMS
+	JUMPA SNDRPT
+
+; Receiver rejected file
+RREJC:	AOS MSGS4		; Count unprintable file events
+	PUSH P,[0,,[ASCIZ /File rejected by printing host/]]
+	JUMPA EABF
+
+; Subroutines to connect a send and receive socket to socket 1 of the
+; host selected for this file.  REMCHR, ASC8 flag setup.
+PCONNC:	MOVE D,PDEVIC
+	CAMN D,[-1]		; Check for no host specified
+	JUMPA [ FERR(No Press printing host specified)]
+	MOVEM D,HLPTR#		; Save pointer for FINFIL
+	MOVE B,HSTCON-HSTLST(D)
+	TLNE B,(1B2)		; Found to be dead this pass?
+	JUMPA HSTDWN		; Yes, don't try to connect
+	MOVEI B,-HSTLST(D)	; Index to foreign host tables
+	SETZM SOCSEQ+EFTBLK	; Init sequence number
+	SETOM SOCTC+EFTBLK	; Init timeout interval
+	MOVE A,HSTADR(B)
+	MOVEM A,SOCFNH+EFTBLK	; Set foreign net,,foreign host
+	HLRZ C,A
+	MOVE A,PUPGET		; Table number for PUPROU
+	HRLI A,-1(C)		; Entry
+	GETAB
+	  PUSHJ P,JERROR
+	TRNN A,-1		; Directly connected?
+	LDB C,[POINT 8,A,9]	; No, use gateway
+	HRLZM C,SOCLNH+EFTBLK
+	MOVEI C,5
+	MOVEM C,FRSTMS#		; Longer persistence on first message = 5*30 sec
+	MOVE A,TFRKH
+	MOVEI B,TIMPUP		; Starting address of timeout routine
+	SFORK
+	SETOM TRANSM#		; Indicate time fork started and high priority
+	MOVEI A,400000
+	MOVEI B,102
+	SPRIW			; Become high priority
+	POPJ P,
+
+
+EOFABT:	SETZM BSYMSG		; Message lost by ESEND
+	CAIN A,-1
+	JUMPA RTIMEO
+	JUMPA EOFFAI
+
+; Send EOF, dally and close transmission
+CLSEOF:	MOVEI A,EFTBLK		; Pointer to socket info block
+	MOVEI D,^D30000		; 30 second timeout interval
+	PUSHJ P,ESEND		; Send EOF and dally
+	  JUMPA EOFABT		; Failed
+CLSHST:	MOVE A,TFRKH
+	HFORK
+	MOVEI A,400000
+	MOVEI B,0
+	SPRIW			; Become regular priority again
+	HRRZS SOCLNH+EFTBLK
+	SETZM TRANSM
+	SETZM SOCSEQ+EFTBLK
+	POPJ P,
+        

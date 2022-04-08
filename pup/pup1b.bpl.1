@@ -1,0 +1,298 @@
+//PUP1B.BPL -- PUP LEVEL 1
+// Copyright Xerox Corporation 1979
+
+GET "LEVEL0.HDR"
+GET "LEVEL1.HDR"
+GET "PUPLIB.HDR"
+
+//----------------------------------------------------------------------------
+LET PUPLEVEL1() BE
+//----------------------------------------------------------------------------
+//PROCESS TO DISTRIBUTE INPUT PUPS AND RELEASE USED OUTPUT PBIS.
+[PUPLEVEL1
+LET PBI = NIL
+LET ENET = NIL
+LET EHOST = NIL
+LET ENDB = NIL
+LET RTE = NIL
+LET SOC = NIL
+   [
+   WHILE PBITQ!0 NE 0 DO
+      [
+      PBI := DEQUEUE(PBITQ)
+      RELEASEPBI(PBI)
+      ]
+   PBI := DEQUEUE(PBIIQ)
+   IF PBI NE 0 THEN BREAK
+   BLOCK()
+   ] REPEAT
+
+// WE NOW HAVE AN INPUT PBI TO PROCESS.
+// FIRST, REJECT OBVIOUSLY BAD PACKETS.
+
+PBI!QUEUE := PBITQ  //IN CASE PBI IS RE-USED FOR OUTPUT
+PBI!SOCKET := 0  //PBI NOT YET ASSIGNED TO A SOCKET
+PBI!STATUS := 0  //IN PARTICULAR, ALLNETS = FALSE
+IF (PBI!SHOST & #377) EQ 0 THEN  //REJECT ZERO SOURCE HOST
+   [ RELEASEPBI(PBI); LOOP ]
+
+// STILL IN PUPLEVEL1
+
+// PUPLEVEL1 (CONT'D)
+
+// IF THE DESTINATION NET IS NONZERO, WE MAKE THE FOLLOWING CHECKS:
+// IF WE KNOW THE IDENTITY OF THE NET ON WHICH THE PBI ARRIVED
+//   THEN IF WE HAVE A VALID RT ENTRY FOR THE PUP DESTINATION NET
+//      THEN IF WE ARE DIRECTLY CONNECTED TO THAT NET &
+//		(IT ISN'T A BROADCAST % ITS IMMED. SRC NET NE DEST NET)
+//         THEN SETUP NDB SO THAT WE LATER COMPARE THE DESTINATION
+//              HOST WITH OUR LOCAL HOST ADDRESS ON THAT NET
+//         ELSE IT CAN'T BE FOR US SO FORWARD IT VIA GATEWAY
+//      ELSE WE DON'T KNOW HOW IT GOT HERE SO DISCARD
+//   ELSE ASSUME IT ARRIVED ON THE CORRECT DESTINATION NET
+
+ENET := PBI!DNET RSHIFT 8
+EHOST := PBI!DHOST & #377
+ENDB := PBI!NDB  //NDB FOR NET IT CAME IN ON
+RTE := HLOOKUP(PUPRT, ENET, FALSE)  //RTE FOR DESTINATION NET
+IF ENET NE 0 & ENDB!LNET NE 0 THEN
+   TEST RTE NE 0
+      THEN TEST (RTE!HOPS & #77400) EQ 0
+         THEN ENDB := RTE!DNDB
+         OR [ ENQUEUE(GATEWAYIQ, PBI); LOOP ]
+      OR  //ROUTING ERROR.  DON'T KNOW WHY IT GOT TO US.
+         [ PUPERROR(PBI, #1002, "CAN'T GET THERE FROM HERE", TRUE); LOOP ]
+
+// NOW WE KNOW THE DEST NET IS ONE TO WHICH WE ARE CONNECTED.
+// NDB POINTS TO THE NDB FOR IT.
+
+UNLESS EHOST EQ ENDB!LHOST | EHOST EQ 0 DO
+   [ ENQUEUE(GATEWAYIQ, PBI); LOOP ]
+
+// PBI IS FOR US.  SEARCH LOCAL SOCKET QUEUE FOR RECIPIENT.
+
+SOC := SOCKETQ!0
+   [
+   IF SOC EQ 0 THEN [ SOCKETNOTFOUND(PBI); BREAK ]
+   IF PBI!(DSOCKET+0) EQ SOC!(LCLSOCKET+0) &
+    PBI!(DSOCKET+1) EQ SOC!(LCLSOCKET+1)
+    THEN  //SOCKET FOUND
+      [
+      IF (SOC!LEV1STATUS & #100000) THEN  //CHECK PUP CHECKSUM
+         [
+         LET C = PBI!(LENPBIOVERHEAD+((PBI!LENGTH-1) RSHIFT 1))
+         UNLESS C EQ -1 | C EQ PUPCHECKSUM(LV PBI!PUP) DO 
+            [ PUPERROR(PBI, 1, "BAD CHECKSUM"); BREAK ]
+         ]
+
+      //IF WE DON'T KNOW THE IDENTITY OF THE NET ON WHICH THE
+      //PACKET ARRIVED, BUT IT WAS ADDRESSED TO A SPECIFIC
+      //NET, AND TO AN EXISTING SOCKET IN THIS HOST,
+      //THEN BELIEVE THE DESTINATION NET NUMBER IN THE PACKET
+      //AND ESTABLISH THE IDENTITY OF THE CONNECTED NET IN THE RT.
+      IF ENDB!LNET EQ 0 & ENET NE 0 THEN
+         [
+         (PBI!NDB)!LNET := ENET
+         RTE := HINSERT(PUPRT, ENET)  //ZEROES HOP COUNT
+         RTE!DNDB := ENDB
+         RTE!HOST := ENDB!LHOST
+         ]
+      FILLINNETS(PBI)  //DEFAULT ZERO SOURCE AND DEST NET NUMBERS
+      IF (SOC!NUMIPBI & #377) EQ 0 | (SOC!NUMTPBI & #377) EQ 0 THEN
+         [ PUPERROR(PBI, 3, "PORT IQ FULL"); BREAK ]
+      SOC!NUMIPBI := SOC!NUMIPBI -1
+      SOC!NUMTPBI := SOC!NUMTPBI -1
+      PBI!STATUS := PBI!STATUS | #100000  //THIS IS AN INPUT PACKET
+      PBI!SOCKET := SOC
+      ENQUEUE(LV SOC!IQ, PBI)
+      BREAK
+      ]
+   SOC := SOC!0
+   ] REPEAT
+]PUPLEVEL1 REPEAT
+
+//----------------------------------------------------------------------------
+AND SOCKETNOTFOUND(PBI) BE  //DEFAULT HANDLING FOR UNWANTED PBI'S
+//----------------------------------------------------------------------------
+   PUPERROR(PBI, 2, "NO SUCH PORT")
+
+//----------------------------------------------------------------------------
+AND FILLINNETS(PBI) BE
+//----------------------------------------------------------------------------
+[
+IF (PBI!DNET & #177400) EQ 0 THEN
+   PBI!DNET := ((PBI!NDB)!LNET LSHIFT 8) + (PBI!DNET & #377)
+IF (PBI!SNET & #177400) EQ 0 THEN
+   PBI!SNET := ((PBI!NDB)!LNET LSHIFT 8) + (PBI!SNET & #377)
+]
+
+//----------------------------------------------------------------------------
+AND PUPERROR(PBI, SUBTYPE, STRING, SETSOURCEPORT) BE
+//----------------------------------------------------------------------------
+[
+RELEASEPBI(PBI)
+]
+
+//----------------------------------------------------------------------------
+AND COMPLETEPUP(PBI, TYP, LNGTH) BE
+//----------------------------------------------------------------------------
+[
+LET SOC = PBI!SOCKET
+LET PDH = NIL
+IF TYP NE 0 THEN
+   PBI!TYPE := TYP + (PBI!TYPE & #177400)
+IF LNGTH NE 0 THEN
+   PBI!LENGTH := LNGTH
+IF SOC NE 0 THEN  //ERROR AND TRACE PUPS HAVE NO LCL SOCKET
+   [  //DEFAULT ANY ZERO ADDRESS FIELDS IN HEADER
+   DEFAULTPORT(LV PBI!DPORT, LV SOC!FRNPORT)
+   DEFAULTPORT(LV PBI!SPORT, LV SOC!LCLPORT)
+   ]
+PBI!TRANSPORT := 0 + (PBI!TRANSPORT & #377)
+IF (PBI!STATUS & #40000) THEN [ BROADCASTNEXTNET(PBI, NDBQ!0); RETURN ]
+SETPUPCHECKSUM(PBI)
+PDH := ROUTEPUP(PBI)
+TEST PBI!NDB NE 0
+   THEN
+      [  //DESTINATION NET IS IN RT.  ENCAPSULATE AND TRANSMIT
+      ((PBI!NDB)!ENCAPSULATEPUP)(PBI, PDH)
+      ((PBI!NDB)!LEVEL0TRANSMIT)(PBI)
+      ]
+   OR
+      [  //DESTINATION NET NOT IN RT.  DISPOSE OF PBI AS IF IT HAD
+         //BEEN TRANSMITTED, AND INITIATE A PROBE TO LOCATE THE NET
+      UNKNOWNNET := PBI!DNET RSHIFT 8
+      ENQUEUE(PBI!QUEUE, PBI)
+      ]
+]
+
+//----------------------------------------------------------------------------
+AND ROUTEPUP(PBI) = VALOF
+//----------------------------------------------------------------------------
+//SETS NDB POINTER IN PBI, 0 IF CAN'T ROUTE THERE
+//RETURNS PHYSICAL DESTINATION HOST
+[
+LET RTE = HLOOKUP(PUPRT, PBI!DNET RSHIFT 8, FALSE)
+TEST RTE NE 0 & ((RTE!HOPS & #77400) RSHIFT 8) LE MAXHOPS 
+	THEN PBI!NDB := RTE!DNDB
+	OR PBI!NDB := 0
+TEST (RTE!HOPS & #77400) EQ 0
+	THEN RESULTIS (PBI!DHOST & #377)
+	OR RESULTIS (RTE!HOST & #377)
+]
+
+//----------------------------------------------------------------------------
+AND DEFAULTPORT(PUPPORT, SOCPORT) BE
+//----------------------------------------------------------------------------
+[
+IF (PUPPORT!PNET & #177400) EQ 0 THEN
+   [  // IF PORT IN SOCKET REFERS TO NET ZERO BUT TO A SPECIFIC
+      // HOST, THEN UPDATE THE NET NUMBER IN THE SOCKET WITH
+      // THE ACTUAL NET NUMBER OF THE DEFAULT NDB, ASSUMING THAT
+      // IS NOW KNOWN.
+   IF (SOCPORT!PNET & #177400) EQ 0 & (SOCPORT!PHOST & #377) NE 0 THEN
+      SOCPORT!PNET := ((NDBQ!0)!LNET LSHIFT 8) + (SOCPORT!PHOST & #377)
+   PUPPORT!PNET := (SOCPORT!PNET & #177400) + (PUPPORT!PHOST & #377)
+   ]
+IF (PUPPORT!PHOST & #377) EQ 0 THEN
+   PUPPORT!PHOST := (SOCPORT!PHOST & #377) + (PUPPORT!PHOST & #177400)
+IF PUPPORT!PSOCKET1 EQ 0 & PUPPORT!PSOCKET2 EQ 0 THEN
+   [
+   PUPPORT!PSOCKET1 := SOCPORT!PSOCKET1
+   PUPPORT!PSOCKET2 := SOCPORT!PSOCKET2
+   ]
+]
+
+//----------------------------------------------------------------------------
+AND EXCHANGEPORTS(PBI) BE
+//----------------------------------------------------------------------------
+//EXCHANGE SOURCE AND DESTINATION PORTS
+//IF THE ORIGINAL PUP WAS BROADCAST, WHEN THE EXCHANGE IS DONE
+//SPORT.HOST WILL BE ZERO.  COMPLETEPUP WILL DEFAULT THIS TO
+//THE LCLPORT.HOST IN THE LEVEL1 SOCKET, WHICH MAY NOT BE THE
+//CORRECT HOST CORRESPONDING TO SPORT.NET IF THE HOST HAS MULTIPLE
+//NETS, SO FORCE IT BY SETTING SPORT.HOST HERE.
+[
+LET D = LV PBI!DPORT
+LET S = LV PBI!SPORT
+FOR I = 0 TO LENPORT-1 DO
+   [ LET TEMP = D!I; D!I := S!I; S!I := TEMP ]
+IF (PBI!SHOST & #377) EQ 0 THEN
+   [
+   LET RTE = HLOOKUP(PUPRT, PBI!SNET RSHIFT 8, FALSE)
+   //THE SOURCE NET HERE WAS THE DESTINATION BEFORE THE SWAP, SO
+   //IT IS GUARANTEED TO BE IN THE ROUTING TABLE.
+   PBI!SHOST := (RTE!DNDB)!LHOST + (PBI!SHOST & #177400)
+   ]
+]
+
+
+//----------------------------------------------------------------------------
+AND SETPUPDPORT(PBI, PORT) BE
+//----------------------------------------------------------------------------
+   MOVEBLOCK(LV PBI!DPORT, PORT, LENPORT)
+
+
+//----------------------------------------------------------------------------
+AND SETPUPSPORT(PBI, PORT) BE
+//----------------------------------------------------------------------------
+   MOVEBLOCK(LV PBI!SPORT, PORT, LENPORT)
+
+
+//----------------------------------------------------------------------------
+AND SETPUPID(PBI, PUPID) BE
+//----------------------------------------------------------------------------
+[
+PBI!ID1 := PUPID!0
+PBI!ID2 := PUPID!1
+]
+
+//----------------------------------------------------------------------------
+AND SETPUPCHECKSUM(PBI) BE
+//----------------------------------------------------------------------------
+[
+TEST PBI!SOCKET EQ 0 | ((PBI!SOCKET)!LEV1STATUS & #100000) NE 0
+	THEN PBI!(LENPBIOVERHEAD + ((PBI!LENGTH-1) RSHIFT 1)) := PUPCHECKSUM(LV PBI!PUP)
+	OR PBI!(LENPBIOVERHEAD + ((PBI!LENGTH-1) RSHIFT 1)) := -1
+]
+
+//----------------------------------------------------------------------------
+AND RELEASEPBI(PBI) BE
+//----------------------------------------------------------------------------
+[
+LET SOC = PBI!SOCKET
+IF SOC NE 0 THEN
+   [
+   SOC!NUMTPBI := SOC!NUMTPBI+1
+   TEST (PBI!STATUS & #100000)  //INPUT OR OUTPUT PBI?
+      THEN SOC!NUMIPBI := SOC!NUMIPBI+1
+      OR SOC!NUMOPBI := SOC!NUMOPBI+1
+   ]
+ENQUEUE(PBIFREEQ, PBI)
+]
+
+//----------------------------------------------------------------------------
+AND GETPBI(SOC, RETURNONFAIL) = VALOF
+//----------------------------------------------------------------------------
+//GET AN OUTPUT PBI CHARGED TO THE SOCKET.
+//THE PUP HEADER IS CLEARED.
+//IF RETURNONFAIL IS TRUE, RETURN ZERO ON FAILURE.
+//IF FALSE OR OMITTED, BLOCK UNTIL A PBI IS AVAILABLE.
+[
+LET PBI = NIL
+   [
+   IF (SOC!NUMTPBI & #377) GR 0 & (SOC!NUMOPBI & #377) GR 0 THEN
+      [
+      PBI := DEQUEUE(PBIFREEQ)
+      IF PBI NE 0 THEN BREAK
+      ]
+   IF RETURNONFAIL THEN RESULTIS 0
+   BLOCK()
+   ] REPEAT
+SOC!NUMTPBI := SOC!NUMTPBI-1
+SOC!NUMOPBI := SOC!NUMOPBI-1
+ZERO(PBI, LENPBIOVERHEAD+PUPOVWORDS)  //CLEAR PBI AND PUP HEADER
+PBI!SOCKET := SOC
+PBI!QUEUE := PBITQ  //DEFAULT DISPOSITION AFTER OUTPUT DONE
+RESULTIS PBI
+]

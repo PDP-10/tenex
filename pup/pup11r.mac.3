@@ -1,0 +1,298 @@
+	.title	hack PDP11-RT11 C support
+
+;	stack frame format
+;
+;	sp->	local variables
+;		and temps
+;		...
+;	r5->	return pc
+;		old r4 (arg ptr)
+;		old r5
+;
+
+;	calling sequence
+;
+;		<code to store args in local frame>
+;		jsr r5,routine
+;		<offset of args in local frame>
+;		<number of arguments>
+;	NOTE:
+;	$PUTC, $GETC assume that CALLER will handle all echoing, etc.
+; 	These simply pipeline chars to and from the TTY untouched.
+;
+;	$PUTS, $GETS handle echoing, crlf, DEL (0177) locally.
+
+	.globl	$main,start
+	.globl  prolog
+	.globl  epilog
+	.globl  $nargs
+r0=%0
+r1=%1
+r2=%2
+r3=%3
+r4=%4
+r5=%5
+sp=%6
+pc=%7
+	.macro	.exit
+		halt
+		br .-2
+	.endm
+	.macro	rentry 	name
+		.list  	meb
+		.globl	name
+	name:
+		jsr	R0,prolog
+		0.
+		.nlist	meb
+	.endm
+ 	.macro	.ttyin
+ 	jsr	pc,ttyin
+ 	.endm
+
+ 	.macro	.ttyout
+ 	jsr	pc,ttyout
+ 	.endm
+	.sbttl	start up stuff...
+psw = 177776
+STACK = 1000				; USE 1000 FOR PUPSCH STUFF.
+pri4 = 200				; run NON interrupt stuff at pri4
+start:
+	mov	#pri4,@#PSW		; set us to priority 4.
+	mov	#STACK,sp		; set up stack pointer.
+	mov	#0,-(sp)		; two dummies for return via epilog
+	mov	#0,-(sp)
+
+	jsr	pc,TRAPfx		; steal trap vectors.
+	jsr	pc,TTinit		; init tty vectors
+
+	mov	@#PSW,r0		; old PSW
+	mov	#340,@#PSW		; pri 7
+	bic	#100,@#177546		; clock off
+	mov	r0,@#PSW		; restore priority.
+	jsr	r5,$main		; start the program.
+	0
+	2
+	jsr	pc,TTEXIT		; fix up TT stuff.
+	.exit
+
+prolog:
+	mov	r4,(sp)
+	mov	sp,r4
+	add	(r5)+,r4
+	add	#4,r4
+	tst	(r5)+
+	mov	r5,-(sp)
+	mov	sp,r5
+	sub	(r0)+,sp
+	mov	r0,pc
+
+epilog:
+	mov	r5,sp
+	mov	(sp)+,r5
+	mov	(sp)+,r4
+	rts	r5
+
+$nargs:
+	mov	(sp),r0		; pointer to old frame
+	mov	(r0),r0		; old old pc
+	mov	-2(r0),r0	; old old nargs
+	cmp	(r5)+,(r5)+	; skip past junk
+	rts	r5		; return
+
+	.sbttl	TRAP vector stuff
+t4  = 000004
+t10 = 000010
+
+TRAPfx:
+	MOV	#TR04,@#t4
+	MOV	#TR10,@#t10
+	rts	pc
+TR04:
+	jsr	PC,REGsav
+	halt
+	4
+TR10:
+	jsr	PC,REGsav
+	halt
+	10
+REGsav:
+;	stack is as follows
+;	(SP)	oldPC from call to here
+;      2(SP)	PC at trap
+;      4(SP)	PSW from trap
+;      6(SP)    stack when trap happened
+	mov	R0,$REGS
+	mov	R1,$REGS+2
+	mov	R2,$REGS+4
+	mov	R3,$REGS+6
+	mov	R4,$REGS+10
+	mov	R5,$REGS+12
+	mov	SP,$REGS+14
+	add	#6,$REGS+14		; (SP) + 6
+	mov	2(SP),$REGS+16		; PC
+	mov	4(SP),$PSW		; PSW...
+	rts	PC
+	.globl  $REGS,$PSW
+$REGS:	.BLKW	8.
+$PSW:	.WORD   0
+	.sbttl	TTY interrupt service 
+ttysta = 177560
+ttybuf = ttysta + 2
+ringL = 256.
+ring:	.BLKB	ringL
+nxtCHR:	0
+TTINT1:
+	mov	r0,-(sp)
+
+	; check for wrap around -
+	mov	nxtCHR,r0
+	inc	r0
+	cmp	r0,#ringL
+	blt	1$
+	 clr	r0
+1$:
+	cmp 	r0,nxtIN		; = on overflow.
+	bne	2$			; no branch, then forget char.
+	 movb	@#ttybuf,r0		; clear char
+	 br	TTINT2			; exit
+2$:
+	mov	#ring,r0
+	add	nxtCHR,r0
+	movb	@#ttybuf,(r0)
+	inc	nxtCHR
+	cmp	nxtCHR,#ringL
+	blt	TTINT2
+	 clr	nxtCHR
+TTINT2:
+	mov	(sp)+,r0
+	RTI
+
+	.sbttl	TTY char input from ring buffer.
+lf=12
+cr=15
+nxtIN:	0
+TTYIN:
+	mov	nxtCHR,r0		; put in register to fix value.
+	cmp	nxtIN,r0		
+	beq	TTYIN			; wait for a character
+
+	mov 	#ring,r0
+	add	nxtIN,r0
+	movb	(r0),r0
+	bic	#177600,r0		; 7 bit ascii only.
+	inc	nxtIN
+	cmp	nxtIN,#ringL
+	blt	TTYxit
+	 clr	nxtIN
+TTYxit:
+	rts	pc
+	
+	.sbttl	ttyout char stuff.
+ttouts = 177564
+ttoutb = ttouts + 2
+TTYOUT:
+;	R0 has char
+	TSTB	@#ttouts		; done bit on?
+	bge	TTYOUT			; no, if branch.
+	 movb	r0,@#ttoutb
+	 rts	pc
+invec =	60
+TTOVEC: 0
+TTOSTA: 0
+TTINIT:
+;	 set up vector 
+	bic	#100,@#ttysta		; turn off for a second.
+	mov	@#invec,TTOVEC		; save old vector.
+	mov	#TTINT1,@#invec		;
+	mov	@#ttouts,TTOSTA
+	bic	#100,@#ttouts		; turn off output interrupt
+	bis	#100,@#ttysta		; turn on input interrupt
+	rts	pc
+TTEXIT:
+	mov	TTOVEC,@#invec		; restore vector
+	mov	TTOSTA,@#ttouts		; and old output status.
+	rts	pc
+
+	.sbttl	Some library routines.
+rentry $cputc			; caller pipeline to TTY.
+	movb	(r4),r0
+	bic	#177600,r0
+	.ttyout
+	jmp	epilog
+
+rentry $puts
+;	called with (R4) = address of address of buffer
+	mov	(r4),r4
+1$:	
+	movb	(r4)+,r0	; next character
+	beq	2$		; NULL terminates
+	.ttyout
+	cmp	r0,#lf
+	bne	1$
+	 mov	#cr,r0
+	 .ttyout		; tag on carraige-return with \n
+	 br	1$		; full string.
+
+2$:
+	jmp	epilog
+
+rentry $cgetc
+	.ttyin			; caller MUST ECHO-pipe to caller!
+	jmp 	epilog		; char in r0
+
+bell = 7
+DEL = 177
+rentry $gets
+;	called with (r4) = address of address of input buffer
+;	    R3 used as buffer pointer
+;	    R2 used as delete flag
+;	C protects registers...so no sweat here.
+	mov	(R4),R3
+	clr	R2
+1$:	
+	.ttyin			; get a character.
+	cmpb	r0,#DEL		; delete previous char?
+	bne	4$		; No
+	 CMP	R3,(R4)		; begining of buffer?
+	 BNE	2$
+	  mov	#bell,R0	; beep!
+	  .ttyout		;
+	  br	1$		; get next char.
+2$:
+	 dec	R3		; to previous char.
+	 tst	R2		; "[" yet ?
+	 bne	3$		; yes
+	  movb	#"[J,R0
+	  .ttyout
+	  INC	R2		; [ done.
+3$:
+	 movb	(R3),R0		; prev. char
+	 .ttyout
+	 br	1$		; try again
+4$:
+	tst	R2		; done with DEL?
+	beq	5$		; for sure.
+	 mov	r0,R2		; save char
+	 movb	#"]J,r0		; ...[...]
+	 .ttyout
+	 mov	R2,r0
+	 clr	R2
+5$:
+	.ttyout			; ECHO character just typed.
+	cmpb	r0,#cr		; get char until #cr.
+	bne	6$
+	 mov	#lf,R0		; line-feed out.
+	 .ttyout
+	 clr	r0		; terminate with NULL
+6$:
+	movb	r0,(r3)+	;  into buffer.
+	tst	r0		;  all done?
+	bne	1$		;  No,  if branch.
+	 jmp	epilog		;   tell the tail end of this story too!
+; end of program...
+	.end	start
+
+
+
+

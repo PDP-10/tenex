@@ -1,0 +1,238 @@
+	.nlist	bex
+	.title	NEW ether-net board service test.
+	.sbttl	definitions
+	.sbttl	vector addresses and registers.
+E0OCV = 400					; Output complete vector
+E0ICV = E0OCV+4					; Input  complete vector
+E0OEV = E0OCV+10				; Output ERROR vector
+E0OWC = 160000					; output word count
+E0OBL = E0OWC+2					; output buffer location
+E0OCS = E0OWC+4					; output control and status
+E0ODE = E0OWC+6					; output delay.
+E0IWC = E0OWC+10				; input word count
+E0IBL = E0OWC+12				; input buffer location
+E0ICS = E0OWC+14				; input control and status
+E0RHA = E0OWC+16				; RAM HOST stuff.
+
+	.sbttl	input cs bits
+; INPUT control status register  (16xx14)
+; Some bit definitions:	      bit
+inGO  = 1		;	0		  Input GO bit
+inPR  = 2		;	1		  Promiscuous bit
+inRWE = 4		;	2		  Ram WRITE enable
+inRWV = 10		;	3		  Ram WRITE value (0, 1)
+inRCR = 20		;	4		  Receiver reset.
+inLBK = 40		;	5		  Loop back
+inENA = 100		;	6		  enable
+inDON = 200		;	7		  input DONE
+			;	8-9		  N/A	
+inCAR = 2000		;      10		  carrier on = 1
+
+	; ERROR BITS FOLLOW 
+inWOV = 4000		;      11		  word count overflow
+inFOR = 10000		;      12		  FIFO over-run
+inCRC = 20000		;      13		  CRC error
+inNXM = 40000		;      14		  NXM (if NXMok = 1)
+inERR = 100000		;      15		  ERROR bit(See 11 - 14)
+
+	.sbttl	output CS bits.
+; OUTPUT control status register  (16xx04)
+; Some bit definitions:	      bit
+outGO  = 1		;	0		  output GO - active/idle
+outWC  = 2		;	1		  Set if word count = 0
+outIOR = 4		;	2		  I/O reset.
+outMER = 10		;	3		  Memory error reset
+outTRR = 20		;	4		  transmiter reset
+           		;	5		  N/A
+outENA = 100		;	6		  enable
+outDON = 200		;	7		  output DONE
+	
+	;  ERROR BITS FOLLOW
+outNXM = 400		;	8		  NXM: SSYN NOT received.
+			;			  BIT11 ALSO SET.
+			;       9		  N/A
+outCAR = 2000		;      10		  compliment of BIT1
+outBGN = 4000		;      11		  Bus grant not received.
+			;			  BIT11 and NOT BIT8.
+outFOR = 10000		;      12		  output word count overflow.
+outRET = 20000		;      13		  Retry. Couldn't output
+			;			  because carrier detected.
+outCOL = 40000		;      14		  jammed or Collision detect.
+outERB = 100000		;      15		  ERROR bit (See 8 - 14)
+
+	.sbttl	local host and destination host
+; Local HOST defined as...
+lHOST = 111		; 	For the heck of it.
+dHOST = 111		;	Looping back - ta dah...
+hosts:	.byte lHOST,dHOST	; ENCAP word.
+	.sbttl	DATA area.
+	jmp	mini	;	For boots to 1000.
+	.globl	WDcnt,delay,wtime
+WDcnt:	17.
+delay:	100			; 	output delay.
+wtime:	0			;	non-zero for software delay.
+nGOES:	0			;	number of goes
+nOint:	0			;	number of OUTput interrupts.
+nIint:	0			;	number of INput interrupts.
+console=177570
+pri=240				; Do these at pri. 5
+	.sbttl	The least of 5 evils!
+	.globl	mini
+;
+;	NON interrupt driven interface test-polls for done.
+;	bit 0 SET on console causes a halt at end of pass.
+;
+;	Loopback - promiscuous mode...
+;	
+mini:
+	mov	#1000,SP		; set up the stack
+	clr	@#177776		; we run at 0.
+
+;	INITIALIZE the world!
+	clr	nGOES
+	clr	nOint
+	clr	nIint
+	bic	#100,@#177546		; clock off.
+	jsr	pc,BufINI		; initialize buffers:
+
+;	Initialize interface, and vector
+;	First output
+	mov	#outIOR+outMER+outTRR,@#E0OCS	 ; resest the world!
+	clr	@#E0OCS			; clear it.
+	mov	#oIN,@#E0OCV		; output complete vector
+	mov	#pri,@#E0OCV+2		; #priority
+	mov	#oERR,@#E0OEV		; out error vector
+	mov	#pri,@#E0OEV+2		; #priority
+
+;	input...							
+	mov	#inRCR,@#E0ICS		; reset receiver
+;	Now clear the RAM for address selection
+	mov	#255.,r0
+	clr	r1
+1$:
+	mov	r1,@#E0RHA		; CLEAR Ram host address.
+	mov	#inRWE,@#E0ICS		; write a 1 in ALL addresses.
+	inc	r1			; next address
+	dec	r0			; our count
+	bge	1$			; 256 times.
+
+;	broad Cast
+	clr	@#E0RHA
+	mov	#inRWE+inRWV,@#E0ICS	; write a 1 
+
+;	local host
+	mov	#lHOST,@#E0RHA
+	mov	#inRWE+inRWV,@#E0ICS	; write a 1 
+
+	clr	@#E0ICS			; and clear CS bits.
+;	Now intialize input vector.
+	mov	#inINT1,@#E0ICV		; vector location
+	mov	#pri,@#E0ICV+2		; and #priority.
+;	Processing loop below
+process:
+;	Set up output and input
+;	Set up io on interface:
+	NOP
+	CLR	@#177776		; priority 0.
+	mov	#outIOR+outMER+outTRR,@#E0OCS	 ; resest the world!
+	mov	#inRCR,@#E0ICS		; reset receiver
+
+;	Now set up registers
+	mov	WDcnt,r0		; word count.
+	neg	r0			; two's compliment
+	bic	#174000,R0		; 11 bits only...
+	mov	r0,@#E0OWC		; word count
+	NOP
+	mov	#OUTBUF,@#E0OBL		; buffer location.
+	mov	delay,r0		; set delay.
+	neg	r0			; 2's compliment.
+	mov	r0,@#E0ODE		; set delay - 16 bits
+
+;	Set up input (We will be doing loopback, so don't start output yet)
+	mov	#-1777,@#E0IWC		; input word count(2's compliment)
+	mov	#INbuff,@#E0IBL		; input buffer location
+	NOP
+;	GO + loopback + inENA : INPUT-
+	mov	#inGO+inLBK+inPR+inENA,@#E0ICS
+	NOP
+
+	inc	nGOES		;	go counter...
+	mov	#outGO+outENA,@#E0OCS	; OUTPUT off and running.
+	NOP
+;	Software WAIT for about x milliseconds - change wtime for wait:
+	mov	wtime,r0	;      	     time - differs with mem.
+3$:	tst	wtime		;	about 1.0 us
+	dec	r0		;	about  .5 us
+	bge	3$		;	about  .8 us
+				;	total 2.3 * 500 = 1150 us
+;	Here we WAIT until input AND output are DONE.
+Owait:	
+	br	PROCESS			; NOTHING WORKING...SO TRY AGAIN 
+	NOP
+	WAIT
+;	interrupt stuff...
+	.globl 	oIN,oERR,inINT1
+
+oIN:	; Don't do RTI, just jmp to the top.
+	NOP
+	NOP
+	inc	nOint
+	clr	@#177776		; back to pri 0.
+	mov	#1000,SP
+	jmp	process
+oERR:	
+	NOP
+	NOP
+	NOP
+	NOP
+	inc	nOint
+	clr	@#177776		; back to pri 0.
+	mov	#1000,SP
+	jmp	process
+inINT1: 
+	NOP
+	NOP
+	inc	nIint
+	CMP	OUTbuf,INbuff		; first word only
+	beq	1$
+	 NOP
+1$:
+	clr	@#177776		; back to pri 0.
+	mov	#1000,SP
+	jmp	process
+bufINI:
+;	initialize outBuf, and clear input Buf:
+;	outBUF has first tw0 bytes of dHOST,sHOST for bSize+1 words.
+	mov	hosts,ENCAP		; re-init encapsulation.
+	mov	#OUTdat,r0
+	mov	#1,r1
+1$:
+	mov	r1,(r0)+		; store 1,...,bSize
+	inc	r1
+	cmp	r1,#bSize
+	ble	1$
+
+;	Clear input buffer
+	mov	#INbuff,r0
+	clr	r1
+2$:	
+	clr	(r0)+			; clr 0,1,...,bSize(bSize+1 words)
+	inc	r1
+	cmp	r1,#bSize
+	ble	2$
+
+	rts	pc
+	.sbttl	buffer areas.
+	.globl	OUTBUF,inBUFF
+bSize = 1000.
+OUTBUF:
+ENCAP:	.byte	lHOST,dHOST		; Source, and dest HOST(lHOST..)
+OUTdat:
+	.BLKW	bSize
+; Data buffer area:
+INbuff:	.BLKW bSize+1
+	.end	mini
+
+
+
+

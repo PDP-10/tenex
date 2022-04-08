@@ -1,0 +1,569 @@
+EFTP memory dump - version 1. July 31, 1981. by Bill.	MACN11   V4.26T   29-Sep-82 15:13:01   PAGE 1
+EFTPMD.MAC;8
+
+      1						.title	EFTP memory dump - version 1. July 31, 1981. by Bill.
+      2					; patch 11-4-81	  Don't look for real memory past 28K
+      3					; patch 10-21-81  wait 5 secs before retransmitting, and
+      4					;		  receive set up for RESTART everything.
+      5					; patch 10-22-81  Restart on receiving any ERROR pup, or ABORT pup
+      6					;		  ALSO, use source info. in startup PUP as dest
+      7					;		  for the EFTP.
+      8					; for net #55, or whomever is using board 0.
+      9		000001			VeizBD=1					; 1 if Nick's board.
+     10		000001			prom = 1					; 1 if for PROM version
+     11		000001			withTT=1					; =1 if TTY messages
+     12		000001			GO = 1
+
+
+     15		160000			OWC = 160000					; output word count
+     16		160002			OBL = OWC+2					; output buffer location
+     17		160004			OCS = OWC+4					; output control and status
+     18		160006			ODE = OWC+6					; output delay.
+     19		160010			IWC = OWC+10					; input word count
+     20		160012			IBL = OWC+12					; input buffer location
+     21		160014			ICS = OWC+14					; input control and status
+     22		160016			RHA = OWC+16					; read HOST address.
+
+     24					; Packet types  et. al.
+     25		000020			EFTPsn = 20
+     26		000030			EFTPda = 30
+     27		000031			EFTPak = 31
+     28		000032			EFTPen = 32
+     29		000033			EFTPab = 33
+     30		000004			ERROR  = 4
+     31		000011			ABORT = 11			; This one will manually restart this
+     32									; server from ANY host that knows the
+     33									; format of the PUP. A genl. bailout.
+     34		000000			encap = 0
+     35		000000			esHost= 0
+     36		000001			edHost= 1
+     37		000002			pup   = 2
+     38		000004			pupl  = 4
+     39		000006			type  = 6
+     40		000010			id1   = 10
+     41		000012			id2   = 12
+     42		000014			dPort = 14
+     43		000014			dpHost= 14
+     44		000015			dpNet = 15
+     45		000016			dpSoc1= 16
+     46		000020			dpSoc2= 20
+     47		000022			sPort = 22
+     48		000022			spHost= 22
+     49		000023			spNet = 23
+     50		000024			spSoc1= 24
+     51		000026			spSoc2= 26
+     52		000030			Odata = 30
+     53		000377			dHost = 377				; NON-host: host setup from start PUP
+     54					.IF EQ <prom>
+EFTP memory dump - version 1. July 31, 1981. by Bill.	MACN11   V4.26T   29-Sep-82 15:13:01   PAGE 2
+EFTPMD.MAC;8
+
+     55					boot = 165576
+     56					tmpStk = 2000				; This location doesn't matter since
+     57					.ENDC					; We run from PROM, and replace it.
+
+     59					.IF NE <prom>
+     60		001000			tmpStk = 1000				; This location doesn't matter since
+     61					.ENDC					; We run from PROM, and replace it.
+
+     63					.IF NE <VeizBD>
+
+     65		000004			inRWE = 4		;	2		  Ram write ENABLE
+     66		000010			inRWV = 10		;       3		  Ram write value of 1
+     67		000020			inRCR = 20		;	4		  Receiver reset.
+     68		040000			inNXM = 40000 		;      12		  in NXM.
+
+     70		000004			outIOR = 4		;	2		  IO reset
+     71		000010			outMER = 10		;	3		  Memory error reset
+     72		000020			outTRR = 20		;	4		  transmiter reset
+     73		174000			Omask=174000				; 11 bit output word count
+     74		177776			delay=-2		; NOTE: the delay must NOT be -1 on VB.
+     75					; maxWin=30.				; max. words input(interrupts on
+     76										; Word count overflow. So we can
+     77										; use a smaller input buffer.
+     78					.ENDC
+
+     80					.IF EQ <VeizBD>
+     81					Omask=176000				; 10 bit output word count
+     82					delay=1
+     83					outIOR = 0		;	0 values for resets on XEROX board.
+     84					outMER = 0		;
+     85					outTRR = 0		;
+     86					inRCR  = 0		;
+     87					.ENDC
+     88		001060			maxBin=maxWin*2				; max. input EFTP packet in bytes. 
+
+     90		000430			maxWin=280.				; max. words input(Inputs until 
+     91										; carrier drops, so need max PAK)
+
+     93		000004			trap4 = 4
+     94					; some sizes.
+     95		000002			esize =2				; words of encapsulation.
+     96		000026			ovHead=22.				; PUP header + checksum.
+     97		000006			MNPBLN=6.				; minimum PDP10 words for ACK
+     98		000100			ndata =64.				; max data for output PUP.
+     99		000232			mxBout=ovHead+<<esize+ndata>*2>		; largest output packet.
+
+    101					.IF NE <withTT>
+    102		177564			ttyOs= 177564
+    103		177566			ttyOb= ttyOs+2
+    104		000033			esc=33
+    105		000015			eol=15
+    106		000012			lf=12
+    107	000000'	   033	   110	   033	clrTTY:	.asciz <esc>/H/<esc>/JMem Dump:/<eol><lf>
+	000003'	   112	   115	   145
+EFTP memory dump - version 1. July 31, 1981. by Bill.	MACN11   V4.26T   29-Sep-82 15:13:01   PAGE 3
+EFTPMD.MAC;8
+
+	000006'	   155	   040	   104
+	000011'	   165	   155	   160
+	000014'	   072	   015	   012
+	000017'	   000
+    108						.EVEN
+    109					.ENDC
+    110		000002			expire= 2.				; EACH unit is about 1.4 seconds.
+
+EFTP memory dump - version 1. July 31, 1981. by Bill.	MACN11   V4.26T   29-Sep-82 15:13:01   PAGE 4
+EFTPMD.MAC;8
+
+    112					;
+    113					;	All register including interface board(s) must be saved in some
+    114					;	memory location before WE are booted. We don't save it for you.
+    115					;
+    116					;	After loading the boot address, then put the 
+    117					;	the boot file number of the program you want loaded in the switches 
+    118					;	before pressing start.
+    119					;
+    120					;	We will boot that program when done.
+    121					;
+    122					;		REGISTER usage:
+    123					;		r0	points to beginning of the memory we use
+    124					;		r1	points to input buffer 
+    125					;		r2-r3	general usage
+    126					;		r4	core pointer for dump.
+    127					;		r5	bit 15 set if reached end of mem. 
+    128					;			byte 0 used for state maintenance.
+    129						.globl	EFTPmd
+    130	000020'				EFTPmd:
+    131					.IF EQ <prom>
+    132						HALT				; for debugging purposes.
+    133					.ENDC
+    134					.IF NE <withTT>
+    135					;	clear tty
+    136	000020'	012700	000000'			mov	#clrTTY,r0
+    137	000024'				clear:
+    138	000024'	105737	177564			tstb	@#ttyOs
+    139	000030'	002375				bge	clear
+    140	000032'	112037	177566			 movb	(r0)+,@#ttyOb
+    141	000036'	001372				 bne	clear
+    142					.ENDC
+    143					;	load our HOST address.
+    144	000040'	113705	160016			movb	@#RHA,r5
+    145	000044'	042705	177400			bic	#177400,r5
+    146					.IF EQ <VeizBD>
+    147						comb	r5			; use r5 temporarily
+    148					.ENDC
+    149					.IF NE <VeizBD>
+    150	000050'	012700	000377			mov	#255.,r0		; clear RAM
+    151	000054'				clearR:
+    152	000054'	010037	160016			mov	r0,@#RHA		; host #
+    153	000060'	012737	000004	160014		mov	#inRWE,@#ICS		; clear.
+    154	000066'	005300				dec	r0
+    155	000070'	002371				bge	clearR
+
+    157	000072'	010537	160016			mov	r5,@#RHA		; set up RAM
+    158	000076'	012737	000014	160014		mov	#inRWE+inRWV,@#ICS	; hear for us.
+    159					.ENDC
+    160					;	Find last core location:
+    161	000104'	013700	000776			mov	@#tmpStk-2,r0
+    162	000110'	013701	000774			mov	@#tmpStk-4,r1		; save these two words
+    163	000114'	012706	001000			mov	#tmpStk,sp		; temporarily
+    164	000120'	005002				clr	r2
+    165	000122'	013703	000004			mov	@#trap4,r3		; save old vector
+EFTP memory dump - version 1. July 31, 1981. by Bill.	MACN11   V4.26T   29-Sep-82 15:13:01   PAGE 5
+EFTPMD.MAC;8
+
+    166	000126'	010737	000004			mov	pc,@#trap4
+    167	000132'	062737	000020	000004		add	#gotMem-.+2,@#trap4	; PIC vector location.
+    168
+    169	000140'				1$:
+    170	000140'	005722				tst	(r2)+
+    171	000142'	020227	157776			cmp	r2,#157776		; end of possible core?
+    172	000146'	001374				bne	1$ 			; no, loop until trap/branch
+
+    174	000150'				gotMem:
+    175	000150'	010037	000776			mov	r0,@#tmpStk-2		; restore memory.
+    176	000154'	010137	000774			mov	r1,@#tmpStk-4
+    177	000160'	010337	000004			mov	r3,@#trap4		; restore old vector
+    178	000164'	162702	000004			sub	#4,r2			; last good address.
+    179	000170'	010200				mov	r2,r0			; start here.
+    180					;	use end of memory for buffers:
+    181	000172'	162700	001060			sub	#maxBin,r0		; minus length
+    182	000176'	010001				mov	r0,r1			; f
+    183	000200'	162700	000234			sub	#mxBout+2,r0		; and now output-2
+    184	000204'	010210				mov	r2,(r0)			; save last core address.
+    185	000206'	010006				mov	r0,Sp			; a stack in case for jsr pc,
+
+EFTP memory dump - version 1. July 31, 1981. by Bill.	MACN11   V4.26T   29-Sep-82 15:13:01   PAGE 6
+EFTPMD.MAC;8
+
+    187					; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+    188					;
+    189					;	Wait for special start up PUP
+    190					;
+    191					;
+    192					; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+    193					;	Now wait for type 205 with id 323,,4676 
+    194	000210'				heracl:
+    195	000210'	012737	000020	160014		mov	#inRCR,@#ICS		; clear receiver
+    196	000216'				herald:
+    197	000216'	010137	160012			mov	r1,@#IBL
+    198	000222'	012737	177350	160010		mov	#-maxWin,@#IWC
+    199	000230'	012737	000001	160014		mov	#1,@#ICS
+    200	000236'				hWait:
+    201	000236'	105737	160014			tstb	@#ICS			; an arrival?
+    202	000242'	002375				bge	hWait			; No on branch
+    203	000244'	005737	160014			 tst	@#ICS			;  got here intact?
+    204	000250'	002757				 blt	heraCL			;  No on branch - INPUT error.
+
+    206					;	Got a packet...the one?
+    207	000252'	122761	000205	000006		cmpb	#205,type(r1)
+    208	000260'	001356				bne	herald
+
+    210	000262'	022761	152357	000010		cmp	#152357,id1(r1)		; our magic id! 152357
+    211	000270'	001352				bne	herald
+
+
+EFTP memory dump - version 1. July 31, 1981. by Bill.	MACN11   V4.26T   29-Sep-82 15:13:01   PAGE 7
+EFTPMD.MAC;8
+
+    214					; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+    215					;
+    216					;	Set up SOURCE(US) And DESTINATION (THEM) addresses
+    217					;	ID2		destination  socket0
+    218					;	destination PORT of 205 pup is as follows:
+    219					;	Net,,Host	US
+    220					;	Socket 0        dNET,,dHOST	8 bits each
+    221					;	Socket 1	destination  socket1.
+    222					;
+    223					; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+    224					;	away we go!
+    225					;	output encapsulation, and fixed defaults...
+    226	000272'	010702				mov	pc,r2
+    227	000274'	062702	000664			add	#header-.,r2		; where the header is.
+    228	000300'	012703	000014			mov	#hlen,r3
+    229	000304'	010004				mov	r0,r4			; for addressing output buffer
+    230	000306'	005724				tst	(r4)+			; + 2 to buffer.
+    231	000310'				1$:
+    232	000310'	012224				mov	(r2)+,(r4)+
+    233	000312'	005303				dec	r3
+    234	000314'	003375				bgt	1$
+
+    236					;	Now set up source(US) Host.
+    237	000316'	110560	000002			movb	r5,esHost+2(r0)		; ENCAPsulation source Host
+    238	000322'	116160	000016	000003		movb	dpSoc1(r1),edHost+2(r0) ; ENCAPsulation destination Host
+    239	000330'	110560	000024			movb	r5,spHost+2(r0)		; source host.
+
+    241	000334'	105060	000017			clrb	dpNet+2(r0)  		; destination net - use default 0
+    242	000340'	116160	000016	000016		movb	dpSoc1(r1),dpHost+2(r0) ; destination Host
+    243	000346'	016160	000012	000020		mov	id2(r1),dpSoc1+2(r0)	; socket 0
+    244	000354'	016160	000020	000022		mov	dpSoc2(r1),dpSoc2+2(r0) ; socket 1
+
+EFTP memory dump - version 1. July 31, 1981. by Bill.	MACN11   V4.26T   29-Sep-82 15:13:01   PAGE 8
+EFTPMD.MAC;8
+
+    246					; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+    247					;
+    248					;	Now dump the memory:
+    249					;
+    250					; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+    252					;	Initialize "state" machine.
+    253	000362'	005004				clr	r4			; core pointer 0 (r0).
+    254	000364'	005005				clr	r5			; <0 for end of data.
+    255	000366'				build:
+    256					;	build output packet
+    257	000366'	005260	000014			inc	id2+2(r0)		; Next packet-initially -1.
+    258	000372'	012760	000026	000006		mov	#ovHead,pupl+2(r0)	; length start.
+
+    260					;	set up the type.
+    261	000400'	012760	000030	000010		mov	#EFTPda,type+2(r0)	; Type data
+    262	000406'	120527	000002			cmpb	r5,#2			; state check
+    263	000412'	002407				blt	1$			; still data
+    264	000414'	012760	000032	000010		 mov	#EFTPen,type+2(r0)	;  termination packet
+    265	000422'	012760	177777	000032		 mov	#-1,Odata+2(r0)		;  check sum
+    266	000430'	000422				 br	resend			;  No data, send it.
+    267	000432'				1$:
+    268					;	Now move the data
+    269	000432'	010003				mov	r0,r3
+    270	000434'	062703	000032			add	#Odata+2,r3		; data starts there.
+    271	000440'	012702	000100			mov	#ndata,r2		; max words to send...
+    272	000444'				2$:
+    273	000444'	012423				mov	(r4)+,(r3)+		; nxt word from memory.
+    274	000446'	062760	000002	000006		add	#2,pupl+2(r0)		; increase length.
+    275	000454'	020410				cmp	r4,(r0)			; reached last location?
+    276	000456'	101403				blos	3$			; No, so continue(unsigned please!)
+    277	000460'	052705	100000			 bis	#100000,r5		;  END of data..
+    278	000464'	000402				 br	chkSum
+    279	000466'				3$:
+    280	000466'	005302			        dec	r2			; one word less.
+    281	000470'	003365			        bgt	2$			; done on ZERO!!
+    282	000472'				chkSum:
+    283	000472'	012713	177777			mov	#-1,(r3)		; No checksumming done.
+
+EFTP memory dump - version 1. July 31, 1981. by Bill.	MACN11   V4.26T   29-Sep-82 15:13:01   PAGE 9
+EFTPMD.MAC;8
+
+    285					; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+    286					;
+    287					;	Send the packet
+    288					;
+    289					; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+    290	000476'				resend:
+    291	000476'				Psend: 
+    292					;	start input if NOT in state 3 = resending EFTPend.
+    293	000476'	120527	000003			cmpb	r5,#3
+    294	000502'	001410				beq	1$			; No input here.
+    295	000504'	010137	160012			 mov	r1,@#IBL		; input buffer location
+    296	000510'	012737	177350	160010		 mov	#-maxWin,@#IWC		; input size.
+    297	000516'	012737	000001	160014		 mov	#1,@#ICS		; started...
+
+    299					;	 send the fellow.
+    300	000524'				1$:
+    301					;	Set up word count.
+    302	000524'	016002	000006			mov	PUPL+2(r0),r2		; PUP length in bytes.
+    303	000530'	006202				asr	r2			; now in words
+    304	000532'	062702	000002			add	#esize,r2		; + encapsulation.
+    305	000536'	005402				neg	r2			; 2's compliment.
+    306	000540'	042702	174000			bic	#Omask,r2		; 10 bits only.
+    307	000544'	010237	160000			mov	r2,@#OWC		; word count.
+    308	000550'	012737	177776	160006		mov	#delay,@#ODE		; delay...don't be greedy.
+    309	000556'	010002				mov	r0,r2			; buffer location-2
+    310	000560'	062702	000002			add	#2,r2			; out buffer location.
+    311	000564'	010237	160002			mov	r2,@#OBL		;
+    312	000570'	012737	000001	160004		mov	#GO,@#OCS		; Go...
+
+    314	000576'				2$:
+    315	000576'	105737	160004			tstb	@#OCS			; Is output finished?
+    316	000602'	002375				bge	2$			; Not yet...If errored INPUT will
+    317										; take care of it for XEROX
+    318					; ::::::::     OUTPUT DONE    :::::::::::::
+    319					.IF NE <VeizBD>
+    320	000604'	005737	160004			tst	@#OCS			; any error?
+    321	000610'	002010				bge	3$
+    322	000612'	013703	160004			 mov	@#OCS,r3		; output CS
+    323	000616'	042703	173377			 bic	#173377,r3		; leave NXM-Bus grant
+    324	000622'	001403				 beq	3$			; NOT those errors.
+    325	000624'	012737	000034	160004		  mov	#outIOR+outMER+outTRR,@#OCS ; clear the world.
+    326	000632'				3$:
+    327					.ENDC
+    328	000632'	120527	000003			cmpb	r5,#3			; all done(state = 3).
+    329	000636'	001005				bne	NOTdon			; No, so send again.
+    330					.IF NE <withTT>
+    331	000640'	112737	074052	177566		 movb	#"*x,@#ttyOb
+    332					.ENDC
+    333						.IF NE <prom>
+    334						 .globl	LOADA
+    335	000646'	000167	000000G			 jmp	LOADA
+    336						.ENDC
+    337						.IF EQ <prom>
+    338						 HALT				; just HALT if NO prom...
+EFTP memory dump - version 1. July 31, 1981. by Bill.	MACN11   V4.26T   29-Sep-82 15:13:01   PAGE 10
+EFTPMD.MAC;8
+
+    339						.ENDC
+    340	000652'				NOTdon:
+
+EFTP memory dump - version 1. July 31, 1981. by Bill.	MACN11   V4.26T   29-Sep-82 15:13:01   PAGE 11
+EFTPMD.MAC;8
+
+    342					; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+    343					; 
+    344					;	Now wait for a PUP
+    345					;
+    346					; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+    347					;	See if input done...
+    348	000652'	005002				clr	r2			; our time out counter... 
+    349	000654'	012703	000002			mov	#expire.,r3		; wait A BIT...
+    350	000660'				inning:					; OR AROUND 1.3 x expire seconds.
+    351	000660'	105737	160014			tstb	@#ICS			; have we received anything?
+    352	000664'	002405				blt	someIn			; Yes..
+    353					;	 check time out...
+    354	000666'	005302				 dec	r2			; about .5 seconds worth...
+    355	000670'	001373				 bne	inning			; No, so wait...
+    356	000672'	005303				  dec	r3			;  second counter.(r2 = 0)
+    357	000674'	003371				  bgt	inning			;  Timed OUT..Count down done?
+    358	000676'	000677				  br	reSend			;   Yes, time out try again.
+    359	000700'				someIn:
+    360					;	Yes, is it errored?
+    361	000700'	005737	160014			tst	@#ICS
+    362					.IF EQ <VeizBD>
+    363						blt	pWAIT			; wait and try again
+    364					.ENDC
+    365					.IF NE <VeizBD>
+    366	000704'	002010				bge	2$			; No error
+    367	000706'	032737	040000	160014		 bit	#inNXM,@#ICS		; NXM
+    368	000714'	001403				 beq	1$
+    369	000716'	012737	000020	160014		  mov	#inRCR,@#ICS		; clear receiver.
+    370	000724'				1$:
+    371	000724'	000504				 br	pWAIT			; wait and try again.
+    372	000726'				2$:
+    373					.ENDC
+
+EFTP memory dump - version 1. July 31, 1981. by Bill.	MACN11   V4.26T   29-Sep-82 15:13:01   PAGE 12
+EFTPMD.MAC;8
+
+    375					; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+    376					;
+    377					;	Analyze received PUP
+    378					;
+    379					; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+    381	000726'	105761	000001			tstb	edHost(r1)		; broadcast?
+    382	000732'	001501				beq	pWAIT			; Yes, so ignore.
+
+    384	000734'	022761	001000	000002		cmp	#1000,pup(r1)		; is it a pup?
+    385	000742'	001075				bne	pWAIT
+
+    387					;	This packet can be used to manually ABORT the process.
+    388					;	From Any Host if NOT broadcast.
+    389	000744'	122761	000011	000006		cmpb	#ABORT,type(r1)		; is it an a ABORT
+    390	000752'	001424				beq	MDabort			;  yes, start over
+
+
+    393					;	Is it FROM the dHost? (destination HOST dependencies)
+    394	000754'	126061	000003	000000		cmpb	edHost+2(r0),esHost(r1)	; sHost = the dest. we intended?
+    395	000762'	001065				bne	pWAIT			; reject
+
+    397					;	check socket - output PAK source soc = input PAK dest socket.
+    398	000764'	026061	000026	000016		cmp	spSoc1+2(r0),dpSoc1(r1)
+    399	000772'	001061				bne	pWAIT
+    400	000774'	026061	000030	000020		 cmp	spSoc2+2(r0),dpSoc2(r1)	;  how about the second?
+    401	001002'	001055				 bne	pWAIT			;  wrong socket...
+
+    403	001004'	122761	000004	000006		cmpb	#ERROR,type(r1)		; is it an ERROR pup
+    404	001012'	001404				beq	MDabort			;  yes, start over
+
+    406					;	An EFTP abort packet?
+    407	001014'	122761	000033	000006		cmpb	#EFTPab,type(r1)
+    408	001022'	001002				bne	NOquit
+    409	001024'				MDabort:
+    410	001024'	000167	176770			jmp	EFTPmd
+    411	001030'				NOquit:
+    412					;	Is it an EFTPak
+    413	001030'	122761	000031	000006		cmpb	#EFTPak,type(r1)
+    414	001036'	001037				bne	pWAIT			; Nope, so forget it.
+
+    416					;	So here we are...Is it for correct ID?
+    417	001040'	026061	000014	000012		cmp	id2+2(r0),id2(r1)	; should be equal.
+    418	001046'	001033				bne	pWAIT			; Nope..
+
+
+EFTP memory dump - version 1. July 31, 1981. by Bill.	MACN11   V4.26T   29-Sep-82 15:13:01   PAGE 13
+EFTPMD.MAC;8
+
+    421					; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+    422					;
+    423					;	Got an EFTP acknowledge with correct sequence number:
+    424					;
+    425					;
+    426					; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+    427						.IF NE <withTT>
+    428	001050'				doType:
+    429	001050'	105737	177564			 tstb	@#ttyOs			; can we type?
+    430	001054'	002375				 bge	doType			; Not done yet.
+    431	001056'	016103	000012			  mov	id2(r1),r3
+    432	001062'	042703	177760			  bic	#177760,r3		;  mod 16
+    433	001066'	001003				  bne	noType
+    434	001070'	112737	074041	177566		   movb	#"!x,@#ttyOb		;  once every 16 packets.
+    435	001076'				noType:
+    436						.ENDC
+
+    438					;	Got our ACK...so, see what state we are in...
+    439	001076'	105705				tstb	r5			; state = 0? [just sent pak 0]
+    440	001100'	001001				bne	1$			; NO...
+    441	001102'	105205				 incb	r5			;  state = 1 [host responded]
+    442	001104'				1$:
+    443	001104'	005705				tst	r5			; End of data on last send?
+    444	001106'	002005				bge	2$			; No.
+    445	001110'	105205				 incb	r5			;  state = 2. [termination EFTPend]
+    446	001112'	042705	100000			 bic	#100000,r5		;  reset flag.
+    447	001116'	000167	177244			 jmp	build			;  build EFTP end packet...
+    448	001122'				2$:
+    449					;	Got an Ack for state 2?
+    450	001122'	120527	000002			cmpb	r5,#2			; In state 2?
+    451	001126'	001001				bne	3$			; No, state = 1, send more data.
+    452	001130'	105205				 incb	r5			;  Yes,state = 3. send one more END.
+    453	001132'				3$:
+    454	001132'	000167	177230		       	jmp	build
+    455	001136'				pWAIT:
+    456	001136'	012703	000002		      	mov	#expire,r3		; wait A BIT... 1.3 * 2 = 2.6 secs.
+    457	001142'	005002			       	clr	r2
+    458	001144'	005302			1$:    	dec	r2
+    459	001146'	001376				bne	1$			; wrap around
+    460	001150'	005303				 dec	r3			; r2 = 0 here.
+    461	001152'	003374				 bgt	1$			; ON 0, resend the packet...
+    462	001154'	000167	177316		2$:	jmp	resend
+
+
+EFTP memory dump - version 1. July 31, 1981. by Bill.	MACN11   V4.26T   29-Sep-82 15:13:01   PAGE 14
+EFTPMD.MAC;8
+
+    465					;	data area:
+    466					;  default header for output packet
+    467	001160'	   000	   377		header:	.byte	0,dHost			; encap dhost,,0
+    468	001162'	001000				.word	1000			; type pup
+    469	001164'	000000				.word	0			; pup length
+    470	001166'	000000				.word	0			; transport and type
+    471	001170'	000000	177777			.word	0,-1			; id1 and id2
+    472	001174'	   000	   000			.byte	0,0			; dnet and dhost supplied by starter
+    473	001176'	000000	000000			.word	0,0			; socket supplies by starter
+    474	001202'	000000			hsport:	.word	0			; source net and host
+    475	001204'	000000	000023			.word	0,23			; From "MEFTP" socket.
+    476		000014			hlen = <.-header>/2
+
+    478		000001				.end
+EFTP memory dump - version 1. July 31, 1981. by Bill.	MACN11   V4.26T   29-Sep-82 15:13:01   PAGE 15
+EFTPMD.MAC;8	Symbol table
+
+ABORT  = 000011  	BUILD    000366R 	CHKSUM   000472R 	CLEAR    000024R 
+CLEARR   000054R 	CLRTTY   000000R 	DELAY  = 177776  	DHOST  = 000377  
+DOTYPE   001050R 	DPHOST = 000014  	DPNET  = 000015  	DPORT  = 000014  
+DPSOC1 = 000016  	DPSOC2 = 000020  	EDHOST = 000001  	EFTPAB = 000033  
+EFTPAK = 000031  	EFTPDA = 000030  	EFTPEN = 000032  	EFTPMD   000020RG
+EFTPSN = 000020  	ENCAP  = 000000  	EOL    = 000015  	ERROR  = 000004  
+ESC    = 000033  	ESHOST = 000000  	ESIZE  = 000002  	EXPIRE = 000002  
+GO     = 000001  	GOTMEM   000150R 	HEADER   001160R 	HERACL   000210R 
+HERALD   000216R 	HLEN   = 000014  	HSPORT   001202R 	HWAIT    000236R 
+IBL    = 160012  	ICS    = 160014  	ID1    = 000010  	ID2    = 000012  
+INNING   000660R 	INNXM  = 040000  	INRCR  = 000020  	INRWE  = 000004  
+INRWV  = 000010  	IWC    = 160010  	LF     = 000012  	LOADA  = ****** G
+MAXBIN = 001060  	MAXWIN = 000430  	MDABOR   001024R 	MNPBLN = 000006  
+MXBOUT = 000232  	NDATA  = 000100  	NOQUIT   001030R 	NOTDON   000652R 
+NOTYPE   001076R 	OBL    = 160002  	OCS    = 160004  	ODATA  = 000030  
+ODE    = 160006  	OMASK  = 174000  	OUTIOR = 000004  	OUTMER = 000010  
+OUTTRR = 000020  	OVHEAD = 000026  	OWC    = 160000  	PC     =%000007  
+PROM   = 000001  	PSEND    000476R 	PUP    = 000002  	PUPL   = 000004  
+PWAIT    001136R 	RESEND   000476R 	RHA    = 160016  	R0     =%000000  
+R1     =%000001  	R2     =%000002  	R3     =%000003  	R4     =%000004  
+R5     =%000005  	R6     =%000006  	R7     =%000007  	SOMEIN   000700R 
+SP     =%000006  	SPHOST = 000022  	SPNET  = 000023  	SPORT  = 000022  
+SPSOC1 = 000024  	SPSOC2 = 000026  	TMPSTK = 001000  	TRAP4  = 000004  
+TTYOB  = 177566  	TTYOS  = 177564  	TYPE   = 000006  	VEIZBD = 000001  
+WITHTT = 000001  	.MACN. = 000004  	.VRSN. = 000010  	1$       000140R 
+1$       000310R 	1$       000432R 	1$       000524R 	1$       000724R 
+1$       001104R 	1$       001144R 	2$       000444R 	2$       000576R 
+2$       000726R 	2$       001122R 	2$       001154R 	3$       000466R 
+3$       000632R 	3$       001132R 	.      = 001210R 
+
+
+EFTP memory dump - version 1. July 31, 1981. by Bill.	MACN11   V4.26T   29-Sep-82 15:13:01   PAGE 16
+EFTPMD.MAC;8
+
+
+
+ Errors detected: 0
+
+ *,eftpmd_eftpmd
+ Run-time:  5 seconds
+

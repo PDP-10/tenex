@@ -1,0 +1,545 @@
+	.title	  Interrupt Service routines - ETHER NET
+	.sbttl    Ether-Net interrupt routines.
+	.sbttl	  $E0$I0init - initialization for NEt 0
+	.globl	prolog,epilog			; CC11 interface stuff.
+	.globl	$l0$ra				; RAW input queue.
+	.globl	$q$set				; sets intent in socket
+	.globl	$p$enq				; enqueue routine
+	.globl	$l0$dis				; discard queue for output.
+	.globl	$e$0NDB				; addresses of associated
+					        ; NDBs for Net 0, and 1
+						; Set up in pupl1e.c
+	.globl	$E0$I0init
+	.globl	$l0$Ie,$l0$Oe,$l0$CX		; Error counters
+	.globl	$l0$TP,$l0$LP
+; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+;
+;    SET NET1 = 0 IF ONLY *ONE* ethernet board is used.
+;    SET VeizBD = 1 IF USING NICK's board
+;    SET wantBC = 1 IF broadcasts desired: NOT in tips please
+;
+; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+NET1 = 0
+VeizBD=1				; =1 if for veizades board
+wantBC=0				; DON'T accept broadcasts
+.IF NE <NET1>
+	.globl	$e$1NDB				; Net 1
+	.globl	$E1$I0init			; Net 1
+	.globl	$l1$Ie,$l1$Oe,$l1$CX		; Error counters
+	.globl	$l1$TP,$l1$LP
+.ENDC
+pri5 = 240
+	.sbttl vector and register assignments - 
+;  NET 0 - set up for our 11/05 board right now.
+MaxPUP = 280.					; includes 2 Encap. words.
+						; Note Max PAK is 279 words,
+						; but word count->0 is
+						; an input overflow for
+						; the interface.
+
+E0OCV = 400					; Output complete vector
+E0ICV = E0OCV+4					; Input  complete vector
+E0OEV = E0OCV+10				; Output ERROR vector
+E0OWC = 160000					; output word count
+E0OBL = E0OWC+2					; output buffer location
+E0OCS = E0OWC+4					; output control and status
+E0ODE = E0OWC+6					; output delay.
+E0IWC = E0OWC+10				; input word count
+E0IBL = E0OWC+12				; input buffer location
+E0ICS = E0OWC+14				; input control and status
+E0RHA = E0OWC+16				; read HOST address.
+RHA = 2						; offset from ICS.
+; NET 1 - for defining a second NET, set NET1 = 1
+.IF NE <NET1>
+E1OCV = 500					; Output complete vector
+E1ICV = E1OCV+4					; Input  complete vector
+E1OEV = E1OCV+10				; Output ERROR vector
+E1OWC = 160020					; output word count
+E1OBL = E1OWC+2					; output buffer location
+E1OCS = E1OWC+4					; output control and status
+E1ODE = E1OWC+6
+E1IWC = E1OWC+10				; input word count
+E1IBL = E1OWC+12				; input buffer location
+E1ICS = E1OWC+14				; input control and status
+E1RHA = E1OWC+16				; read HOST address.
+.ENDC
+
+; NDB definitions  -  see PUPL11.H
+sinput = 10.					; offsets in bytes.
+sOutput = 12.
+Icount = 16.
+ICstat = 20.
+pakIN  = 22.
+OCstat = 28.
+OCload = 30.
+Ncolli = 32.
+pakOUT = 38.
+ETHOCS = 48.
+ETHIWC = 52.
+ETHICS = 56.
+
+; packet definitions
+input  = 2.					; Flags input packet.
+Ocomplete = 8.
+keepPUP = 32.
+Opending  = 128.
+PUP    = 1000					; Type PUP.
+OnRawQ = 1000					; flags for input trace.
+; some useful offsets - in bytes for PUP Data BLOCK.
+NDBptr = 4.					; Net Data BLOCK
+intent = 6.					; intent discriptor.
+PAKlen = 8.
+ENCAP1 = 10.
+ENCAP2 = 12.
+PUPlen = 14.
+
+; local data here
+$l0$Ier: 0					; error counters I/O Net0
+$l0$Oer: 0					; saves source HOST for ier.
+$l0$CX: 0
+
+; below double word for through put counting...
+$l0$TP: 0
+$l0$LP: 0
+.IF NE <NET1>
+$l1$Ie: 0					; error stuff I/O Net1
+$l1$Oe: 0
+$l1$CX: 0
+
+; below double word for through put counting...
+$l1$TP: 0
+$l1$LP: 0
+.ENDC
+.IF NE <VeizBD>
+	.sbttl	Veizades board definitions:
+inPR  = 2		;	1		  Promiscuous bit
+inRWE = 4		;	2		  Ram WRITE enable
+inRWV = 10		;	3		  Ram WRITE value (0, 1)
+inRCR = 20		;	4		  Receiver reset.
+inLBK = 40		;	5		  Loop back
+inENA = 100		;	6		  enable
+inDON = 200		;	7		  input DONE
+			;	8-9		  N/A	
+inCAR = 2000		;      10		  carrier on = 1
+inWOV = 4000		;      11	    [=0 ] word count overflow
+inFOR = 10000		;      12		  FIFO over-run
+inCRC = 20000		;      13		  CRC error
+inNXM = 40000		;      14		  NXM (if NXMok = 1)
+inERR = 100000		;      15		  ERROR bit(See 11 - 14)
+
+
+outWC  = 2		;	1		  Set if word count = 0
+outIOR = 4		;	2		  I/O reset.
+outMER = 10		;	3		  Memory error reset
+outTRR = 20		;	4		  transmiter reset
+outNXM = 400		;	8		  NXM: SSYN NOT received.
+			;			  BIT11 ALSO SET.
+			;       9		  N/A
+outCAR = 2000		;      10		  compliment of BIT1
+outBGN = 4000		;      11		  Bus grant not received.
+			;			  BIT11 and NOT BIT8.
+outFOR = 10000		;      12		  output word count overflow.
+outRET = 20000		;      13		  Retry. Couldn't output
+			;			  because carrier detected.
+outCOL = 40000		;      14		  jammed or Collision detect.
+outERB = 100000		;      15		  ERROR bit (See 8 - 14)
+.ENDC
+	.sbttl	ether initialization routines
+$E0$I0init:
+; do initialization of Ether interface, and return local host in r0
+	jsr	r0,prolog
+	0
+;	reset interface
+.IF EQ <VeizBD>
+	clr	@#E0ICS				; reset input 
+	clr	@#E0OCS				; reset output
+.ENDC
+.IF NE <VeizBD>
+	mov	#outIOR+outMER+outTRR,@#E0OCS	;    output - clear the world
+	mov	#E0ICS,r0			;    ICS address.
+	jsr	pc,Vinit
+.ENDC
+	bis	#100,@#E0ICS			; interrupt on
+	bis	#100,@#E0OCS			;       "
+
+;	set vectors
+	mov	#ICnet0,@#E0ICV			; input vector
+	mov	#pri5,@#E0ICV+2			; priority 5
+
+	mov	#OCnet0,@#E0OCV			; output vector
+	mov	#pri5,@#E0OCV+2			; priority 5
+
+	mov	#OEnet0,@#E0OEV			; output ERROR vector
+	mov	#pri5,@#E0OEV+2			; priority 5
+
+;	return HOST number
+	mov	@#E0RHA,r0			; host number
+.IF NE <VeizBD>
+	bic	#177400,r0			; 8 bits only.
+.ENDC
+.IF EQ <VeizBD>
+	comb	r0				; 1s complement for XEROX.
+.ENDC
+;	clear error counters
+	CLR	$l0$Ie
+	CLR	$l0$Oe
+	CLR	$l0$CX
+	CLR	$l0$TP
+	CLR	$l0$LP
+	jmp	epilog
+	.sbttl	  $E1$I0init - initialization for NET 1
+.IF NE <NET1>
+$E1$I0init:
+; do initialization of Ether interface, and return local host in r0
+	jsr	r0,prolog
+	0
+;	reset interface
+
+.IF EQ <VeizBD>
+	clr	@#E1ICS				; reset input 
+	clr	@#E1OCS				; reset output
+.ENDC
+.IF NE <VeizBD>
+	mov	#outIOR+outMER+outTRR,@#E1OCS	;    output - clear the world
+	mov	#E1ICS,r0			;    input
+	jsr	pc,Vinit
+.ENDC
+	bis	#100,@#E1ICS			; interrupt on
+	bis	#100,@#E1OCS			;       "
+
+;	set vectors
+	mov	#ICnet1,@#E1ICV			; input vector
+	mov	#pri5,@#E1ICV+2			; priority 5
+
+	mov	#OCnet1,@#E1OCV			; output vector
+	mov	#pri5,@#E1OCV+2			; priority 5
+
+	mov	#OEnet1,@#E1OEV			; output ERROR vector
+	mov	#pri5,@#E1OEV+2			; priority 5
+
+;	return HOST number
+	mov	@#E1RHA,r0			; 1s comp-host number
+.IF NE <VeizBD>
+	bic	#177400,r0			; 8 bits only.
+.ENDC
+.IF EQ <VeizBD>
+	comb	r0				; 1s complement for XEROX.
+.ENDC
+
+;	clear error counters
+	CLR	$l1$Ie
+	CLR	$l1$Oe
+	CLR	$l1$CX
+	CLR	$l1$TP
+	CLR	$l1$LP
+	jmp	epilog
+.ENDC
+.IF NE <veizBD>
+Vinit:
+; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+;
+;	Veizades INIT-
+;	   NOTE: Special RAM addressing init required 
+;	   (r0)  constrol status pointer.
+; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+	mov	#inRCR,(r0)			;    input receiver reset.
+
+;	CLEAR the addressing RAM
+	mov	r1,-(Sp)			; SAVE r1
+	mov	#256.,r1
+	clr	r4
+1$:
+	mov	r4,RHA(r0)			; host address
+	mov	#inRWE,(r0)			; write a 0-dat3 is OFF.
+	inc	r4
+	dec	r1
+	bgt	1$
+	mov	(Sp)+,r1			; RECALL r1
+
+;	We'll receive broadcasts and packets for local host
+.if ne <wantBC>
+	clr	RHA(r0)				; address 0
+	mov	#inRWE+inRWV,(r0)		; dat3 is ON.
+.endc
+;	And local host:
+	mov	RHA(r0),r4			; host address
+	movb	r4,RHA(r0)			; write it back.
+	mov	#inRWE+inRWV,(r0)		; dat3 is ON.
+	rts	pc
+.ENDC
+	.sbttl	input complete interrupt service
+
+;	NOTE: ALL interrupt routines MUST save r0, r4, r5 AND
+;	      any other LOCALLY used registers.
+;	      On procedure calls CC11 will protect r4, and r5, ALL
+;	      other registers are fair game.
+ICnet0:
+	mov	r2,-(SP)
+	mov	r3,-(SP)
+	mov	r4,-(SP)
+	mov	r0,-(SP)
+
+;	load address of associated network data block.
+	mov	$e$0NDB,r4
+;	And input error counter
+	mov	#$l0$Oe,r0
+	mov	#$l0$Ie,r2
+	mov	#$l0$LP,r3
+	br	Istart
+.IF NE <NET1>
+ICnet1:
+;	save r2, r3, r4
+	mov	r2,-(SP)
+	mov	r3,-(SP)
+	mov	r4,-(SP)
+	mov	r0,-(SP)		; NEW save here for ier host check.
+;	load address of associated network data block.
+	mov	$e$1NDB,r4
+
+;	And input error counter
+	mov	#$l1$Oe,r0
+	mov	#$l1$Ie,r2
+	mov	#$l1$LP,r3
+	br	Istart
+.ENDC
+Istart:
+;	See if there WAS indeed an input PACKET - could be bad interrupt
+	mov	r1,-(SP)
+	mov	r5,-(SP)
+
+	MOV	ETHICS(r4),r5			; ICS address for NET
+	MOV	(R5),ICstat(r4)			; save in NDB.
+	MOV	pakIN(r4),R1			; Pointer to input Packet.
+	BEQ	Ierr				; BAD interrupt, restart
+
+;	Through put counting:
+	inc	(r3)
+	bge	1$				; keep up to 32767
+	 clr	(r3)				;  wrap around
+	 inc	-(r3)				;  multiples of 32767.
+1$:
+;	Flag as input
+	MOV	#input,intent(r1)		; flag as input buffer.
+	TST	ICstat(r4)			; errored PUP?
+	BGE	2$				; NO, so continue on...
+	 movb	ENCAP1(r1),(r0)			;  save err'd source host.
+	.IF NE <VeizBD>				; For the veizades board
+	 bit	#inNXM,ICstat(r4)		; input NXM?
+	 bne	20$				;  Yes on branch
+	  bit	#inWOV,ICstat(r4)		;  word ct. overflow
+	  bne	21$				;  NO ON SET!!!
+20$:						;  Yes if RESET.
+	   mov	#inRCR,ICstat(r4)		;  clear receiver on NXM.
+21$:
+	.ENDC
+	 br	Ierr
+2$:						; the SAME input buffer.
+;	Validate TYPE PUP
+	CMP	ENCAP2(r1),#PUP			; type PUP?
+	BNE	Ierr				; NOT a PUP!
+
+;	Compute length of input packet
+	MOV	ETHIWC(r4),r5			; pointer to word count
+	MOV	(r5),Icount(r4)			; save in NDB ( < 0 )
+	BIS	#176000,Icount(r4)		; 10 bits - extend sign.
+	MOV	#MaxPUP,PAKlen(r1)		; Max. size PUP.
+	ADD	Icount(r4),PAKlen(r1)		; N words INPUT.
+
+; 	Validate Length of PUP
+	MOV	PUPlen(r1),r5			; length in bytes.
+	ADD	#5,r5				; 4 for ENCAP, 1 for odd
+	ASR	r5				; Now in words.
+	CMP	r5,PAKlen(r1)			; good length?
+	BNE	Ierr				; NO, restart.
+
+;	Assign arrival NDB for routing.
+	MOV	r4,NDBptr(r1)
+
+;	Queue on Raw INPUT Queue - NOTE: push params in REVERSE order.
+	BIS	#OnRawQ,intent(r1)		; into raw input Q.(trace)
+	MOV	r1,-(SP)			; packet pointer
+	MOV	$l0$raw,-(SP)			; queue pointer.
+	JSR	R5,$p$enq			; enqueue packet
+	0					; 0 local frame
+	2					; 2 parameters
+	tst	(SP)+				; clear params 
+	tst	(SP)+				; 
+
+	CLR	pakIN(r4)			; Need NEW input buffer
+	br	Ires
+Ierr:
+	INC	(R2)				; up error counter
+	BGE	1$				; 15 bits only.
+	 CLR	(R2)
+1$:
+	MOV	ETHICS(r4),r5			; ICS address for NET
+	MOV	#100,(R5)			; reset input-leave int bit.
+Ires:
+;	start ether input up 
+	MOV	r4,-(SP)			; NDB pointer
+	JSR	r5,@sinput(r4)			; start ether input.
+	0
+	1
+	tst	(SP)+				; clear parameter.
+
+;	restore registers
+	MOV	(SP)+,r5			; restore registers.
+	MOV	(SP)+,r1
+	MOV	(SP)+,r0
+	MOV	(SP)+,r4
+	MOV	(SP)+,r3
+	MOV	(SP)+,r2
+	RTI
+	.sbttl	output SUCCESSFULLY complete interrupt service.
+OCnet0:
+	MOV	r4,-(SP)
+	MOV	$e$0NDB,r4
+	br	Ostart
+.IF NE <NET1>
+OCnet1:
+	MOV	r4,-(SP)
+	MOV	$e$1NDB,r4
+	br	Ostart
+.ENDC
+Ostart:
+	MOV	r0,-(SP)
+	MOV	r1,-(SP)
+	MOV	r2,-(SP)
+	MOV	r3,-(SP)
+	MOV	r5,-(SP)
+
+;	save status
+	MOV	ETHOCS(r4),r5			; pointer to OCS reg.
+	MOV	(r5),OCstat(r4)			; save status in NDB
+	BLT	Oerr0				; output error.
+						; This can change in
+						; different implimentations.
+;	check for spurious interrupt
+	MOV	pakOUT(r4),r1			; pointer to packet
+	BEQ	Oerr1				; 0, so restart.
+	 jsr	pc,fixOUT			;  success, fix up &Toss pak.
+	 br	Ores
+Oerr0: 
+	TST	pakOUT(r4)			; will we go again NOW?
+	BNE	Ores				; YES, something to send.
+Oerr1:
+	mov	#100,(r5)			; set interrupt to clear
+						; error bit..May NOT immedi-
+						; ately GO.
+Ores:
+;	restart output.
+	MOV	r4,-(SP)			; NDB address
+	jsr	r5,@sOutput(r4)			; start output
+	0
+	1
+	TST	(SP)+				; clear parameter
+	
+;	restore registers
+	MOV	(SP)+,r5
+	MOV	(SP)+,r3
+	MOV	(SP)+,r2
+	MOV	(SP)+,r1
+	MOV	(SP)+,r0
+	MOV	(SP)+,r4
+	RTI
+	.sbttl	output ERRORED interrupt service (collision!!).
+OEnet0:
+	MOV	r2,-(SP)
+	MOV	r4,-(SP)
+	MOV	$e$0NDB,r4			; NDB address
+	MOV	#$l0$CX,r2
+	br	OEbeg
+.IF NE <NET1>
+OEnet1:
+	MOV	r2,-(SP)
+	MOV	r4,-(SP)
+	MOV	$e$1NDB,r4			; NDB address
+	MOV	#$l1$CX,r2
+	br	OEbeg
+.ENDC
+OEbeg:
+	MOV	r0,-(SP)
+	MOV	r1,-(SP)
+	MOV	r3,-(SP)
+	MOV	r5,-(SP)
+
+;	Save OCS
+	MOV	ETHOCS(r4),r5			; ptr to status
+	MOV	(r5),OCstat(r4)			; saved in NDB.
+
+;	See if we were really outputing...
+	MOV	pakOUT(r4),r1			; pointer to packet.
+	BEQ	OEclr				; bad interrupt?? try again.
+
+	.IF NE <VeizBD>				; for Veizades Board
+	 bit	#outRET+outCOL,(r5)		; A retry or Collision
+	 bne	OV$				; Yes, treat as a collision
+	  mov	(r5),r0
+	  bic	#173377,r0			; clear all but NXM bits
+	  beq	OEclr				; NOT nxm
+	   mov	#outIOR+outMER+outTRR,(r5)	; IOerr, MEMerr & reset trans
+	   br	OEclr
+OV$:
+	.ENDC
+
+	 INC	(R2)
+	 INC	nColli(r4)			; Up the collision counter
+	 BGT	1$				; 15 bits only.
+	  CLR	(R2)
+	  CLR   nColli(r4)
+1$:
+	 TST	OCload(r4)			; had 16 retries?
+	 BGE	OEres				; NO, so try again.
+	  JSR	pc,fixOUT			; fix intent flag. Toss pak.
+OEclr:
+	 MOV	#100,(r5)			; turn on interrupt to clear
+						; error, since we may NOT
+						; GO immediately.
+OEres:
+	MOV	r4,-(SP)			; NDB
+	jsr	r5,@soutput(r4)			; start output
+	0
+	1
+	TST	(SP)+				; clear parameter.
+
+	MOV	(SP)+,r5
+	MOV	(SP)+,r3
+	MOV	(SP)+,r1
+	MOV	(SP)+,r0
+	MOV	(SP)+,r4
+	MOV	(SP)+,r2
+	RTI
+	.sbttl	fix up packet intent flag - discard if necessary
+;	Here r1 has address of packet just output.
+;	     r4 the NDB pointer.
+fixOUT:
+;	output complete - set intent to show output complete.
+	bic	#Opending,intent(r1)		; clear pending
+	bis	#Ocomplete,intent(r1)		; set complete
+
+;	now, set tag in socket.
+	MOV	intent(r1),-(SP)		; current intent
+	MOV	r1,-(SP)			; PAK ptr.
+	jsr	r5,$q$set			; set tag in socket.
+	0
+	2
+	MOV	(SP)+,r1			; R1 back
+	TST	(SP)+				; clear other parameter
+
+;	If NOT keepPUP, then enqueue in $l0$dis
+	bit	#keepPUP,intent(r1)		; keep it when done?
+	bne	fixRet				; Yes...
+	 MOV	R1,-(SP)			; packet address
+	 MOV	$l0$dis,-(SP)			; ptr to discard Q.
+	 jsr	R5,$p$enq			; enqueue Packet.
+	 0
+	 2
+	 TST	(SP)+				; clear parameters
+	 MOV	(SP)+,R1			
+fixRET:	 
+	CLR	pakOUT(r4)			; clear ptr in NDB
+	CLR	OCload(r4)			; reset retry counter.
+	rts	pc
+	.END
+

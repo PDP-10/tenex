@@ -1,0 +1,284 @@
+	.enabl  lc
+	.title  PUPl0 macro package
+	; NOTE: C prefixes all variables with $ and replaces _ with $.
+	.globl	$l0$KW11L,$TODCLK,$TODlow,$l$longAdd,$l$ULE
+	.globl	$TODSEC,$TODMIN,$TODHRS
+	.globl	prolog,epilog,$l$firstFree
+	.globl	$l$CSpak
+R0=%0
+R1=%1
+R2=%2
+R3=%3
+R4=%4
+R5=%5
+SP=%6
+PC=%7
+
+	.macro 	savRegs
+	mov	R0,-(SP)
+	mov	R1,-(SP)
+	mov	R2,-(SP)
+	mov	R3,-(SP)
+	mov	R4,-(SP)
+	mov	R5,-(SP)
+	.endm
+
+	.macro	resRegs
+	mov	(SP)+,R5
+	mov	(SP)+,R4
+	mov	(SP)+,R3
+	mov	(SP)+,R2
+	mov	(SP)+,R1
+	mov	(SP)+,R0
+	.endm
+
+	.sbttl	KW11L interrupt service
+; time interrupt routine for 11's
+TODCNT: 0			; counter
+$TODSEC: 0			; seconds up
+$TODMIN: 0			; minutes up
+$TODHRS: 0			; hours up
+$TODCLK: 0			; UP time in 60ths of a second 
+$TODlow: 0			; double word		       
+timtab:	 TODCNT,$TODSEC,$TODMIN,$TODHRS
+ntim= 3
+$l0$KW11L:
+	inc	$TODCLK+2		; lower 16 bits
+	bne	1$
+	 inc	$TODCLK			; upper 16 bits
+1$:	
+	mov	r0,-(Sp)		; our HHMMSS counters...
+	mov	r1,-(Sp)
+	mov	#timTab,r0
+	mov	#ntim,r1
+	inc	@(r0)			; incr. todcnt.
+count:
+	cmp	@(r0),#60.		; overflow?
+	blt	2$			; NO
+	 clr	@(r0)+			;  clear this one, point to next.
+	 inc	@(r0)			;  incr. next one.
+	 dec	r1
+	 bgt	count
+2$:
+	mov	(Sp)+,r1
+	mov	(Sp)+,r0
+	RTI
+	.sbttl	long addition cludge!
+; C call is l_longAdd (&h, &l, h1, h2)
+
+$l$longAdd:
+	jsr	r0,prolog
+	0
+	add	6.(r4),@2(r4)		; add low order
+	adc	@(r4)			; check carry.
+	add	4.(r4),@(r4)		; high order
+	jmp	epilog
+	.sbttl	long UNsigned integer compare
+; C call is l_ULE (h1, l1, h2, l2)
+; RETURNS TRUE iff (h1, l1) LEQ (h2, l2)
+$l$ULE:
+	jsr	r0,prolog
+	0
+
+	MOV	#1,r0			; for TRUE return
+	cmp	(r4),4(r4)		; compare high 16 bits
+	blo	$l$UXT			; <
+	bhi	$l$U1			; >
+	; Here - high 16bits are equal -; =
+	cmp	2(r4),6(r4)		; test low order.
+	blos	$l$UXT			; (h1, l1) LEQ (h2, l2)
+$l$U1:
+	CLR	r0			; (h1, h1) > (h2,l2)
+$l$UXT:
+	jmp	epilog
+
+	.sbttl	shuffle r5 for suspend, resume...
+	.globl	$l$gr5,$l$sr5,$l$pr5,$s$r5
+
+$s$r5:	0
+; 	get to xxx by 
+;	JSR	R5,xxx
+
+;	These used by resume () and suspend ()
+
+;	move OLD r5 to save area.
+$l$gr5:
+	mov	(sp)+,$s$r5		; move old R5 to save location
+	jmp	4.(R5)			; and return over args...
+
+; 	move save area to r5
+$l$sr5:
+	mov	r5,R4			; save our return pc
+	mov	$s$r5,r5		; new value of r5 for link
+	tst	(sp)+			; POP the stack
+	jmp	4.(R4)			; and return.
+
+;	move save area to (OLD r5)
+$l$pr5:
+	mov	r5,r4			; save our link
+	mov	(sp)+,r5		; get r5 back, and pop
+	mov	$s$r5,(r5)		; put entry on stack
+	jmp	4.(r4)			; and return...
+
+	.sbttl	count excess memory.
+	.globl	$l$Memcount
+NOmem = 4
+NOtrap = 0				; NOtrap = 0 if we use trap to 4
+					; to determine memory size.
+MAXadd = 157676				; last useable address.
+
+$l$Memcount:
+;	Count how much core we have
+	jsr	r0,prolog		; set things up
+	0.
+
+.IF EQ <NOtrap>		
+
+;	hum along until a trap to 2 - we want to gobble ALL that's excess
+	mov	@#NOmem,r2		; save old vector
+	mov	#zap,@#NOmem		; for bomb
+	clr	r0			; our counter
+	mov	#$l$firstFree,r1	; begins here
+1$:
+	clr	(r1)+			; go until NO mem....
+	inc	r0	    ;  _
+	br	1$	    ;  |
+; here on TRAP to 4	       |
+;			       |
+;	(sp)   return pc  -----*
+;      2(sp)   old PSW
+zap:	
+	mov	#zap1,(sp)		; change return PC
+	RTI				; clear stack, and whatever.
+zap1:
+	mov	r2,@#NOmem		; restore old vector
+	jmp	epilog
+.ENDC
+
+.IF NE <NOtrap>
+;	just go up to MAXadd and quit
+
+	clr	r0			; our counter
+	mov	#$l$firstFree,r1	; begins here
+1$:
+	clr	(r1)+			; go until NO mem....
+	inc	r0	    
+	cmp	r1,#MAXadd		; last address?
+	ble	1$
+	jmp	epilog			; return
+.ENDC
+	.sbttl	priority stuff.
+	.globl	$l$Opri,$l$6pri
+PSW = 177776
+; restore old priority, OLD priority passed as a parameter.
+$l$Opri:
+	jsr	r0,prolog
+	0
+	mov	(r4),@#PSW		; change priority
+	jmp 	epilog
+
+; change priority to 5
+pri5 = 240
+Tbit = 20
+$l$6pri:
+;	NO params passed - so forget prolog, epilog
+	mov	@#PSW,r0		; return OLD priority
+	mov	#pri5,@#PSW		; now priority 5
+	bit	#Tbit,r0		; Was the Tbit on?
+	beq	1$			; NO - so forget it...
+	 bis	#Tbit,@#PSW		;  Yes, Keep it on...
+1$:
+;	call was
+;	jsr	r5,$l$6pri
+;	0
+;	0
+;	So...
+	add	#4,r5			; skip over call stuff
+	rts	r5			; return
+	.sbttl	ONE'S compliment add
+	.globl	$l$1CO
+;	call l_1CO (a, b) int a, b;
+$l$1CO:
+	jsr	r0,prolog
+	0
+	mov	(r4),r0			; addend
+	add	2(r4),r0		; add em
+	adc	r0			; add carry
+	jmp	epilog
+
+	.sbttl	do ether check sum
+;	call  l_CSpak (&length)
+;	cs(n+1) = ROTL(cs(n) [+1] nextWord)    [+1] = one's compl. addition.
+;
+$l$CSpak:
+	jsr	r0,prolog
+	0
+	mov	@(r4),r1		; length in bytes, l(includes cs).
+	dec	r1			; l - 1
+	asr	r1			; (l - 1)/2 = length in words
+	mov	(r4),r2			; address of first word of PUP
+	clr	r0			; clear check sum.
+
+1$: ; DO [1+]
+	add	(r2)+,r0		; sum
+	bcc	2$
+	 inc	r0			; carry set, so add 1.
+
+2$: ; NOW ROTATE
+	asl	r0			; shift left
+	bcc	3$			; bit 15 was 0?
+	 inc	r0			;  No, so set bit 0
+3$:
+	dec	r1			; loop counter
+	bgt	1$
+
+; -1 is set to 0
+	cmp	r0,#-1
+	bne	4$ 
+	 clr	r0
+4$:	jmp	epilog
+
+	.sbttl	fast move, and zero block stuff
+	.globl 	$l$fMove,$l$zero
+;	Calls:
+;		l_fMove (&source, &dest, nWords);
+;		l_zero (&start, nWords);
+$l$fmove:
+	jsr	r0,prolog
+	0
+	mov	(r4),r0			; source
+	mov	2(r4),r1		; destination
+	mov	4(r4),r2		; nWords
+1$:
+	tst	r2			; protect against bad counts...
+	ble	2$			; none left
+	 mov	(r0)+,(r1)+
+	 dec	r2
+	 br	1$
+2$:
+	jmp 	epilog
+
+
+$l$zero:
+	jsr	r0,prolog
+	0
+	mov	(r4),r0			; start address
+	mov	2(r4),r1		; count
+1$:
+	tst	r1
+	ble	2$
+	 clr	(r0)+
+	 dec	r1
+	 br 	1$
+2$:
+	jmp	epilog
+
+; This must always be the last location, and pupl0.obj must be the
+; last linked object module.
+	.globl $l$first
+$l$firstFree: 0				; first free memory location.
+	.end
+
+
+
+

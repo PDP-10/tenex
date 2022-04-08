@@ -1,0 +1,788 @@
+	.list  bex
+	.list	meb
+	.title PDP-11 Ethernet Boot Loader
+chksum=1
+debug==0					; debug causes halt at LOADA
+tty==1						; for some tty output
+xerox==0					; 1 = Xerox board
+; Ethernet Interface Vector Addresses and Registers
+E0OCV = 500					; Output complete vector
+E0ICV = E0OCV+4					; Input  complete vector
+E0OEV = E0OCV+10				; Output ERROR vector
+E0OWC = 0					; output word count
+E0OBL = E0OWC+2					; output buffer location
+E0OCS = E0OWC+4					; output control and status
+E0ODE = E0OWC+6					; output delay.
+E0IWC = E0OWC+10				; input word count
+E0IBL = E0OWC+12				; input buffer location
+E0ICS = E0OWC+14				; input control and status
+E0RHA = E0OWC+16				; RAM HOST stuff.
+
+; Ethernet Interface Input Control Status Register Bits (loc 16xx14)
+inGO  = 1		;  bit	0		  Input GO bit
+inPR  = 2		;	1		  Promiscuous bit
+inRWE = 4		;	2		  Ram WRITE enable
+inRWV = 10		;	3		  Ram WRITE value (0, 1)
+inRCR = 20		;	4		  Receiver reset.
+inLBK = 40		;	5		  Loop back
+inENA = 100		;	6		  enable
+inDON = 200		;	7		  input DONE
+			;	8-9		  N/A	
+inCAR = 2000		;      10		  carrier on = 1
+
+; Input CS reg error bits
+inWOV = 4000		;      11		  word count overflow
+inFOR = 10000		;      12		  FIFO over-run
+inCRC = 20000		;      13		  CRC error
+inNXM = 40000		;      14		  NXM (if NXMok = 1)
+inERR = 100000		;      15		  ERROR bit(See 11 - 14)
+
+; Ethernet Interface Output Control Status Bits (loc 16xx04)
+outGO  = 1		;	0		  output GO - active/idle
+outWC  = 2		;	1		  Set if word count = 0
+outIOR = 4		;	2		  I/O reset.
+outMER = 10		;	3		  Memory error reset
+outTRR = 20		;	4		  transmiter reset
+           		;	5		  N/A
+outENA = 100		;	6		  enable
+outDON = 200		;	7		  output DONE
+	
+; Output CS reg error bits
+outNXM = 400		;	8		  NXM: SSYN NOT received.
+			;			  BIT11 ALSO SET.
+			;       9		  N/A
+outCAR = 2000		;      10		  compliment of BIT1
+outBGN = 4000		;      11		  Bus grant not received.
+			;			  BIT11 and NOT BIT8.
+outFOR = 10000		;      12		  output word count overflow.
+outRET = 20000		;      13		  Retry. Couldn't output
+			;			  because carrier detected.
+outCOL = 40000		;      14		  jammed or Collision detect.
+outERB = 100000		;      15		  ERROR bit (See 8 - 14)
+
+
+; The format of an Ethernet-encapsulated Pup (bytes)
+PACSRC = 0		; Source Host of this Ethernet packet
+PACDST = 1		; Destination Host for this Ethernet packet
+PACTYP = 2		; Type of Ethernet packet (Pup = 1000) (16 bits)
+PUPLEN = 4		; Length, in 8 bit bytes, not including encapsulation
+PUPTYP = 6		; Type of Pup
+PUPTCB = 7		; Pup Transport Contol Byte
+PUPID1 = 10		; High order Pup ID
+PUPID0 = 12		; Low order Pup ID
+PPUPDH = 14		; Dest host
+PPUPDN = 15		; Dest net
+PPUPD1 = 16		; Dest socket high
+PPUPD0 = 20		; Dest socket low
+PPUPSH = 22		; Source host
+PPUPSN = 23		; Source net
+PPUPS1 = 24		; Source socket high
+PPUPS0 = 26		; Source socket low
+PUPCNT = 30		; Pup contents start here
+
+MNPBLN = 26.		; Minimum Packet Length, 8 bit bytes
+MXPBLN = MNPBLN+532.	; Maximum Packet length, 8 bit bytes
+MNPLEN = MNPBLN/2	; Minimum Packet Length, 16 bit words
+MXPLEN = MXPBLN/2	; Maximum Packet Length, 16 bit words
+
+; Packet and Pup Types
+typPup = 1000		; Packet type 1000 is Pup
+MDType = 244		; Pup type 244 is Mayday
+EFTPDataType = 30	; Pup type 30 is EFTP Data
+EFTPAckType = 31	; Pup type 31 is EFTP Acknowledge
+EFTPEndType = 32	; Pup type 32 is EFTP End
+EFTPAbortType = 33	; Pup type 33 is EFTP Abort
+
+ExtSenderAbort = 1	; EFTP External Sender Abort code
+ExtRcvrAbort = 2	; EFTP External Receiver Abort code
+RcvrBsyAbort = 3	; EFTP Receiver Busy Abort code
+
+; Well known sockets
+EFTPReceive = 20	; EFTP Receieve socket
+MiscServices = 4	; Miscellaneous Services
+
+.if	ne,xerox
+EODLY = 10		; Some timeout count
+.endc
+.if	eq,xerox
+EODLY = -10
+.endc
+PITimeout = 1*60.	; One second packet input timeout
+EITimeout = 10.*60.	; Ten second EFTP wait timeout
+DallyTimeout = 10.*60.	; Dally timeout
+.if	eq,xerox
+ntries = 30.
+.endc
+.if	ne,xerox
+ntries = 3000.
+.endc
+; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+;
+;	A mini tty debugger for testing BOOT stuff
+;
+;	r0 is fair game
+; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+.IF NE <tty>
+	.macro	strOut,str		; this sends a string watching regs.
+	mov	r1,-(Sp)
+	mov	#str,r1
+	jsr	pc,linout
+	mov	(Sp)+,r1
+	.endm
+
+ttyocs=177564
+ttyout=ttyocs+2
+esc=33
+lf=12
+eol=15
+herald:	.ASCIZ	<esc>/H/<esc>/JEther net boot server/<eol><lf>
+CSerr:	.ASCIZ	/C/			; check sum error
+SQerr:	.ASCIZ	/S/			; sequence error
+Other:	.ASCIZ	/O/			; Other packet received
+Erpt:	.ASCIZ	/R/			; Repeat of previous packet
+EBok:	.ASCIZ	/!/			; got good data
+TimOUT:	.ASCIZ  /T/			; time out on input
+PakOut:	.ASCIZ	/$/			; Sent a packet
+ALLdon:	.ASCIZ  <eol>/*Done*/
+	.EVEN
+;	Char is in r0
+chrout:
+	tstb	@#ttyocs		; Are we done (bit 7 on)?
+	bge	chrout			; not if ge 0.
+	 movb	r0,@#ttyout		;  yes, send byte.
+	 inc	nout(r5)		; char counter
+	 cmp	#72.,nout(r5)		; line done
+	 bne	1$			; NO on br
+	  clr	nout(r5)
+	  mov	#eol,r0
+	  br	chrout
+1$:
+	rts	pc
+;	
+;	r1 has string pointer .ASCIZ required.
+linout:
+	movb	(r1)+,r0
+	beq	1$
+	 jsr	pc,chrout
+	 br	linout
+1$:
+	rts	pc
+.ENDC
+	.sbttl	Ethernet I/O
+
+;************************************************
+;*						*
+;* Ethernet Output				*
+;*						*
+;* Call: jsr pc,OutToEther			*
+;*	r1/ Address of Packet to send		*
+;*	r2/ Length of Packet to send		*
+;*						*
+;* Returns: "+1" on success, or halts		*
+;*  Returns on successful output.  NTRIES	*
+;* retries are made (not counting net busy	*
+;* errors).					*
+;*						*
+;* Clobbers r0					*
+;*						*
+;************************************************
+OutToEther:
+	mov	#ntries,r0			; Retry count
+	mov	r2,-(r6)			; Save length
+	neg	r2				; Negate length
+	bic	#174000,r2			; Mask to 11 bits
+oLoop:	mov	r2,E0OWC(r4)			; Send to interface
+	mov	r1,E0OBL(r4)			; Send output buffer loc
+	mov	#EODLY,E0ODE(r4)		; Set up output delay
+	mov	#outGO,E0OCS(r4)		; Launch the packet
+
+1$:	tstb 	E0OCS(r4)
+	bge	1$
+	HALT
+	tst	E0OCS(r4)			; Done, see if error
+	blt	2$				; Error
+; Everything is A-OK.  Prepare to receive a response.
+	mov	#-MXPLEN-1,E0IWC(r4)		; Load max possible input wds +1
+	mov	IBL(r5),E0IBL(r4)
+	mov	#inGO,E0ICS(r4)			; Enable for packet input
+	mov	(r6)+,r2			; Recover r2
+.IF NE <tty>
+	strOut	Pakout				; Say sent one
+.ENDC	
+	rts	pc				; Output done, return
+
+2$:	
+.if	eq,xerox
+	HALT
+	bit	#outCOL+outRET,E0OCS(r4)	; Net busy?
+	bne	oLoop				; If so, just try again
+.endc
+	dec	r0				; Else decr retry count
+	bgt	oLoop				; And try again if retries left
+
+	.globl	EOTerr
+EOTerr:
+	halt
+	jmp	lc				; start from beginning on cont
+
+;************************************************
+;*						*
+;* Ethernet Input				*
+;*						*
+;* Call: jsr pc,InFromEther			*
+;*  Input should be started before this is 	*
+;*  called!					*
+;*						*
+;* Returns: "+1" always.  Caller should examine *
+;*	InDne to determine success of input	*
+;* R2 will contain length				*
+;* if packet was read in error.			*
+;*						*
+;************************************************
+IN2nd=2.
+InFromEther:
+	mov	#ntries,r0			; Set up retry count
+	mov	#IN2nd,INCTR(r5)		; second counter.
+	clr	r2
+1$:	
+	tstb	E0ICS(r4)			; Wait until done
+	blt	2$				; DONE bit 7.
+	 dec	r2				; Minor counter(wrap around)
+	 bne	1$				; =0 if expired.
+	  dec	INCTR(r5)			;  MAJOR counter (r2=0)
+	  bgt	1$				;  time out if expired.
+.IF NE <tty>
+	strOut	timOut				; "T" out...
+.ENDC
+	rts	pc				; return with r2=0 on timeout
+
+2$:	tst	E0ICS(r4)			; Done, test for error
+	blt	4$				; If so, try again
+
+	mov	E0IWC(r4),r2			; Else get input word count
+	bis	#176000,r2
+	add	#MXPLEN+1,r2			; NOW length (Bill)
+.IF NE chksum
+	beq	21$				; NO checksum
+	 jsr	pc,DoPupCheckSum	; will clear r2 for checksum error.
+.IF NE <tty>
+	 tst	r2			; An error?
+	 bne	20$			; NO on br.
+	  strOut CSerr
+20$:
+.ENDC
+
+.ENDC
+21$:
+	rts	pc				; Return now
+
+4$:	mov	#-MXPLEN-1,E0IWC(r4)		; Load max possible input wds +1
+	mov	IBL(r5),E0IBL(r4)
+	mov	#inGO,E0ICS(r4)			; Enable for packet
+	clr	r2
+	dec	r0				; On error, decr retry count
+	bgt	1$				; And try again if possible
+	.globl	EINerr
+EINerr:
+	halt					; Stop (assume hardware prob)
+	jmp	lc				; try again on console continue
+
+; :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+;
+;	Do PUP checksum here. r1 points to packet just input
+;		clobbers r0 only.
+;
+; :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+DoPupCheckSum:
+	NOP
+	mov	PUPLEN(r1),r0		; compute address of checksum
+	dec	r0
+	asr	r0			; Now word offset
+	asl	r0			; Now BYTE offset
+	add	r1,r0			; Now address
+	cmp	(r0),#-1		; Checksummed?
+	bne	doIt			; NO
+	 rts	pc
+doIt:
+	mov	r1,-(Sp)
+	mov	r2,-(Sp)
+	add	#PUPLEN,r1		; Point to PUPLEN-start of PUP
+	mov	(r1),r2			; length in bytes, l(includes cs).
+	dec	r2			; l - 1
+	asr	r2			; (l - 1)/2 = length in words-1
+
+	clr	r0			; clear check sum.
+
+1$: ; DO [1+]
+	add	(r1)+,r0		; sum
+	bcc	2$
+	 inc	r0			; carry set, so add 1.
+
+2$: ; NOW ROTATE
+	asl	r0			; shift left
+	bcc	3$			; bit 15 was 0?
+	 inc	r0			;  No, so set bit 0
+3$:
+	dec	r2			; loop counter
+	bgt	1$
+
+
+; 	-1 is set to 0 (-1 is "negative 0" in 1's complement arith
+	cmp	r0,#-1
+	bne	CSnn0
+	 clr	r0
+CSnn0:
+	mov	(Sp)+,r2		; Get back r2 - our RETURN flag!
+;	Is CS correct?
+	cmp	r0,(r1)
+	beq	4$			; all is well
+	 clr	r2			;  checksum error.
+4$:
+	mov	(Sp)+,r1		; and r1 back...
+	rts	pc
+
+	.sbttl	Initialization
+
+;************************************************
+;*						*
+;* Ethernet Interface Initialization		*
+;*						*
+;* Call: jsr pc,EnInit				*
+;*	r1/ Local Host Address			*
+;*						*
+;*	EODLY is initial output delay count	*
+;*						*
+;* Returns: "+1" always				*
+;*						*
+;************************************************
+EnInit:
+	mov	r2,IBL(r5)			; Set up input buffer loc
+.if	eq,xerox
+	jsr	pc,InitHA			; Init Host Address RAM
+.endc
+.if	ne,xerox
+	mov	r0,-(r6)			; Save r0
+	movb	E0RHA(r4),r0			; get complement of address
+	com	r0				; complement it
+	bic	#177400,r0			; make it 8 bits
+ 	mov	r0,lHost(r5)		    	; Save
+	mov	(r6)+,r0			; Recover r0
+.endc
+	
+	rts	pc				; Return
+
+.if	eq,xerox
+;************************************************
+;*						*
+;* Host Address RAM Initialization		*
+;*						*
+;* Call: jsr pc,InitHA				*
+;*						*
+;* Returns: "+1" always				*
+;* Hardwired address and address 0 are set	*
+;* Clobbers r0					*
+;*						*
+;************************************************
+InitHA:
+	mov	#255.,r0			; Loop to clear RAM
+1$:	movb	r0,E0RHA(r4)			; Send address to RAM
+	mov	#inRWE,E0ICS(r4)		; Write a zero
+	dec	r0				; Decrement address
+	bge	1$				; Loop until done
+
+	movb	E0RHA(r4),E0RHA(r4)		; Send local host address
+	mov	#inRWE+inRWV,E0ICS(r4)		; Write a one
+	rts	pc				; Return
+.endc
+
+	.sbttl Mayday Routines
+
+;************************************************
+;*						*
+;* Send a MayDay packet to all hosts on local	*
+;* network.					*
+;*						*
+;* Call: jsr pc,MayDay				*
+;*						*
+;* Console switch register contains the 	*
+;* BootFileNumber.				*
+;*						*
+;* Returns: "+1" if success, never otherwise	*
+;*	After 30 output errors, gives up and	*
+;*	halts.					*
+;*						*
+;* Clobbers r0-r3!				*
+;*						*
+;************************************************
+
+MayDay:	
+	mov	#packet,r0			; pointer to packet to build
+	add	r5,r0
+	mov	r0,-(r6)
+	mov	#EPak,r1
+	mov	#MNPLEN,r2
+1$:	mov	(r1)+,(r0)+
+	dec	r2
+	bgt	1$
+	mov	(r6)+,r0
+
+.if	eq,xerox
+	movb	E0RHA(r4),(r0)			; Dest=0, Source=me
+.endc
+.if	ne,xerox
+	mov	lHost(r5),(r0)
+.endc
+
+	mov	@#177570,12(r0)			; Store BFN
+
+.if	eq,xerox
+	movb	E0RHA(r4),22(r0)		; Set source host = me
+.endc
+.if	ne,xerox
+	mov	lHost(r5),22(r0)
+.endc
+
+; Packet is now built.  Send it out.  Allow 30 tries before giving up
+MDAgn:	mov	#ntries,r3			; Set # of retries
+MDLoop:	mov	r0,r1				; Address of packet
+	mov	#MNPLEN,r2			; Length of packet
+	jsr	pc,OutToEther			; Send the packet
+	rts	pc				; Output succeeded, return
+
+
+	.sbttl	EFTP Routines
+
+;************************************************
+;*						*
+;* Swap Source and Destination in PUP		*
+;*						*
+;* Call: jsr pc,swapPort			*
+;*	r1/ Address of Pup to swap		*
+;*	r2/ Address of where to build swapped	*
+;*	    Pup					*
+;*						*
+;* Returns: "+1" always				*
+;* Clobbers r0					*
+;*						*
+;************************************************
+swapPort:
+	mov	r1,-(r6)			; Save old packet address
+	mov	r2,-(r6)			; Save new packet address
+
+	mov	(r1)+,r0			; Get Pup header
+	swab	r0				; Swap source/dest
+	mov	r0,(r2)+			; Save in new Pup
+	mov	(r1)+,(r2)+			; Transfer Packet type
+
+	mov	(r1)+,(r2)+			; Transfer length
+
+	mov	(r1)+,(r2)+			; Transfer Pup type
+	mov	(r1)+,(r2)+			; Transfer ID hi
+	mov	(r1)+,(r2)+			; Transfer ID low
+
+	mov	(r1)+,-(r6)			; Push dest Net/Host
+	mov	(r1)+,-(r6)			; Push dest socket hi
+	mov	(r1)+,-(r6)			; Push dest socket low
+
+	mov	(r1)+,(r2)+			; Move source net/host to dest
+	mov	(r1)+,(r2)+			; Move source socket hi to dest
+	mov	(r1)+,(r2)+			; Move source soc low to dest
+
+	add	#6,r2				; Prepare to pop sources 
+	mov	(r6)+,-(r2)			; Pop socket low
+	mov	(r6)+,-(r2)			; Pop socket high
+	mov	(r6)+,-(r2)			; Pop net/host
+
+	mov	(r6)+,r2			; Pop new packet address
+	mov	(r6)+,r1			; Pop old packet address
+	rts	pc				; Return to caller
+
+;************************************************
+;*						*
+;* Move DATA words from input packet to real	*
+;* destination					*
+;*						*
+;* Call: jsr pc,moveData			*
+;*	r1/ Address of input packet		*
+;*	r2/ Location to move data		*
+;*						*
+;* Returns: "+1" always				*
+;*	r2 updated to point to after data loc	*
+;* Clobbers r0					*
+;*						*
+;************************************************
+moveData:
+	mov	PUPLEN(r1),r0			; Get length of Pup
+	sub	#MNPBLN-4,r0			; Remove overhead length
+	asr	r0				; Convert to words
+	mov	r1,-(r6)			; Save packet address
+	add	#MNPBLN-2,r1			; Adjust packet ptr past header
+	
+1$:	mov	(r1)+,(r2)+			; Move data
+	dec	r0				; Adjust words remaining count
+	bgt	1$				; Loop if more to do
+
+	mov	(r6)+,r1			; Recover packet ptr
+	rts	pc				; Return
+
+;************************************************
+;*						*
+;*  Get the next Pup from the sender		*
+;*						*
+;* Call: jsr pc,getNextPup			*
+;*						*
+;************************************************
+getNextPup:
+gnLoop: bit	#inGo,E0ICS(r4)
+	bne	1$
+	mov	#-MXPLEN-1,E0IWC(r4)		; Restart input
+	mov	IBL(r5),E0IBL(r4)
+	mov	#inGo,E0ICS(r4)
+1$:	jsr	pc,InFromEther			; Wait for net input
+	tst	r2				; See if any data was rcvd
+	bne	2$				; If r2=0, error occurred
+
+	mov	r1,-(r6)			; save r1
+	mov	#packet,r1			; resend last transmission
+	add	r5,r1				; add stg pointer
+	mov	#MNPLEN,r2			; we always send MNPLEN
+	jsr	pc,outToEther			; resend
+	mov	(r6)+,r1			; recover r1
+	br	gnLoop				; try again
+
+
+2$:	cmp	#typPup,PACTYP(r1)		; See if it's a Pup
+	bne	gnLoop				; Get next input
+	rts	pc				; Return
+
+
+;************************************************
+;*						*
+;* Acknowledge Data				*
+;*						*
+;* Call: jsr pc,EIAck				*
+;*	r1/ Pointer to EFTP Data just rcvd	*
+;*						*
+;************************************************
+EIAck:	mov	r2,-(r6)			; Save r2
+	mov	#packet,r2			; General packet for reply
+	add	r5,r2
+	jsr	pc,swapPort			; Swap source/dest
+	mov	#EFTPAckType,PUPTYP(r2)		; Type is ACK
+	mov	#MNPBLN-4,PUPLEN(r2)		; Length is minimum
+	mov	#-1,PUPCNT(r2)			; Checksum is NIL
+	mov	r1,-(r6)			; Save packet buffer ptr
+	mov	r2,r1				; Set up for Ether output
+	mov	#MNPLEN,r2			; Minimum word length
+	jsr	pc,OutToEther			; Output to Ether
+	mov	(r6)+,r1			; Recover pb pointer
+	mov	(r6)+,r2			; Recover r2
+	inc	seqnum(r5)			; Next number in sequence
+	rts	pc				; Return
+
+;************************************************
+;*						*
+;* Receive EFTP 				*
+;*						*
+;* Call: jsr pc,EFTP				*
+;*	r1/ Address of packet buffer		*
+;*	r2/ Where to place input data		*
+;*						*
+;************************************************
+EFTP:
+	mov	r2,-(r6)			; Save data buffer pointer
+EILoop:	jsr	pc,getNextPup			; Get the next Pup
+; Here when Pup is received
+	clR	-(R6)				; A FLAG.
+	cmpb	#EFTPDataType,PUPTYP(r1)	; What type of Pup?
+	beq	EIGood				; an EFTP PUP.
+	 inc	(r6)				; flag an END.
+	 cmpb	#EFTPEndType,PUPTYP(r1)
+	 beq	EIGood				; Got an EFTP END.
+	  tst	(r6)+				;  clear stack
+	  cmpb	#EFTPAbortType,PUPTYP(r1)
+	  beq	EFTPax				;  not for us.
+.IF NE <tty>
+	   strOut Other
+.ENDC
+	   br	EILoop				;  abort halt.
+; Got EFTP PUP - in sequence?
+EIGood:
+	mov	PUPID0(r1),r2			; Get sequence number
+	cmp	seqnum(r5),r2			; See if it's correct
+	beq	EISeqn				; If so, ACK and move data
+
+	tst	(r6)+				; clear flag.
+	inc	r2				; Maybe repeat of last packet?
+	cmp	seqnum(r5),r2			; Try that
+	beq	EIRpt				; In that case, just ACK it
+.IF NE <tty>
+	 strOut SQerr
+.ENDC
+	br	EFTPsq				; If not, then abort
+EISeqn:
+;     	IN SEQUENCE...Now route   0 = DATA, 1 = END
+.IF NE <tty>
+	strOut	EBok
+.ENDC
+	tst	(r6)+
+	bne	EIEnd				; got an end
+
+	tst	sender(r5)			; Do we have a sender?
+	bne	1$				; Yes
+	movb	PACSRC(r1),sender(r5)		; No sender, this must be it
+1$:	cmpb	PACSRC(r1),sender(r5)
+	bne	EILoop				; Ignore if not right source
+
+	mov	(r6),r2				; Recover data pointer
+	jsr	pc,moveData			; Move into core
+	mov	r2,(r6)				; Save updated data pointer
+	jsr	pc,EIAck			; Ack it
+	br	EILoop				; Loop for more packets
+
+EIRpt:	dec	seqnum(r5)			; adjust sequence number
+.if	ne,<tty>
+	strOut	Erpt				; note a repeated packet
+.endc
+	jsr	pc,EIAck			; ACK the repeat packet
+	br	EILoop				; Go for more
+
+; Here on bad sequence number or Abort
+	.globl	EFTPax,EFTPsq
+EFTPax:
+EFTPsq:	halt					; die on out-of-sequence
+	br	lc				; And try again on cont
+
+;    Here on EFTP end
+EIEnd:	
+	jsr	pc,EIAck
+	add	#2,r6				; Adjust stack
+	mov	#DallyTimeout,TO1(R5)		; Set up for dally time
+	mov	#-MNPLEN-1,E0IWC(r4)		; Set up input
+	mov	IBL(r5),E0IBL(r4)
+	mov	#inGo,E0ICS(r4)
+EIElp:	jsr	pc,InFromEther			; Wait for the next end
+	cmpb	#EFTPEndType,PUPTYP(r1)		; Something came.  End?
+	bne	EIEwt
+	rts	pc				; Yes, return
+EIEwt:	dec	TO1(R5)				; Dally time expired yet?
+	bge	EIElp
+	rts	pc				; Yes, just return
+
+	.sbttl	Boot routines
+loada::	
+.IF NE <debug>					; Halt if debugging.
+	halt
+.ENDC
+	mov	#160000,r4			; For board on net 1
+	br	lc
+
+loadb::	mov	#160020,r4
+
+; Here, only r4 is assumed setup, containing the base address of the
+; Ethernet board in the I/O section...
+lc::	reset					; Reset devices
+	mov	#1000,r6			; Temp stack
+	jsr	pc,load1			; Where are we in core?
+load1:	mov	#trap4,r1			; Compute where TRAP4 is
+	sub	#load1,r1
+	add	(r6),r1				; r1 has TRAP4 PC
+	mov	r1,@#4				; setup interrupt vector
+	mov	#340,@#6			; and new PSW
+	clr	r0				; and start looking for mem end
+1$:	mov	(r0),(r0)+			; See how far we can write
+	cmp	r0,#157776			; Reached the end of core?
+	bne	1$				; no, loop until we trap/branch
+
+TRAP4:	sub	#stglen+4,r0			; Compute storage beginning
+	mov	r0,r5				; set up stg pointer
+	mov	r0,r6				; and stack pointer
+
+boot:
+	clr	@#4				; Clear trap vector
+.IF NE <tty>
+	strOut 	herald				; Use TTY for debugging
+	clr	nout(r5)
+.ENDC
+	mov	#inBuf,r2			; Packet buffer
+	add	r5,r2
+	jsr	pc,EnInit			; Init the interface
+	jsr	pc,MayDay			; Send a Mayday Pup
+	clr	seqnum(r5)			; Expect sequence # 0
+	clr	sender(r5)			; Don't know who the send is
+	mov	#inBuf,r1			; Set up for EFTP
+	add	r5,r1
+	clr	r2				; Starting at 0
+	jsr	pc,EFTP				; Run EFTP
+.IF NE <tty>
+	strOut	ALLdone				; tell any observer.
+.ENDC
+	mov	@#0,r0				; Recover starting address
+	jmp	(r0)				; Enter the program
+
+	.sbttl	Storage
+
+; an Ethernet packet
+EPak:	.word	0		; Dest/Src
+	.word	typPup		; Packet type
+	.word	MNPBLN-4	; Pup length
+	.word	MDType		; Pup Type
+	.word	0		; High order ID
+	.word	0		; Low order ID (BFN)
+	.word	0		; Dest net, host
+	.word	0		; Dest socket high
+	.word	MiscServices	; Dest socket low
+	.word	0		; Source net, host
+	.word	0		; Source socket high
+	.word	EFTPReceive	; Source socket low
+	.word	-1		; CheckSum
+
+; Impure segment definitions
+	.macro	stg,name,length
+name==..u
+	.if	nb,length
+..u==..u+<length>+<length>
+	.endc
+	.if	b,length
+..u==..u+2
+	.endc
+	.endm	stg
+
+..u==0
+
+.if	ne,xerox
+	stg	lHost
+.endc
+	stg	IBL				; Hold input buffer loc
+	stg	packet,MNPLEN+1			; Should suffice for replies
+	stg	inBuf,MXPLEN			; Input buffer from net
+	stg	seqnum				; Holds expected sequence #
+	stg	TO0				; First timeout word
+	stg	TO1				; Second timeout word
+	stg	sender				; Holds address of partner
+	stg	INCTR				; second input counter
+.IF NE <tty>
+	stg	nout				; tty chr/line counter.
+.ENDC
+; WARNING: storage starts stglen+4 bytes before end of memory:
+;	IF just testing with .LDA or .BOOT file then memory looks like
+;	000000	for loading program
+;	  .
+;	  .
+;	  .
+;	xxxxxx  end of program loading area
+;       yyyyyy  load boot test program here
+;	  .
+;	  .
+;	zzzzzz  end of boot test program
+;	  .
+;	  .
+;	end of mem - (stglen+4)
+;	  .
+;	  .	< here is place for storage>
+;       end of mem
+;
+stglen=..u					; End of storage
+	.end	
+
+

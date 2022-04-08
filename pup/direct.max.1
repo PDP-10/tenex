@@ -1,0 +1,1267 @@
+;<134>DIRECT.MAC;10302    30-MAY-79 18:54:18    EDIT BY TAFT
+; Add "secondary directory group" access mechanism
+;<134>DIRECT.MAC;10301     9-JAN-76 14:33:21    EDIT BY TAFT
+; Soup merge to 1.34
+;<134-TENEX>DIRECT.MAC;103    28-AUG-75 16:45:44    EDIT BY ALLEN
+; MODS TO CORRESPOND TO NEW LOCK-UNLOCK MACROS
+;<134-TENEX>DIRECT.MAC;102    20-JUN-75 07:46:49    EDIT BY TOMLINSON
+; DON'T PROPOGATE FDBUND
+;<134-TENEX>DIRECT.MAC;101    28-APR-75 15:04:17    EDIT BY CLEMENTS
+;<134-TENEX>DIRECT.MAC;100    28-APR-75 12:13:35    EDIT BY CLEMENTS
+;<134-TENEX>DIRECT.MAC;99    28-APR-75 11:31:46    EDIT BY CLEMENTS
+;<134-TENEX>DIRECT.MAC;98    24-APR-75 14:14:44    EDIT BY CLEMENTS
+;<134-TENEX>DIRECT.MAC;97    16-APR-75 13:20:01    EDIT BY TOMLINSON
+; INIBLK: CALL SETHIQ BEFORE CLEARING DIRLCK
+;<133>DIRECT.MAC;9602    11-JAN-75 15:54:17    EDIT BY TAFT
+;<133>DIRECT.MAC;9601     4-JAN-75 18:45:02    EDIT BY TAFT
+; SOUP merge to 1.33
+;<133-TENEX>DIRECT.MAC;96     5-SEP-74 15:29:13    EDIT BY ALLEN
+; CHANGE SETOM DIRLCK TO UNLOCK DIRLCK
+;<132>DIRECT.MAC;9503    19-DEC-74 16:47:15    EDIT BY TAFT
+; Fix GNJFN glitch at VERLKF+5
+;<132>DIRECT.MAC;9502    24-JUL-74 16:10:03    EDIT BY TAFT
+; SOUP merge 1.31 to 1.32
+;<TENEX-132>DIRECT.MAC;95     3-JUN-74 16:07:12    EDIT BY TOMLINSON
+; CHECK FOR ILLEGAL NEG VERSION NUMBERS
+;<TENEX-132>DIRECT.MAC;94    12-APR-74 14:09:59	EDIT BY TOMLINSON
+; FIXED BUG IN IMPLICITLY UNDELETED PRM FILE LOGIC
+;<TENEX-132>DIRECT.MAC;93    25-MAR-74 10:45:43	EDIT BY TOMLINSON
+; UNDELETED PERMANENT FILES ARE CONSIDERED OLD VERSIONS. FDBSIZ_0
+;<TENEX-132>DIRECT.MAC;91    19-MAR-74 11:03:04	EDIT BY TOMLINSON
+; BUG FIXES IN NEW MAPDIR
+;<TENEX-132>DIRECT.MAC;90    18-MAR-74 21:44:28	EDIT BY TOMLINSON
+;<TENEX-132>DIRECT.MAC;89    18-MAR-74 19:40:52	EDIT BY TOMLINSON
+; NEW MAPDIR FOR OLD AND NEW FORMAT FD'S
+;<TRAP>DIRECT.MAC;1     4-MAR-74 15:18:59	EDIT BY BTHOMAS
+;<TENEX-132>DIRECT.MAC;88    30-NOV-73 16:50:07	EDIT BY TOMLINSON
+;<TENEX-132>DIRECT.MAC;87    27-NOV-73 17:46:25	EDIT BY CLEMENTS
+;<TENEX-132>DIRECT.MAC;86     9-NOV-73 19:33:19	EDIT BY CLEMENTS
+;<TENEX-132>DIRECT.MAC;85     2-NOV-73 11:28:17	EDIT BY TOMLINSON
+; FIX TO XPAND0 TO LIMIT SIZE OF SUBINDEX TO 8 PAGES
+;<131>DIRECT.MAC;8403    23-MAY-74 15:07:18    EDIT BY TAFT
+; Make lookup routine internal
+;<131>DIRECT.MAC;8402     8-MAR-74 13:47:48	EDIT BY TAFT
+;<131>DIRECT.MAC;8401     7-MAR-74 18:44:14	EDIT BY TAFT
+;<TENEX-132>DIRECT.MAC;84     9-APR-73 16:05:06	EDIT BY TOMLINSON
+; PROTECTED PROTECTION CHANGES FROM NON-OWNERS
+;<TENEX-130>DIRECT.MAC;83    21-NOV-72  1:12:22	EDIT BY TOMLINSON
+;<DLM/TEMP>DIRECT.MAC;82    31-OCT-72 22:53:05	EDIT BY TOMLINSON
+; TEMPORARY PATCH TO MAPDIR FOR COMPATIBILITY WITH NEW CODE
+;<DLM/TEMP>DIRECT.MAC;81    31-OCT-72  9:09:27	EDIT BY TOMLINSON
+; REMOVE CALL'S
+;<DLM/TEMP>DIRECT.MAC;80    30-OCT-72 15:10:16	EDIT BY TOMLINSON
+;<DLM/TEMP>DIRECT.MAC;79    30-OCT-72 13:24:12	EDIT BY TOMLINSON
+;<DLM/TEMP>DIRECT.MAC;79    30-OCT-72 13:12:58	EDIT BY TOMLINSON
+; DIRETORY PROTECTION
+;<DLM/TEMP>DIRECT.MAC;78    30-OCT-72 11:48:06	EDIT BY TOMLINSON
+; FDBPRM NOT PROPOGATED TO NEW VERSIONS
+
+	SEARCH STENEX,PROLOG
+	TITLE	DIRECT
+	SUBTTL	R.S.Tomlinson
+
+EXTERN	FDFMTF,CAPENB
+EXTERN	ASGDFR,FORKX,GCDIR,GETFDB,JOBDIR,MODES,RELDFR
+EXTERN	FKGRPS,FKDIR
+EXTERN	BUGCHK,BUGHLT,DIOFN,FDOFN,MRMAP,MRPACS,SETMPG
+
+	USE	SWAPPC
+
+; Check protection of file/directory
+; Call:	LH(A)	; Readf, wrtf etc. bits in left half
+;	RH(A)	; Location of fdb if call to accchk
+;	PUSHJ P,DIRCHK	; To check access to a directory
+; Or
+;	PUSHJ P,ACCCHK	; To check access to a file
+; Return
+;	+1	; Error, access not allowed
+;	+2	; Ok
+; The directory in which the protection is checked must be locked
+
+DIRCHK::SKIPA B,DIRPRT
+ACCCHK::MOVE B,FDBPRT(A)	; Get protection of this file
+	MOVE C,CAPENB
+	TRNE C,WHEEL!OPR
+	JRST SKPRET
+	PUSH P,D
+	PUSH P,E
+	MOVE E,FORKX
+	SKIPGE D,FKDIR(E)	; D=connected dir,,user dir
+	MOVE D,FKDIR(D)
+	MOVEI C,0(D)
+	CAMN C,DIRNUM		;REFERENCE TO OWN DIR?
+	JRST ACCCH9		;YES
+	HLRZ C,D		; C=connected dir
+	CAME C,DIRNUM		; Reference to this dir?
+	JRST [	MOVE C,FKGRPS(E)	; Groups of this user
+		SKIPGE E,FKDIR(E)	; Skips if top fork in group
+		MOVE C,FKGRPS(E)	; Now have groups of user
+		LSH B,6			; Group protection to B18-23
+		TDNE C,DIRGRP		; User in groups of this dir?
+		 JRST ACCCH9		; Yes, check group protection
+		LSH B,6			; No, "other" protection to B18-23
+		SKIPN DIRSGR		; Dir have secondary groups?
+		 JRST ACCCH9		; No, just check "other" protection
+		TDNN C,DIRSGR		; Yes, user in secondary groups of dir?
+		 SETZ B,		; No, deny all access
+		JRST .+1]
+ACCCH9:	POP P,E
+	POP P,D
+	ANDCAI B,770000		; Mask off 6 bits and complement
+	LSH B,^D18-1
+	AND A,B			; Get bad bits
+	JFFO A,ACCCH2		; If any ones, access not permitted
+	JRST SKPRET
+
+ACCCH2:	SOS B,A+1		; Get bit number
+	ROT B,-1		; Divide by 2
+	HRRZ A,ACCERT(B)	; Get error number
+	SKIPL B
+	HLRZ A,ACCERT(B)
+	POPJ P,
+
+ACCERT:	XWD OPNX3,OPNX4
+	XWD OPNX5,OPNX6
+	XWD OPNX12,OPNX13
+
+; Directory lookup
+; Call:	A		; Iowd # full words in input, loc first word
+;	FILOPT(JFN)	; Location of last byte if recognition
+;	PUSHJ P,DIRLUK	; For recognition
+; Or
+;	PUSHJ P,DIRLKX	; For no recognition
+; Return
+; +1	ERROR, NO MATCH
+; +2	ERROR, AMBIGUOUS
+; +3	OK, IN A, THE DIRECTORY NUMBER
+; Clobbers a,b,c,d, filopt(jfn) and bits mtchf, ambgf, norec1
+
+DIRLUU::TEST(O,UNLKF)
+	TEST(O,NREC1)
+	JRST DIRLU0
+
+DIRLUK::
+	TEST(ZA,NREC1)
+DIRLKX::
+	TEST(O,NREC1)
+	TEST(Z,UNLKF)
+DIRLU0:	TEST(Z,MTCHF,AMBGF)
+	PUSH P,A		; Save input pointer
+	MOVEI A,0
+	PUSHJ P,SETDIR		; Map block 0 of directory index
+	JRST [	POP P,A		; Does not exist. if this happens,
+				; The index is screwed up
+		POPJ P,]	; Proceed as for failure
+	MOVE A,(P)		; Get the input pointer
+	MOVE B,1(A)		; Get the first word of the input string
+	LSH B,-^D29		; Shift over to the first character
+	IDIVI B,5		; Prepare to dispatch to proper subindex
+	LDB A,DPTAB(B+1)
+	JUMPE A,[POP P,A	; There is no subindex for this char
+		PUSHJ P,USTDIR
+		POPJ P,]	; Fail
+	MOVNS A			; Convert to negative subindex number
+	PUSHJ P,USTDIR
+	PUSHJ P,SETDIR		; And map the correct subindex
+	JRST [POP P,A		; Subindex does not exist
+				; Indicates fouled up directory index
+		POPJ P,]	; Treat as failure
+	POP P,A			; Restore input pointer
+	MOVEI B,0
+	PUSHJ P,LOOKUP
+	JRST DIRFND
+DIRLK9:	HRRZ A,DIRLOC		; Get directory number rh(symtabptr)
+	HRRZ A,DIRORG(A)
+	TEST(NE,UNLKF)		; If entry at dirluu,
+	JRST SKPRET		; Return skipping with directory locked
+	PUSHJ P,USTDIR
+	JRST SK2RET		; Double skip return
+
+DIRFND:	MOVEM B,DIRLOC		; Save where
+	TEST(NE,MTCHF)
+	TEST(NE,NREC,NREC1)	; Since we do not have an exact match
+	JRST DIRFD2
+	TEST(NE,AMBGF)
+	JRST AMBRET		; Ambiguous
+	AOS B			; Ok so far, make sure not ambiguous
+	CAMGE B,SYMTOP		; By examining the next entry
+	PUSHJ P,NAMCMM
+	JRST DIRUNQ		; If not equal, we win
+	JRST DIRUNQ
+	JRST AMBRET		; Otherwise it is ambiguous
+	JRST AMBRET
+
+DIRFD2:	TEST(NN,UNLKF)		; If entry not at dirluu,
+	JRST ERRET		; Return unlocking directory
+	POPJ P,			; Otherwise, return no skip
+
+DIRUNQ:	MOVE B,DIRLOC		; Get location of symtabptr
+	MOVE A,DIRINP		; And input pointer
+	MOVNI A,(A)		; Negative of origin of input
+	ADD A,FILOPT(JFN)	; Get end of input relative to beginning
+	HLRZ C,DIRORG(B)	; Get location of string block
+	ADDI A,DIRORG+1(C)	; Yields pointer to tail of string
+	LDB C,A
+	DPB C,FILOPT(JFN)
+DIRUN1:	ILDB C,A		; Copy tail to input
+	JUMPE C,[MOVEI C,0
+		MOVE B,FILOPT(JFN)
+		IDPB C,B
+		JRST DIRLK9]
+	IDPB C,FILOPT(JFN)
+	JRST DIRUN1
+
+; Pointers to subindex dispatch table
+
+RADIX ^D10
+
+Q==6
+
+DPTAB:	REPEAT 5,<
+	POINT 7,SBIDTB(B),Q
+Q==Q+7>
+
+RADIX 8
+
+; Directory number to string conversion
+; Call:	A	; The directory number
+;	PUSHJ P,GDIRST
+; Return
+;	+1	; Error, no such directory number
+;	+2	; Ok, in a, pointer to string block holding the name
+; The directory index is locked upon exit, and must be unlocked
+; After the string is used
+; Clobbers a,b,c,d
+
+GDIRST::PUSHJ P,GETDDB		; Get the ddb
+	POPJ P,			; None
+	HRRZ A,DDBNAM(A)	; Get pointer to name
+	ADDI A,DIRORG		; As absolute address
+	JRST SKPRET
+
+; Initilize a directory block
+; Call:	A	; Most common block size in the directory
+;	B	; INITIAL SIZE OF DIRECTORY
+;	C	; DIRECTORY NUMBER
+;		; At dirorg, the directory in question
+;	PUSHJ P,INIBLK
+
+	USE	RESPC
+
+INIBLK::PUSH P,A
+	MOVE A,[XWD DIRORG,DIRORG+1]
+	SETZM DIRORG
+	BLT A,DIRORG-1(B)		; Clear all of directory
+	POP P,DIRFRE+3
+	MOVEM C,DIRNUM
+	CALL SETHIQ
+	SETZM DIRLCK		; Initially locked
+	MOVE A,[XWD 500000,777752]
+	MOVEM A,DIRDPW		; Default protection is all access
+	MOVE A,[XWD 500000,777740]
+	MOVEM A,DIRPRT		; Directory protection is all access
+	MOVEI A,2
+	MOVEM A,DIRDBK
+	MOVEM B,SYMBOT		; Null symbol table
+	MOVEM B,SYMTOP
+	MOVEI A,DIFREE-DIRORG
+	HRLOM A,DIRFRE
+	HRRM A,DIRFRE+4
+	SUB A,B			; Negative of space to a
+	ASH A,-6		; Reserve 1/64 of space for symtab
+	ADD A,B			; Remainder for dynamic storage
+	MOVEM A,FRETOP
+	HRLM A,DIRFRE+4
+	SUBI A,DIFREE-DIRORG
+	MOVEM A,DIFREE
+	MOVEM A,DIRFRE+2
+	SETOM DIRFRE+1
+	POPJ P,
+
+	USE	SWAPPC
+
+; Get directory descriptor block location
+; Call:	A	; Directory number
+;	PUSHJ P,GETDDB
+; Return
+;	+1	; No such directory
+;	+2	; Ok, a addresses the directory descriptor block
+; Leaves the directory subindex locked and psi off
+; Clobbers a,b,c,d
+
+GETDDB::PUSHJ P,HSHLUK		; Look up number in hash table
+	JRST [	PUSHJ P,USTDIR
+		POPJ P,]	; Not found
+	PUSHJ P,USTDIR		; Release block 0
+	HLRZ A,C		; Location of the descriptor block
+	IDIVI A,10000		; Separate subindex number and offset
+	PUSH P,A+1		; Save offset
+	MOVNS A
+	PUSHJ P,SETDIR		; Map the pertinent subindex
+	JRST [	POP P,A
+		POPJ P,]
+	POP P,A
+	ADDI A,DIRORG
+	JRST SKPRET		; Skip return
+
+; Hash table lookup routine
+; Call:	A	; Directory number
+;	PUSHJ P,HSHLUK
+; Return
+;	+1	; Error, no such number
+;	+2	; Success
+;	LH(C)	; Location of ddb
+;	B	; Location of hash table entry
+
+HSHLUK::PUSH P,A		; Save directory number
+	MOVEI A,0
+	PUSHJ P,SETDIR		; Map block 0 of the directory subindex
+	BUG(HLT,<HSHLUK: IMPOSSIBLE FAILURE OF CALL TO SETDIR FOR BLOCK 0>)
+	POP P,A
+	MOVE B,A
+	IMULI B,741633		; Hash on the directory number
+	ROT B,7
+	TSC B,B
+	LSH B,-1
+	MUL B,DIRHTL
+	ADD B,DIRHTO		; Initial location to probe
+	PUSH P,B
+	PUSH P,[0]
+GETDD1:	MOVE C,DIRORG(B)	; Get the hash table entry
+	JUMPLE C,[CAMG C,[XWD -2,0]
+		JRST HSHLU1	; Place-holder
+		SKIPN (P)	; Position found yet?
+		MOVEM B,(P)	; No, save this pointer
+		JUMPL C,HSHLU1
+		POP P,B		; Lookup failure
+		SUB P,[XWD 1,1]
+		POPJ P,]	; Return
+	CAIN A,(C)		; Compare rh to input number
+	JRST [	SUB P,[XWD 2,2]
+		JRST SKPRET]
+HSHLU1:	SOS B			; Cycle backward through table
+	CAMGE B,DIRHTO
+	ADD B,DIRHTL
+	CAME B,-1(P)
+	JRST GETDD1
+	POP P,B
+	SUB P,[XWD 1,1]
+	POPJ P,
+
+; Insert account string/number in fdb
+; Call:	A		; Location of fdb
+;	FILACT(JFN)	; Negative number or positive string location
+;	PUSHJ P,INSACT
+; Returns +1 always
+; Clobbers b,c
+
+INSACT::PUSHJ P,GETFDB
+	POPJ P,
+	PUSH P,A
+	MOVSI A,XCTF
+	PUSHJ P,DIRCHK
+	 JRST [	POP P,A
+		JRST ERRET]
+	POP P,A
+	PUSHJ P,INSAC0
+	JRST ERRET
+
+INSAC0:	PUSH P,A
+	SKIPG B,FILACT(JFN)	; Number?
+	 JRST CPYACG
+CPYACT:	HRRO A,CAPENB
+	TRNN A,WHEEL!OPR
+	MOVE A,MODES
+	TLNN A,(1B1)
+	 JRST CPYACF
+	MOVN A,(B)
+	HRLZI A,2(A)
+	HRR A,B
+	MOVEI B,100000
+	PUSHJ P,LOOKUP
+	JRST CPYAC1
+	MOVE B,DIRLOC
+	HLRZ B,DIRORG(B)
+CPYAC0:	AOS DIRORG+1(B)		; Increment share count
+CPYACG:	POP P,A			; Restore fdb pointer
+	MOVEM B,FDBACT(A)	; Store as account
+	POPJ P,
+
+CPYACF:	MOVE B,[500000,,INIACT]	; USE OVERHEAD ACCOUNT
+	JRST CPYACG
+
+CPYAC1:	MOVE A,SYMBOT
+	SUBI A,2
+	CAMG A,FRETOP		; Room for new symtab entry?
+	 JRST [	PUSHJ P,XPAND	; No, try to expand symtab
+		 JRST CPYACF	; Can't.
+		JRST .+1]
+	HLRE A,DIRINP
+	MOVN B,A
+	ADDI B,3
+	PUSH P,B
+	PUSHJ P,ASGDFR
+	JRST [	POP P,B
+		JRST CPYACF]
+	HRLZ B,DIRINP
+	HRRI B,2(A)
+	POP P,D
+	ADDI D,-3(B)
+	BLT B,(D)
+	MOVE C,DIRMSK
+	ANDM C,(D)
+	SETZM 1(A)
+	MOVEI B,-DIRORG(A)
+	HRLZ C,B
+	HRRI C,100000
+	SOS B,DIRLOC
+	SOS A,SYMBOT
+	ADDI A,DIRORG
+	HRLI A,1(A)
+	CAIL B,-DIRORG+1(A)
+	BLT A,DIRORG-1(B)
+	MOVEM C,DIRORG(B)
+	HLRZ B,C
+	JRST CPYAC0
+
+; Insert protection into fdb
+; Call:	FILPTR(JFN)	; Protection number
+;	A		; Location of fdb
+;	PUSHJ P,INSPRT
+; Returns +1
+; Clobbers b
+
+INSPRT::PUSHJ P,GETFDB
+	POPJ P,
+	PUSH P,A
+	MOVSI A,XCTF		; Check for owner privilege
+	PUSHJ P,DIRCHK
+	 JRST [	POP P,A
+		JRST ERRET]
+	POP P,A
+	MOVE B,FILPRT(JFN)
+	MOVEM B,FDBPRT(A)
+	JRST ERRET
+
+; Initialize fdb
+; Call:	A		; Location of fdb
+;	PUSHJ P,FDBINI
+; Return +1 always
+; Initializes the fdb as follows:
+;	FDBCTL	; Fdbnxf (non-existent)
+;	FDBCRE	; Date and time of now
+;	FDBCRV	; Date and time of now
+; All else is zeroed including fdbext, fdbver, etc.
+; Clobbers b,c,d
+; Preserves a
+
+FDBINI:	MOVEI B,400100
+	HRLM B,(A)		; Mark the block as fdb type
+	HRLZI B,1(A)
+	HRRI B,2(A)
+	SETZM 1(A)
+	BLT B,FDBLEN-1(A)	; Clear the entire fdb
+	PUSH P,A
+	GTAD			; Get today
+	POP P,B
+	MOVEM A,FDBCRE(B)	; Set creation dates
+	MOVEM A,FDBCRV(B)
+	MOVSI A,FDBNXF
+	MOVEM A,FDBCTL(B)
+	MOVE A,DIRDPW
+	MOVEM A,FDBPRT(B)
+	MOVSI A,500000
+	MOVEM A,FDBACT(B)	; Set account to 0 for now
+	MOVE A,B
+	POPJ P,
+
+; Set directory or directory index
+; Call:	A	; Directory number or subindex number
+;	B	; Ofn of the appropriate directory unless its the di
+;	PUSHJ P,SETDIR	; For mapping a directory
+; Or
+;	PUSHJ P,SETDIR	; For mapping a directory subindex
+; Return
+;	+1	; Non-existent directory
+;	+2	; Normal, the 10 pages starting at dirorg are set up
+; Clobbers a,b,c,d
+
+	USE	RESPC
+
+SETDIR::NOINT
+	PUSH P,A
+	PUSH P,B
+	MOVEI A,DIRORG
+	PUSHJ P,MRMAP		; Read the ident of current directory
+	 JRST SETDI5
+	PUSH P,A
+	HLRZS A
+	PUSHJ P,CVOFNU		; Convert ofn to logical unit
+	CAME A,-1(P)		; Compare to required logical unit
+	 JRST [	SUB P,[XWD 1,1]
+		POP P,B
+		MOVE A,0(P)
+		JRST SETDI1]
+	POP P,A
+	PUSHJ P,MRPACS		; Read access of page
+	MOVE C,A
+	POP P,B
+	MOVE A,0(P)		;DIRECTORY NUMBER
+	TLNE C,(1B5)		; If non-existent
+	CAME A,DIRNUM		; Or different
+SETDI1:	PUSHJ P,MAPDIR		; Must map it first
+	MOVEI A,DIRORG
+	PUSHJ P,MRMAP
+	BUG(HLT,<SETDIR: DIRECTORY PAGE 0 IS NOT A FILE PAGE>)
+	PUSHJ P,MRPACS
+	MOVE C,A
+	POP P,A			;DIRECTORY NUMBER
+	TLNE C,(1B5)		;IF STILL NO ACCESS,
+	CAME A,DIRNUM		;OR NUMBER DOESN'T COMPARE,
+	 JRST SETDI4
+	LOCK DIRLCK,,HIQ
+	PUSH P,FORKX
+	POP P,DIRUSE
+	JRST SKPRET
+
+SETDI4:	OKINT			; Directory non-existent
+	BUG(CHK,<SETDIR: SMASHED DIRECTORY>)
+	POPJ P,			; Give no-skip return
+
+SETDI5:	SKIPE A			; Non-existent page?
+	BUG(CHK,<SETDIR: DIRECTORY PAGE 0 BELONGS TO A FORK>)
+	POP P,B			; Yes, skip the following
+	MOVE A,0(P)
+	JRST SETDI1
+
+; Temporary cvofnu
+
+CVOFNU:	MOVEI A,-1
+	POPJ P,
+
+; Unlock directory
+
+USTDIR::UNLOCK DIRLCK,,HIQ
+	OKINT
+	POPJ P,
+
+MAPDIR::PUSH P,C		; SAVE AN ACCUMULATOR
+	JUMPLE A,MAPDI6		; SUBINDEX
+	MOVNI B,1		; TEMPORARY
+;	HRRES B
+	CAML B,[-1]
+	CAIL B,NDSKS-1
+	 JRST MAPDI5
+MAPDI4:	MOVE B,PFDOFN+1(B)	; Get location of ofn's for this unit
+	PUSH P,B		; Save
+	CAIL A,NFDIB*100/2
+	BUG(HLT,<MAPDIR: ATTEMPT TO MAP INVALID DIRECTORY NUMBER>)
+	MOVEI C,20		; DEFAULT NUMBER OF PAGES/DIRECTORY SECTION
+	SKIPE FDFMTF		; OLD FORMAT?
+	 MOVEI C,10		; YES, THEN 10 PAGES PER SECTION
+	IMUL A,C		; COMPUTE PAGE OFFSET OF 0TH PAGE
+	IDIVI A,1000		; SEPARATE INTO PT/PAGE
+	ADDB A,0(P)		; Location of ofn
+	EXCH A,B
+	HRL A,(B)		; Get ofn of pt
+	PUSHJ P,MAPDI1		; Map first half
+	POP P,B
+	SKIPN FDFMTF
+	 JRST MAPDI7		; NEW STYLE -- DONE
+	MOVEI A,-10(A)		; BACK UP PAGE NUMBER
+	HRL A,NFDIB/2(B)	; GET SECOND HALF OFN
+	MOVEI C,10
+	PUSHJ P,MAPDI2		; Map second half
+MAPDI7:	POP P,C			; RESTORE C
+	POPJ P,
+
+MAPDI5:	BUG(CHK,<MAPDIR: BAD DSK UNIT NUMBER>)
+	MOVNI B,1
+	JRST MAPDI4
+
+MAPDI6:	LSH A,3
+	MOVEI C,10
+	MOVMS A
+	HRL A,DIOFN
+	CALL MAPDI1
+	JRST MAPDI7
+
+MAPDI2:	SKIPA B,[140000,,DIRORG+10000]
+MAPDI1:	MOVE B,[140000,,DIRORG]
+MAPDIL:	CALL SETMPG
+	ADDI B,1000
+	AOS A
+	SOJG C,MAPDIL
+	POPJ P,
+
+Q==0
+
+PFDOFN:	REPEAT NDSKS,<
+	FDOFN+NFDIB*Q
+Q==Q+1>
+USE	SWAPPC
+
+; Multiple directory device directory lookup routine
+; Call:	A	; Directory number
+;	PUSHJ P,MDDDIR
+; Returns
+;	+1	; Not used here, means non-directory device
+;	+2	; No such directory
+;	+3	; Ok, the directory is mapped and locked
+
+MDDDIR::AOS (P)			; Always skips atleast once
+	TEST(NE,STEPF)
+	TEST(NN,DIRSF)
+	 JRST SETDRR		; MAP AND CHECK DIRECTORY FOR READING
+	PUSH P,B
+MDDDI4:	PUSH P,A
+MDDDI5:	MOVEI A,0
+	PUSHJ P,SETDIR		; Map the index block 0
+	BUG(HLT,<MDDDIR: IMPOSSIBLE FAILURE OF CALL TO SETDIR FOR BLOCK 0>)
+	MOVEI A,777777		; Larger than any possible dir number
+	AOS (P)			; Looking for one greater than last
+	MOVE B,DIRHTO
+	ADD B,DIRHTL
+	SOS B
+MDDDI0:	MOVE C,DIRORG(B)	; Get hash table entry
+	JUMPLE C,MDDDI1		; Empty slot
+	HRRZS C			; Extract directory number
+	CAMN C,(P)		; Is this what we are looking for
+	JRST MDDDI2		; Yes, map it etc.
+	CAMLE C,(P)
+	CAML C,A
+	JRST MDDDI1
+	MOVE A,C		; Better than any other
+MDDDI1:	CAMLE B,DIRHTO
+	SOJA B,MDDDI0		; Loop through entire hash table
+	CAIE A,777777		; Were any found?
+	JRST MDDDI3		; Yes
+	POP P,A
+	POP P,B
+	PUSHJ P,USTDIR
+	POPJ P,
+
+MDDDI3:	MOVEM A,(P)
+MDDDI2:	PUSHJ P,USTDIR
+	MOVE A,0(P)
+	MOVE B,-1(P)
+	PUSHJ P,SETDRR		; SEE IF WE CAN READ THIS
+	 JRST MDDDI5		; CAN'T, TRY NEXT ONE
+	POP P,A
+	POP P,B
+	JRST SKPRET
+
+SETDRR:	PUSHJ P,SETDIR
+	 JRST [	MOVEI A,GJFX36
+		POPJ P,]
+	PUSH P,A
+	MOVSI A,READF
+	PUSHJ P,DIRCHK
+	 JRST [	PUSHJ P,USTDIR
+		SUB P,[1,,1]
+		MOVEI A,GJFX35
+		POPJ P,]
+	POP P,A
+	JRST SKPRET
+
+; Multiple directory device name lookup routine
+; Call:	A	; Lookup pointer
+;	DIRORG-	; The correct subdirectory, locked and psi off
+;	JRST MDDNAM
+; Return
+;	+1	; Match is impossible
+;	+2	; Ambiguous
+;	+3	; Success, if nrec&nrec1 are 0, the remainder if any
+;		; Is appended to the string addressed by filopt(jfn)
+
+MDDNAM::JUMPE A,MDDSTP
+	MOVEI B,0
+	PUSHJ P,LOOKUP
+	JRST NAMFND
+	TEST(NE,STEPF)
+	TEST(NN,NAMSF)
+	JRST NAMLK9
+	AOS B,DIRLOC		; Location in symtab of next after match
+MDDSN1:	MOVEI C,700000		; Prepare to test entry type
+	CAMGE B,SYMTOP		; If above top
+	TDNE C,DIRORG(B)	; Or not name
+	 JRST [	MOVEI A,GJFX18	; Then fail
+		JRST ERRET]	; None left
+	HLRZ C,DIRORG(B)	; Pointer to name string
+	MOVEI A,DIRORG+1(C)
+	HRLI A,(<POINT 7,0>)
+	JRST UNIQL1		; Copy new name to filopt
+
+NAMLK9:	MOVE B,DIRLOC
+	ADDI B,DIRORG
+	HRRZ A,(B)
+	ANDCMI A,700000		; Mask off entry type bits
+	ADDI A,DIRORG		; Convert to absolute address
+NAMLKM:	TEST(NE,UNLKF)
+	JRST SK2RET		; Do not unlock directory
+	PUSHJ P,USTDIR
+	JRST SK2RET
+
+	USE	RESPC
+
+SK3RET::AOS (P)
+SK2RET::AOS (P)
+SKPRET::AOS (P)
+CPOPJ::	POPJ P,
+
+USE	SWAPPC
+
+MDDSTP:	MOVE B,SYMBOT		; Get bottom of symbol table
+	MOVEM B,DIRLOC
+	JRST MDDSN1
+
+NAMFND:	TEST(NE,NREC,NREC1)	; Is recognition being performed
+	JRST NEWNAM		; No. try to insert a new name
+	MOVEI A,GJFX18
+	TEST(NE,AMBGF)		; Ambiguous?
+	JRST AMBRET		; Yes
+	TEST(NN,MTCHF)		; Yes, did at least one string match?
+	JRST ERRET		; Error return, no match possible
+	AOS B			; Point b to following entry
+	CAMGE B,SYMTOP		; If not above top,
+	PUSHJ P,NAMCMM		; Compare strings
+	JRST UNIQUE		; Only one string is superset
+	JRST UNIQUE
+	JFCL
+	MOVEI A,GJFX18
+	JRST AMBRET
+
+	USE	RESPC
+
+AMBRET:	TEST(NN,UNLKF)		; Ambiguity is downright failure if unlkf
+	AOS (P)
+ERRET:	PUSHJ P,USTDIR
+	POPJ P,
+
+USE	SWAPPC
+
+UNIQUE:	MOVE B,DIRLOC		; Location in symtab of matching entry
+	HLRZ C,DIRORG(B)	; Matching string block origin
+UNIQU1:	MOVE A,DIRINP		; Start of input string
+	MOVNI A,(A)
+	ADD A,FILOPT(JFN)	; End of input relative to beginning
+	ADDI A,DIRORG+1(C)	; Start of tail
+	LDB C,A
+	DPB C,FILOPT(JFN)
+UNIQL1:	ILDB C,A		; Copy tail to input string
+	JUMPE C,[MOVE A,FILOPT(JFN)
+		IDPB C,A
+		JRST NAMLK9]	; Terminate with null
+	IDPB C,FILOPT(JFN)
+	JRST UNIQL1
+
+NEWNAM:	MOVE A,DIRINP
+	TLNN A,-1
+	SKIPE DIRMSK
+	JRST .+3
+	MOVEI A,GJFX33
+	JRST ERRET		; Null names not allowed
+	MOVEI A,GJFX24
+	TEST(NE,OLDNF)		; Are new names ok?
+	JRST ERRET		; No new names, error return
+	MOVSI A,RNDF
+	PUSHJ P,DIRCHK		; Does this user have append access
+	JRST [	MOVEI A,GJFX24
+		JRST ERRET]
+	MOVE A,SYMBOT
+	SUBI A,2
+	CAMG A,FRETOP		; Room to expand symtab?
+	 JRST [	PUSHJ P,XPAND	; No, attempt to expand it
+		 JRST [	MOVEI A,GJFX23
+			JRST ERRET]; No room
+		JRST .+1]
+	TEST(O,NEWF)		; Remember we entered a new file name
+	MOVEI B,FDBLEN
+	PUSHJ P,ASGDFR		; Assign space for fdb
+	JRST [	MOVEI A,GJFX23
+		JRST ERRET]
+	PUSHJ P,FDBINI		; Initialize fdb
+	MOVSI B,FDBNEX!FDBNXF
+	IORM B,1(A)		; Set "no extension" flag in fdb
+	MOVEM A,DIRSAV		; Save loc of fdb
+	PUSHJ P,CPYDIR		; Copy the input string into directory
+	JRST [	MOVE B,DIRSAV
+		SETZM DIRSAV
+		PUSHJ P,RELDFR
+		MOVEI A,GJFX23
+		JRST ERRET]
+	MOVEI C,400001
+	HRLM C,(A)		; Mark as string block for name
+	MOVE C,DIRSAV		; Get fdb location
+	SETZM DIRSAV
+	SUBI A,DIRORG
+	HRRM A,FDBCTL(C)	; Store location of name string in fdb
+	SUBI C,DIRORG		; Relative to directory origin
+	HRL C,A			; Put string block loc in lh
+	SOS B,DIRLOC		; Restore sym tab location
+	SOS A,SYMBOT		; Move bottom of symbol table down
+	ADDI A,DIRORG
+	HRLI A,1(A)
+	CAIL B,-DIRORG+1(A)
+	BLT A,DIRORG-1(B)	; Blt lower part of symtab down
+	MOVEM C,DIRORG(B)	; Insert symtab pointer in symtab
+	JRST NAMLK9
+
+; Multiple directory device extension lookup
+; Call:	A	; Lookup pointer
+;	B	; Pointer to start pointer (as left by mddnam)
+;	JRST MDDEXT
+; Return
+;	+1	; No match
+;	+2	; Ambiguous
+;	+3	; Ok, the remaining string is appended to filopt(jfn)
+
+MDDEXT::JUMPE A,MDDSTE		; Set to first extension
+	HRRZM B,DIRSCN		; Save loc of pointer
+	PUSHJ P,SETMSK		; Set up mask etc
+	MOVE A,DIRSCN		; Save location of pointer
+	MOVEM A,DIRLOC
+	HRRZ A,@DIRSCN		; Get loc of first fdb
+	ADDI A,DIRORG		; As absolute address
+	MOVE B,FDBCTL(A)	; Get flags
+	TLNE B,FDBNEX		; Is this fdb simply holding a place
+				; Because no extension is known?
+	JRST NEWEXT		; Yes, then fill in extension
+EXTLK1:	HLRZ B,FDBEXT(A)	; Get pointer to extension block
+	ADDI B,DIRORG+1		; As absolute address
+	MOVN C,-1(B)		; Get length of block
+	HRLI B,2(C)		; Account for header and partial word
+	MOVE A,DIRINP		; Get pointer to input
+	MOVE C,DIRMSK		; And mask
+	PUSHJ P,STRCMP		; Compare strings
+	JRST EXTNEQ		; Not equal
+	JRST EXTNEQ		; Not equal
+	JRST EXTSUB		; Substring
+	TEST(NE,STEPF)
+	TEST(NN,EXTSF)
+	JRST EXTLKL
+	MOVE B,DIRSCN		; Get loc of pointer
+	HRRZ B,(B)		; Location of fdb
+	MOVEI B,DIRORG+FDBEXT(B); Location of pointer to next fdb
+MDDSTE:	MOVEM B,DIRSCN
+	MOVEM B,DIRLOC
+	HRRZ A,(B)
+	JUMPE A,[MOVEI A,GJFX19
+		JRST ERRET]	; None left
+	MOVE C,FDBCTL+DIRORG(A)
+	TLNE C,FDBNEX
+	JRST [	MOVEI A,GJFX19
+		JRST ERRET]	; Non-existent
+	HLRZ A,FDBEXT+DIRORG(A)	; Location of extension string
+	ADDI A,DIRORG+1
+	MOVNI B,DIRORG
+	ADDM B,DIRLOC
+	HRLI A,(<POINT 7,0>)
+	JRST UNIQL1
+
+EXTLKL:	MOVE B,DIRSCN		; Exact match. get loc of pointer
+	HRRZ A,(B)
+	ADDI A,DIRORG		; And loc of fdb
+	MOVE C,FDBCTL(A)
+	TLNE C,FDBTMP		; File already temp?
+	TEST(O,TMPFF)		; Yes, set tmpff
+	JRST NAMLKM		; Double skip return & unlock directory
+
+EXTSUB:	TEST(NE,NREC,NREC1)
+	JRST EXTNEQ
+	MOVE A,DIRSCN
+	MOVEM A,DIRLOC		; Save location of pointer to match fdb
+	MOVEI A,GJFX19
+	TEST(OE,MTCHF)		; Set mtchf, was it already set?
+	JRST AMBRET		; Yes,  ambiguous return
+EXTNEQ:	HRRZ B,@DIRSCN		; Get loc of next fdb
+	ADDI B,DIRORG+FDBEXT
+	MOVEM B,DIRSCN
+	HRRZ A,(B)		; Get loc of next fdb
+	JUMPN A,[ADDI A,DIRORG
+		JRST EXTLK1]
+	TEST(NE,NREC,NREC1)
+	JRST NEWEX1		; New extension
+	MOVEI A,GJFX19
+	TEST(NN,MTCHF)
+	JRST ERRET
+	HRRZ B,@DIRLOC		; Get pointer to fdb
+	MOVE C,FDBCTL+DIRORG(B)
+	TLNE C,FDBTMP
+	TEST(O,TMPFF)
+	MOVNI C,DIRORG
+	ADDM C,DIRLOC
+	HLRZ C,FDBEXT+DIRORG(B)	; Get pointer to extension block
+	JRST UNIQU1		; And copy tail to input
+
+NEWEX1:	MOVEI A,GJFX24
+	TEST(NE,OLDNF)		; Are new files allowed?
+	JRST ERRET
+	MOVSI A,RNDF
+	PUSHJ P,DIRCHK		; Append access ok?
+	JRST [	MOVEI A,GJFX24
+		JRST ERRET]
+	MOVEI B,FDBLEN
+	PUSHJ P,ASGDFR		; Get space for new fdb
+	JRST [	MOVEI A,GJFX23
+		JRST ERRET]
+	PUSHJ P,FDBINI		; Initialize the fdb
+	MOVE B,@DIRLOC		; Location of fdb with correct name
+	HRRZ C,FDBCTL+DIRORG(B)
+	HRRM C,FDBCTL(A)	; Move name pointer to new fdb
+	MOVEM A,DIRSAV		; Save fdb location
+	PUSHJ P,CPYDIR		; Copy extension string to directory
+	JRST [	MOVE B,DIRSAV
+		SETZM DIRSAV
+		PUSHJ P,RELDFR
+		MOVEI A,GJFX23
+		JRST ERRET]
+	MOVEI C,400002
+	HRLM C,(A)		; Mark as string block for extension
+	PUSH P,A
+	MOVE A,DIRSAV
+	SETZM DIRSAV
+	MOVE C,DIRSCN		; Location of last extension pointer
+	SUBI A,DIRORG		; Convert pointer to fdb to relative
+	HRRZ B,(C)
+	HRRM A,(C)		; Point last to this
+	HRRM B,DIRORG+FDBEXT(A)	; Point this to next
+	POP P,A
+	JRST NEWEX2
+	
+NEWEXT:	TEST(NN,NREC,NREC1)
+	JRST [	MOVEI A,GJFX19
+		JRST ERRET]	; Recognition wanted
+	TEST(NE,OLDNF)
+	JRST [	MOVEI A,GJFX24
+		JRST ERRET]	; No new files
+	PUSH P,A
+	PUSHJ P,CPYDIR		; Copy string block into directory
+	JRST [	POP P,A			; CLEAR STACK LEVEL
+		MOVEI A,GJFX23
+		JRST ERRET]
+	MOVEI C,400002
+	HRLM C,(A)		; Mark as string block for extension
+	MOVSI B,FDBNEX
+	POP P,C
+	ANDCAM B,FDBCTL(C)	; No longer no extension
+NEWEX2:	HRRZ B,@DIRSCN
+	ADDI B,DIRORG
+	SUBI A,DIRORG
+	HRLM A,FDBEXT(B)	; Save in extension
+	TEST(O,NEWF)		; Remember this is a new file
+	MOVE B,DIRSCN
+	HRRZ A,(B)
+	ADDI A,DIRORG
+	JRST NAMLKM		; Double skip return
+
+
+; Multiple directory device version lookup routine
+; Call:	A	; Desired version
+;	DIRORG-	; The appropriate directory locked and psi off
+;	JRST MDDVER
+; Return
+;	+1	; Version not found
+;	+2	; Success version in a if unlkf=1
+;		; Fdb address in a if unlkf=0
+
+MDDVER::HRRES A			; Extend sign
+	MOVEM A,DIRINP
+	MOVEM B,DIRLOC
+	HRRZ D,@B
+	CAMN A,[-2]
+	MOVEM D,DIRLOC
+	HLRZ C,DIRORG+FDBVER(D)
+	JUMPE C,VERLK7		; This is first version of this file
+VERLK0:	MOVEM B,DIRSCN		; Save scan pointer
+	ADDI D,DIRORG		; Convert to absolute address
+	MOVE C,FDBCTL(D)	; Get flag word
+VERLKA:	TLNE C,FDBTMP		; If we ever see a temp version
+	TEST(O,TMPFF)		; Consider this as temporary also
+	JUMPG A,VERLK1		; Specific version wanted
+	CAMN A,[-2]
+	JRST VERLKC
+	CAMN A,[-1]		; New version wanted?
+	 JRST VERLK2		; Yes.
+	JUMPL A,[		; OTHER NEG VERSIONS ARE VERBOTEN
+		MOVEI A,GJFX37
+		JRST ERRET]
+	TLNE C,FDBDEL
+	TEST(NE,IGDLF)
+	TLNE C,FDBNXF		; Does this version exist yet?
+	JRST VERLK1		; Go to next one
+VERLK3:	MOVE A,D		; Found
+VERLK8:	TEST(NE,NEWVF,NEWF)
+	JRST VERLKB
+	TEST(NE,NEWNF)
+	JRST [	MOVEI A,GJFX27
+		JRST ERRET]
+VERLKB:	TEST(NE,STEPF)
+	TEST(NN,VERSF)
+	JRST VERLKE
+	SKIPN DIRINP
+	JRST VERLKE
+VERLKF:	HRRZ B,FDBVER(A)	; Location of fdb of next version
+	MOVEI A,GJFX20
+	JUMPE B,ERRET		; No more versions
+	MOVEI A,DIRORG(B)
+	MOVE B,FDBCTL(A)
+	TEST(NN,IGDLF)
+	TLNN B,FDBDEL
+	TLNE B,FDBNEX+FDBNXF
+	JRST VERLKF
+VERLKE:	TEST(NE,UNLKF)
+	JRST SKPRET		; Return without unlocking directory
+	HLRZ A,FDBVER(A)
+	PUSHJ P,USTDIR
+	JRST SKPRET
+
+VERLK7:	SKIPG A
+	MOVEI A,1		; However it can be most recent+1
+	HRLM A,DIRORG+FDBVER(D)	; Or specific version
+	MOVEI A,DIRORG(D)
+	JRST VERLK8
+
+VERLK2:	TEST(O,NEWVF)
+	TEST(Z,NEWF)
+	TLNE C,FDBNXF		; Want next newer version
+	TLNE C,FDBDEL		; If this version is deleted or
+	JRST .+2		; In existence, then create a new one
+	JRST VERLK3		; Otherwise, this one is the one
+VERLK6:	MOVEI A,GJFX24
+	TEST(NE,OLDNF)
+	JRST ERRET		; Old files only
+	MOVSI A,RNDF
+	PUSHJ P,DIRCHK		; Check for append access to directory
+	JRST [	MOVEI A,GJFX24
+		JRST ERRET]
+	MOVEI B,FDBLEN
+	PUSHJ P,ASGDFR		; Assign space for a new fdb
+	JRST [	MOVEI A,GJFX23
+		JRST ERRET]
+	PUSHJ P,FDBINI		; Initialize the fdb
+	HRRZ C,@DIRLOC
+	ADDI C,DIRORG
+ 	MOVE D,FDBCTL(C)	; Copy things from previous version
+	TLZ D,FDBDEL!FDBLNG!FDBPRM!FDBUND
+	TLO D,FDBNXF
+	MOVEM D,FDBCTL(A)
+	MOVE D,FDBEXT(C)
+	MOVEM D,FDBEXT(A)
+	MOVE D,FDBCRE(C)
+	MOVEM D,FDBCRE(A)
+	MOVE D,FDBPRT(C)
+	MOVEM D,FDBPRT(A)
+	SOSGE D,DIRINP		; Was specific version given?
+	HLRZ D,FDBVER(C)	; No, get previous version number
+	AOS D			; Increment
+	HRLM D,FDBVER(A)	; And store in new fdb
+	SUBI A,DIRORG
+	HRRZ B,@DIRSCN
+	HRRM A,@DIRSCN		; Point predecessor to new fdb
+	ADDI A,DIRORG
+	HRRM B,FDBVER(A)
+	MOVE B,DIRSCN
+	TEST(O,NEWVF)		; Remember we created a new version
+	JRST VERLK8
+
+VERLKC:	TLNE C,FDBDEL
+	TEST(NE,IGDLF)
+	TLNE C,FDBNXF
+	JRST VERLK1
+	MOVEI C,-DIRORG(D)	; Get relative location
+	MOVEM C,DIRLOC		; Save for later
+VERLK1:	HLRZ C,FDBVER(D)	; Get version number of this fdb
+	CAMG C,A		; Below desired version?
+	JRST VERLK5		; Yes, we have found where it belongs
+	HRRZ B,@DIRSCN		; Step to next fdb
+	ADDI B,FDBVER+DIRORG
+	HRRZ D,@B
+	JUMPN D,VERLK0		; Continue search
+	JUMPE A,[MOVEI A,GJFX20
+		JRST ERRET]	; Not found, can't create most recent
+	CAMN A,[-2]
+	JRST VERLKD
+	HRRZ C,@DIRSCN
+	ADDI C,DIRORG
+	MOVEM B,DIRSCN
+	JRST VERLK6		; Insert new version here
+	JRST VERLK0		; And loop
+
+VERLKD:	TEST(Z,NEWF,NEWVF)
+	MOVEI A,GJFX20
+	MOVE D,DIRLOC
+	MOVE C,FDBCTL+DIRORG(D)
+	TLNE C,FDBDEL
+	TEST(NE,IGDLF)
+	TLNE C,FDBNXF
+	JRST ERRET
+	MOVEI A,DIRORG(D)
+	JRST VERLK8
+
+VERLK5:	CAME C,A		; Exactly the right one?
+	JRST VERLK6		; Insert a new one
+	MOVE B,DIRSCN
+	HRRZ A,(B)
+	ADDI A,DIRORG
+	HLLZ C,FDBCTL(A)	; Get flags from fdb
+	TLNE C,FDBDEL
+	TEST(NE,OUTPF,IGDLF)
+	JRST VERLKH
+	MOVEI A,GJFX20
+	JRST ERRET
+VERLKH:	TEST(NE,OUTPF)
+	 JRST [	TLZN C,FDBDEL
+		 JRST .+1
+		TLNE C,FDBPRM
+		 JRST [	SETZM FDBSIZ(A)
+			JRST .+1]
+		TLO C,FDBNXF
+		JRST .+1]
+	HLLM C,FDBCTL(A)
+	TLNE C,FDBNXF		; Does the file exist?
+	TEST(O,NEWVF)
+	JRST VERLK8		; Found
+
+; Lookup of string in a directory
+; Call:	A	; Lookup pointer
+;	B	; Entry type
+;	PUSHJ P,LOOKUP
+; Return
+;	+1	; No exact match found
+;	+2	; Exact match found
+
+LOOKUP::PUSH P,B		; Save entry type
+	PUSHJ P,SETMSK		; Set up input pointer and mask
+	MOVE A,SYMTOP
+	SUB A,SYMBOT		; Get length of symbol table
+	JFFO A,.+2		; Get top 1 bit
+	MOVEI A+1,^D35
+	MOVNS A+1
+	MOVSI A,400000
+	LSH A,(A+1)		; Largest power of 2 <= length
+	MOVE B,SYMBOT
+	SOS B			; Start just below symbol table
+MOVUP:	JUMPE A,STRFND		; And move up
+	ADD B,A
+	ASH A,-1		; Halve increment
+	CAMGE B,SYMTOP		; Too big?
+	JRST SYMCMP		; No, compare strings
+MOVDN:	JUMPE A,STRFDD
+	SUB B,A
+	ASH A,-1
+	CAML B,SYMTOP
+	JRST MOVDN
+	CAMGE B,SYMBOT
+	BUG(HLT,<LOOKUP: SYMBOL SEARCH FOULED UP.>)
+
+SYMCMP:	MOVEM A,DIRINC		; Save increment
+	MOVEM B,DIRLOC		; And symtab loc
+	MOVE A,(P)
+	PUSHJ P,NAMCM1
+	JRST [	MOVE B,DIRLOC	; A<b
+		MOVE A,DIRINC
+		JRST MOVDN]
+	JRST [	MOVE B,DIRLOC	; A>b
+		MOVE A,DIRINC
+		JRST MOVUP]
+	JRST [	TEST(OE,MTCHF)	; A<b and subset
+		TEST(O,AMBGF)
+		MOVE B,DIRLOC
+		MOVE A,DIRINC
+		JRST MOVDN]
+	POP P,A
+	JRST SKPRET
+
+STRFND:	AOS B
+STRFDD:	MOVEM B,DIRLOC
+	SUB P,[XWD 1,1]
+	POPJ P,
+
+NAMCMM:	MOVEI A,0
+NAMCM1:	HRRZ C,DIRORG(B)	; Get entry type
+	ANDI C,700000		; Extract entry type
+	CAMGE C,A		; Less than that being sought?
+	JRST SKPRET		; Yes.
+	CAMLE C,A		; Greater than entry type being sought?
+	POPJ P,
+	HLRZ A,DIRORG(B)	; Get loc of string block for this entry
+	MOVN B,DIRORG(A)	; Get length of string block
+	CAIGE C,100000
+	JRST SYMCM1
+	AOS A			; For entries greater than 0, there
+	AOS B			; Is a share count which must be ignored
+SYMCM1:	HRLZI B,2(B)		; To lh of b
+	HRRI B,DIRORG+1(A)	; Rh  in absolute address
+	MOVE A,DIRINP		; Set up pointer to input string
+	MOVE C,DIRMSK		; Set up mask
+	JRST STRCMP		; And continue with string compare
+
+; Setup mask and input pointer for directory looks
+; Call:	A	; Lookup pointer
+;	PUSHJ P,SETMSK
+; Return
+;	+1	; In dirinp, a string compare pointer to input
+; In dirmsk, a mask of ones for masking last word of input string
+; Clobbers a,b,c,d
+
+SETMSK::HLRE D,A		; Get size of the string block
+	SUBM A,D		; Get loc of last full word
+	MOVSI B,774000		; 7 bit mask left justified
+	MOVNI C,1		; Mask of bits to ignore
+SETMS0:	TDNN B,1(D)		; Look for the terminating null
+	JRST SETMS1		; There it is, c has 1's for ignoration
+	LSH B,-7		; Not there, shift to next bit
+	LSH C,-7
+	JRST SETMS0
+
+SETMS1:	SETCAM C,DIRMSK		; Get mask of bits to test in last word
+	AOS A
+	MOVEM A,DIRINP		; Save input pointer
+	POPJ P,
+
+; Copy the dirinp string to a new string block in directory
+; Call:	DIRINP		; The input pointer
+;	PUSHJ P,CPYDIR
+; Return
+;	+1	; No room
+;	+2	; Ok, in a, the location of the string block
+; Clobbers a,b,c,d
+
+CPYDIR::	HLRE A,DIRINP		; Get length of input
+	MOVN B,A		; Make positive and account
+	ADDI B,2		;  for header and partial word
+	PUSH P,B		; Save for below
+	PUSHJ P,ASGDFR		; Assign space for name string
+	JRST [	POP P,B		; No room
+		POPJ P,]
+	HRLZ B,DIRINP		; Get loc of input strinext word
+	JCRY0 .+2		; A < b
+STRCM3:	AOS -1(P)		; A > b
+	POP P,C
+	POPJ P,
+
+STRCM2:	JUMPGE B,STRCM3		; Is b gone?
+	AOBJN A,.+1		; No, step to next word
+	AOBJN B,STRCM0
+	JRST STRCM0
+
+STRCM1:	POP P,C
+	MOVE D,(A)		; Get last word of string a
+	AND D,C			; Get rid of garbage
+	SKIPL B			; If string b is also down to last word,
+	CAME D,(B)		; Check for exact match
+	JRST STRCM4		; Not exact match
+	MOVEI D,3		; Exact match
+	ADDM D,(P)		; Triple skip
+	POPJ P,
+
+STRCM4:	AND C,(B)		; Truncate string b to same length as a
+	JCRY0 .+1		; Clear carry 0
+	SUB C,D			; Compare a to truncated b
+	JUMPE C,SK2RET		; Equal, subset
+	JCRY0 CPOPJ		; A < b
+	JRST SKPRET		; A > b
+
+	END
+

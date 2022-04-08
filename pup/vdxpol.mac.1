@@ -1,0 +1,341 @@
+	.nlist	bex
+	.title	NEW ether-net board service test.
+	.sbttl	definitions
+	.sbttl	vector addresses and registers.
+clock = 1					; gens EDCPOLL.LDA
+						; =0   EDNPOLL.LDA
+E0OCV = 400					; Output complete vector
+E0ICV = E0OCV+4					; Input  complete vector
+E0OEV = E0OCV+10				; Output ERROR vector
+E0OWC = 160000					; output word count
+E0OBL = E0OWC+2					; output buffer location
+E0OCS = E0OWC+4					; output control and status
+E0ODE = E0OWC+6					; output delay.
+E0IWC = E0OWC+10				; input word count
+E0IBL = E0OWC+12				; input buffer location
+E0ICS = E0OWC+14				; input control and status
+E0RHA = E0OWC+16				; RAM HOST stuff.
+
+	.sbttl	input cs bits
+; INPUT control status register  (16xx14)
+; Some bit definitions:	      bit
+inGO  = 1		;	0		  Input GO bit
+inPR  = 2		;	1		  Promiscuous bit
+inRWE = 4		;	2		  Ram WRITE enable
+inRWV = 10		;	3		  Ram WRITE value (0, 1)
+inRCR = 20		;	4		  Receiver reset.
+inLBK = 40		;	5		  Loop back
+inENA = 100		;	6		  enable
+inDON = 200		;	7		  input DONE
+			;	8-9		  N/A	
+inCAR = 2000		;      10		  carrier on = 1
+
+	; ERROR BITS FOLLOW 
+inWOV = 4000		;      11		  word count overflow
+inFOR = 10000		;      12		  FIFO over-run
+inCRC = 20000		;      13		  CRC error
+inNXM = 40000		;      14		  NXM (if NXMok = 1)
+inERR = 100000		;      15		  ERROR bit(See 11 - 14)
+
+	.sbttl	output CS bits.
+; OUTPUT control status register  (16xx04)
+; Some bit definitions:	      bit
+outGO  = 1		;	0		  output GO - active/idle
+outWC  = 2		;	1		  Set if word count = 0
+outIOR = 4		;	2		  I/O reset.
+outMER = 10		;	3		  Memory error reset
+outTRR = 20		;	4		  transmiter reset
+           		;	5		  N/A
+outENA = 100		;	6		  enable
+outDON = 200		;	7		  output DONE
+	
+	;  ERROR BITS FOLLOW
+outNXM = 400		;	8		  NXM: SSYN NOT received.
+			;			  BIT11 ALSO SET.
+			;       9		  N/A
+outCAR = 2000		;      10		  compliment of BIT1
+outBGN = 4000		;      11		  Bus grant not received.
+			;			  BIT11 and NOT BIT8.
+outFOR = 10000		;      12		  output word count overflow.
+outRET = 20000		;      13		  Retry. Couldn't output
+			;			  because carrier detected.
+outCOL = 40000		;      14		  jammed or Collision detect.
+outERB = 100000		;      15		  ERROR bit (See 8 - 14)
+
+	.sbttl	local host and destination host
+; Local HOST defined as...
+lHOST = 111		; 	For the heck of it.
+dHOST = 111		;	Looping back - ta dah...
+hosts:	.byte lHOST,dHOST	; ENCAP word.
+	.sbttl	DATA area.
+	jmp	mini	;	For boots to 1000.
+	.globl	difCnt,Ochang,datDIF,WDcnt,delay
+WDSout: 0			;	Word count for output
+WDcnt:	17.
+delay:	100			; 	output delay.
+done:	0
+
+difCNT:	0			;	 counts number of times input buffer
+				;	 is different than output buffer.
+pdatDIF: 0			;	 previous count of datDIF
+datDIF:	0			;	 Number of data words that are
+				;	 different.
+ERRED:	0
+Ochang:	0			;	 counts number of times output
+				;	 buffer has changed.
+
+nGOES:	0
+nOINT:	0
+nIGOE:	0
+nIINT:	0
+nOERR:	0
+xERR:	0			; 	set whenever there is an error.
+	.sbttl	The least of 5 evils!
+	.globl	mini
+;
+;	NON interrupt driven interface test-polls for done.
+;	bit 0 SET on console causes a halt at end of pass.
+;
+;	Loopback, promiscuous mode...
+;	
+mini:
+	HALT				; to get 10 going.
+	mov	#1000,SP		; set up the stack
+	clr	@#177776		; we run at 0.
+	jsr	pc,MINini		; initialize interface, etc...
+
+;	Processing loop below
+process:
+;	Set up output and input
+	NOP
+	clr	done
+	bit	#1,@#177570		; Shall we halt?
+	beq	1$			; NOTset.
+	 halt				;  HALT on 1
+1$:
+	jsr	pc,setup		; for next try.
+
+	.IF NE <clock>
+	jsr	pc,setTIM		; set timer for time out
+	.ENDC
+
+;	Here we WAIT until input AND output are DONE.
+Owait:	
+	tstb	@#E0OCS		;	see if output done:
+	bge	1$		;	NOT yet...
+	 bis	#1,done		;	 Yes, set flag.
+1$:
+	tstb	@#E0ICS		;	See if input done.
+	bne	2$
+	 bis	#2,done		;	 Yes, set flag.
+2$:
+	cmp	#3,done		;	ALL done?
+	beq	process		;	YES.
+
+	.IF NE <clock>
+;	time out check
+	jsr	pc,TIMout		; Time out ?
+	bcc	Owait			; NO.
+	 jsr	pc,RESETi		; reset interface
+	 inc	nTO
+	 br	process			;  Yes, do again.
+	.ENDC
+
+	.IF EQ <clock>
+	 br 	Owait			; and continue
+	.ENDC
+
+;	NO interrupts on, so any interrupt causes a HALT...
+	.globl 	oIN,oERR,inINT1
+oIN:	HALT
+oERR:	HALT
+inINT1: HALT
+console=177570
+setup:
+	jsr	pc,BufINI		; initialize buffers:
+;	Set up io on interface:
+	mov	@#console,WDcnt		; the words
+	cmp	WDcnt,#1777		; The MAX.
+	ble	1$
+	 mov	#1777,WDcnt		;  
+1$:
+	cmp	WDcnt,#1		; the MIN
+	bge	2$
+	 mov	#1,WDcnt
+2$:
+	mov	WDcnt,r0		; word count.
+;	Now set up registers
+	mov	r0,WDSout		; save so we can check.
+	neg	r0			; two's compliment
+	bic	#174000,R0		; 11 bits only...
+	mov	r0,@#E0OWC		; word count
+	NOP
+	mov	#OUTBUF,@#E0OBL		; buffer location.
+	mov	delay,r0		; set delay.
+	neg	r0			; 2's compliment.
+	mov	r0,@#E0ODE		; set delay - 16 bits
+
+;	Set up input (We will be doing loopback, so don't start output yet)
+	mov	#-1777,@#E0IWC		; input word count(2's compliment)
+	mov	#INbuff,@#E0IBL		; input buffer location
+	NOP
+;	GO + loopback + promiscuos : INPUT-polling only.
+	mov	#inGO+inLBK+inPR,@#E0ICS
+	NOP
+	INC	nIGOE			; input go event counter
+
+	mov	#outGO,@#E0OCS		; OUTPUT off and running.
+	NOP
+	INC	nGOES			; output go counter
+	rts	pc
+TRAP4:
+	halt
+	br	TRAP4
+	4
+TRAP10:
+	halt
+	br	TRAP10
+	10
+
+.IF NE <clock>
+	.sbttl 	timer stuff here.
+chkHI:	0
+chkLOW:	0	; TIMER double word.
+
+timHI:	0
+timLOW: 0	; CURRENT time double word.
+
+	.globl	TIMout,chkLOW,chkHI
+;	Compare timer to current time, and return true (sec)
+;	if timer LEQ current time. Double word UNsigned compares...
+TIMout:
+	cmp	chkHI,timHI		; HIGH ORDER compare
+	blo	TIMup			; timer(H) < current(H). Times UP.
+	bhi	NOTup			; timer(H) > current(H).
+	cmp	chkLOW,timLOW		; high =, check LOW ORDER
+	bhi	NOTup			; timer(L) > current(L)
+TIMup:
+;	[T(H),T(L)] LEQ [C(H),C(L)]
+	sec
+	rts	pc
+NOTup:
+	clc
+	rts	pc
+
+
+;	16 2/3 milliseconds timer
+	.globl	setTIM
+setTIM:
+	mov	timHI,chkHI
+	mov	timLOW,chkLOW
+	add	#1,chkLOW
+	adc	chkHI
+	rts	pc
+
+	.sbttl	timer interrupt server-stuff.
+	.globl	timINT,timHI,timLOW
+timINT:
+	add	#1,timLOW
+	adc	timHI
+	RTI
+.ENDC
+	.sbttl	MINI - initialization routine.
+	.globl	pri,MINini
+pri:	 240			; Do these at pri. 5
+MINini:
+	clr	nGOES
+	clr	nOINT
+	clr	nIGOE
+	clr	nIINT
+	clr	nOERR
+
+	.IF NE <clock>
+;	Initialize clock
+	clr	timHI
+	clr	timLOW
+	mov	#timINT,@#100		; vector for clock
+	mov	#300,@#102		; pri 6.
+ 	MOV	#100,@#177546		; turn on interrupt
+	.ENDC
+
+	.IF EQ <clock>
+	bic	#100,@#177546		; clock off.
+	.ENDC
+
+	jsr	pc,BufINI		; initialize buffers:
+;	Initialize interface, and vector
+;	First output
+	mov	#outIOR+outMER+outTRR,@#E0OCS	 ; resest the world!
+	clr	@#E0OCS			; clear it.
+	mov	#oIN,@#E0OCV		; output complete vector
+	mov	pri,@#E0OCV+2		; priority
+	mov	#oERR,@#E0OEV		; out error vector
+	mov	pri,@#E0OEV+2		; priority
+
+;	input...							
+	mov	#inRCR,@#E0ICS		; reset receiver
+;	Now clear the RAM for address selection
+	mov	#255.,r0
+	clr	r1
+1$:
+	mov	r1,@#E0RHA		; Ram host address.
+	mov	#inRWE+iRWV,@#E0ICS	; write a 1 in ALL addresses.
+	inc	r1			; next address
+	dec	r0			; our count
+	bge	1$			; 256 times.
+
+	clr	@#E0ICS			; and clear CS bits.
+;	Now intialize input vector.
+	mov	#inINT1,@#E0ICV		; vector location
+	mov	pri,@#E0ICV+2		; and priority.
+
+;	For trap to 4-10
+	mov	#TRAP4,@#4
+	mov	#340,@#6
+	mov	#TRAP10,@#10
+	mov	#340,@#12
+
+;	For tty
+	clr	@#ttyICS		; interrupts off.
+	clr	@#ttyOCS
+
+	rts	pc
+	.sbttl	initialize buffers.
+bufINI:
+;	initialize outBuf, and clear input Buf:
+;	outBUF has first tw0 bytes of dHOST,sHOST for bSize+1 words.
+	mov	hosts,ENCAP		; re-init encapsulation.
+	mov	#OUTdat,r0
+	mov	#1,r1
+1$:
+	mov	r1,(r0)+		; store 1,...,bSize
+	inc	r1
+	cmp	r1,#bSize
+	ble	1$
+
+;	Clear input buffer
+	mov	#INbuff,r0
+	clr	r1
+2$:	
+	clr	(r0)+			; clr 0,1,...,bSize(bSize+1 words)
+	inc	r1
+	cmp	r1,#bSize
+	ble	2$
+
+
+	rts	pc
+	.nlist	meb
+	.sbttl	buffer areas.
+	.globl	OUTBUF,inBUFF
+bSize = 1776
+OUTBUF:
+ENCAP:	.byte	lHOST,dHOST		; Source, and dest HOST(lHOST..)
+OUTdat:
+	.BLKW	bSize
+; Data buffer area:
+INbuff:	.BLKW bSize+1
+	.end	mini
+
+
+
+

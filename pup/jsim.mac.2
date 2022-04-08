@@ -1,0 +1,390 @@
+;<PUP>JSIM.MAC.6, 12-Jun-80 16:36:17, Edit by SCHOEN
+;<PUP>JSIM.MAC;4  12-Jun-80 12:46:30  Edit by SCHOEN
+; Made PS: default for user name specified to .CNPXY
+;<PUP>JSIM.MAC.2, 18-Apr-80 16:21:40, Edit by SCHOEN
+;<SCHOEN>JSIM.MAC;2     6-Apr-80 08:47:35    EDIT BY SCHOEN
+
+
+	title jsim
+	subttl simulate some TENEX JSYS's on TOPS20 for PUP code
+
+	search pupdef,psvdef,monsym 
+IFNDEF FT10X,<search sysdef>
+	ifn ft10x,<printx JSIM not required on TENEX
+		   end>
+
+	usevar ftpvar,ftppvr
+
+opdef	call	[pushj p,]
+opdef	ret	[popj p,]
+opdef	callret	[jrst]
+
+	INTERN .cnchk,.cncon,.cnpxy,.gdacc,.cfgrp
+	INTERN chkwr,chkrd,chkwrd,chkdr
+
+skprtn:	aos 0(p)
+retn:	ret
+
+; macro to define JSYS error returns
+define reterr (error,errac<1>),<
+	jrst  [movei 1,error
+	       movem 1,errac+pac
+	       jsr .mretn
+	       move p,ppc
+	       ret] 
+>
+define retgd,<
+	jsr .mretn
+	jrst skprtn
+>
+; ac save/restore
+; saves/restores 0 - 16
+highac==16		;last ac to save
+.mentr:	0
+	movem highAC,pac+highAC
+	movei highAC,pac
+	blt highAC,highAC-1+pac
+	movem p,ppc
+	jrst @.mentr
+
+.mretn:	0
+	movsi highAC,pac
+	blt highAC,highAC
+	jrst @.mretn
+
+ls pac,20
+ls ppc
+
+; CNDIR simulations
+
+; CNDIR ERROR MNEMONICS:
+
+CNDIX1=600200		;invalid password
+CNDIX3=600202		;invalid directory #
+CNDIX4=600203		;logged in  (strange error)
+CNDIX5=600204		;not logged in
+
+; routine to connect to a directory.  Changes the fork's entry in the
+; connected-directory table but not the login table.
+; allows connect if group privileges sufficient, but does NOT take
+; into account enabled status of fork.
+; accepts 1/36-bit directory number
+;	  2/pointer to password
+; returns +1 if failure; ac1 contains failure code (tenex CNDIR JSYS code)
+; returns +2 if successful.
+.cncon:	jsr .mentr		;save ACs
+	tlnn 1,77777
+	 tlo 1,(1b3)		;if no structure, assume PS:
+	movsi 3,(1b0)
+	call .cnchk
+	 call screwup##
+	movem 1,c.cnam##		;save new connected directory in table
+	call cpycdn		;also save the string of the connected dir
+	retgd			;leave good
+; routine to implement TENEX CNDIR "proxy login."  Changes entries in
+; both connected and login directory tables
+; accepts in 1/36-bit directory number
+;	     2/pointer to password
+; returns +1 on failure, Tenex error code in AC1
+; returns +2 on success
+.cnpxy:	jsr .mentr		; save acs, stack
+	setz 3,
+	tlnn 1,77777		; structure designator?
+	 tlo 1,(1b3)		; if not, assume PS:
+	call .cnchk		; check password, directory name
+	 call screwup##		; shouldn't happen
+	movem 1,c.unam##		; save logged in directory
+	movem 1,c.cnam##		; save connected directory
+	call cpycdn		; save connected directory name
+	call cpylgn		; save logged in directory name
+	retgd			; leave good
+; routine to check a password. Simulates TENEX CNDIR with B0 in AC1
+; accepts 1/36-bit directory number
+;	  2/pointer to password
+; returns +1 if failure, Tenex error code in ac1
+; returns +2 on success
+.cnpsw:	jsr .mentr		; save stats
+	tlnn 1,77777
+	 tlo 1,(1b3)
+	setz 3,
+	call .cnchk		; check password, dir #
+	 call screwup##		; shouldn't happen
+	retgd			; return good
+
+; routine to check if connect is possible for this user
+; called with 1/36-bit directory #
+;	      2/pointer to password
+;	      3/special bits:
+;		B0 - Check group privileges and don't require
+;		     password unless group priv insufficient
+.cnchk:	call chkdir		;make sure directory exists
+	 reterr (CNDIX3)	;return with bad directory #
+	tlne 3,(1b0)		;check group?
+	 call chkgrp		; yes
+	  caia			; failed, check password
+	 jrst .cnck1		; succeeded, leave good
+	call chkpsw		;check password supplied
+	 reterr (CNDIX1)	;return with bad password
+.cnck1:	aos	0(p)
+	ret
+; routine to check for legal directory number
+; accepts directory # in ac1
+; returns +1 on failure, +2 on success
+chkdir:	push p,2		; save password pointer
+	move 2,1
+	movei 1,.nulio
+	dirst			; check dir # by DIRSTing to NUL:
+	 jrst .chk1		; failed
+	move 1,2		; success, restore acs
+	pop p,2
+	aos 0(p)
+	ret
+
+.chk1:	pop p,2			; failure, ret +1
+	ret
+; routine to check for sufficient privileges for connect
+; does NOT consider enabledness as privilege
+; accepts 1/36-bit directory number of directory to connect to
+;   C.UNAM/current login directory
+;   C.CNAM/current connected directory
+;
+; returns +1 on insufficient privileges for non-password connect
+;	  +2 on password unnecessary
+chkgrp:	setom chkjfn		; not supplying a JFN in .CKAUD
+	push p,1
+	push p,2
+	movei 2,.charg		; address of CHKAC arg block
+	movei 1,.ckacn		; check for legal connect
+	movem 1,.ckaac(2)
+	move 1,-1(p)		; retrieve .ckaud arg
+	call chkall
+	 jrst chkdn1		; return +1
+	jrst chkdne		; succeed, return +2
+
+	
+; routine to check for legal password
+; accepts 1/36-bit directory number
+;	  2/pointer to password
+; returns +1 on illegal password, +2 on password OK
+chkpsw:	push p,1
+	push p,2
+	call getpsw		; get password from directory
+	hrroi 1,usrpsw		; pointer to directory's psw in 1
+	stcmp			; compare strings
+	cain 1,0		; must be exact match
+	 aos -2(p)
+	pop p,2
+	pop p,1
+	ret
+	
+; routine to get a directory's password
+; returns password in USRPSW
+; accepts 1/36-bit directory number
+; returns +1 always
+getpsw:	push p,2		; save password pointer
+	movsi 2,(cd%psw)
+	call getdir		; get directory info
+	pop p,2
+	ret
+; routine to get directory data block
+; accepts 1/36-bit directory number
+;	  2/LH: GTDIR bits (from CRDIR JSYS)
+; returns +1 always (or jumps to SCREWUP##)
+;	     directory in USRDIR
+;	     password, if requested, in USRPSW
+;	     directory groups, if requested, in USRDGP
+;	     user groups, if requested, in USRUGP
+;	     default account, if requested, in USRACT
+getdir:	push p,3
+	push p,4
+	move 3,[usrdir,,usrdir+1]
+	setzm usrdir
+	blt 3,gtdlen(4)
+	move 3,[usrugp,,usrugp+1]
+	setzm usrugp
+	blt 3,usrugp+gtdlen
+	move 3,[usrdgp,,usrdgp+1]
+	blt 3,usrdgp+gtdlen
+	hrrzi 4,usrdir
+	hrri 3,gtdlen
+	hrrzm 3,.cdlen(4)	; set data block length
+	setz 3,	
+	tlne 2,(cd%psw)		; want password?
+	 move 3,[point 7,usrpsw]
+	movem 3,.cdpsw(4)
+	setz 3,
+	tlne 2,(cd%ugp)		; want user groups?
+	 movei 3,usrugp
+	movem 3,.cdugp(4)
+	setz 3,
+	tlne 2,(cd%dgp)		; want directory groups?
+	 movei 3,usrdgp
+	movem 3,.cddgp(4)
+	setz 3,
+	tlne 2,(cd%dac)		; want default account?
+	 move 3,[point 7,usract]
+	movem 3,.cddac(4)
+	movei 3,10		; up to 10 dir/user groups
+	tlne 2,(cd%ugp)
+	 movem 3,usrugp
+	tlne 2,(cd%dgp)
+	 movem 3,usrdgp
+	setz 3,
+	tlne 2,(cd%psw)
+	 move 3,usrdir+.cdpsw
+	exch 4,2
+	gtdir
+	 ercal screwup##
+	tlne 4,(cd%dpt)		; was want directory protection on?
+	 jrst  [move 3,.cddpt(2)	; put it in safe place
+		movem 3,usrdpt
+		jrst .+1]
+	pop p,4
+	pop p,3
+	ret
+; routines to put connected and login directory names into strings
+; both accept 1/36 bit directory number
+; both return +1 always
+cpycdn:	push p,2
+	move 2,1
+	tlz 2,77777		; Make directory number a user number
+	hrroi 1,usrcdn
+	dirst
+	 call screwup##
+	move 1,2
+	pop p,2
+	ret
+
+cpylgn:	push p,2
+	move 2,1
+	tlz 2,77777
+	hrroi 1,usrlgn
+	dirst
+	 call screwup##
+	move 1,2
+	pop p,2
+	ret
+; routine to simulate TENEX GDACC JSYS
+; accepts 1/Address of 8 word string block in which to store
+; 	    default account string
+;	  2/36-bit directory number (-1 for self)
+;returns +1 on failure, error code in AC1
+;	 +2 successful
+;GDACC ERROR MNEMONICS
+GDACX2=601031			; No default account for this user
+
+.GDACC:	jsr .mentr
+	camn 2,[-1,,-1]		; given -1 for directory?
+	 move 2,c.unam##		; use what we think is login directory
+	push p,1		; save account string destination address
+	setzm usract		; clear out last account string
+	move 1,[usract,,usract+1]
+	blt 1,usract+usrstl/5+1
+	move 1,2
+	movsi 2,(cd%dac)
+	call getdir		; get the account string
+	skipn usract
+	 reterr (GDACX2)	; nothing was put there, must be no default
+	pop p,1			; transfer file to destination block
+	hrli 1,usract
+	blt 1,usrstl/5(1)
+	retgd			; and leave
+; routine to simulate TENEX CFGRP JSYS
+; currently, no use for this exists in Tops20 implementation,
+; so no code is written.
+.cfgrp:	popj p,
+; routines to check for file access permission
+; Since Tops20 PUPSRV doesn't have fork groups, we have to check
+; to see if files can be read/written by user
+
+; routine to check for read access of file
+; accepts in 1/ JFN of file
+;	C.CNAM/ connected directory of user
+;	C.UNAM/ login directory of user
+; returns +1/ read access not allowed
+;	  +2/ read access allowed
+
+chkrd:	setzm chkjfn
+	push p,1
+	push p,2
+	movei 2,.charg
+	setzm .ckaac(2)
+	call chkall
+	 jrst chkf
+	jrst chkdne
+
+; routine to check for directory listing access
+; accepts 1/JFN of file
+chkdr:	setzm chkjfn
+	push p,1
+	push p,2
+	movei 2,.charg
+	movei 1,.ckadl
+	movem a,.ckaac(2)
+	move 1,-1(p)
+	call chkall
+	 jrst chkf
+	jrst chkdne
+
+; routines to check for write access to file
+; call chkwrd for directory, chkwr for file
+; CHKWR is intended to be called for delete/rename, and CHKWRD for 
+;  creating new files in directory
+
+chkwrd:	setom chkjfn		; means checking directory (dir in 1)
+	caia
+chkwr:	setzm chkjfn		; means checking file (JFN in 1)
+	push p,1
+	push p,2
+	movei 2,.charg
+	movei 1,.ckawr
+	skipge chkjfn		; checking directory write privs?
+	 movei 1,.ckacf
+	movem 1,.ckaac(2)
+	move 1,-1(p)
+	call chkall
+	 jrst chkf		; failed
+chkdne:	aos -2(p)
+chkdn1:	pop p,2
+	pop p,1
+	ret
+
+chkf:	movei 1,GJFX35		; say invalid directory access
+	movem 1,-1(p)
+	jrst chkdn1
+	
+
+; common routine to call CHKAC
+; accepts 1/ word to go into .CKAUD in arg block
+; .ckaac having already been set up by caller
+
+chkall:	movem 1,.ckaud(2)	; save dest directory in arg block
+	move 1,c.unam
+	movem 1,.ckald(2)	; user
+	move 1,c.cnam
+	movem 1,.ckacd(2)	; connected directory now
+	movsi 1,777000		; standard privelege word
+	movem 1,.ckaec(2)
+	setzm .ckapr(2)		; shouldn't need file protection
+	movei 1,6		; length of arg block
+	skipl chkjfn
+	tlo 1,(ck%jfn)		; .CKAUD contains a JFN
+	chkac
+	 erjmp chkal1		; failed
+	caie 1,0		; or not Allowed
+	aos 0(p)		; return +2
+chkal1:	popj p,
+
+ls usrpsw,usrstl/5+1		; user password
+ls usrcdn,usrstl/5+1		; connected directory string
+ls usrlgn,usrstl/5+1		; login directory string
+ls usract,usrstl/5+1		; default account string
+ls usrdpt			; directory protection of destination dir
+gtdlen==20			; length of GTDIR data block
+ls usrdir,gtdlen		; GTDIR data block
+ls usrugp,gtdlen		; user group list
+ls usrdgp,gtdlen		; directory group list
+ls .charg,6			; CHKAC arg block
+ls chkjfn			; flag to check JFN or directory in CHKAC
+	end
+

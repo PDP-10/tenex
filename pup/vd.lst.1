@@ -1,0 +1,2216 @@
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 1
+VDXTTY.MAC;3			Table  of  Contents
+
+      3		definitions
+      4		vector addresses and registers.
+     19		input cs bits
+     40		output CS bits.
+     65		local host and destination host
+     70		macros
+     81		DATA area.
+   1384		The lesser of 2 evils!
+   1576		timer stuff here.
+   1624		timer interrupt server-stuff.
+   1632		little interrupt routines.
+   1633		output-mini Error
+   1668		output-mini OK
+   1692		input-mini OK
+   1964		MINI - initialization routine.
+   2844		compare buffers
+   2995		buffer patterns.
+   3000		initialize buffers.
+   3070		buffer areas.
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 1
+VDXTTY.MAC;3
+
+      1						.nlist	bex
+      2						.title	NEW ether-net board service test.
+      3						.sbttl	definitions
+      4						.sbttl	vector addresses and registers.
+      5		000001			clock=1						; For timer.
+      6		001200			baud=1200					; =1200 slows tty output
+      7		000400			E0OCV = 400					; Output complete vector
+      8		000404			E0ICV = E0OCV+4					; Input  complete vector
+      9		000410			E0OEV = E0OCV+10				; Output ERROR vector
+     10		160000			E0OWC = 160000					; output word count
+     11		160002			E0OBL = E0OWC+2					; output buffer location
+     12		160004			E0OCS = E0OWC+4					; output control and status
+     13		160006			E0ODE = E0OWC+6					; output delay.
+     14		160010			E0IWC = E0OWC+10				; input word count
+     15		160012			E0IBL = E0OWC+12				; input buffer location
+     16		160014			E0ICS = E0OWC+14				; input control and status
+     17		160016			E0RHA = E0OWC+16				; RAM HOST stuff.
+
+     19						.sbttl	input cs bits
+     20					; INPUT control status register  (16xx14)
+     21					; Some bit definitions:	      bit
+     22		000001			inGO  = 1		;	0		  Input GO bit
+     23		000002			inPR  = 2		;	1		  Promiscuous bit
+     24		000004			inRWE = 4		;	2		  Ram WRITE enable
+     25		000010			inRWV = 10		;	3		  Ram WRITE value (0, 1)
+     26		000020			inRCR = 20		;	4		  Receiver reset.
+     27		000040			inLBK = 40		;	5		  Loop back
+     28		000100			inENA = 100		;	6		  enable
+     29		000200			inDON = 200		;	7		  input DONE
+     30								;	8-9		  N/A
+     31		002000			inCAR = 2000		;      10		  carrier on = 1
+
+     33						; ERROR BITS FOLLOW 
+     34		004000			inWOV = 4000		;      11	    [=0 ] word count overflow
+     35		010000			inFOR = 10000		;      12		  FIFO over-run
+     36		020000			inCRC = 20000		;      13		  CRC error
+     37		040000			inNXM = 40000		;      14		  NXM (if NXMok = 1)
+     38		100000			inERR = 100000		;      15		  ERROR bit(See 11 - 14)
+
+     40						.sbttl	output CS bits.
+     41					; OUTPUT control status register  (16xx04)
+     42					; Some bit definitions:	      bit
+     43		000001			outGO  = 1		;	0		  output GO - active/idle
+     44		000002			outWC  = 2		;	1		  Set if word count = 0
+     45		000004			outIOR = 4		;	2		  I/O reset.
+     46		000010			outMER = 10		;	3		  Memory error reset
+     47		000020			outTRR = 20		;	4		  transmiter reset
+     48					           		;	5		  N/A
+     49		000100			outENA = 100		;	6		  enable
+     50		000200			outDON = 200		;	7		  output DONE
+     51
+     52						;  ERROR BITS FOLLOW
+     53		000400			outNXM = 400		;	8		  NXM: SSYN NOT received.
+     54								;			  BIT11 ALSO SET.
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 2
+VDXTTY.MAC;3	Output CS bits.
+
+     55								;       9		  N/A
+     56		002000			outCAR = 2000		;      10		  compliment of BIT1
+     57		004000			outBGN = 4000		;      11		  Bus grant not received.
+     58								;			  BIT11 and NOT BIT8.
+     59		010000			outFOR = 10000		;      12		  output word count overflow.
+     60		020000			outRET = 20000		;      13		  Retry. Couldn't output
+     61								;			  because carrier detected.
+     62		040000			outCOL = 40000		;      14		  jammed or Collision detect.
+     63		100000			outERB = 100000		;      15		  ERROR bit (See 8 - 14)
+
+     65						.sbttl	local host and destination host
+     66					; Local HOST defined as...
+     67		000111			lHOST = 111		; 	For the heck of it.
+     68		000111			dHOST = 111		;	Looping back - ta dah...
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 3
+VDXTTY.MAC;3	Macros
+
+     70						.sbttl	macros
+     71						.MACRO 	dADD	oper
+     72						add	#1,oper+2
+     73						adc	oper
+     74						.ENDM
+
+     76						.MACRO	dCLR	oper
+     77						clr	oper
+     78						clr	oper+2
+     79						.ENDM
+
+     81						.sbttl	DATA area.
+     82	000000'	000167	003670			jmp	mini	;	For boots to 1000.
+     83						.globl	difCnt,Ochang,datDIF,WDcnt,delay
+     84	000004'	   111	   000		hosts:	.byte lHOST,0		; 	ENCAP word. hosts+1 set up in minini
+     85	000006'	000000			WDSout: 0			;	Word count for output
+     86	000010'	000000			WDSerr:	0			;	Words out NE word count.
+     87	000012'	000012			WDcnt:	12
+     88	000014'	000100			delay:	100			; 	output delay.
+     89	000016'	000000			done:	0
+     90	000020'	177777			bound:	-1			;	a spare.
+
+     92	000022'	000000			difCNT:	0			;	 counts number of times input buffer
+     93									;	 is different than output buffer.
+     94	000024'	000000			pdatDIF: 0			;	 previous count of datDIF
+     95	000026'	000000			datDIF:	0			;	 Number of data words that are
+     96									;	 different.
+     97	000030'	000000			ERRED:	0
+     98	000032'	000000			Ochang:	0			;	 counts number of times output
+     99									;	 buffer has changed.
+
+    101	000034'	000000			nGOES:	0
+    102	000036'	000000			nOINT:	0
+    103	000040'	000000			nIGOE:	0
+    104	000042'	000000			nIINT:	0
+    105	000044'	000000			nOERR:	0
+    106	000046'	000000			nIERR:	0
+    107	000050'	000000			nTIO:	0			;	output time out counter
+    108	000052'	000000			nTII:	0			;	input time out counter
+    109	000054'	000000			oNOT:	0			;	output tme
+    110	000056'	000000			iNOT:	0
+    111	000060'	000000			oSUM:	0			;	Output goes + time outs
+    112	000062'	000000			iSUM:	0			;	Input      "
+    113	000064'	000000			xERR:	0			; 	set whenever there is an error.
+    114	000066'	000000			nTO:	0			;	number of time outs.
+    115	000070'	000000			xIN:	0			;	extra input interrupts
+    116	000072'	000000			xOUT:	0			;	extra output interrupts
+    117	000074'	000000			rcvdB:  0			;	received broadcast counter.
+
+    119					;	Some double word counters...
+    120	000076'	000000	000000		TotGO:	0,0
+    121	000102'	000000	000000		TotOI:	0,0			;	output interrupt counter
+    122	000106'	000000	000000		TotII:	0,0			;	input interrupt counter
+    123	000112'	000000	000000		TotTO:	0,0			;	double word time out counter
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 4
+VDXTTY.MAC;3	DATA area.
+
+    124	000116'	000000	000000		TotXI:	0,0			;	xtra input interrupts.
+    125	000122'	000000	000000		TotXO:	0,0			;	xtra output interrupts.
+    126	000126'	000000			TotIT:	0			;	input time out counter
+    127	000130'	000000			TotOT:	0			;	output time out counter
+    128	000132'	000000			INP1st:	0			; 	increment if input beats output.
+    129					;	3 ring buffers: Each entry is as follows:
+    130					;		Qinx		index into first entry
+    131					;		Entry(0)	E0ICS
+    132					;		Entry(1)	E0IWC
+    133					;		Entry(2)	E0ICS
+    134					;		Entry(3)	E0OWC
+    135					;		Entry(4)	PSW
+    136					;		Entry(5)	Current Hi order time
+    137					;		Entry(6)	Current Low order time
+    138					;		Entry(7)	Expired Hi order time
+    139					;		Entry(8)	Expired Low order time
+    140					;		Entry(9)	n words of errored packet
+    141					;		Entry(10)	Valid flag,=0 if NO entry.
+    142		000013			nRing=11.			;	n words per entry
+    143		000024			valid=<nRing-1>*2
+    144		000012			Rmax=10.			;	Max entry.
+    145		000026			Esize=nRing*2.			;	n x 2 bytes...
+    146		000334			wrap=Esize*Rmax			;	Wrap around byte count.
+    147	000134'				Rstart:
+    148	000134'	000000			Binx:	0			;	0 to Rmax-1
+    149	000136'				Bring:
+    150					.rept	Rmax
+    151						.rept	nRing
+    152						.word	0
+    153						.endr
+    154					.endr
+
+    296	000472'	000000			Ainx:	0
+    297	000474'				Aring:
+    298					.rept	Rmax
+    299						.rept	nRing
+    300						.word	0
+    301						.endr
+    302					.endr
+    443	001030'	000000			Winx:	0
+    444	001032'				Wring:
+    445					.rept	Rmax
+    446						.rept	nRing
+    447						.word	0
+    448						.endr
+    449					.endr
+    590	001366'	000000			Iinx:	0
+    591	001370'				Iring:
+    592					.rept	Rmax
+    593						.rept	nRing
+    594						.word	0
+    595						.endr
+    596					.endr
+    737	001724'	000000			Jinx:	0
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 5
+VDXTTY.MAC;3	DATA area.
+
+    738	001726'				Jring:
+    739					.rept	Rmax
+    740						.rept	nRing
+    741						.word	0
+    742						.endr
+    743					.endr
+    884	002262'	000000			Kinx:	0
+    885	002264'				Kring:
+    886					.rept	Rmax
+    887						.rept	nRing
+    888						.word	0
+    889						.endr
+    890					.endr
+   1031	002620'	000000			IEinx:	0
+   1032	002622'				IEring:
+   1033					.rept	Rmax
+   1034						.rept	nRing
+   1035						.word	0
+   1036						.endr
+   1037					.endr
+   1178	003156'	000000			RBinx:	0
+   1179	003160'				RBring:
+   1180					.rept	Rmax
+   1181						.rept	nRing
+   1182						.word	0
+   1183						.endr
+   1184					.endr
+   1325	003514'	177777			rFinis:	-1
+   1326	003516'	000000			K$ring:	0			;	counts errors for Kring.
+   1327	003520'	000000			IE$ring: 0			;	counts errors for Input NE errors.
+   1328	003522'	000000			RB$ring: 0			;	counts errors for Rec. broadcast
+   1329						.macro	Ring	inx,Rbuff
+   1330						mov	r0,-(Sp)
+   1331						mov	r1,-(Sp)
+   1332						mov	#inx,r0
+   1333						mov	#Rbuff,r1
+   1334						jsr	pc,RingIT
+   1335						mov	(Sp)+,r1
+   1336						mov	(Sp)+,r0
+   1337						.endm
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 6
+VDXTTY.MAC;3	DATA area.
+
+   1339	003524'	177777			minCNT:	-1			;	time out counters...(unsigned)
+   1340	003526'	000000			minTOC:	0
+   1341	003530'	000000			maxCNT:	0			;
+   1342	003532'	000000			recCNT:	0
+   1343	003534'	000000			timCNT:	0
+   1344	003536'	000000			minWC:	0
+   1345	003540'	000000			maxWC:	0
+   1346	003542'	000000			recWC:	0
+   1347	003544'	000000			timWC:	0
+   1348	003546'	000000			curCNT:	0			;	and current counter...
+   1349	003550'	000000			late:	0			;
+   1350	003552'	007640			softy:	4000.			;	for software time out...
+   1351		000015			eol=15
+   1352	003554'	   015	   120	   104	ourHI:	.ASCIZ	<eol>/PDP11 ether-net interface debugger-Version 1/<eol><eol>
+   1353						.EVEN
+   1354		054512			secret="JY
+   1355		000001			varWC=1
+   1356		000000			Wboxes=0			;	1 if we want the boxes.
+   1357					.IF NE <varWC*Wboxes>
+   1358					;	Stuff for variable word counts...
+   1359					nboxes=280.			;	counts ERRORS/box, boxn=wordct N.
+   1360						.word	0		;	Preword
+   1361					boxes:	.rept	nboxes		;
+   1362						.word	0
+   1363						.endr
+   1364					lastBx:	0.			;	last box used.
+   1365					.ENDC
+   1366	003634'	000427			useBox:	279.			;	MAX box used.
+   1367	003636'	000012			Fpak:	10.			;	start with box 10.
+   1368		000012			Mcycle=10.			;	N times per box.
+   1369	003640'	000000			cycles:	0			;	counts tries / word count.
+   1370	003642'	000000			cDown:	0			;	countdown for Processor too long.
+   1371	003644'	000000			Record:	0			;	=1 if recorded Processor weird.
+   1372	003646'	000000			before:	0			; 	counts before weirdness.
+   1373	003650'	000000			iNEo:	0			;	counts words in NE words out.
+   1374	003652'	000000			tiNEo:	0			;	TRUE-counts words in NE words out.
+   1375	003654'	000000			ADDerr:	0			;	Artifact-counts words in NE words out
+   1376	003656'	000000			OVRrun:	0
+   1377	003660'	000000			retry:	0
+   1378	003662'	000000			collid:	0
+   1379	003664'	000000			IOerr:	0			;	Set if IOerr inhibits buff. compare.
+   1380	003666'	000000			PIOerr:	0			;	Previous value of IOerr
+   1381	003670'	000000			D$ONer:	0			;	done on error flag.
+   1382	003672'	000000			T$PRer:	0			;	counts time-out with previous err.
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 7
+VDXTTY.MAC;3	The lesser of 2 evils!
+
+   1384						.sbttl	The lesser of 2 evils!
+   1385						.globl	mini
+   1386					;
+   1387					;	bit 0 SET on console causes a halt at end of pass.
+   1388					;	bit 1 SET on console, and ALL other bits cleared generates
+   1389					;	      a report on next errored buffer.
+   1390					;      bits 1&2 SET generate SHORT report
+   1391					;	bit 3 SET generates 15 second NEWS report .
+   1392					;	bit 4 SET generates BOX dump.
+   1393					;	bit 5 SET skips buffer init and compare.
+   1394					;	bit 6 SET skips move to HIGH priority after time out.
+   1395					;	bit 7 SET forces 5 minute report.
+   1396					;	bit 8 SET forces dump of the Rings...
+   1397					;	bit 9 SET forces current buffer pattern message.
+   1398					;	bit 15 SET slows down packet output.
+
+   1400		001604			NEWtim = 15.*60.			; 15 sec timer...
+   1401		043120			newLNG = 5*60.*60.			; 5 minute timer...
+   1402		177570			console=177570
+   1403		177776			psw=177776
+   1404		000003			tics=3					; about 50.00 milliseconds...
+   1405	003674'				mini:
+   1406	003674'	000000				HALT				; to get 10 going.
+   1407	003676'	012706	001000			mov	#1000,SP		; set up the stack
+   1408	003702'	005037	177776			clr	@#psw			; we run at 0.
+   1409	003706'	004767	002240			jsr	pc,MINini		; initialize interface, etc...
+
+   1411	003712'	012700	003554'			mov	#ourHI,r0
+   1412	003716'	004767	007612			jsr	pc,linOUT		; herald to 10
+
+   1414					;	Processing loop below
+   1415	003722'				Process:
+   1416					;	Do some top of the loop stuff...
+   1417	003722'	004767	000356			jsr	pc,etcEtc
+
+   1419					;	Now start another i/o pass.
+   1420	003726'	004767	001526			jsr	pc,setup		; for next try.
+
+   1422					;	Here we WAIT until input AND output are DONE.
+   1423	003732'				Owait:
+   1424	003732'	022767	000003	174056		cmp	#3,done
+   1425	003740'	001022				bne	chkPro			; NOT done on branch.
+   1426	003742'	032737	000040	177570		 bit	#40,@#console		;  DONE, skip the compare?
+   1427	003750'	001364				 bne	process			;  Yes...
+   1428	003752'	016767	177706	177706		  mov	IOerr,PIOerr		;  Previous state.
+   1429	003760'	005767	177700			  tst	IOerr			;  IOerr force compltion?
+   1430	003764'	001356				  bne 	process 
+
+   1432	003766'	004767	007622			  jsr	pc,bufCMP		;  ALL is done. Check for differences.
+   1433	003772'	103353				  bcc	process			;  No error
+   1434	003774'	005267	177516			   inc	K$ring			;  count em...
+   1435	004000'	004767	003216			   jsr	pc,Kringe		;  The K ring stuff....
+   1436	004004'	000746				   br 	process			;  and continue
+   1437	004006'				chkPro:
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 8
+VDXTTY.MAC;3	The lesser of 2 evils!
+
+   1438					;	See if done bits are up, but NO interrupt
+   1439	004006'	005767	177632			tst	Record			; Recorded it?
+   1440	004012'	001035				bne	chkTim			; Yes
+
+   1442	004014'	005000				clr	r0
+   1443	004016'	105737	160014			tstb	@#E0ICS			; input done?
+   1444	004022'	002001				bge	1$			; No
+   1445	004024'	005200				 inc	r0			;  Yes so tag.
+   1446	004026'				1$:
+   1447	004026'	105737	160004			tstb	@#E0OCS			; output done?
+   1448	004032'	002001				bge	2$			; No
+   1449	004034'	005200				 inc	r0			;  Yes, tag.
+   1450	004036'				2$:	 
+   1451	004036'	020027	000002			cmp	r0,#2			; BOTH done?
+   1452	004042'	001021				bne	chkTim			; NO.
+   1453	004044'	005367	177572			 dec 	cDown			;  count down. Give CPU some time.
+   1454	004050'	003016				 bgt	chkTim			;  wait some...
+   1455	004052'					  Ring	Binx,Bring		;  save in ring buffer
+   1463	004076'	005267	177544			  inc	Before			;  counter.
+   1464	004102'	005267	177536			  inc	Record			;  record save.
+   1465	004106'				chktim:
+   1466					;	time out check
+   1467	004106'	005267	177434			inc	curCNT			;  OUR counter...
+   1468						.IF NE <clock>
+   1469	004112'	012700	004444'			mov	#chkHI,r0
+   1470	004116'	012701	004446'			mov	#chkLOW,r1
+   1471	004122'	004767	000336			jsr	pc,TIMout		; Time out ?
+   1472	004126'	103301				bcc	Owait			; NO.
+   1473						.ENDC
+   1474						.IF EQ <clock>			;  Software timeout...
+   1475						cmp	softy,curCNT		;  has it exceeded?
+   1476						bhi	Owait			;  NOT yet.
+   1477						.ENDC
+   1478	004130'	012737	000240	177776		 mov	#pri5,@#psw		;  NOW-no interrupt allowed
+   1479	004136'	012767	004136'	000652		 mov	#.,RedWC		;  Return PC for time out.
+   1480	004144'					 Ring	Ainx,Aring		;  Update AFTER ring buffer.
+   1488	004170'	022767	000003	173620		 cmp	#3,done			;  finished WHILE timing out?
+   1489	004176'	001003				 bne	3$			;  NO
+   1490	004200'	005267	177344			   inc	late			;   Yes, came late...
+   1491	004204'	000432				   br	2$			;   So, don't count as time out.
+   1492	004206'				3$:
+   1493	004206'	005767	177454			 tst	PIOerr			;  Previous DONE on IOerr?
+   1494	004212'	001402				 beq	31$			;  NO
+   1495	004214'	005267	177452			  inc	T$PRer			;   time out, previous was error.
+   1496	004220'				31$:
+   1497	004220'	005267	173642			 inc	nTO
+   1498	004224'					 dADD	TotTO
+   1501	004236'	005767	173612			 tst	oNOT			;  output come back?
+   1502	004242'	001004				 bne	1$			;  yes
+   1503	004244'	005267	173600			  inc	nTIO
+   1504	004250'	005267	173654			  inc  TotOT			;  the running total
+   1505	004254'				1$:
+   1506	004254'	005767	173576			 tst	iNOT
+   1507	004260'	001004				 bne	2$			;  yes
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 9
+VDXTTY.MAC;3	The lesser of 2 evils!
+
+   1508	004262'	005267	173564			  inc	nTII
+   1509	004266'	005267	173634			  inc	TotIT
+   1510	004272'				2$:
+   1511						 .IF EQ <clock>
+   1512						 mov	curCNT,timCNT
+   1513						 mov	WDcnt,timWC		;  save some counters.
+   1514						 .ENDC
+   1515	004272'	004767	000130			 jsr	pc,RESETi		; reset interface
+   1516	004276'	005037	177776			 clr	@#psw			;  back to priorty 0!
+   1517						.IF EQ <clock>
+   1518						 jsr	pc,countX		;  check counters...
+   1519						.ENDC
+   1520	004302'	000607				 br	process			;  Yes, do again.
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 10
+VDXTTY.MAC;3	The lesser of 2 evils!
+
+   1522	004304'				etcEtc:
+   1523					;	check some counters...and other top of the loop jazz...
+   1524	004304'	016767	177236	177220		mov	curCNT,recCNT		; SAVE most recent
+   1525	004312'	016767	173474	177222		mov	WDcnt,recWC		; And word count.
+   1526	004320'	005067	177222			clr	curCNT			; And clear it...
+   1527	004324'	005067	177314			clr	Record			; clear Ring record.
+   1528	004330'	012767	000004	177304		mov	#4,cDown		; count downer...
+
+   1530					;	SET UP output and input
+   1531	004336'	000240				NOP
+   1532	004340'	005067	173452			clr	done
+   1533	004344'	032737	000001	177570		bit	#1,@#177570		; Shall we halt?
+   1534	004352'	001401				beq	1$			; NOTset.
+   1535	004354'	000000				 halt				;  HALT on 1
+   1536	004356'				1$:
+   1537	004356'	032737	177771	177570		bit	#177771,@#177570	; compliment of 6 set
+   1538	004364'	001011				bne	2$			; at least one is
+   1539	004366'	032737	000006	177570		bit	#6,@#177570		; generate report?(bit 4 or 2)
+   1540	004374'	001405				beq	2$			; NO.
+   1541	004376'	005767	173462			 tst	xERR			; error on i/o?
+   1542	004402'	001002				 bne	2$			; Yes, no reporting
+   1543	004404'	004767	003334			  jsr	pc,report
+   1544	004410'				2$:
+   1545	004410'	005067	173450			clr	xERR			; for reports.
+
+   1547	004414'	004767	006564			jsr	pc,news			; see if time for 15 sec report...
+   1548						.IF NE <varWC*Wboxes>
+   1549						jsr	pc,BOXrep		; show the boxes...
+   1550						.ENDC
+   1551	004420'	004767	010064			jsr	pc,ShoPat		; current buffer pattern message.
+   1552	004424'	000207				rts	pc
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 11
+VDXTTY.MAC;3	The lesser of 2 evils!
+
+   1554	004426'				RESETi:
+   1555	004426'	012737	000020	160014		mov	#inRCR,@#E0ICS			; reset receiver.
+   1556	004434'	012737	000034	160004		mov	#outIOR+outMER+outTRR,@#E0OCS   ; reset transmitter
+   1557	004442'	000207				rts	pc
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 12
+VDXTTY.MAC;3	The lesser of 2 evils!
+
+   1559					.IF EQ <clock>
+   1560					countX:
+   1561						cmp	curCNT,minCNT		; NEW min?
+   1562						bhi	11$
+   1563						 mov	WDcnt,minWC		;  And word count.
+   1564						 mov	curCNT,minTOC		;  THis one not -1.
+   1565						 mov	curCNT,minCNT		;  YES.
+   1566					11$:
+   1567						cmp	curCNT,maxCNT		; NEW max?
+   1568						blo	12$			; NO.
+   1569						 mov	WDcnt,maxWC		;  And word count.
+   1570						 mov	curCNT,maxCNT		;  Save...
+   1571					12$:
+   1572						rts	pc
+   1573					.ENDC
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 13
+VDXTTY.MAC;3	The lesser of 2 evils!
+
+   1575					.IF NE <clock>
+   1576						.sbttl 	timer stuff here.
+   1577	004444'	000000			chkHI:	0
+   1578	004446'	000000			chkLOW:	0	; TIMER double word for process loop
+
+   1580	004450'	000000			repHI:	0
+   1581	004452'	000000			repLOW:	0	; TIMER double word for 15 second report.
+
+   1583	004454'	000000	000000		newHI:	0,0	; Timer for 5 minute report.
+
+   1585	004460'	000000			timHI:	0
+   1586	004462'	000000			timLOW: 0	; CURRENT time double word.
+
+   1588						.globl	TIMout,chkLOW,chkHI
+   1589					;	Compare timer to current time, and return true (sec)
+   1590					;	if timer LEQ current time. Double word UNsigned compares...
+   1591					;	(r0) = high order, (r1) = low order
+   1592	004464'				TIMout:
+   1593	004464'	000240				NOP
+   1594	004466'	021067	177766			cmp	(r0),timHI		; HIGH ORDER compare
+   1595	004472'	103404				blo	TIMup			; timer(H) < current(H). Times UP.
+   1596	004474'	101005				bhi	NOTup			; timer(H) > current(H).
+   1597	004476'	021167	177760			cmp	(r1),timLOW		; high =, check LOW ORDER
+   1598	004502'	101002				bhi	NOTup			; timer(L) > current(L)
+   1599	004504'				TIMup:
+   1600					;	[T(H),T(L)] LEQ [C(H),C(L)]
+   1601	004504'	000261				sec
+   1602	004506'	000207				rts	pc
+   1603	004510'				NOTup:
+   1604	004510'	000241				clc
+   1605	004512'	000207				rts	pc
+
+
+   1608					;	16 2/3 milliseconds timer
+   1609						.globl	setTIM
+   1610					;	(r0) = high order time word, (r1) = low order, r2 = time tics
+   1611		000340			pri7=340
+   1612	004514'				setTIM:
+   1613	004514'	013746	177776			mov	@#psw,-(SP)		; save old PSW
+   1614	004520'	012737	000340	177776		mov	#pri7,@#psw		; NO int. here.
+
+   1616	004526'	016710	177726			mov	timHI,(r0)
+   1617	004532'	016711	177724			mov	timLOW,(r1)
+   1618	004536'	060211				add	r2,(r1)
+   1619	004540'	005510				adc	(r0)
+
+   1621	004542'	012637	177776			mov	(SP)+,@#psw		; OLD psw back.
+   1622	004546'	000207				rts	pc
+
+   1624						.sbttl	timer interrupt server-stuff.
+   1625						.globl	timINT,timHI,timLOW
+   1626	004550'				timINT:
+   1627	004550'	062767	000001	177704		add	#1,timLOW
+   1628	004556'	005567	177676			adc	timHI
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 14
+VDXTTY.MAC;3	Timer interrupt server-stuff.
+
+   1629	004562'	000002				RTI
+   1630					.ENDC
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 15
+VDXTTY.MAC;3	Little interrupt routines.
+
+   1632						.sbttl	little interrupt routines.
+   1633						.sbttl	output-mini Error
+   1634	004564'				oERR:
+   1635	004564'	000240				NOP
+   1636					;	WARNING: DO NOT reset the receiver OR transmitter except for NXM.
+   1637	004566'	010046				mov	r0,-(SP)
+   1638	004570'	005267	173270			inc	xERR				; An error
+   1639	004574'	005267	173244			inc	nOERR
+   1640	004600'	013700	160004			mov	@#E0OCS,r0
+   1641	004604'	032700	020000			bit	#outRET,r0			; retry
+   1642	004610'	001402				beq	11$				; NO.
+   1643	004612'	005267	177042			 inc	retry
+   1644	004616'				11$:
+   1645	004616'	032700	040000			bit	#outCOL,r0			; collision
+   1646	004622'	001402				beq	12$
+   1647	004624'	005267	177032			 inc	collid
+   1648	004630'				12$:
+   1649					;	IF nxm then also clear receiver.
+   1650	004630'	042700	173377			bic	#173377,r0			; see if 4400 | 4000 | 400
+   1651	004634'	005700				tst	r0
+   1652	004636'	001406				beq	13$				; Any kind of NXM?
+   1653						 ; CLEAR the world.
+   1654	004640'	012737	000034	160004		 mov	#outIOR+outMER+outTRR,@#E0OCS   ; I/O error, Mem err, and 
+   1655	004646'	012737	000020	160014	         mov	#inRCR,@#E0ICS			; reset receiver>
+   1656	004654'				13$:
+   1657	004654'	012767	000003	173134		mov	#3,done				; We are DONE.
+   1658	004662'	005267	173166			inc	oNOT
+   1659	004666'	005267	176772			inc	IOerr				; NO buffer compares here.
+   1660	004672'	005267	173140			inc	nOINT				; OUTput interrupt counter.
+   1661	004676'					dADD	TotOI
+   1664	004710'	005267	173140			inc	oNOT
+   1665	004714'	012600				mov	(SP)+,r0
+   1666	004716'	000002				RTI
+
+   1668						.sbttl	output-mini OK
+   1669	004720'				oIN:
+   1670	004720'	000240				NOP
+   1671	004722'	005767	173126			tst	oNOT			; an extra interrupt?
+   1672	004726'	001407				beq	1$			; NO
+   1673	004730'	005267	173136			 inc	xOUT			;  record it.
+   1674	004734'					 dADD	TotXO
+   1677	004746'				1$:
+   1678	004746'	005737	160004			tst	@#E0OCS
+   1679	004752'	002704				blt	oERR
+   1680	004754'	105737	160004			tstb	@#E0OCS
+   1681	004760'	002301				bge	oERR			; Interrupt with NO done set
+
+   1683	004762'	005267	173066			inc	oNOT
+   1684	004766'	005267	173044			inc	nOINT
+   1685	004772'					dADD	TotOI
+   1688	005004'	000240				NOP
+   1689	005006'	052767	000001	173002		bis	#1,done			; output done
+   1690	005014'	000002				RTI
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 16
+VDXTTY.MAC;3	Input-mini OK
+
+   1692						.sbttl	input-mini OK
+   1693	005016'	000000			RedWC:	0
+   1694	005020'	000000			IdidIt:	0
+   1695	005022'				inINT1:
+   1696	005022'	011667	177770			mov	(Sp),RedWC		; return pc.
+   1697	005026'	005767	173024			tst	iNOT			; an extra interrupt?
+   1698	005032'	001407				beq	10$			; NO
+   1699	005034'	005267	173030			 inc	xIN			;  record it.
+   1700	005040'					 dADD	TotXI
+   1703	005052'				10$:
+   1704	005052'	005267	173000			inc	iNOT			; input came in.
+   1705	005056'	005267	172760			inc	nIINT			; interrupt counters
+   1706	005062'					dADD	TotII
+
+   1710					; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+   1711					;
+   1712					;	OBVIOUS hardware error checking
+   1713					;
+   1714					; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+   1716	005074'	005737	160014			tst	@#E0ICS			; input error?
+   1717	005100'	002026				bge	NOIerr			; No...
+   1718	005102'	000240				 NOP				;  YES>>
+   1719	005104'	005267	172736			 inc	nIERR			;  count them.
+   1720	005110'	012767	000001	172746		 mov	#1,xERR			;  An error.
+   1721	005116'	032737	040000	160014		 bit	#inNXM,@#E0ICS		;  a NXM?
+   1722	005124'	001406				 beq	NOTnxm
+   1723	005126'	012737	000020	160014		  mov	#inRCR,@#E0ICS		;  receiver reset bit
+   1724	005134'	012737	000034	160004		  mov	#outIOR+outMER+outTRR,@#E0OCS  ; I/O error, Mem err, and 
+   1725	005142'				NOTnxm:					       ; transmitter reset.
+   1726	005142'	005267	176516			 inc	IOerr			; NO buffer compares here.
+   1727	005146'	012767	000003	172642		 mov	#3,done			; ALL done
+   1728	005154'	000002				 RTI
+
+   1730					; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+   1731					;
+   1732					;	NON-obvious hardware error check.
+   1733					;
+   1734					; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+   1736	005156'				NOIerr:
+   1737	005156'	105767	011437			tstb	INbuff+1		; received broadcast?
+   1738	005162'	001014				bne	NOTbrd			; NO on branch...
+   1739	005164'	005267	176474			 inc	IOerr
+   1740	005170'	005267	172700			 inc	rcvdB			; count em...
+   1741	005174'	012767	000001	001650		 mov	#1,which
+   1742	005202'	005267	176314			 inc	RB$ring			;  SHOW input buffer.
+   1743	005206'	004767	001652			 jsr	pc,Orings		;  The IE ring stuff....
+   1744	005212'	000516				 br	ImOK
+   1745	005214'				NOTbrd:
+
+   1747					; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+   1748					;
+   1749					;	DID input interrupt BEFORE OUTPUT?
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 17
+VDXTTY.MAC;3	Input-mini OK
+
+   1750					;
+   1751					; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+   1753	005214'	032767	000001	172574		bit	#1,done			; OUTput done?
+   1754	005222'	001025				bne	itIs			; YES...
+   1755	005224'	005267	176434			 inc	IOerr			;  NO buffer compare.
+   1756	005230'	005267	172676			 inc	INP1st			;  keep track of INPUT winning.
+   1757	005234'					 Ring	Winx,Wring		;  Update Win ring buffer.
+   1765	005260'	005267	176234			 inc	IE$ring			;  SHOW input buffer.
+   1766	005264'	005067	001562			 clr	which			;  shows which "other" ring.
+   1767	005270'	004767	001570			 jsr	pc,Orings		;  The IE ring stuff....
+   1768	005274'	000465				 br	imOK
+   1769	005276'				itIs:
+
+   1771					; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+   1772					;
+   1773					;	N Words OUTPUT = N words input?
+   1774					;
+   1775					; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+   1777	005276'	012746	000601			mov	#tsize,-(Sp)		; input start wc.
+   1778	005302'	063716	160010			add	@#E0IWC,(Sp)		; words received.
+   1779	005306'	021667	172474			cmp	(Sp),WDSout		; weirdo bug?(Bus error check)
+   1780	005312'	001406				beq	12$
+   1781	005314'	000240				 NOP
+   1782	005316'	005267	176342			 inc	IOerr			;  NO redundant buffer compare.
+   1783	005322'	005267	172462			 inc	WDSerr			;
+   1784	005326'	000450				 br	ImOK
+   1785	005330'				12$:
+   1786	005330'	022667	011266			cmp	(Sp)+,PAKsiz		; = output?
+   1787	005334'	001445				beq	ImOK			; YES on branch.
+   1788	005336'	000240				 NOP
+   1789	005340'	016767	011256	172440		 mov	PAKsiz,WDSout		;  For output...
+   1790	005346'	005267	176276			 inc	iNEo			;
+   1791	005352'	005267	176274			 inc	tiNEo			;
+   1792	005356'					 Ring	Jinx,Jring		;  TRUE word count errors.
+   1800	005402'	005267	176256			 inc	IOerr			;  NO redundant buffer compare.
+   1801	005406'	005267	176104			 inc	K$ring			;  SHOW input buffer.
+   1802	005412'	004767	001604			 jsr	pc,Kringe		;  The K ring stuff....
+   1803	005416'	000414				 br 	ImOK
+
+   1805					; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+   1806					;
+   1807					;	Insure INPUT address = SOURCE address
+   1808					;
+   1809					; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+   1810	005420'	126767	011174	011173		cmpb	INbuff,INbuff+1
+   1811	005426'	001010				bne	ImOk
+   1812	005430'	005267	176220			 inc	ADDerr
+   1813	005434'	005267	176224			 inc	IOerr			;  NO redundant buffer compare.
+   1814	005440'	005267	176052			 inc	K$ring			;  SHOW input buffer.
+   1815	005444'	004767	001552			 jsr	pc,Kringe		;  The K ring stuff....
+   1816	005450'				ImOK:
+   1817	005450'	052767	000002	172340		bis	#2,done			; INPUT done
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 18
+VDXTTY.MAC;3	Input-mini OK
+
+   1818	005456'	000002				RTI
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 19
+VDXTTY.MAC;3	Input-mini OK
+
+   1820						.globl	setup
+   1821		000601			tsize=601				; size for catching bug. I before O.
+   1822		000017			sWait=15.
+   1823		000001			prime=1
+   1824	005460'				setup:
+   1825					; :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+   1826					;
+   1827					;	SETUP each pass here.
+   1828					;
+   1829					; :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+   1831						.IF NE <prime>			; prime-time slow down.
+   1832	005460'	005737	177570			tst	@#console
+   1833	005464'	002017				bge	NOTprime		; Not prime time or cheating
+   1834	005466'	012700	004444'			 mov	#chkHI,r0		; timer double word.
+   1835	005472'	012701	004446'			 mov	#chkLOW,r1
+   1836	005476'	012702	000017			 mov	#sWait,r2		; n-tics...
+   1837	005502'	004767	177006			 jsr	pc,setTIM		; set timer for time out
+   1838	005506'				1$:
+   1839	005506'	012700	004444'			mov	#chkHI,r0
+   1840	005512'	012701	004446'			mov	#chkLOW,r1
+   1841	005516'	004767	176742			jsr	pc,TIMout		; Time UP ?
+   1842	005522'	103371				bcc	1$			; NOT on carry CLEAR
+   1843	005524'				NOTprime:
+   1844						.ENDC
+
+   1846					;	Some error stuff:
+   1847	005524'	005067	172326			clr	iNOT
+   1848	005530'	005067	172320			clr	oNOT			;  clear these flags
+
+   1850						.IF NE <varWC>
+   1851	005534'	005267	176100			inc	cycles			; per word count.
+   1852	005540'	026727	176074	000012		cmp	cycles,#Mcycle		; new word count?
+   1853	005546'	003414				ble	set1
+   1854	005550'	005067	176064			 clr	cycles			;  YES.
+   1855	005554'	062767	000003	172230		 add	#3,WDcnt
+   1856	005562'	026767	172224	176044		 cmp	WDcnt,useBox		;  reached MAX?
+   1857	005570'	003403				 ble	set1
+   1858	005572'	016767	176040	172212		  mov	Fpak,WDcnt		;   YES, reset.
+   1859	005600'				set1:
+   1860						.ENDC
+
+   1862					;	Set up io on interface:
+   1863	005600'	032737	000040	177570		bit	#40,@#console		; Don't init on bit 5.
+   1864	005606'	001002				bne	1$
+   1865	005610'	004767	006454			 jsr	pc,bufINI		; reinitialize buffers.
+   1866	005614'				1$:
+   1867	005614'	005067	176044			clr	IOerr			; for buffer compares...
+   1868	005620'	016700	172166			mov	WDcnt,r0		; word count.
+
+   1870					;	Now set up OUTput registers
+   1871	005624'	010067	172156			mov	r0,WDSout		; save so we can check.
+   1872	005630'	010067	007014			mov	r0,OUTdat		; ** save size in output buffer **
+   1873	005634'	005400				neg	r0			; two's compliment
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 20
+VDXTTY.MAC;3	Input-mini OK
+
+   1874	005636'	042700	174000			bic	#174000,R0		; 11 bits only...
+   1875	005642'	010037	160000			mov	r0,@#E0OWC		; word count
+   1876	005646'	000240				NOP
+   1877	005650'	012737	014646'	160002		mov	#OUTBUF,@#E0OBL		; buffer location.
+   1878	005656'	016700	172132			mov	delay,r0		; set delay.
+   1879	005662'	005400				neg	r0			; 2's compliment.
+   1880	005664'	010037	160006			mov	r0,@#E0ODE		; set delay - 16 bits
+
+   1882					;	Set up input (We will be doing loopback, so don't start output yet)
+   1883					;
+   1884					;	mov	#-<bSize+1>,@#E0IWC	; bit 10 -> 0 causes WC overflow.
+   1885					;
+   1886	005670'	012737	177177	160010		mov	#-tsize,@#E0IWC		; for catching bug.
+   1887	005676'	012737	016620'	160012		mov	#INbuff,@#E0IBL		; input buffer location
+   1888	005704'	000240				NOP
+   1889	005706'					dADD	TotGO			;
+   1892	005720'	005267	172110			INC	nGOES			; output go counter
+   1893	005724'	001005				bne	minext			; zero?
+   1894	005726'	004767	000064			 jsr	pc,CLRerr		; clear error stuff.
+   1895	005732'	012767	000001	172074		 mov	#1,nGOEs		; we're really at 1 go.
+   1896	005740'				minext:
+   1897					;	GO + loopback + enable : INPUT
+   1898					;	mov	#inGO+inLBK+inENA,@#E0ICS
+   1899	005740'	012737	000101	160014		mov	#inGO+inENA,@#E0ICS
+   1900	005746'	000240				NOP
+   1901						.IF NE <clock>
+   1902	005750'	012700	004444'			mov	#chkHI,r0		; timer double word.
+   1903	005754'	012701	004446'			mov	#chkLOW,r1
+   1904	005760'	012702	000003			mov	#tics,r2		; n-tics...
+   1905	005764'	004767	176524			jsr	pc,setTIM		; set timer for time out
+   1906						.ENDC
+   1907	005770'	012737	000101	160004		mov	#outGO+outENA,@#E0OCS	; OUTPUT off and running.
+   1908	005776'	000240				NOP
+   1909	006000'	000207				rts	pc
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 21
+VDXTTY.MAC;3	Input-mini OK
+
+   1911	006002'				TRAP4:
+   1912	006002'	000000				halt
+   1913	006004'	000776				br	TRAP4
+   1914	006006'	000004				4
+   1915	006010'				TRAP10:
+   1916	006010'	000000				halt
+   1917	006012'	000776				br	TRAP10
+   1918	006014'	000010				10
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 22
+VDXTTY.MAC;3	Input-mini OK
+
+   1920					.IF NE <varWC*Wboxes>
+   1921						.sbttl	CLRbox - initialize box counts
+   1922					CLRbox:
+   1923						mov	r0,-(SP)
+   1924						mov	r1,-(SP)
+   1925						mov	#boxes,r0
+   1926						mov	#nboxes+1,r1
+   1927					1$:
+   1928						clr	(r0)+
+   1929						dec	r1
+   1930						bgt	1$
+   1931						clr	cycles
+   1932						mov	Fpak,WDcnt
+   1933						mov	(SP)+,r1
+   1934						mov	(SP)+,r0
+   1935						rts	pc
+   1936					.ENDC
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 23
+VDXTTY.MAC;3	Input-mini OK
+
+   1938	006016'				CLRerr:
+   1939	006016'	005067	175650			clr	T$PRer
+   1940	006022'	005067	172006			clr	nGOES
+   1941	006026'	005067	172004			clr	nOINT
+   1942	006032'	005067	172002			clr	nIGOE
+   1943	006036'	005067	172000			clr	nIINT
+   1944	006042'	005067	172000			clr	nIERR
+   1945	006046'	005067	171772			clr	nOERR
+   1946	006052'	005067	171772			clr	nTIO
+   1947	006056'	005067	171770			clr	nTII
+   1948	006062'	005067	171766			clr	oNOT
+   1949	006066'	005067	171764			clr	iNOT
+   1950	006072'	005067	171762			clr	oSUM
+   1951	006076'	005067	171760			clr	iSUM
+   1952	006102'	005067	175440			clr	curCNT
+   1953	006106'	005067	175416			clr	maxCNT
+   1954	006112'	005067	175414			clr	recCNT
+   1955	006116'	005067	175414			clr	minWC
+   1956	006122'	005067	175412			clr	maxWC
+   1957	006126'	005067	175410			clr	recWC
+   1958	006132'	005067	171732			clr	xIN
+   1959	006136'	005067	171730			clr	xOUT
+   1960	006142'	012767	177777	175354		mov	#-1,minCNT		;
+
+   1962	006150'	000207				rts	pc
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 24
+VDXTTY.MAC;3	MINI - initialization routine.
+
+   1964						.sbttl	MINI - initialization routine.
+   1965						.globl	MINini
+   1966		000240			pri5=240			; Do these at pri. 5
+   1967	006152'				MINini:
+   1968						.IF NE <varWC*Wboxes>
+   1969						jsr	pc,CLRbox		; clear the box seats.
+   1970						.ENDC
+
+   1972	006152'	004767	000652			jsr	pc,Cringe		; clear ring buffers...
+   1973	006156'	004767	177634			jsr	pc,CLRerr		; clear some error counters.
+   1974	006162'	005067	175362			clr	late			; 	clear these on init ONLY.
+   1975	006166'					dCLR	TotGO
+   1978	006176'					dCLR	TotOI
+   1981	006206'					dCLR	TotII
+   1984	006216'					dCLR	TotTO
+   1987	006226'					dCLR	TotXO
+   1990	006236'					dCLR	TotXI
+   1993	006246'	005067	175414			clr	PIOerr
+   1994	006252'	005067	175412			clr	D$ONer
+   1995	006256'	005067	175234			clr	K$ring
+   1996	006262'	005067	175232			clr	IE$ring
+   1997	006266'	005067	175230			clr	RB$ring
+   1998	006272'	005067	171630			clr	TotIT
+   1999	006276'	005067	171626			clr	TotOT
+   2000	006302'	005067	171624			clr	INP1st
+   2001	006306'	005067	175336			clr	iNEo
+   2002	006312'	005067	175336			clr	ADDerr
+   2003	006316'	005067	175330			clr	tiNEo
+   2004	006322'	005067	171462			clr	WDSerr
+   2005	006326'	005067	171472			clr	pdatDIF
+   2006	006332'	005067	171470			clr	datDIF
+   2007	006336'	005067	171470			clr	Ochang
+   2008	006342'	005067	171526			clr	rcvdB
+   2009	006346'	005067	171450			clr	difCNT			; number of buffer errors.
+   2010	006352'	005067	171510			clr	nTO			; number of time outs.
+   2011	006356'	005067	175274			clr	OVRrun			; number of Buffer over  runs.
+   2012	006362'	005067	175274			clr	collid
+   2013	006366'	005067	175266			clr	retry
+   2014						.IF NE <clock>
+   2015					;	Initialize clock
+   2016	006372'	005067	176062			clr	timHI
+   2017	006376'	005067	176060			clr	timLOW
+   2018	006402'	012737	004550'	000100		mov	#timINT,@#100		; vector for clock
+   2019	006410'	012737	000300	000102		mov	#300,@#102		; pri 6.
+   2020	006416'	012737	000100	177546	 	MOV	#100,@#177546		; turn on interrupt
+   2021	006424'	012700	004450'			mov	#repHI,r0
+   2022	006430'	012701	004452'			mov	#repLOW,r1
+   2023	006434'	012702	001604			mov	#NEWtim,r2		; set timer...for 15 sec. report.
+   2024	006440'	004767	176050			jsr	pc,SETTIM
+   2025	006444'	012700	004454'			mov	#newHI,r0
+   2026	006450'	012701	004456'			mov	#newHI+2,r1
+   2027	006454'	012702	043120			mov	#newLNG,r2
+   2028	006460'	004767	176030			jsr	pc,SETTIM
+   2029						.ENDC
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 25
+VDXTTY.MAC;3	MINI - initialization routine.
+
+
+   2031						.IF EQ <clock>
+   2032						bic	#100,@#177546		; clock off.
+   2033						.ENDC
+
+   2035	006464'	004767	005600			jsr	pc,BufINI		; initialize buffers:
+   2036					;	Initialize interface, and vector
+   2037					;	First output
+   2038	006470'	012737	000034	160004		mov	#outIOR+outMER+outTRR,@#E0OCS	 ; resest the world!
+   2039	006476'	005037	160004			clr	@#E0OCS			; clear it.
+   2040	006502'	012737	004720'	000400		mov	#oIN,@#E0OCV		; output complete vector
+   2041	006510'	012737	000240	000402		mov	#pri5,@#E0OCV+2		; priority
+   2042	006516'	012737	004564'	000410		mov	#oERR,@#E0OEV		; out error vector
+   2043	006524'	012737	000240	000412		mov	#pri5,@#E0OEV+2		; priority
+
+   2045					;	input...
+   2046	006532'	012737	000020	160014		mov	#inRCR,@#E0ICS		; reset receiver
+   2047					;	Now clear the RAM for address selection
+   2048	006540'	012700	000377			mov	#255.,r0
+   2049	006544'	005001				clr	r1
+   2050	006546'				1$:
+   2051	006546'	010137	160016			mov	r1,@#E0RHA		; Ram host address.
+   2052	006552'	012737	000004	160014		mov	#inRWE,@#E0ICS		; write a 0. NOTE: dat3 is OFF.
+   2053	006560'	005201				inc	r1			; next address
+   2054	006562'	005300				dec	r0			; our count
+   2055	006564'	002370				bge	1$			; 256 times.
+
+   2057					;	Now set up for broadcast & local HOST.
+   2058					;	clr	@#E0RHA			; Ram host address 0.
+   2059					;	mov	#inRWE+inRWV,@#E0ICS	; write a 1. NOTE: dat3 is ON.
+   2060					;
+   2061					;	local HOST
+   2062	006566'	013700	160016			mov	@#E0RHA,r0		; Ram host address 0.
+   2063	006572'	010037	160016			mov	r0,@#E0RHA		; Ram host address 0.
+   2064	006576'	012737	000014	160014		mov	#inRWE+inRWV,@#E0ICS	; write a 1. NOTE: dat3 is ON.
+   2065	006604'	005037	160014			clr	@#E0ICS			; and clear CS bits.
+   2066	006610'	110067	171171			movb	r0,HOSTs+1		; send to our-self.
+   2067	006614'	110067	171164			movb	r0,HOSTs		; We are the source.
+
+   2069					;	Now intialize input vector.
+   2070	006620'	012737	005022'	000404		mov	#inINT1,@#E0ICV		; vector location
+   2071	006626'	012737	000240	000406		mov	#pri5,@#E0ICV+2		; and priority.
+
+   2073					;	For trap to 4-10
+   2074	006634'	012737	006002'	000004		mov	#TRAP4,@#4
+   2075	006642'	012737	000340	000006		mov	#340,@#6
+   2076	006650'	012737	006010'	000010		mov	#TRAP10,@#10
+   2077	006656'	012737	000340	000012		mov	#340,@#12
+
+   2079					;	For tty
+   2080	006664'	005037	177560			clr	@#ttyICS		; interrupts off.
+   2081	006670'	005037	177564			clr	@#ttyOCS
+
+   2083	006674'	000207				rts	pc
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 26
+VDXTTY.MAC;3	MINI - initialization routine.
+
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 27
+VDXTTY.MAC;3	MINI - initialization routine.
+
+   2085					;	scope loop
+   2086						.globl scope
+   2087	006676'				scope:
+   2088	006676'	016737	177770	160000		mov	-10,@#E0OWC
+   2089	006704'	000774				br	scope
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 28
+VDXTTY.MAC;3	MINI - initialization routine.
+
+   2091						.list	meb
+   2092						.MACRO	XOR05 r,s		;	XOR for pdp11-05
+   2093						mov	r,-(SP)
+   2094						bic	s,(SP)			; 	r-s
+   2095						bic	r,s			;	s-r
+   2096						bis	(SP)+,s			; 	r-s U s-r
+   2097						.ENDM
+
+   2099						.MACRO	LSR 	r,N,?b,?c	; 	logical shift right.
+   2100						mov	N,-(SP)			;	The count
+   2101					b:
+   2102						tst	(SP)			;	Done?
+   2103						ble	c			;	Yes on branch.
+   2104						 clc				;	Don't want carry
+   2105						 ror	r			;	rotate
+   2106						 dec	(SP)			;	one less
+   2107						 br	b			;	continue
+   2108					c:
+   2109						tst	(SP)+			;	stack back.
+   2110						.ENDM
+
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 29
+VDXTTY.MAC;3	MINI - initialization routine.
+
+   2113	006706'	077777	107777	170777	Masks:	077777,107777,170777,177077,177707,177770
+   2114					;	OCTAL out. puts word in r0 into array (r1), converting to ASCII
+   2115	006722'				OCTout:
+   2116	006722'	010246				mov	r2,-(SP)		;
+   2117	006724'	010346				mov	r3,-(SP)		;
+   2118	006726'	010046				mov	r0,-(SP)		; need this again
+   2119	006730'	012702	006706'			mov	#Masks,r2		; for our octades
+   2120	006734'	012703	000017			mov	#15.,r3			; for shifting.
+   2121	006740'	000240				NOP
+   2122	006742'				convrt:
+   2123	006742'	011600				mov	(SP),r0			; original r0
+   2124	006744'	042200				bic	(r2)+,r0		; zap unused bits.
+
+   2126	006746'					LSR	r0,r3			; shift into position
+1  2127	006746'	010346				mov	r3,-(SP)			;	The count
+1  2128	006750'				64$:
+1  2129	006750'	005716				tst	(SP)			;	Done?
+1  2130	006752'	003404				ble	65$			;	Yes on branch.
+1  2131	006754'	000241				 clc				;	Don't want carry
+1  2132	006756'	006000				 ror	r0			;	rotate
+1  2133	006760'	005316				 dec	(SP)			;	one less
+1  2134	006762'	000772				 br	64$			;	continue
+1  2135	006764'				65$:
+1  2136	006764'	005726				tst	(SP)+			;	stack back.
+
+   2138	006766'	062700	000060			add	#60,r0			; to ASCII
+   2139	006772'	110021				movB	r0,(r1)+		; into array
+   2140	006774'	162703	000003			sub	#3,r3			; our shifter
+   2141	007000'	000240				NOP
+   2142	007002'	002357				bge	convrt			; 15,12,9,6,3,0 DONE
+
+   2144	007004'	012600				mov	(SP)+,r0
+   2145	007006'	012603				mov	(SP)+,r3
+   2146	007010'	012602				mov	(SP)+,r2		; got-em back.
+   2147	007012'	000240				NOP
+   2148	007014'	000207				rts	pc
+
+   2150	007016'				makLIN:
+   2151					;	From (r0)+ to (r1)+ . Done on NULL
+   2152	007016'				1$:
+   2153	007016'	105710				tstb	(r0)		; DONE
+   2154	007020'	001402				beq	2$		; Yes
+   2155	007022'	112021				 movb	(r0)+,(r1)+	;  NEXT into buffer.
+   2156	007024'	000774				 br	1$
+   2157	007026'				2$:
+   2158	007026'	000207				rts	pc
+
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 30
+VDXTTY.MAC;3	MINI - initialization routine.
+
+   2161	007030'				Cringe:
+   2162	007030'	005067	174612			clr	Before
+   2163	007034'	012700	000134'			mov	#rStart,r0		;	start of data area
+   2164	007040'				1$:
+   2165	007040'	005020				clr	(r0)+
+   2166	007042'	022700	003514'			cmp	#rFinis,r0		;	End of data area?
+   2167	007046'	001374				bne	1$			;	NO on branch.
+
+   2169	007050'	000207				rts	pc
+
+   2171					; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+   2172					;
+   2173					;	Variations on a theme by rings.
+   2174					;
+   2175					; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+   2176	007052'	000000			which:	0
+   2177	007054'	002620'	003156'		OItab:	IEinx,RBinx
+   2178	007060'	002622'	003160'		OItab1: IEring,RBring
+   2179	007064'				Orings:
+   2180	007064'	010046				mov	r0,-(Sp)
+   2181	007066'	010146				mov	r1,-(Sp)
+
+   2183	007070'	016700	177756			mov	which,r0
+   2184	007074'	006300				asl	r0
+   2185	007076'	062700	007054'			add	#OItab,r0
+   2186	007102'	017000	000000			mov	@(r0),r0		; 	the index
+
+   2188	007106'	016701	177740			mov	which,r1
+   2189	007112'	006301				asl	r1
+   2190	007114'	062701	007060'			add	#OItab1,r1
+   2191	007120'	061100				add	(r1),r0			;	base + index
+
+   2193	007122'	012701	014646'			mov	#OUTbuf,r1		;	OUTput buffer...
+   2194	007126'	012120				mov	(r1)+,(r0)+		;	3 words
+   2195	007130'	012120				mov	(r1)+,(r0)+
+   2196	007132'	012120				mov	(r1)+,(r0)+
+
+   2198	007134'	012701	016620'			mov	#INbuff,r1		;	And input buffer
+   2199	007140'	012120				mov	(r1)+,(r0)+		;	First 7 words
+   2200	007142'	012120				mov	(r1)+,(r0)+
+   2201	007144'	012120				mov	(r1)+,(r0)+
+   2202	007146'	012120				mov	(r1)+,(r0)+
+   2203	007150'	012120				mov	(r1)+,(r0)+
+   2204	007152'	012120				mov	(r1)+,(r0)+
+   2205	007154'	012120				mov	(r1)+,(r0)+
+
+   2207	007156'	005220				inc	(r0)+			;	THE 11th word!
+   2208	007160'	016701	177666			mov	which,r1		;	which ring
+   2209	007164'	006301				asl	r1			;	words of course..
+   2210	007166'	062701	007054'			add	#OItab,r1
+   2211	007172'	062771	000026	000000		add	#Esize,@(r1)		;	up the ring
+   2212	007200'	027127	000000	000334		cmp	@(r1),#wrap		;	and check the end points.
+   2213	007206'	002402				blt	1$
+   2214	007210'	005071	000000			 clr	@(r1)
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 31
+VDXTTY.MAC;3	MINI - initialization routine.
+
+   2215	007214'				1$:
+   2216	007214'	012601				mov	(Sp)+,r1
+   2217	007216'	012600				mov	(Sp)+,r0
+   2218	007220'	000207				rts	pc
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 32
+VDXTTY.MAC;3	MINI - initialization routine.
+
+   2220	007222'				Kringe:	; a slight variation for buffer dump. MAX 10 words...
+
+   2222	007222'	010046				mov	r0,-(Sp)
+   2223	007224'	010146				mov	r1,-(Sp)
+   2224	007226'	010246				mov	r2,-(Sp)
+   2225	007230'	010346				mov	r3,-(Sp)
+   2226	007232'	016700	173024			mov	Kinx,r0
+   2227	007236'	062700	002264'			add	#Kring,r0		;	base + offset:
+   2228					;	Now 	4 words from each buffer, and current time, WDcnt.
+   2229	007242'	016720	175212			mov	timHI,(r0)+
+   2230	007246'	016720	175210			mov	timLOW,(r0)+		;	time of error.
+
+   2232	007252'	012701	014646'			mov	#OUTbuf,r1		;	OUTput buffer...
+   2233	007256'	012120				mov	(r1)+,(r0)+		;	3 words
+   2234	007260'	012120				mov	(r1)+,(r0)+
+   2235	007262'	012120				mov	(r1)+,(r0)+
+
+   2237	007264'	012701	016620'			mov	#INbuff,r1		;	And input buffer
+   2238	007270'	012120				mov	(r1)+,(r0)+		;	First 2 words
+   2239	007272'	012120				mov	(r1)+,(r0)+
+   2240	007274'	012702	013604'			mov	#BERROD,r2		;	The errored words.
+   2241	007300'	012703	000003			mov	#3,r3			;	at MOST 3 of the suckers.
+   2242	007304'				BERRY:
+   2243	007304'	012220				mov	(r2)+,(r0)+
+   2244	007306'	005303				dec	r3
+   2245	007310'	003375				bgt	BERRY
+
+   2247	007312'	005220				inc	(r0)+			;	THE 11th word!
+
+   2249	007314'	062767	000026	172740		add	#Esize,Kinx		;	up the ring
+   2250	007322'	026727	172734	000334		cmp	Kinx,#wrap
+   2251	007330'	002402				blt	1$
+   2252	007332'	005067	172724			 clr	Kinx
+   2253	007336'				1$:
+   2254	007336'	012603				mov	(Sp)+,r3
+   2255	007340'	012602				mov	(Sp)+,r2
+   2256	007342'	012601				mov	(Sp)+,r1
+   2257	007344'	012600				mov	(Sp)+,r0
+   2258	007346'	000207				rts	pc
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 33
+VDXTTY.MAC;3	MINI - initialization routine.
+
+   2260	007350'				RingIT:
+   2261	007350'	061001				add	(r0),r1
+   2262	007352'	013721	160014			mov	@#E0ICS,(r1)+
+   2263	007356'	013721	160010			mov	@#E0IWC,(r1)+
+   2264	007362'	013721	160004			mov	@#E0OCS,(r1)+
+   2265	007366'	013721	160000			mov	@#E0OWC,(r1)+
+   2266	007372'	016721	175420			mov	RedWC,(r1)+
+   2267	007376'	016721	175056			mov	timHI,(r1)+
+   2268	007402'	016721	175054			mov	timLOW,(r1)+
+   2269	007406'	016721	175032			mov	chkHI,(r1)+
+   2270	007412'	016721	175030			mov	chkLOW,(r1)+
+   2271	007416'	016721	170364			mov	WDSout,(r1)+		;	size of packet going out.
+   2272	007422'	005211				inc	(r1)			;	a valid entry.
+   2273	007424'	062710	000026			add	#Esize,(r0)		;	increment for next time.
+   2274	007430'	000240				NOP
+   2275	007432'	021027	000334			cmp	(r0),#wrap		;	wrap around?
+   2276	007436'	002401				blt	1$			;	NO.
+   2277	007440'	005010				 clr	(r0)			;	start over...
+   2278	007442'				1$:
+   2279	007442'	000207				rts	pc
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 34
+VDXTTY.MAC;3	MINI - initialization routine.
+
+   2281	007444'	000000			maxSLT:	0
+   2282		000144			MaxWRD=100.
+   2283					;	Here we dump the most recent errored buffer:
+   2284					;	Format is:
+   2285					;
+   2286					; oooooo xxxxxx  oooooo xxxxxx  oooooo xxxxxx  oooooo xxxxxx  oooooo xxxxxx
+
+   2288					; Where oooooo = output buffer word, xxxxxx = that word XOR input buffer.
+   2289					; For now we dump a maximum of 100 words or 20 lines of 5 pairs.
+   2290	007446'	000000			wcntr:	0
+   2291	007450'	000000			wpline:	0
+   2292	007452'	000000			MAXpr:	0
+   2293	007454'	000144			line:	.BLKB	100.
+   2294	007620'	000000			EOB:	0
+   2295	007622'	   015	   106	   157	rHead:	.ASCIZ	<eol>/Format: OOOOOO EEEEEE, O input buf, E errored bits:/<eol>
+   2296	007710'	   040	   040	   124	TnSNT:	.ASCIZ /  Total SENT: /
+   2297	007727'	   054	   040	   116	TnERR:	.ASCIZ 	/, N errors: /
+   2298						.EVEN
+   2299	007744'				report:
+   2300					;	All registers are free here.
+   2301	007744'	005767	170060			tst	ERRED		;	most recent errored?
+   2302	007750'	001001				bne	1$		;	Yes
+   2303	007752'	000207				 rts	pc		;	 NO, wait a little longer.
+   2304	007754'				1$:
+   2305					;	So we have to output WDcnt pairs from the input buffer,
+   2306					;	5 per line. 11-05s don't have / or *...So,...
+   2307	007754'	022737	000006	177570		cmp	#6,@#177570	;	counts only?
+   2308	007762'	001404				beq	10$		;	Yes on 6.
+
+   2310	007764'	012700	007622'			mov	#rHead,r0
+   2311	007770'	004767	003540			jsr	pc,linOUT	;	Header out
+   2312	007774'				10$:
+   2313	007774'	012700	007710'			mov	#TnSNT,r0	;	Number sent
+   2314	010000'	012701	007454'			mov	#line,r1	;
+   2315	010004'	004767	177006			jsr	pc,makLIN	;	into (r1)
+   2316	010010'	016700	170020			mov	nGOES,r0	;	now the GO count
+   2317	010014'	000240				NOP
+   2318	010016'	004767	176700			jsr	pc,OCTout	;	into buffer
+
+   2320	010022'	012700	007727'			mov	#TnERR,r0	;	number errored
+   2321	010026'	004767	176764			jsr	pc,makLIN	;	into (r1)
+   2322	010032'	016700	167764			mov	difCNT,r0	;	now the GO count
+   2323	010036'	000240				NOP
+   2324	010040'	004767	176656			jsr	pc,OCTout	;	into buffer
+   2325	010044'	112721	000015			movb	#eol,(R1)+	;	eol, eol...
+   2326	010050'	112721	000015			movb	#eol,(R1)+	;
+   2327	010054'	112721	000000			movb	#0,(R1)+	;	NULL terminator
+
+   2329	010060'	012700	007454'			mov	#line,r0	;	NOW, send it to TTY.
+   2330	010064'	004767	003444			jsr	pc,linOUT	;	"Total SENT: nnnnnn, N errs: nnnnnn"
+   2331	010070'	022737	000006	177570		cmp	#6,@#177570	;	numbers only?
+   2332	010076'	001002				bne	ron		;	NO.
+   2333	010100'	000167	000220			 jmp	rExit		;	YEP.
+   2334	010104'				ron:
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 35
+VDXTTY.MAC;3	MINI - initialization routine.
+
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 36
+VDXTTY.MAC;3	MINI - initialization routine.
+
+   2336					;	Here we do the actual work...
+   2337	010104'	005067	177336			clr	wcntr		;	word counter
+   2338	010110'	005067	177334			clr	wpline		;	words/line
+   2339					;	we only output MAXwrd pairs .
+   2340	010114'	016767	167672	177330		mov	WDcnt,MAXpr
+   2341	010122'	026727	177324	000144		cmp	MAXpr,#MAXwrd	;	our MAX
+   2342	010130'	003403				ble	11$
+   2343	010132'	012767	000144	177312		 mov	#MAXwrd,MAXpr	;	Use our MAX.
+   2344	010140'				11$:
+   2345					;	This is all done when (r0)=WDcnt.
+   2346	010140'	012702	016620'			mov	#inBUFF,r2	;	input buffer
+   2347	010144'	012703	014646'			mov	#outBUF,r3	;	output buffer
+
+   2349	010150'				2$:	; start a new line
+   2350	010150'	012704	007454'			mov	#line,r4	;	line byte pointer.
+   2351	010154'				3$:
+   2352	010154'	012200				mov	(r2)+,r0	;	next buffer words
+   2353	010156'	010401				mov	r4,r1		;	line pointer.
+   2354	010160'	000240				NOP
+   2355	010162'	004767	176534			jsr	pc,OCTout	;	to octal..."oooooo"
+   2356	010166'	000240				NOP
+   2357	010170'	010104				mov	r1,r4		;	updated byte pointer
+   2358	010172'	112724	054040			movB	#" X,(r4)+	;	"oooooo "
+   2359	010176'	012301				mov	(r3)+,r1	;	output buffer word.
+
+   2361	010200'					XOR05	r1,r0		; 	XORS the two. result in r0
+1  2362	010200'	010146				mov	r1,-(SP)
+1  2363	010202'	040016				bic	r0,(SP)			; 	r1-r0
+1  2364	010204'	040100				bic	r1,r0			;	r0-r1
+1  2365	010206'	052600				bis	(SP)+,r0			; 	r1-r0 U r0-r1
+
+   2367	010210'	010401				mov	r4,r1		;	line pointer
+   2368	010212'	000240				NOP
+   2369	010214'	004767	176502			jsr	pc,OCTout	;	octal
+   2370	010220'	000240				NOP
+   2371	010222'	010104				mov	r1,r4		;	updated byte pointer
+   2372	010224'	112724	054040			movB	#" X,(r4)+
+   2373	010230'	112724	054040			movB	#" X,(r4)+	;	"oooooo xxxxxx  " a pair
+
+   2375					;	check our end conditions...
+   2376					;	1. END of data
+   2377	010234'	005005				clr	r5		;	a temp flag
+   2378	010236'	005267	177204			inc	wcntr		;	our word count...
+   2379	010242'	026767	177200	177202		cmp	wcntr,MAXpr	;	That's all?
+   2380	010250'	002402				blt	4$		;	nope
+   2381	010252'	005205				 inc	r5		;	ALL done after EOL
+   2382	010254'	000406				 br	5$
+   2383	010256'				4$:
+   2384	010256'	005267	177166			inc	wpline		;	next word-pair.
+   2385	010262'	026727	177162	000005		cmp	wpline,#5	;	The 5th word?
+   2386	010270'	002731				blt	3$		;	NOPE, try another pair.
+
+   2388	010272'				5$:	;EOL here
+   2389	010272'	000240				NOP
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 37
+VDXTTY.MAC;3	MINI - initialization routine.
+
+   2390	010274'	112724	000015			movB	#eol,(r4)+	;	eol for SUMEX
+   2391	010300'	112724	000000			movB	#0,(r4)+	;	NULL for lineout terminator(ASCIZ)
+   2392	010304'	012700	007454'			mov	#line,r0	;	line byte pointer. 
+   2393	010310'	004767	003220			jsr	pc,linOUT	;	send the line
+   2394	010314'	005067	177130			clr	wpline		;	here we go again...
+   2395	010320'	005705				tst	r5		;	end of data?
+   2396	010322'	001712				beq	2$		;	NO, so start a new line.
+   2397	010324'				rExit:
+   2398	010324'	004767	174076			 jsr	pc,RESETi	;	reset interface.
+   2399	010330'	000207				 rts	pc		;	Yes, so zap on out.
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 38
+VDXTTY.MAC;3	MINI - initialization routine.
+
+   2401	010332'	   015	   040	   040	banner:	.ASCIZ	<eol>/             local status report-/
+   2402	010375'	   162	   165	   156	longb:	.ASCIZ	/running totals/<eol>
+   2403						.IF NE <clock>
+   2404	010415'	   063	   063	   056	timban: .ASCIZ	/33.33 millisecond time out/<EOL>
+   2405						.ENDC
+   2406						.IF EQ <clock>
+   2407					timban: .ASCIZ	/Software time out/<EOL>
+   2408						.ENDC
+   2409	010451'	   156	   055	   117	header:	.ASCII	/n-Oint n-Oerr n-Otim  O-sum N-GOES  I-sum n-Ierr n-Itim /
+   2410	010541'	   156	   055	   111		.ASCIZ	/n-Iint n-TimO buf-Err/<eol>
+   2411					;		 123456x123456x123456x123456x123456x123456x123456x123456
+   2412					.IF EQ <clock>
+   2413					numH:	.ASCIZ	<eol>/MIN-ct MAX-ct REC-ct TIM-ct REC-wc TIM-wc xtr-II xtr-OI xtr-NG lat
+   2414						.EVEN
+   2415					numTAB:	minTOC,maxCNT,recCNT,timCNT,recWC,timWC,xIN,xOUT,late
+   2416					nNums=9.
+   2417					.ENDC
+
+   2419					.IF NE <clock>
+   2420	010570'	   015	   170	   164	numH:	.ASCIZ	<eol>/xtr-II xtr-OI late-t OV-run/<eol>
+   2421						.EVEN
+   2422	010626'	000070'	000072'	003550'	numTAB:	xIN,xOUT,late,OVRrun
+   2423		000004			nNums=4.
+   2424					.ENDC
+   2425	010636'	000036'	000044'	000050'	items:	nOINT,nOERR,nTIO,Osum,nGOES,Isum,nIERR,nTII,nIINT,nTO,difCNT
+   2426		000013			nitems=11.
+
+   2428	010664'	   040	   040	   124	longH:	.ASCIZ	/  Total-GOES  Total-Inp-Int Total-Out-Int Total-TimOuts late-I OV-run  
+   2429					;		 123456 123456 123456 123456 123456 123456 123456 123456		
+   2430	011003'	   015	   124	   055	longH1:	.ASCIZ 	<eol>/T-X-II T-X-OI Tot-IT Tot-OT Tot-BT IN-win I-NE-O buf-Er Collid D-O
+   2431		011124'				.EVEN
+   2432	011124'	000076'	000100'	000106'	longL:	TotGO,TotGO+2,TotII,TotII+2,TotOI,TotOI+2,TotTO,TotTO+2,late,OVRrun,rcvdB
+   2433	011152'	000120'	000124'	000126'	longL1:	TotXI+2,TotXO+2,TotIT,TotOT,Before,INP1st,iNEo,difCNT,collid,D$ONer,ADDerr
+   2434		000013			nLong=11.
+   2435		000013			nLong1=11.
+   2436	011200'	000000			fcons:	0
+   2437	011202'	   015	   040	   040	RingB:	.ASCIZ	<eol>/          * RING buffer dump-/
+   2438	011241'	   104	   117	   116	Tail1:	.ASCIZ 	%DONE BIT SET w/o interrupt *%<eol>
+   2439	011277'	   164	   151	   155	Tail2:	.ASCIZ	/time out */<eol>
+   2440	011313'	   111	   156	   160	Tail3:	.ASCIZ	/Input BEFORE output interrupt/<eol>
+   2441	011352'	   127	   157	   162	Tail4:	.ASCIZ	/Words input error & 'IN wins'/<eol>
+   2442	011411'	   116	   055	   167	Tail5:	.ASCIZ 	/N-words IN NE n-words OUT/<eol>
+   2443	011444'	   111	   055	   123	RingH:	.ASCIZ	/I-Stat I-WrdC O-Stat O-WrdC Ret-PC  Current-Time  Expire-Time Wd-OUT/<e
+   2444					;		 123456 123456 123456 123456 123456 123456 123456 123456 123456
+   2445	011552'	   015	   040	   040	Khead:	.ASCII  <eol>/                    INPUT BUFFER ERRORS/
+   2446	011622'	   015	   040	   124		.ASCIZ	<eol>/ Time of Err. OUT-W0 OUT-W1 OUT-W2 INP-W0 INP-W1 INP-W2 INP-W3 INP
+   2447	011732'	   015	   040	   040	IEhead:	.ASCII  <eol>/                    INPUT "WINS" /
+   2448	011774'	   015	   117	   125		.ASCIZ	<eol>/OUT-W0 OUT-W1 OUT-W2 INP-W0 INP-W1 INP-W2 INP-W3 INP-W4 INP-W5 INP
+   2449	012104'	   015	   040	   040	RBhead:	.ASCII  <eol>/                    BROADCAST/
+   2450	012142'	   015	   117	   125		.ASCIZ	<eol>/OUT-W0 OUT-W1 OUT-W2 INP-W0 INP-W1 INP-W2 INP-W3 INP-W4 INP-W5 INP
+   2451	012252'	   015	   052	   052	nada:	.ASCIZ	<eol>/** The rings are NULL/<eol>
+   2452						.EVEN
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 39
+VDXTTY.MAC;3	MINI - initialization routine.
+
+   2454	012302'	000000			dCons:	0
+   2455	012304'				Hring:
+   2456					;	Header out...
+   2457	012304'	010146				mov	r1,-(Sp)
+   2458	012306'	012700	011202'			mov	#RingB,r0		; Lead header.
+   2459	012312'	012701	007454'			mov	#line,r1
+   2460	012316'	004767	174474			jsr	pc,MAKlin
+
+   2462	012322'	010500				mov	r5,r0
+   2463	012324'	004767	174466			jsr	pc,MAKlin
+   2464	012330'	112721	000000			movb	#0,(R1)+
+   2465	012334'	012700	007454'			mov	#line,r0
+   2466	012340'	004767	001170			jsr	pc,linOUT		; type.
+   2467	012344'	012700	011444'			mov	#RingH,r0		; explanation.
+   2468	012350'	004767	001160			jsr	pc,linOUT
+   2469	012354'	012601				mov	(Sp)+,r1
+   2470	012356'	000207				rts	pc
+
+   2472		000024			valid=<nRing-1>*2
+   2473	012360'	000000			dcnt:	0
+   2474	012362'	003516'	003520'	003522'	Oflags:	K$ring,IE$ring,RB$ring
+   2475	012370'	011552'	011732'	012104'	Oheads: Khead,IEhead,RBhead
+   2476	012376'	002264'	002622'	003160'	Onames: Kring,IEring,RBring
+   2477		000003			others=3
+   2478	012404'				During:
+   2479					;	dump ring....(r5)--start of ring...Rmax=nlines, nRing-entries. 
+   2480	012404'	010146				mov	r1,-(sp)
+   2481	012406'	010246				mov	r2,-(sp)
+   2482	012410'	010346				mov	r3,-(sp)
+   2483	012412'	010446				mov	r4,-(sp)
+   2484	012414'	012704	000012			mov	#rMax,r4		; loop deeloop-number of entries.
+   2485	012420'				d1:
+   2486	012420'	005304				dec	r4			; Another line left?
+   2487	012422'	002005				bge	1$			; Yes...
+   2488	012424'	012604				 mov	(Sp)+,r4
+   2489	012426'	012603				 mov	(Sp)+,r3
+   2490	012430'	012602				 mov	(Sp)+,r2
+   2491	012432'	012601				 mov	(Sp)+,r1
+   2492	012434'	000207				 rts	pc			;  no, we are done.
+   2493	012436'				1$:
+   2494	012436'	005765	000024			tst	valid(r5)		; This entry valid?
+   2495	012442'	001003				bne	2$			; YES
+   2496	012444'	062705	000026			 add	#Esize,r5		;  Next entry.
+   2497	012450'	000763				 br	d1
+   2498	012452'				2$:
+   2499	012452'	012703	000012			mov	#nring-1,r3		; inner loop-words/entry
+   2500	012456'	012701	007454'			mov	#line,r1		; buffer
+   2501	012462'				d2:
+   2502	012462'	012500				mov	(r5)+,r0		;
+   2503	012464'	004767	174232			jsr	pc,OCTout		; value into buffer
+   2504	012470'	112721	074040			movB	#" x,(r1)+		; "vvvvvv "
+   2505	012474'	005303				dec	r3			; line counter
+   2506	012476'	003371				bgt	d2
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 40
+VDXTTY.MAC;3	MINI - initialization routine.
+
+   2508	012500'	005725				tst	(r5)+			; Skip the flag.
+
+   2510	012502'	112721	000015			movB	#eol,(r1)+
+   2511	012506'	112711	000000			movB	#0,(r1)			; null terminator
+   2512	012512'	012700	007454'			mov	#line,r0
+   2513	012516'	004767	001012			jsr	pc,linOUT
+   2514	012522'	000736				br	d1
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 41
+VDXTTY.MAC;3	MINI - initialization routine.
+
+   2516					;	Some data for the rings.
+   2517	012524'	011241'	011277'	011313'	tails:	tail1,tail2,tail3,tail4,tail5
+   2518	012536'	000136'	000474'	001032'	rings:	Bring,Aring,Wring,iRing,Jring
+   2519	012550'	003646'	000114'	000132'	rfs:	before,TotTO+2,INP1st,ADDerr,tiNEo
+   2520		000005			nRings=5.
+   2521	012562'				dRings:
+   2522	012562'	032737	000400	177570		bit	#400,@#consol		; Our turn?
+   2523	012570'	001003				bne	1$
+   2524	012572'	005067	177504			 clr	dCons			; clear consecutiveness.
+   2525	012576'	000207				 rts	pc
+   2526	012600'				1$:
+   2527	012600'	005767	177476			tst	dCons			; In a row...
+   2528	012604'	001401				beq	2$			; NO
+   2529	012606'	000207				 rts	pc			;  Yes, so spit...until toggle
+   2530	012610'				2$:
+   2531	012610'	005267	177466			inc	dCons			; THE flag...
+   2532	012614'	005067	177540			clr	dCnt			; N dumped.
+   2533					;	dump the rings..
+   2534	012620'	012701	012524'			mov	#tails,r1
+   2535	012624'	012702	012536'			mov	#rings,r2
+   2536	012630'	012703	012550'			mov	#rfs,r3
+   2537	012634'	012704	000005			mov	#nRings,r4
+   2538	012640'				deTail:
+   2539	012640'	005733				tst	@(r3)+			; any at all?
+   2540	012642'	001005				bne	3$			; Yes..
+   2541	012644'	005721				 tst	(r1)+			; Next header.
+   2542	012646'	005722				 tst	(r2)+			; Next Ring.
+   2543	012650'	005267	177504			 inc	dCnt
+   2544	012654'	000406				 br	Rend
+   2545	012656'				3$:
+   2546	012656'	012105				mov	(r1)+,r5
+   2547	012660'	004767	177420			jsr	pc,Hring		; Header
+   2548					;	dump it...
+   2549	012664'	012205				mov	(r2)+,r5		; The ring
+   2550	012666'	004767	177512			jsr	pc,During		;
+   2551	012672'				Rend:
+   2552	012672'	005304				dec	r4
+   2553	012674'	003361				bgt	deTail
+
+   2555					;	The special O-rings now folks...
+   2556	012676'	012703	012362'			mov	#Oflags,r3		; their flags.
+   2557	012702'	012701	012370'			mov	#Oheads,r1		; their heads.
+   2558	012706'	012702	012376'			mov	#Onames,r2		; their names.
+   2559	012712'	012704	000003			mov	#others,r4		; How many.
+   2560	012716'				1$:
+   2561	012716'	005733				tst	@(r3)+			; Is it there ol photo pal?
+   2562	012720'	001005				bne	2$			; Yes - beyond the J.
+   2563	012722'	005267	177432			 inc	dCnt
+   2564	012726'	005721				 TST	(r1)+			;  next of everything...
+   2565	012730'	005722				 TST	(r2)+
+   2566	012732'	000406				 br	3$
+   2567	012734'				2$:
+   2568	012734'	012100				mov	(r1)+,r0
+   2569	012736'	004767	000572			jsr	pc,linOUT		; Header.
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 42
+VDXTTY.MAC;3	MINI - initialization routine.
+
+   2570	012742'	012205				mov	(r2)+,r5		; This ring.
+   2571	012744'	004767	177434			jsr	pc,During		; dump it...
+   2572	012750'				3$:
+   2573	012750'	005304				dec	r4			; Any others left?
+   2574	012752'	003361				bgt	1$			; Some more.
+
+   2576	012754'	022767	000010	177376		cmp	#nRings+others,dCnt	; did nothing (n + others)
+   2577	012762'	001004				bne	4$			; NO
+   2578	012764'	012700	012252'			 mov	#nada,r0
+   2579	012770'	004767	000540			 jsr	pc,linOUT		; tell outsiders..
+   2580	012774'				4$:
+   2581	012774'	000207				rts	pc
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 43
+VDXTTY.MAC;3	MINI - initialization routine.
+
+   2583	012776'				LONGrep:
+   2584	012776'	004767	177560			jsr	pc,dRings		; Check for ring dump...
+   2585	013002'	012700	004454'			mov	#newHI,r0
+   2586	013006'	012701	004456'			mov	#newHI+2,r1
+   2587	013012'	004767	171446			jsr	pc,TIMout		; Time out ?
+   2588	013016'	103415				bcs	LONGon			; YES.
+   2589	013020'	032737	000200	177570		 bit	#200,@#consol		; force report?
+   2590	013026'	001406				 beq	2$			; NO.
+   2591	013030'	005767	176144			  tst	fcons			;  forced consecutively?
+   2592	013034'	001005				  bne	3$			;  Yes, so skip until reset bit.
+   2593	013036'	005267	176136			   inc	fcons			;   NO. but don't allow consec.
+   2594	013042'	000407				   br	forceL			;   and do report.
+   2595	013044'				2$:
+   2596	013044'	005067	176130			 clr	fcons			;  clear consecutive flag
+   2597	013050'				3$:
+   2598	013050'	000207				 rts	pc			;  NO, return.
+   2599	013052'				LONGon:
+   2600	013052'	012702	043120			mov	#newLNG,r2
+   2601	013056'	004767	171432			jsr	pc,SETTIM		; Set for next time:
+
+   2603	013062'	012700	010332'		forceL:	mov	#banner,r0
+   2604	013066'	012701	007454'			mov	#line,r1
+   2605	013072'	004767	173720			jsr	pc,MAKlin
+   2606	013076'	012700	010375'			mov	#longb,r0
+   2607	013102'	004767	173710			jsr	pc,MAKlin
+   2608	013106'	112721	000000			movb	#0,(R1)+
+   2609	013112'	012700	007454'			mov	#line,r0
+   2610	013116'	004767	000412			jsr	pc,linOUT		; banner out:
+
+   2612	013122'	012700	010664'			mov	#longH,r0
+   2613	013126'	004767	000402			jsr	pc,linOUT
+
+   2615					;	build report lines:
+   2616	013132'	012701	007454'			mov	#line,r1
+   2617	013136'	012702	000013			mov	#nlong,r2
+   2618	013142'	012703	011124'			mov	#longL,r3
+   2619	013146'	004767	000270			jsr	pc,newOUT		;	first-OUT
+
+   2621	013152'	012700	011003'			mov	#longH1,r0
+   2622	013156'	004767	000352			jsr	pc,linOUT
+
+   2624					;	build report lines:
+   2625	013162'	012701	007454'			mov	#line,r1
+   2626	013166'	012702	000013			mov	#nlong1,r2
+   2627	013172'	012703	011152'			mov	#longL1,r3
+   2628	013176'	004767	000240			jsr	pc,newOUT		;	first-OUT
+   2629	013202'	000207				rts	pc
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 44
+VDXTTY.MAC;3	MINI - initialization routine.
+
+   2631	013204'				news:
+   2632					;	news report here:
+   2633	013204'	000240				NOP
+   2634	013206'	004767	177564			jsr	pc,LONGrep		; see if time for long report.
+   2635	013212'	012700	004450'			mov	#repHI,r0
+   2636	013216'	012701	004452'			mov	#repLOW,r1
+   2637	013222'	004767	171236			jsr	pc,TIMout		; Time out ?
+   2638	013226'	103401				bcs	NEWSon			; NO.
+   2639	013230'	000207				 rts	pc
+   2640	013232'				NEWSon:
+   2641					;	Some sums for our report...number time outs+number ints+ num errors.
+   2642	013232'	016767	164612	164620		mov 	nTIO,Osum
+   2643	013240'	066767	164572	164612		add	nOINT,Osum		;  out ints + out time outs
+   2644	013246'	066767	164572	164604		add	nOERR,Osum
+   2645	013254'	016767	164572	164600		mov 	nTII,Isum
+   2646	013262'	066767	164554	164572		add	nIINT,Isum		;  out ints + out time outs
+   2647	013270'	066767	164552	164564		add 	nIERR,Isum
+
+   2649	013276'	012702	001604			mov	#NEWtim,r2		; set again...
+   2650	013302'	004767	171206			jsr	pc,SETTIM
+   2651					;	require bit 3 set on console
+   2652	013306'	032737	000010	177570		bit	#10,@#console
+   2653	013314'	001001				bne	newsGO
+   2654	013316'	000207				 rts	pc
+   2655	013320'				newsGO:
+   2656					;	output banner and list...
+   2657	013320'	012700	010332'			mov	#banner,r0
+   2658	013324'	012701	007454'			mov	#line,r1
+   2659	013330'	004767	173462			jsr	pc,MAKlin
+   2660	013334'	012700	010415'			mov	#timban,r0
+   2661	013340'	004767	173452			jsr	pc,MAKlin
+   2662	013344'	112721	000000			movb	#0,(R1)+
+   2663	013350'	012700	007454'			mov	#line,r0
+   2664	013354'	004767	000154			jsr	pc,linOUT
+
+   2666	013360'	012700	010451'			mov	#header,r0
+   2667	013364'	004767	000144			jsr	pc,linOUT
+
+   2669					;	build report lines:
+   2670	013370'	012701	007454'			mov	#line,r1
+   2671	013374'	012702	000013			mov	#nitems,r2
+   2672	013400'	012703	010636'			mov	#items,r3
+   2673	013404'	004767	000032			jsr	pc,newOUT		;	first-OUT
+
+   2675	013410'	012700	010570'			mov	#numH,r0		;	header out
+   2676	013414'	004767	000114			jsr	pc,linOUT
+
+   2678	013420'	012701	007454'			mov	#line,r1
+   2679	013424'	012702	000004			mov	#nNums,r2
+   2680	013430'	012703	010626'			mov	#numTAB,r3
+   2681	013434'	004767	000002			jsr	pc,newOUT		;	second out...
+
+   2683	013440'	000207				rts	pc			;	AND, exit...
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 45
+VDXTTY.MAC;3	MINI - initialization routine.
+
+   2685	013442'				newOUT:
+   2686	013442'	013300				mov	@(r3)+,r0		;	item value.
+   2687	013444'	004767	173252			jsr	pc,OCTout		;	into line
+   2688	013450'	112721	054040			movb	#" X,(r1)+		;	"oooooo "
+   2689	013454'	005302				dec	r2
+   2690	013456'	003371				bgt	newOUT
+
+   2692	013460'	004767	000002			jsr	pc,EndSnd		;	end and send
+   2693	013464'	000207				rts	pc
+
+   2695	013466'				EndSnd:
+   2696	013466'	112721	000015			movb	#eol,(r1)+		;
+   2697	013472'	112721	000000			movb	#0,(r1)+		; 	NULL terminator
+   2698	013476'	012700	007454'			mov	#line,r0
+   2699	013502'	004767	000026			jsr	pc,linOUT		;
+   2700	013506'	000207				rts	pc
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 46
+VDXTTY.MAC;3	MINI - initialization routine.
+
+   2702					.IF NE <varWC*Wboxes>
+   2703					fmess:	.ASCIZ	<eol>/           !! NO errored words !!/<eol><eol>
+   2704						.EVEN
+   2705					final:
+   2706						tst	oneOUT
+   2707						beq	2$
+   2708						 rts	pc
+   2709					2$:
+   2710						mov	#fmess,r0
+   2711						jsr	pc,linOUT
+   2712						rts	pc
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 47
+VDXTTY.MAC;3	MINI - initialization routine.
+
+   2714					boxHD:	.ASCIZ	<eol><eol>/            ERROR counts vrs WORD counts/<eol>
+   2715					boxLA:	.ASCIZ  /   N  \    1      2      3      4      5      6      7      8/<eol>
+   2716					;               xxNNNNxxOOOOOOxOOOOOOxOOOOOOxOOOOOOxOOOOOOxOOOOOOxOOOOOOxOOOOOO
+   2717						.EVEN
+   2718					tt:	" 0," 8,"16,"24,"32,"40,"48,"56,"64,"72,"80,"88,"96
+   2719						" 1,"04," 1,"12," 1,"20," 1,"28," 1,"36," 1,"44
+   2720						" 1,"52," 1,"60," 1,"68," 1,"76," 1,"84," 1,"92
+   2721						" 2,"00," 2,"08," 2,"16," 2,"24," 2,"32," 2,"40," 2,"48
+   2722						" 2,"56," 2,"64," 2,"72," 2,"80," 2,"88
+   2723					oneOUT:	0
+   2724					ttSize=30.
+   2725					pline=8.
+   2726					nlines=35.
+   2727					BOXrep:
+   2728					;	IF bit 4 is set, then show boxes...
+   2729						bit	#20,@#console		;	do we report?
+   2730						bne	1$
+   2731						 rts	pc			;	 NOPE.
+   2732					1$:
+   2733						mov	#boxHD,r0
+   2734						jsr	pc,linOUT		;	header...
+   2735						mov	#boxLA,r0
+   2736						jsr	pc,linOUT		;	Lables...
+
+   2738					;	Now output the DATA	8/line, 35 lines...
+   2739						mov	#boxes,r3
+   2740						clr	r5			; 	line base 
+   2741						clr	oneOUT			;	for final message.
+   2742					BOXlin:
+
+   2744					;	Only output errored lines...
+   2745					9$:
+   2746						clr	r1			;	entry counter.
+   2747						mov	r3,-(SP)		;	save r3
+   2748					10$:
+   2749						cmp	r3,#lastBx		;	End of the boxes?
+   2750						blt	11$			;	No...
+   2751						 tst	(SP)+			;	 clear stack of r3.
+   2752						 jsr	pc,final		;	 See if a final message
+   2753						 rts	pc
+   2754					11$:
+   2755						tst	(r3)+			;	an errored word?
+   2756						beq	12$			;	no (NOP for all lines out)
+   2757						 mov	(SP)+,r3		;	THIS line out. adjust stack.
+   2758						 mov	#1,oneOUT		;
+   2759						 br	13$			;	send it.
+   2760					12$:
+   2761						inc	r1
+   2762						cmp	r1,#pline		;	A line exhausted?
+   2763						blt	10$			;	No...
+   2764						 add	#2*pline,(SP)		;	 Yes, so point to next line.
+   2765						 inc	r5			;	 UP the base.
+   2766						 clr	r1			;	 start again
+   2767						 br	10$			;
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 48
+VDXTTY.MAC;3	MINI - initialization routine.
+
+   2768					13$:
+   2769						mov	#line,r1
+   2770						mov	#"  ,(R1)+		;	"  "
+   2771						mov	r5,r2			;	line counter
+   2772						asl	r2			;	*2
+   2773						add	#tt,r2			;	into trans. table
+   2774						cmp	r5,#12.			;	over one word entry?
+   2775						ble	14$			;	NO...
+   2776						 mov	(r2)+,(r1)+		;	 yes..." n"
+   2777						 inc 	r5			;	 2 entries
+   2778						 br	15$
+   2779					14$:
+   2780						mov	#"  ,(r1)+		;	NO..."  "
+   2781					15$:
+   2782						inc	r5			;	skip entry...
+   2783						mov	(r2)+,(r1)+		;	"nn"
+   2784						mov	#"  ,(R1)+		;	"  "
+
+   2786					;	Here goes the line:
+   2787						mov	#pline,r2
+   2788					1$:
+   2789						mov	(r3)+,r0		;	item value.
+   2790						jsr	pc,OCTout		;	into line
+   2791						movb	#" X,(r1)+		;	"oooooo  "
+   2792						dec	r2
+   2793						bgt	1$
+
+   2795						movb	#eol,(r1)+		;
+   2796						movb	#0,(r1)+		; 	NULL terminator
+   2797						mov	#line,r0
+   2798						jsr	pc,linOUT		;	LINE out
+   2799						jmp	9$			;	NO on branch.
+   2800					.ENDC
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 49
+VDXTTY.MAC;3	MINI - initialization routine.
+
+   2802					.IF NE <baud>
+   2803						.globl	wait
+   2804	013510'	003720			wait:	2000.
+   2805	013512'				slowIT:
+   2806					;	A wait loop between chars - ABOUT 4 milliseconds.
+   2807	013512'	010046				mov	r0,-(SP)
+   2808	013514'	016700	177770			mov	wait,r0		;      	     time - differs with mem.
+
+   2810	013520'	005767	177764		1$:	tst	wait		;	about 1.0 us
+   2811	013524'	005300				dec	r0		;	about  .5 us
+   2812	013526'	002374				bge	1$		;	about  .8 us
+   2813									;	total 2.3 * 2000 = 4600 us
+   2814	013530'	012600				mov	(SP)+,r0
+   2815	013532'	000207				rts	pc
+   2816					.ENDC
+
+   2818					;	Here we just put one line to the TTY...simple stuff.
+   2819		177560			ttyICS=177560
+   2820		177562			ttyIDA=ttyICS+2
+   2821		177564			ttyOCS=ttyICS+4
+   2822		177566			ttyODA=ttyICS+6
+   2823					;	(r0)= address of line to be output at entry.
+   2824	013534'				linOUT:
+   2825	013534'	010146				mov	r1,-(SP)
+   2826	013536'	005001				clr	r1		;	line terminator...just in case.
+   2827	013540'	012767	000144	177742		mov	#100.,WAIT	;	for slowit...
+   2828	013546'	105737	177564		1$:	tstB	@#ttyOCS	;	ready?
+   2829	013552'	002375				bge	1$		;	NO.
+   2830	013554'	105710				 tstB	(r0)		;	NULL?
+   2831	013556'	001406				 beq	2$		;	eol.
+   2832	013560'	112037	177566			   movB	(r0)+,@#ttyODA	;	char out
+   2833	013564'	005201				   inc	r1		;	prevent run aways...
+   2834						   .IF NE <baud>
+   2835	013566'	004767	177720			   jsr	pc,SlowIT	;	make 2400 baud close to 1200.
+   2836						   .ENDC
+   2837	013572'	000765				   br	1$		;	NO, so loop.
+   2838					;	A line is done...
+   2839	013574'				2$:
+   2840	013574'	012601				mov	(SP)+,r1
+   2841	013576'	000240				NOP
+   2842	013600'	000207				rts	pc
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 50
+VDXTTY.MAC;3	Compare buffers
+
+   2844						.sbttl	compare buffers
+   2845	013602'	000000			OVRerr:	0
+   2846	013604'	000003			BERROD:	.BLKW	3
+   2847	013612'	177177				.WORD	177177		;	del del for the marker.
+   2848	013614'				bufCMP:
+   2849	013614'	005767	170044			tst	IOerr		;	NO compare on IOerr
+   2850	013620'	001401				beq	DObc
+   2851	013622'	000207				 rts	pc
+   2852	013624'				DObc:
+   2853	013624'	012701	013604'			mov	#BERROD,r1
+   2854	013630'	012702	000003			mov	#3,r2
+   2855	013634'				cCache:
+   2856	013634'	005021				clr	(r1)+		;	clear our errored buff. cache.
+   2857	013636'	005302				dec	r2
+   2858	013640'	003375				bgt	cCache
+
+   2860	013642'	012700	014646'			mov	#OUTbuf,r0
+   2861	013646'	012701	016620'			mov	#INbuff,r1
+   2862	013652'	012703	013604'			mov	#BERROD,r3	;	save the errored words...
+   2863	013656'	005067	164146			clr	ERRED		;	set if this one in err.
+   2864	013662'	005067	177714			clr	OVRerr		;	overRUN.
+   2865	013666'	005067	164134			clr	datDIF		;		"
+   2866	013672'	005002				clr	r2
+   2867	013674'	005004				clr	r4		;	count storage in errored buff.
+
+
+   2870					; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+   2871					;
+   2872					;	compare the buffers
+   2873					;
+   2874					; ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+   2876	013676'				1$:
+   2877	013676'	022011				cmp	(r0)+,(r1)
+   2878	013700'	001412				beq	2$		;	The same--
+   2879	013702'	005267	164120			 inc	datDIF		;	Keep a running count of differences.
+   2880	013706'	020227	000001			 cmp	r2,#1		;	Don't want first 2 words
+   2881	013712'	003405				 ble	2$
+   2882	013714'	020427	000003			  cmp	r4,#3		;	only want 3 words
+   2883	013720'	001402				  beq   2$
+   2884	013722'	005204				   inc	r4		;	cache 1 more word.
+   2885	013724'	011123				   mov	(r1),(r3)+	;	save the input word.
+   2886	013726'				2$:
+   2887	013726'	005721				tst	(r1)+		;	and next input word.
+   2888	013730'	005202				inc	r2		;	Word counter. WDcnt times.
+   2889									;	0,1,...,WDcnt-1
+   2890	013732'	020267	164054			cmp	r2,WDcnt	;	all done?
+   2891	013736'	002757				blt	1$		;	No on branch.
+
+   2893					;	See if any change
+   2894	013740'	005767	164062			tst	datDIF		;	no data errors?
+   2895	013744'	001405				beq	22$		;	Yes.
+   2896	013746'	005267	164050			 inc	difCNT		;	 NO. So, buffer has changed again.
+   2897	013752'	005267	164052			 inc	ERRED		;	for RPG.
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 51
+VDXTTY.MAC;3	Compare buffers
+
+   2898	013756'	000240				 NOP
+   2899	013760'				22$:
+   2900	013760'	021127	054512			cmp	(r1),#secret	;	The secret pattern
+   2901	013764'	001404				beq	23$
+   2902	013766'	005267	167664			 inc	OVRrun		;	An overrun.
+   2903	013772'	005267	177604			 inc	OVRerr		;	The error
+   2904	013776'				23$:
+   2905						.IF NE <varWC*Wboxes>
+   2906						tst	datDIF
+   2907						beq	3$
+
+   2909						mov	r0,-(SP)
+   2910						mov	WDcnt,r0	;	which word
+   2911						dec	r0		;	0 to maxcount-1
+   2912						cmp	r0,#nboxes	;	bound check
+   2913						ble	30$
+   2914						 mov	 #nboxes,r0	;	USE spare - a screwup is at hand.
+   2915					30$:
+   2916						asl	r0		;	* 2
+   2917						add	#boxes,r0	;	start of boxes + displacement
+   2918						inc	(r0)		;	THE box
+   2919						mov	(SP)+,r0
+   2920						.ENDC
+   2921	013776'				3$:
+   2922	013776'	016767	164024	164020		mov	datDIF,pdatDIF	;	data differences the same again.
+   2923	014004'	066767	177572	164012		add	OVRerr,pdatDIF
+   2924	014012'	001002				bne	bear		;	yes
+   2925	014014'	000241				 clc			;	NO arrow into the interface.
+   2926	014016'	000207				 rts	pc
+   2927	014020'				bear:
+   2928	014020'	000261				sec			;	Arrow-return
+   2929	014022'	000207				rts	pc
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 52
+VDXTTY.MAC;3	Compare buffers
+
+   2931	014024'	000000			zeer:	0
+   2932	014026'				Gzero:
+   2933	014026'	005001				clr	r1
+   2934	014030'	000207				rts	pc
+   2935	014032'	177777			my1:	-1
+   2936	014034'				Gminus:
+   2937	014034'	016701	177772			mov	my1,r1
+   2938	014040'	000207				rts	pc
+
+   2940	014042'	052525			Guup:	"UU
+   2941	014044'				GUU:
+   2942	014044'	016701	177772			mov	Guup,r1
+   2943	014050'	000207				rts	pc
+   2944	014052'	025052			Gssp:	"**
+   2945	014054'				Gstar:
+   2946	014054'	016701	177772			mov	Gssp,r1
+   2947	014060'	000207				rts	pc
+   2948	014062'	000001			slide1:	1
+   2949	014064'				Gslid1:
+   2950	014064'	016701	177772			mov	slide1,r1
+   2951	014070'	006367	177766			asl	slide1
+   2952	014074'	005767	177762			tst	slide1
+   2953	014100'	001002				bne	1$		;	ALL the way yet?
+   2954	014102'	005267	177754			 inc	slide1		;	 Yes, so set to 1.
+   2955	014106'				1$:
+   2956	014106'	000207				rts	pc
+   2957	014110'	177776			slide0:	177776
+   2958	014112'				Gslid0:
+   2959	014112'	016701	177772			mov	slide0,r1
+   2960	014116'	005767	177766			tst	slide0
+   2961	014122'	003002				bgt	1$		;	Sign bit set?
+   2962	014124'	000261				 sec			;	 Yes, so set carry.
+   2963	014126'	000401				 br	2$
+   2964	014130'				1$:
+   2965	014130'	000241				clc			; 	NO sign, clear carry.
+   2966	014132'				2$:
+   2967	014132'	006167	177752			rol	slide0
+   2968	014136'	000207				rts	pc
+   2969	014140'	000000			Gval:	0
+   2970	014142'				Gincr:
+   2971	014142'	016701	177772			mov	Gval,r1
+   2972	014146'	005267	177766			inc	Gval
+   2973	014152'	000207				rts	pc
+   2974	014154'	000000			Gseed:	0
+   2975	014156'				Grand:
+   2976					;	(2**9 + 2**2 + 1)X(n) + 13849 = X(n+1)
+   2977	014156'	016701	177772			mov	Gseed,r1
+   2978	014162'	012746	000011			mov	#9.,-(sp)
+   2979	014166'				1$:
+   2980	014166'	006301				asl	r1		;	X(n)*2**9
+   2981	014170'	005316				dec	(sp)
+   2982	014172'	003375				bgt	1$
+
+   2984	014174'	016716	177754			mov	Gseed,(sp)
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 53
+VDXTTY.MAC;3	Compare buffers
+
+   2985	014200'	006316				asl	(sp)		;	X(n)*2
+   2986	014202'	006316				asl	(sp)		;	X(n)*2**2
+   2987	014204'	061601				add	(sp),r1		;	X(n)*2**9 + X(n)*2**2
+   2988	014206'	066701	177742			add	Gseed,r1	;	... + X(n)
+   2989	014212'	062701	032261			add	#13489.,r1
+   2990	014216'	010167	177732			mov	r1,Gseed	;	X(n+1)
+
+   2992	014222'	005726				tst	(sp)+
+   2993	014224'	000207				rts	pc
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 54
+VDXTTY.MAC;3	Buffer patterns.
+
+   2995						.sbttl	buffer patterns.
+   2996	014226'	000000			patInx:	0			;	index into pattern table
+   2997		000010			nPats=8.
+   2998	014230'	014024'	014032'	014042'	cPatt:	zeer,my1,GUUP,GssP,slide1,slide0,Gval,Gseed
+   2999	014250'	014026'	014034'	014044'	GETpat:	Gzero,Gminus,GUU,Gstar,Gslid1,Gslid0,Gincr,Grand
+   3000						.sbttl	initialize buffers.
+   3001	014270'				bufINI:
+   3002					;	initialize outBuf, and clear input Buf:
+   3003					;	outBUF has first tw0 bytes of dHOST,sHOST for bSize+1 words.
+   3004	014270'	016767	163510	000350		mov	hosts,ENCAP		; re-init encapsulation.
+   3005	014276'	012700	014650'			mov	#OUTdat,r0
+   3006	014302'	016701	177720			mov	patInx,r1		; index into call list
+   3007	014306'	006301				asl	r1			; word offset
+   3008	014310'	062701	014250'			add	#GetPat,r1		; into table
+   3009	014314'	004771	000000			jsr	pc,@(r1)		; the call, returns pattern in r1
+   3010	014320'	005267	177702			inc	patInx
+   3011	014324'	026727	177676	000010		cmp	patInx,#nPats
+   3012	014332'	002402				blt	pOK
+   3013	014334'	005067	177666			 clr	patInx			; starting over.
+   3014	014340'				pOK:
+   3015					;	ALSO, "Clear" input buffer:
+   3016	014340'	012702	016620'			mov	#INbuff,r2
+   3017	014344'	005003				clr	r3
+   3018	014346'				1$:
+   3019	014346'	010120				mov	r1,(r0)+		; store 1,...,WDcnt-1 in output buf.
+   3020	014350'	012722	054512			mov	#secret,(r2)+		; store 0,...,WDcnt-1
+   3021	014354'	005203				inc	r3
+   3022	014356'	020367	163430			cmp	r3,WDcnt
+   3023	014362'	002771				blt	1$
+
+   3025	014364'	012712	054512			mov	#secret,(r2)		; ONE extra word for overrun check.
+
+   3027	014370'	000207				rts	pc
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 55
+VDXTTY.MAC;3	Initialize buffers.
+
+   3029	014372'	   015	   052	   040	legend:	.ASCIZ	<eol>/* The current buffer pattern = '/
+   3030	014434'	   015	   052	   040	weirdo:	.ASCIZ	<eol>/* i NE o - words out compare errors = '/
+   3031		014506'				.EVEN
+   3032	014506'	000000			pcons:	0
+   3033	014510'				ShoPat:
+   3034	014510'	032737	001000	177570		bit	#1000,@#consol		; We're on?
+   3035	014516'	001003				bne	1$			; Yes.
+   3036	014520'	005067	177762			 clr	pcons			;  Nope...
+   3037	014524'	000207				 rts	pc
+   3038	014526'				1$:
+   3039	014526'	005767	177754			 tst	pcons			;  consecutive try?
+   3040	014532'	001401				 beq	2$			;  NO.
+   3041	014534'	000207				  rts	pc			;   Yes. So relax.
+   3042	014536'				2$:
+   3043	014536'	005267	177744			 inc	pcons			;  Only once.
+   3044					;	And now the message.
+   3045	014542'	012700	014372'			mov	#legend,r0
+   3046	014546'	012701	007454'			mov	#line,r1
+   3047	014552'	004767	172240			jsr	pc,makLin		;  (r0)+ -> (r1)+
+   3048
+   3049					;	Now the value:
+   3050	014556'	016700	177444			mov	PatInx,r0		;  indexes the pattern
+   3051	014562'	005300				dec	r0
+   3052	014564'	002002				bge	3$
+   3053	014566'	012700	000007			 mov	#nPats-1,r0		;  wrap around.
+   3054	014572'				3$:
+   3055	014572'	006300				asl	r0			;  ...by bytes
+   3056	014574'	062700	014230'			add	#cPatt,r0		;  base+offset 
+   3057	014600'	017000	000000			mov	@(r0),r0		;  the value.
+   3058	014604'	004767	172112			jsr	pc,OCTout		;  r0 -> (r1)+ in ascii(8)
+   3059	014610'	004767	176652			jsr	pc,EndSnd
+
+   3061	014614'	012700	014434'			mov	#weirdo,r0
+   3062	014620'	012701	007454'			mov	#line,r1
+   3063	014624'	004767	172166			jsr	pc,makLin		;  (r0)+ -> (r1)+
+   3064	014630'	016700	163154			mov	WDSerr,r0
+   3065	014634'	004767	172062			jsr	pc,OCTout		;  r0 -> (r1)+ in ascii(8)
+   3066	014640'	004767	176622			jsr	pc,EndSnd
+   3067	014644'	000207				rts	pc
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 56
+VDXTTY.MAC;3	Initialize buffers.
+
+   3069						.nlist	meb
+   3070						.sbttl	buffer areas.
+   3071						.globl	OUTBUF,inBUFF
+   3072		000014			Ndata = 12.
+   3073		000376			excess = 266.-Ndata
+   3074		000764			bSize = 500.
+   3075	014646'				OUTBUF:
+   3076	014646'	   111	   111		ENCAP:	.byte	dHOST,lHOST		; Source, and dest HOST(lHOST..)
+   3077	014650'				OUTdat: .REPT	bSize
+   3078						.WORD	0
+   3079						.ENDR
+   3580					; Data buffer area:
+   3581	016620'	000000			INbuff:	.WORD 0
+   3582	016622'				PAKsiz: .REPT	bSize+1
+   3583						.WORD	0
+   3584						.ENDR
+   4086		003674'				.end	mini
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 57
+VDXTTY.MAC;3	Symbol table
+
+ADDERR   003654R 	AINX     000472R 	ARING    000474R 	BANNER   010332R 
+BAUD   = 001200  	BEAR     014020R 	BEFORE   003646R 	BERROD   013604R 
+BERRY    007304R 	BINX     000134R 	BOUND    000020R 	BRING    000136R 
+BSIZE  = 000764  	BUFCMP   013614R 	BUFINI   014270R 	CCACHE   013634R 
+CDOWN    003642R 	CHKHI    004444RG	CHKLOW   004446RG	CHKPRO   004006R 
+CHKTIM   004106R 	CLOCK  = 000001  	CLRERR   006016R 	COLLID   003662R 
+CONSOL = 177570  	CONVRT   006742R 	CPATT    014230R 	CRINGE   007030R 
+CURCNT   003546R 	CYCLES   003640R 	DATDIF   000026RG	DCNT     012360R 
+DCONS    012302R 	DELAY    000014RG	DETAIL   012640R 	DHOST  = 000111  
+DIFCNT   000022RG	DOBC     013624R 	DONE     000016R 	DRINGS   012562R 
+DURING   012404R 	D$ONER   003670R 	D1       012420R 	D2       012462R 
+ENCAP    014646R 	ENDSND   013466R 	EOB      007620R 	EOL    = 000015  
+ERRED    000030R 	ESIZE  = 000026  	ETCETC   004304R 	EXCESS = 000376  
+E0IBL  = 160012  	E0ICS  = 160014  	E0ICV  = 000404  	E0IWC  = 160010  
+E0OBL  = 160002  	E0OCS  = 160004  	E0OCV  = 000400  	E0ODE  = 160006  
+E0OEV  = 000410  	E0OWC  = 160000  	E0RHA  = 160016  	FCONS    011200R 
+FORCEL   013062R 	FPAK     003636R 	GETPAT   014250R 	GINCR    014142R 
+GMINUS   014034R 	GRAND    014156R 	GSEED    014154R 	GSLID0   014112R 
+GSLID1   014064R 	GSSP     014052R 	GSTAR    014054R 	GUU      014044R 
+GUUP     014042R 	GVAL     014140R 	GZERO    014026R 	HEADER   010451R 
+HOSTS    000004R 	HRING    012304R 	IDIDIT   005020R 	IEHEAD   011732R 
+IEINX    002620R 	IERING   002622R 	IE$RIN   003520R 	IINX     001366R 
+IMOK     005450R 	INBUFF   016620RG	INCAR  = 002000  	INCRC  = 020000  
+INDON  = 000200  	INENA  = 000100  	INEO     003650R 	INERR  = 100000  
+INFOR  = 010000  	INGO   = 000001  	ININT1   005022R 	INLBK  = 000040  
+INNXM  = 040000  	INOT     000056R 	INPR   = 000002  	INP1ST   000132R 
+INRCR  = 000020  	INRWE  = 000004  	INRWV  = 000010  	INWOV  = 004000  
+IOERR    003664R 	IRING    001370R 	ISUM     000062R 	ITEMS    010636R 
+ITIS     005276R 	JINX     001724R 	JRING    001726R 	KHEAD    011552R 
+KINX     002262R 	KRING    002264R 	KRINGE   007222R 	K$RING   003516R 
+LATE     003550R 	LEGEND   014372R 	LHOST  = 000111  	LINE     007454R 
+LINOUT   013534R 	LONGB    010375R 	LONGH    010664R 	LONGH1   011003R 
+LONGL    011124R 	LONGL1   011152R 	LONGON   013052R 	LONGRE   012776R 
+MAKLIN   007016R 	MASKS    006706R 	MAXCNT   003530R 	MAXPR    007452R 
+MAXSLT   007444R 	MAXWC    003540R 	MAXWRD = 000144  	MCYCLE = 000012  
+MINCNT   003524R 	MINEXT   005740R 	MINI     003674RG	MININI   006152RG
+MINTOC   003526R 	MINWC    003536R 	MY1      014032R 	NADA     012252R 
+NDATA  = 000014  	NEWHI    004454R 	NEWLNG = 043120  	NEWOUT   013442R 
+NEWS     013204R 	NEWSGO   013320R 	NEWSON   013232R 	NEWTIM = 001604  
+NGOES    000034R 	NIERR    000046R 	NIGOE    000040R 	NIINT    000042R 
+NITEMS = 000013  	NLONG  = 000013  	NLONG1 = 000013  	NNUMS  = 000004  
+NOERR    000044R 	NOIERR   005156R 	NOINT    000036R 	NOTBRD   005214R 
+NOTNXM   005142R 	NOTPRI   005524R 	NOTUP    004510R 	NPATS  = 000010  
+NRING  = 000013  	NRINGS = 000005  	NTII     000052R 	NTIO     000050R 
+NTO      000066R 	NUMH     010570R 	NUMTAB   010626R 	OCHANG   000032RG
+OCTOUT   006722R 	OERR     004564R 	OFLAGS   012362R 	OHEADS   012370R 
+OIN      004720R 	OITAB    007054R 	OITAB1   007060R 	ONAMES   012376R 
+ONOT     000054R 	ORINGS   007064R 	OSUM     000060R 	OTHERS = 000003  
+OURHI    003554R 	OUTBGN = 004000  	OUTBUF   014646RG	OUTCAR = 002000  
+OUTCOL = 040000  	OUTDAT   014650R 	OUTDON = 000200  	OUTENA = 000100  
+OUTERB = 100000  	OUTFOR = 010000  	OUTGO  = 000001  	OUTIOR = 000004  
+OUTMER = 000010  	OUTNXM = 000400  	OUTRET = 020000  	OUTTRR = 000020  
+OUTWC  = 000002  	OVRERR   013602R 	OVRRUN   003656R 	OWAIT    003732R 
+PAKSIZ   016622R 	PATINX   014226R 	PC     =%000007  	PCONS    014506R 
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 58
+VDXTTY.MAC;3	Symbol table
+
+PDATDI   000024R 	PIOERR   003666R 	POK      014340R 	PRIME  = 000001  
+PRI5   = 000240  	PRI7   = 000340  	PROCES   003722R 	PSW    = 177776  
+RBHEAD   012104R 	RBINX    003156R 	RBRING   003160R 	RB$RIN   003522R 
+RCVDB    000074R 	RECCNT   003532R 	RECORD   003644R 	RECWC    003542R 
+REDWC    005016R 	REND     012672R 	REPHI    004450R 	REPLOW   004452R 
+REPORT   007744R 	RESETI   004426R 	RETRY    003660R 	REXIT    010324R 
+RFINIS   003514R 	RFS      012550R 	RHEAD    007622R 	RINGB    011202R 
+RINGH    011444R 	RINGIT   007350R 	RINGS    012536R 	RMAX   = 000012  
+RON      010104R 	RSTART   000134R 	R0     =%000000  	R1     =%000001  
+R2     =%000002  	R3     =%000003  	R4     =%000004  	R5     =%000005  
+R6     =%000006  	R7     =%000007  	SCOPE    006676RG	SECRET = 054512  
+SETTIM   004514RG	SETUP    005460RG	SET1     005600R 	SHOPAT   014510R 
+SLIDE0   014110R 	SLIDE1   014062R 	SLOWIT   013512R 	SOFTY    003552R 
+SP     =%000006  	SWAIT  = 000017  	TAILS    012524R 	TAIL1    011241R 
+TAIL2    011277R 	TAIL3    011313R 	TAIL4    011352R 	TAIL5    011411R 
+TICS   = 000003  	TIMBAN   010415R 	TIMCNT   003534R 	TIMHI    004460RG
+TIMINT   004550RG	TIMLOW   004462RG	TIMOUT   004464RG	TIMUP    004504R 
+TIMWC    003544R 	TINEO    003652R 	TNERR    007727R 	TNSNT    007710R 
+TOTGO    000076R 	TOTII    000106R 	TOTIT    000126R 	TOTOI    000102R 
+TOTOT    000130R 	TOTTO    000112R 	TOTXI    000116R 	TOTXO    000122R 
+TRAP10   006010R 	TRAP4    006002R 	TSIZE  = 000601  	TTYICS = 177560  
+TTYIDA = 177562  	TTYOCS = 177564  	TTYODA = 177566  	T$PRER   003672R 
+USEBOX   003634R 	VALID  = 000024  	VARWC  = 000001  	WAIT     013510RG
+WBOXES = 000000  	WCNTR    007446R 	WDCNT    000012RG	WDSERR   000010R 
+WDSOUT   000006R 	WEIRDO   014434R 	WHICH    007052R 	WINX     001030R 
+WPLINE   007450R 	WRAP   = 000334  	WRING    001032R 	XERR     000064R 
+XIN      000070R 	XOUT     000072R 	ZEER     014024R 	.MACN. = 000004  
+.VRSN. = 000003  	1$       004026R 	1$       004254R 	1$       004356R 
+1$       004746R 	1$       005506R 	1$       005614R 	1$       006546R 
+1$       007016R 	1$       007040R 	1$       007214R 	1$       007336R 
+1$       007442R 	1$       007754R 	1$       012436R 	1$       012600R 
+1$       012716R 	1$       013520R 	1$       013546R 	1$       013676R 
+1$       014106R 	1$       014130R 	1$       014166R 	1$       014346R 
+1$       014526R 	2$       004036R 	2$       004272R 	2$       004410R 
+2$       007026R 	2$       010150R 	2$       012452R 	2$       012610R 
+2$       012734R 	2$       013044R 	2$       013574R 	2$       013726R 
+2$       014132R 	2$       014536R 	3$       004206R 	3$       010154R 
+3$       012656R 	3$       012750R 	3$       013050R 	3$       013776R 
+3$       014572R 	4$       010256R 	4$       012774R 	5$       010272R 
+10$      005052R 	10$      007774R 	11$      004616R 	11$      010140R 
+12$      004630R 	12$      005330R 	13$      004654R 	22$      013760R 
+23$      013776R 	31$      004220R 	64$      006750R 	65$      006764R 
+.      = 020574R 
+
+
+NEW ether-net board service test.	MACN11   V4.26T   17-Nov-81 13:29:14   PAGE 59
+VDXTTY.MAC;3
+
+
+
+ Errors detected: 0
+
+ *,vd_vdxtty
+ Run-time:  32 seconds
+

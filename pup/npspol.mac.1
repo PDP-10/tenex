@@ -1,0 +1,5097 @@
+TITLE PSPOOL
+SUBTTL Edward R. Fiala
+SEARCH STENEX
+
+; Copyright Xerox Corporation 1981
+; @CCL
+; .LOAD @PSPOOL
+; @RUNFIL
+;  PSPOOL.CROSS
+
+;This server is responsible for sending all files <PRINTER>LPT.*;*
+;via network for printing on any Press or Ears device.  It simply
+;transmits preformatted files, while formatting others during transmission.
+
+;The files <PRINTER>LPT.*;* are divided into, first, the leader, next,
+;an optional part called the initial list, and, finally, the text to be
+;printed.  The value in the user-settable word of the FDB entry for the
+;file contains 5*first initial list word no. (plus flags in the l.h.).
+;To determine how the file is printed, Pspool assimilates successively
+;properties in <USER>DOCGEN.PRT, the leader, and the initial list.
+;The format of properties is discussed with the GETP subroutine.
+;With the exception of TO, C, INVTO, and KEYWORDS, subsequent occurrences
+;of a property overrule earlier uses of it, so system defaults can be
+;overruled by a user's preferences from his own DOCGEN file, then by
+;the properties in the leader, and finally by the initial list.
+
+;TO, C, and INVTO take a distribution list as argument.  Names from
+;the distribution lists are inserted in an alphabetically-ordered symbol
+;table with a code indicating distribution mode.  When these properties
+;occur in DOCGEN.PRT or the leader, they request new distribution.
+;However, when they occur in the initial list, they are a history of
+;already completed distribution which should not be repeated.  That is,
+;there are three possible modes of distribution:  brief, abstract, and
+;copy.  A person may receive both a brief and a copy, but he may not
+;receive an abstract in combination with any other form of distribution.
+;The format of distribution lists is as follows:
+;	Title/L,NAME/B,NAME/A,NAME/C,...,:FILE1/ABC,:FILE2/BBB,...<cr>
+;The order of the names and the title statement is unimportant, and
+;the title and commas or blanks as separators are optional.  Distribution
+;files have default directory SECRETARY and default extension DIS.  Top
+;level names and titles accumulate in the TO or C message, which can be
+;printed on preformatted Ears documents.
+
+;For Ears files setup by Pspool, there is no right margin check, but Ears
+;truncates text extending too far to the right.  Printing is initially in the
+;first font mentioned in the FONT property, or the first one in the default
+;font set, if no FONT directive occurs.  An assortment of formatting
+;directives are possible through use of escape sequences within the text of
+;a file.  These all begin with control-F and are discussed with the code
+;beginning at "CONTF".
+;
+;When files are sent successfully, or rejected as unprintable for one
+;reason or another, the sign bit in the user settable word of the FDB
+;is set and an entry is made in <SECRETARY>PRINTHISTORY.;1 as below:
+;  *Sent PALO 2 x 23 copies + 5 briefs, FILENAME, #USER, 9-20-74 16:54
+;  *Sent XGP2 1 x 23 copies + 2 briefs, FILENAME, #USER, 9-20-74 16:56
+;  *Font not found for FILENAME, #USER, 9-20-74 16:54
+;  **PALO down, 9-20-74 16:54
+;File entries begin "*" and end FILENAME, #USER, DATE-TIME<CR><LF>.
+;Service delay messages begin "**HOSTNM" and end DATE-TIME<CR><LF>.
+;File report messages (optionally) are sent by either SNDMSG or
+;a direct terminal link.  PRINTSTATUS sumarizes a user's recent printing.
+;Printed files unreferenced for 3 hours are expunged.
+
+;Communication with printing hosts is carried out using the EFTP Pup
+;protocol (see <PUP>EFTP.EARS).  Data and end-of-file messages are
+;sequence-numbered from 0 to the final message, and all data messages
+;contain a body of 256 16-bit bytes.
+
+;Abort messages have the following codes:
+;  -1	Timeout, no response from remote host
+;  1	External sender abort
+;  2	External receiver abort--file unprintable for some reason
+;  3	Receiver busy abort--short wait, then retry file
+;  4	Out of sync abort received
+;  5	--
+;  6	Long wait abort
+;  7	Medium wait abort
+;  8	Suspend transfer
+;  >= 2^16 jfn error (shouldn't happen)
+;
+;The server loops through <PRINTER> directory files.  "Receiver busy"
+;abort messages do not disturb this sequence unless one happens
+;in the middle of a file transmission (= bug or host crash-restart).
+;No other errors disturb file sequence.  PSPOOL Sndmsg's to <FIALA> for
+;program bugs, then restarts after several minutes.
+;
+;When no files can be sent, PSPOOL checks every 30 seconds for new files
+;to print, but waits 3 minutes before retransmitting to dead hosts.
+;Every hour and a half, deleted files are expunged, then all files
+;PRINTED.*;* are deleted.  This ensures that if someone tries to RESPOOL
+;a file (due to some difficulty after sending the file over the network),
+;then the file will remain for at least 3 hours.  The Minx program also
+;renames files in this way, so that Pspool's directory purging and the
+;respooling program will work for files printed either way.
+
+; Displacements within each item of the column arrays
+TOPMAR==0	; 10*top margin in 500ths
+BOTTST==1	; Contains skip-if-above-bottom-margin instruction
+LFTMAR==2	; Left margin of column in 500ths
+RGTMAR==3	; Right margin of column in 500ths
+CLINK==4	; Next column's number or 0 (end of page)
+NCPAR==5	; Number of column table parameters/column
+
+; Flags in l.h. of 0 (permanent)
+UPDHIS==20	; Update "To" and "C" histories in initial list
+ABSTRP==10	; Doing abstract flag
+BSYNOT==4	; Terminal notification on busy messages
+SNDMN==2	; SNDMSG notification on completion
+TERNOT==1	; Terminal notification on completion
+
+; Flags in l.h. of 0 (during any document scan)
+EOFFLG==400000	; End-of-file encountered on input
+ASC8==40000	; Text file uses 8-bit chars instead of 7-bit
+UNDERL==20000	; Do underlining for printing chars
+HDIC==20000	; Have dictionary entry for current distribution name
+RDLIST==10000	; Repeat current string for all names on dist. list
+INCOPY==4000	; Current page not in full copy
+INTABS==2000	; Interpret tabs (FEARS only)
+SCNFGS==776000	; Union of scan flags
+
+; Flags in l.h. of 0 (during GETP and distribution list processing)
+DALTER==400000	; Distinguishes ABSTRACTS from COPIES, LCOLUMNS from PCOLUMNS, etc.
+DSNAME==200000	; Reading distribution name
+RDNAME==100000	; Reading argument for NAME
+LONGST==40000	; Reading control-D terminated string
+DOCSCN==20000	; Looking for properties at the beginning of the document
+TOM==4000	; Send distribution file titles and sendto names to "TO"
+CCM==2000	; Send distribution file titles and sendto names to "C"
+XPND==1000	; Suppress titles, send all names
+UPCONV==400	; Convert to upper case
+FIRSTS==200	; First pass over distribution names building EXCMSG complete
+
+; Flags in r.h. of 0
+UNSNTF==400000	; Files unsent because host unresponsive
+BIGDOC==200000	; Document is large--don't check for copies x pages too large
+DONTSN==100000	; This 256-page hunk isn't the last
+RECDOC==40000	; Enter document into an index
+QUEUE==20000	; Queue output for receivers rather than printing now
+STDDIC==10000	; Standard dictionary not in use
+DICLDD==4000	; Standard dictionary not loaded
+DELETF==2000	; Delete file (because of error) after completion
+LANDSC==1000	; Landscape mode
+NAMSOK==400	; Already output strings for each distribution name
+ERRF==100	; File not printed because of error
+MAPP==40	; Transform fonts into portrait (else landscape)
+REDUCF==20	; Carry out reduction
+BLDF==10	; Build document
+PRSFLG==4	; Press file
+
+DEFINE FERR(FOOTXT)
+<	MOVEI B,[ASCIZ /FOOTXT/]
+	JUMPA ABFILE>
+
+; The Press converter fork clears the map from FLGPG to 777.
+PG(TXTPG)		; Page to which text files and font page 0 are mapped
+PG(FLGPG)		; Page to which <SYSTEM>MAILER.FLAGS;1 is mapped
+PG(COMPG)		; Page to which BSYMSG and OLDALC are mapped
+
+OLDALC=COMPG*1000	; Disk allocation at last reading
+BSYMSG=OLDALC+1		; 100-octal word block
+MSGS0=BSYMSG+101	; No. messages originated
+MSGS1=MSGS0+1		; No. messages transmitted
+MSGS2=MSGS1+1		; No. receiver unresponsive on connection attempt events
+MSGS3=MSGS2+1		; Unused
+MSGS4=MSGS3+1		; No. "receiver rejected file" events
+MSGS5=MSGS4+1		; No. "busy in middle of transmission" events
+MSGS6=MSGS5+1		; No. "out of sync" responses
+MSGS7=MSGS6+1		; No. unable to complete transmission of file events
+MSGS8=MSGS7+1		; No. files transmitted ok or in error
+MSGS9=MSGS8+1		; No. receiver busy for a long time
+MSGS16=MSGS9+1		; No. FPress portrait files
+MSGS17=MSGS16+1		; No. FPress landscape files
+MSGS18=MSGS17+1		; No. Simple Press transmissions
+NMSGST==15		; No. statistics words
+LASTHR=MSGS0+NMSGST	; Block for last hour's stats
+DAYSTT=LASTHR+NMSGST	; Block for today's stats
+YESDST=DAYSTT+NMSGST	; Block for yesterday's stats
+WEEKST=YESDST+NMSGST	; Block for this week's stats
+LSTWKS=WEEKST+NMSGST	; Block for last week's stats
+
+
+PGU(FNTWDS,5*1000)	; Table of width-index entries from FONTS.WIDTHS
+PGU(FNTFAM,200)		; Table of nameptr,,famcode entries from FONTS.WIDTHS
+PGU(FAMSTR,600)		; Strings pointed to by FNTFAM entries
+PGU(DICIDX,40000)	; Dictionary index table value,,string pointer
+			; and string space after table
+PGU(DICENT,1000)	; Space for current dictionary entry
+
+PGU(REPMSG,140)		; For Sndmsg or tty report message
+PGU(BRFMSG,640)		; For building SNDMSG brief
+PGU(EXCMSG,1000)	; Non-fatal exception messages
+PGU(MESSAG,4000)	; Message buffer used many places
+
+PGU(FM,40000)		; Font memory (FM) overlapping PD, DL, and TL
+
+PD=FM			; Page directory (256 pages)
+DL=FM+400*2		; Display list (15k chars/pg Ears limit)
+EL=DL+12400		; Press entity list
+ELEND=EL+10400		; Word after EL
+FNTTAB=ELEND		; Like DFNTAB except during reduction when
+			; orig font height [0,8], orig. width [9,17],
+			; trans. align. [27,35]
+ATABT=FNTTAB+20		; Table for absolute tab stops during FEARS
+TABTAB=ATABT+^D26	; Tab displacement from left margin during FEARS
+XFNBUF=TABTAB+^D40	; For name of font transformation file (length 15)
+SUBMSG=XFNBUF+15	; Subheading message during FEARS (length 30)
+
+OUTLDR=FM		; Buffer for building output leader for Press conversions
+PRFTAB=OUTLDR+1000	; Map preferences during GETP (3 words)
+PNAME=PRFTAB+3		; Property names during GETP (3 words)
+SNDHDR=PNAME+3		; Number of entries in SRTTBL
+SRTTBL=SNDHDR+1		; Distribution modes,,name pointer (length 1777)
+TABLEP=SRTTBL+1777	; GETAB table pointers (length 20)
+RESVLC=TABLEP+20	; GETAB tables (length 600)
+
+PGU(FS,400*20)		; Font specification (FS) or font space table
+PGU(DISTL,1000)		; For copy/abstract list
+PGU(BRFL,1000)		; For brief list
+PGU(QUEUEL,1000)	; For queued copies/abstracts
+PGU(SENDTO,4000)	; For distribution names
+PGU(TOREC,2000)		; "To" history list
+PGU(CCREC,2000)		; "C" history list
+
+PGU(FD,200)		; Font directory
+PGU(TOMSG,200)		; For "To" message
+PGU(CCMSG,200)		; For "C" message
+PGU(FRMMSG,40)		; For authors
+PGU(DTITLE,40)		; For title
+PGU(DOCID,20)		; For document i.d. (=file name)
+PGU(USRNAM,10)		; Name of account initiating printing
+PGU(PRINBN,10)		; Optional name for "Printed by" on breakpage
+PGU(DICTN0,14)		; For dictionary filename
+PGU(PAGES,4)		; Document size as string
+LANDSF==400000		; Landscape font flag
+PGU(DFNTAB,20)		; Font height (0-8) + width of "A" (9-17),,LANDSF + 8*interline sep.
+
+PGU(KEYWRD,250)		; For key words
+PGU(SUPPLE,20)		; Supplements I.D.
+PGU(SUPPBY,200)		; Supplemented by I.D.'s
+PGU(REVISS,20)		; Revises I.D.
+PGU(NAMBUF,50)		; For assorted name building
+PGU(THSFDB,25)		; For input file's FDB
+PGU(PORTAB,<10*NCPAR+2>)	; Portrait mode column table
+PGU(LNDTAB,<10*NCPAR+2>)	; Landscape mode column table
+PGU(ARCID,15)		; For Archive I.D. string
+PGU(WRDATE,10)		; For index write date string
+PGU(CURDAT,10)		; Current date string
+PGU(MXNAME,4)		; Name of this host (Maxc1/Maxc2)
+PGU(EFTBLK,24)		; Block for Pup socket info
+EFTHDR==5		; Number of header words in raw packet
+PGU(EFTMSG,200+EFTHDR)	; Buffer for raw packets
+PGU(PFSETS,400)		; Buffer where PFONT string is collected
+PGU(PDL,100)		; Push down list
+PGU(GARBB,<3000-1572-EFTHDR-2*<10*NCPAR+2>>)	; Fill to page boundary
+
+; Displacements in EFTBLK
+SOCJFN==0	; Pup JFN opened in raw packet mode
+SOCSEQ==1	; Current sequence number
+SOCFRK==2	; Inferior timer fork handle
+SOCCHN==3	; Channel number for timeout psi
+SOCTIM==4	; Timeout interval (msec)
+SOCTC==5	; Timeout countdown
+SOCLTT==6	; Long-term timeout expiration time
+SOCSTM==7	; Starting time for round-trip delay measurement
+SOCLNH==10	; Local net,,local host
+SOCLSK==11	; Local socket
+SOCFNH==12	; Foreign net/host
+SOCFSK==13	; Foreign socket
+
+PRINTR==35	; Directory number for PRINTER
+FIALAN==15	; Directory number for Fiala
+TAFTN==152	; Directory number for Taft
+GESCHK==20	; Directory number for Geschke
+
+; PSPOOL starting address
+START:	MOVE P,[-100,,PDL-1]
+	PUSHJ P,UNMAPX		; Remove index pages from map
+	HRLZI D,-3		; Loop over file pages possibly mapped in memory
+	HRROI A,-1
+	MOVE B,[400000,,TXTPG]
+	PMAP			; Remove MAILER.FLAGS page (if any)
+	ADDI B,1
+	AOBJN D,.-2
+	RESET
+	SETZM FILTBL
+	MOVE B,[FILTBL,,FILTBL+1]
+	BLT B,FILTBL+NFILES-1
+BEG1:	GTAD
+	CAME A,[-1]		; Time and date set yet?
+	JUMPA BEG2		; Yes, proceed
+	MOVEI A,^D10000		; No, wait then try again
+	DISMS
+	JUMPA BEG1
+
+BEG2:	GTAD			; Current day,,second
+	MOVEM A,LSTEXP#
+	HLRZ B,A
+	ADDI B,7
+	IDIVI B,7
+	IMULI B,7
+	IMULI B,^D24*^D3600
+	MOVEM B,NXTWK#		; Time of weekly stats
+	HLRZ B,A
+	IMULI B,^D24*^D3600
+	ADDI B,(A)		; Current second
+	MOVE A,B
+	ADDI B,^D3600
+	IDIVI B,^D3600
+	IMULI B,^D3600
+	MOVEM B,NXTHR#		; Time of hourly stats
+	MOVE B,A
+	ADDI B,^D24*^D3600
+	IDIVI B,^D24*^D3600
+	IMULI B,^D24*^D3600
+	MOVEM B,NXTDAY#		; Time of daily stats
+	SETZM DBUGSW#		; Indicate detached
+	GJINF
+	JUMPL D,.+2		; Really detached?
+	SETOM DBUGSW		; No, indicate debugging
+	MOVEI A,400000		; This fork's handle
+	RPCAP			; Get capabilities
+	TRNN B,1B18!1B19	; Must be wheel or operator
+	  HALTF
+	MOVEI C,1B18!1B19
+	EPCAP			; Wheel, and operator capabilities
+	CIS			; Clear interrupt system
+	MOVE B,[LEVTAB,,CHNTAB]
+	SIR			; Setup PSI table addresses
+	EIR			; Enable PSI system
+	MOVE B,[400374,,0]	; Enable timer, EOF, data error, instruction
+				; trap, illegal read, write, and execute PSI's
+	AIC
+	MOVE P,[-100,,PDL-1]
+	MOVE A,[POINT 7,MESSAG]
+	MOVEI B,[ASCIZ /**PSPOOL restarted/]
+	PUSHJ P,CPYSTZ		; Copy string into message buffer
+	PUSHJ P,MSGTER		; Terminate with ", DAY DATE TIME <CR><LF>"
+	HRROI B,MESSAG
+	PUSHJ P,PHSEND		; Put restart message in PRINTHISTORY
+	MOVE A,[HSTINI,,HSTLST]
+	BLT A,HSTLST+NHOSTS-1
+	SETZB 0,HSTCON
+	MOVE A,[HSTCON,,HSTCON+1]
+	BLT A,HSTCON+NHOSTS-1
+
+	MOVEI A,PRINTR
+	CNDIR
+	  PUSHJ P,JERROR
+;	MOVE A,[1B0+1B1+1B4+CONFRK]	; Use same address space, pass
+;				; capabilities, start at CONFRK
+;	CFORK			; Start up control message fork
+;	  PUSHJ P,JERROR
+;	MOVEM A,CFRKH#		; Save fork handle
+	HRLZI A,(1B0)
+	CFORK			; Create timer fork on same address space
+	  PUSHJ P,JERROR
+	MOVEM A,TFRKH#		; Save fork handle
+	MOVEM A,SOCFRK+EFTBLK	; Also save fork handle for communication
+	SETZM SOCCHN+EFTBLK	; Indicate communication timeout interrupt on chan 1
+	SETZM SOCSEQ+EFTBLK	; Receiver not sent to
+	SETZM TRANSM		; Timer fork not started
+	HRLZI A,400001		; Output use
+	HRROI B,[ASCIZ /PUP:!J.##20/]	; Job-relative local socket, wildcard foreign
+	GTJFN			; host, socket 20
+	  PUSHJ P,JERROR
+	MOVEM A,SOCJFN+EFTBLK
+	MOVE B,[16B9+1B19+1B20]
+	OPENF			; Open in raw packet mode
+	  PUSHJ P,JERROR
+	CVSKT
+	  PUSHJ P,JERROR
+	MOVEM B,SOCLNH+EFTBLK	; Save local net (0),,local host
+	MOVEM C,SOCLSK+EFTBLK	; Save local socket in communication table
+	MOVEI A,20
+	MOVEM A,SOCFSK+EFTBLK
+	MOVEI A,^D1000
+	MOVEM A,SOCTIM+EFTBLK	; Initialize timeout interval
+	MOVE A,[SIXBIT /PUPROU/]
+	SYSGT
+	HRRZM B,PUPGET#		; Save PUPROU table number for routing stuff
+	HRLZI E,-NHOSTS
+HSTALP:	HRRO A,HSTINI(E)	; Pointer to host name
+	MOVE B,[400001,,HSTADR]
+	ADDI B,(E)		; Get local net,,local host (just one)
+	PUPNM			; into HSTADR table (Socket into word+1
+	  PUSHJ P,JERROR	; will be ignored)
+	HLRZ B,B
+	AOBJN E,HSTALP
+
+; Read through the index in <FONTS>FONTS.WIDTHS to build the FNTFAM
+; table, which winds up containing NFFAM entries of the form
+;	ptr to string,,family code
+; The strings are converted to ASCIZ and stored in FAMSTR.  The width
+; index entries are stored in the FNTWDS table with NWDIXE entries.
+; Each entry is 4 PDP-10 words long containing the following:
+;
+; Wd 0	family code(9), face(9), beg. code(9), end. code(9)
+; Wd 1	size of the font segment,,rotation of the font segment
+; Wd 2	Starting address of the font segment in the file
+; Wd 3	Length of the font segment
+;
+; As each file is printed, the font height, width, and interline
+; separation for printing are obtained by first converting the family
+; name to a family code, then looking up the appropriate width-index
+; entry, then RINing the width segment from FONTS.WIDTHS and performing
+; some calculations.
+	HRLZI A,100001		; Old-file only
+	HRROI B,[ASCIZ /<FONTS>FONTS.WIDTHS/]
+	GTJFN
+	  PUSHJ P,JERROR
+	MOVEM A,FWIJFN
+	MOVE B,[200000,,200000]	; Byte size 16, read, wait if busy
+	OPENF
+	  PUSHJ P,JERROR
+	SETZM FNTWDS
+	MOVE B,[FNTWDS,,FNTWDS+1]
+	BLT B,FAMSTR+577	; Zero FNTWDS, FNTFAM, and FAMSTR tables
+	MOVE F,[POINT 7,FAMSTR]	; Point at place where ASCIZ family name
+				; strings are built
+	HRLZI G,-200		; Pointer to family name table
+	SETZM NWDIXE#		; No. width-index entries
+	MOVEI AA,FNTWDS		; Pointer to width index entry table
+FWDLP:	BIN			; First word is no. index entries (ignored)
+	LDB E,[POINT 4,B,23]	; Entry type
+	JUMPE E,FINFWD		; Jump when all done
+	LDB D,[POINT 12,B,35]	; Length inlcuding the type,,length word
+	MOVNI C,-1(D)		; - entry length not including type & len
+	MOVE B,[POINT 16,FM]	; Use FM as temporary buffer for entry
+	SIN
+	CAIN E,1
+	JUMPA FWDFAM		; Family name to family number entry
+	CAIE E,4
+	JUMPA FWDLP		; Other--ignore
+; Width index entry type.  Have entry length in D (includes IX header)
+; Have body of width-index entry in FM buffer.
+	AOS NWDIXE		; Increment count of entries
+	CAIE D,11
+	  HALTF			; Width index entry not 9 words long
+	MOVE C,[POINT 8,FM]
+	MOVE D,[POINT 9,(AA)]
+	MOVEI BB,4
+	ILDB B,C
+	IDPB B,D		; Family(9), face(9), bc(9), ec(9)
+	SOJG BB,.-2
+	MOVE C,[POINT 16,FM+1]
+	ILDB B,C
+	ILDB D,C
+	HRL D,B
+	MOVEM D,1(AA)		; Size,,rotation
+	MOVE D,FM+2
+	LSH D,-4
+	MOVEM D,2(AA)		; Segment starting address
+	MOVE D,FM+3
+	LSH D,-4
+	MOVEM D,3(AA)		; Segment length
+	ADDI AA,4
+	CAIL AA,FNTWDS+5000
+	  HALTF			; Overflowed FNTWDS table
+	JUMPA FWDLP
+
+; Name type: 1st word is family number (< 256), next words are Alto
+; BCPL string
+FWDFAM:	MOVE C,[POINT 16,FM]
+	ILDB E,C		; Get family number
+	CAIL E,400
+	  HALTF			; Illegal family number
+	AOBJN G,.+2
+	  HALTF			; Overflowed pointer table
+; Convert to ASCIZ
+	HRLI E,(F)		; Name pointer,,family number
+	MOVEM E,FNTFAM-1(G)
+	MOVE C,[POINT 8,FM,15]
+	ILDB B,C		; String length
+	SOJGE B,.+2
+	  HALTF			; Illegal null string for family name
+	ILDB D,C		; Next name char
+	IDPB D,F
+	SOJGE B,.-2
+	MOVEI D,0
+	IDPB D,F		; Terminate ASCIZ string
+	ADDI F,1
+	HRLI F,440700		; Advance string pointer to next word
+	MOVEI D,(F)
+	CAIL D,FAMSTR+577
+	  HALTF			; Overflowed string space
+	JUMPA FWDLP
+
+FINFWD:	MOVNI G,(G)
+	JUMPN G,.+2
+	  HALTF
+	HRLZM G,NFFAM#		; Save AOBJN pointer for FNTFAM lookup
+	MOVN G,NWDIXE
+	HRLZM G,NWDIXE		; Save AOBJN pointer for FNTWDS lookup
+
+	HRLZI A,400001		; Output use
+	HRROI B,[ASCIZ /<SYSTEM>PSPOOL.CPG;1;P606060/]
+	GTJFN
+	  PUSHJ P,JERROR
+	HRRZM A,CPGJFN
+	MOVE B,[440000,,302200]	; Byte size 44, read, write, thawed, never wait
+	OPENF
+	  PUSHJ P,JERROR
+	MOVE B,[400000,,COMPG]	; This fork,, page to put it
+	HRLZI A,(A)		; Jfn,,page to get it
+	HRLZI C,140000		; Read, write access
+	PMAP
+	HRROI B,[ASCIZ /<SYSTEM>MAILER.FLAGS;1/]
+	HRLZI A,100001		; Old file only
+	GTJFN
+	  PUSHJ P,JERROR
+	MOVEM A,MLRJFN
+	MOVEI B,302000		; Read, write, thawed
+	OPENF
+	  PUSHJ P,JERROR
+	HRLZ A,MLRJFN
+	MOVE B,[400000,,FLGPG]
+	MOVSI C,140000
+	PMAP
+	SKIPE DBUGSW
+	JUMPA HSTFIX		; Debugging--don't protect memory
+	MOVEI D,CODEND/1000	; Last read-only page
+	SUBI D,<DERRTB+777>/1000	; First protectable page
+	MOVEI A,<DERRTB+777>/1000
+	HRLI A,400000
+	HRLZI B,120000		; Read and execute access ok
+	SPACS			; Set page access
+	ADDI A,1
+	SOJG D,.-2
+HSTFIX:	SETZM MXNAME
+	SETZM MXNAME+1
+	MOVE A,[SIXBIT /PUPROU/]
+	SYSGT
+	JUMPE B,NOHSTN
+	HLLZ C,B
+GTMHST:	HRRZ A,B
+	HRLI A,0(C)
+	GETAB
+	  PUSHJ P,JERROR
+	TRNN A,-1
+	AOBJN C,GTMHST
+	JUMPGE C,NOHSTN
+	MOVSI C,1(C)		; Net number in l.h.
+	HRRI C,0(A)		; Host number
+	MOVEI D,0
+	HRROI A,MXNAME		; Convert to local host name
+	MOVE B,[1B1+1B2+C]
+	PUPNM
+	  PUSHJ P,JERROR
+	MOVE A,[POINT 7,PSPNAM+2]
+	MOVEI B,MXNAME
+	PUSHJ P,CPYSTT		; "Pspool on MAXC1" for crash messages
+NOHSTN:	JUMPA MAINLP
+
+LOC 1000
+
+SCKNAM:	ASCII /MCA:./
+	BLOCK 10
+FNAME:	ASCII /MCA:/
+	BLOCK 10
+MAILBF:	ASCII /</	; For filenames beginning <USER>
+	BLOCK 26
+RNAMBF:	ASCII /PRINTED./
+	BLOCK 13
+ONAMBF:	ASCII /LPT./
+	BLOCK 14
+PSPNAM:	ASCII /Pspool on /
+	BLOCK 2
+
+; 1B0 = Xgp host, 1B1 = Ears host, 1B2 = previously dead, 1B3 = defer
+; 1B4 = busy, 1B5 = Press host
+; PRINTS.MAC also has to be editted
+HSTINI:	010000,,[ASCIZ /MENLO/]
+	010000,,[ASCIZ /WONDER/]
+	010000,,[ASCIZ /CHALLENGE/]
+	010000,,[ASCIZ /CLOVER/]
+	010000,,[ASCIZ /LILAC/]
+	010000,,[ASCIZ /DAISY/]
+	010000,,[ASCIZ /ROVER/]
+	010000,,[ASCIZ /CHESTER/]
+	010000,,[ASCIZ /KANJI/]
+	010000,,[ASCIZ /ROCKHOPPER/]
+	010000,,[ASCIZ /TUBORG/]
+	010000,,[ASCIZ /ADELIE/]
+	010000,,[ASCIZ /QUAKE/]
+	010000,,[ASCIZ /YANKEE/]
+	010000,,[ASCIZ /STINGER/]
+	010000,,[ASCIZ /VIKING/]
+	010000,,[ASCIZ /YODA/]
+NHOSTS==.-HSTINI
+U(HSTLST,NHOSTS)
+U(HSTADR,NHOSTS+1)	; Network,,host
+
+; 1B0 = send one file, 1B2 = dead this pass, user # in r.h. (0 = any user)
+U(HSTCON,NHOSTS)
+
+; GTJFN table for print queuing
+QUEBLK:	400000,,0		; Output use
+	377777,,377777
+	0
+QTO:	REPEAT 5,<0>
+
+; GTJFN table for Sndmsg
+GJFTAB:	501000,,0
+	377777,,377777
+	0
+TO:	REPEAT 5,<0>	; 1st word gets pointer to user name
+DATE1:	BLOCK 5		; Date as DD-MMM-YYYY HH:MM:SS
+
+; GTJFN defaulting for distribution files
+GJSTAB:	100000,,0
+	377777,,377777
+	0
+	POINT 7,[ASCIZ /SECRETARY/]
+	0
+	POINT 7,[ASCIZ /DIS/]
+	REPEAT 2,<0>
+
+
+; First words in Ears-format document directory (DD)
+PASSWD:	^D31415	; General password
+NRECDS:	0	; Total # records in file
+NPGS:	0	; # pages in file
+NCPYS:	0	; # copies
+FNTSET:	0	; Font set on last page
+STLREC:	0	; Starting record of last page DL
+NDLREC:	0	; # records in last page of DL
+NTLREC:	0	; # records in last page of TL
+NPDREC:	0	; # records in PD
+NFDREC:	0	; # records in FD
+LMARG:	-1	; Left margin 500th's of an inch (-1 = default)
+BMARG:	-1	; Bottom margin 500th's (-1 = default)
+BPI:	-1	; Bits/inch (-1 = default)
+LPI:	-1	; Lines/inch (-1 = default)
+MAXSCN:	-1	; Max. # scan lines (-1 = default)
+OUTPD:	0	; Output destination and special password
+FLAGST:	0	; Count of flagged TL lines in document
+
+; Stuff in document directory of Press files
+PPASSW:	^D27183
+PRECDS:	0		; No. of records (including parts directory)
+PPARTS:	0		; No. of parts
+PPARTD:	0		; Record # where part dir. begins
+PNPD:	0		; No. records in part dir.
+	-1		; Obs. Doc. dir back pointer
+PCREDT:	-1		; Alto format creation date
+	-1
+PFCOPY:	1		; No. of first copy printed
+PLCOPY:	1		; No. of last copy printed
+PFPAGE:	-1		; First page to print
+PLPAGE:	-1		; Last page to print
+PMODE:	-1		; Transparent, solid, reversed encoded somehow
+
+; Press fork items
+FMP::	FLGPG*1000	; Pointer to free storage for Epress
+BSAVE:	BLOCK 20	; Storage for Bcpl AC save
+PSAVE:	BLOCK 1		; Press converter copy of AC 0
+PRSFDB:	BLOCK 25	; Press converter copy of THSFDB
+PRDOID:	BLOCK 17	; Press converter copy of DOCID buffer
+PRUSRN:	BLOCK 10	; Press converter copy of USRNAM buffer
+
+
+DEFINE DERR(A,B,C)
+<A=.-NFILES
+	[ASCIZ /C/],,B>
+
+NFILES==20	; ***Number of entries in table***
+
+FILTBL:	BLOCK NFILES		; For jfn's
+
+DERRTB:	DERR(MLRJFN,DERR0,<Data error in <SYSTEM>MAILER.FLAGS;1>)
+	DERR(CPGJFN,ERCALL,<Data error in <SYSTEM>PSPOOL.CPG;1>)
+	DERR(DICJFN,DERR0,<Data error in dictionary>)
+	DERR(FWIJFN,DERR0,<Data error in <FONTS>FONTS.WIDTHS>)
+	DERR(PHJFN,ERCALL,<Data error in <SECRETARY>PRINTHISTORY.;1>)
+	DERR(DQJFN,ERCALL,<Data error on someone's DOCGEN.QUEUE;1 file>)
+	DERR(TXTJFN,DERR0,<Data error>)
+
+	DERR(DISJFN,ERDIS,<>)
+	DERR(DCGJFN,ERDCG,<Data error in DOCGEN.PRT>)
+	DERR(INSJFN,DERR0,<Data error on INSERT file>)
+	DERR(NEWJFN,EROUT,<>)
+	DERR(UPDJFN,DERR0,<Data error updating distribution history in document>)
+	DERR(INDJFN,DERR0,<Data error in DOCGEN.INDEX>)
+	DERR(DESJFN,DERR0,<Data error in DOCGEN.DESn>)
+	DERR(VALJFN,DERR0,<Data error in DOCGEN.VALUES>)
+	DERR(SYMJFN,DERR0,<Data error in DOCGEN.SYMBOLS>)
+
+IFN <.-DERRTB-NFILES>,<PRINTX Forgot to fixup NFILES>
+
+; Bad files come here for immediate deletion
+DELUNF:	MOVE A,TXTJFN
+	HRLI A,400000		; Preserve the Jfn
+	DELF
+	  PUSHJ P,JERROR
+; Take next file in sequence LPT.*;*
+NEXT:	MOVE P,[-100,,PDL-1]
+	MOVEI A,400000
+	MOVEI B,0
+	SPRIW			; Become low priority
+	PUSHJ P,CLSTXT
+	PUSHJ P,UNMAPX		; Clear index page from the map
+	PUSHJ P,CLFILS		; Unpmap pages and close all the files
+	SKIPN A,SAVJFN		; Just did Press error report?
+	JUMPA [	MOVEI A,TXTJFN	; Yes, RLJFN
+		PUSHJ P,CLSFIL
+		JUMPA MAINLP]
+	GNJFN
+	  JUMPA ENDDIR		; Completed pass through <PRINTER> directory
+	JUMPA SRCHLP
+
+; GNJFN failed--must be last LPT.*;* file
+ENDDIR:	SKIPGE OLDALC		; Possibly completed a full LPT.*;* scan
+	JUMPA MAINLP		; No, skip abort message checks
+	MOVEI A,0
+	GTDAL
+	CAME B,OLDALC
+	JUMPA MAINLP
+	RWSET			; Reset working set if temporarily inactive
+ENDD1:	HRLZI E,-6		; Quick loop for disk alloc. change
+NEWFT:	MOVEI A,0
+	GTDAL			; Get disk allocation for connected dir.
+	CAME B,OLDALC		; Same as beginning of last pass?
+	JUMPA MAINLP		; No, try new files
+	MOVEI A,^D30000		; Wait 30 seconds and loop
+	DISMS
+	AOBJN E,NEWFT		; Quick loop
+	GTAD			; Current day,,second
+	MOVE C,A
+	HLRZ B,A
+	IMULI B,^D3600*^D24
+	ADDI B,(A)		; Current time in seconds
+	CAML B,NXTHR		; Time for hourly stats?
+	PUSHJ P,HHOURS
+	CAML B,NXTDAY		; Time for daily stats?
+	PUSHJ P,DDAYST
+	CAML B,NXTWK		; Time for weekly stats?
+	JUMPA [	MOVE D,[WEEKST,,LSTWKS]
+		BLT D,LSTWKS+NMSGST-1
+		SETZM WEEKST
+		MOVE D,[WEEKST,,WEEKST+1]
+		BLT D,WEEKST+NMSGST-1
+		MOVE D,[7*^D24*^D3600]
+		ADDM D,NXTWK
+		JUMPA .+1]
+	SUB A,LSTEXP		; - time of last purge
+	HRRZ B,A
+	CAIL B,^D24*^D3600
+	SUBI A,1000000-^D24*^D3600
+	CAIL A,^D3600*^D3	; Purge every 3 hours
+	PUSHJ P,DPURGE
+	TRZN 0,UNSNTF		; Hosts dead or busy last pass?
+	JUMPA ENDD1
+	MOVEI A,0
+	GTDAL
+	JUMPA MAINLP		; Yes, another pass
+
+; Do daily statistics
+DDAYST:	HRLZI D,-NMSGST
+	MOVE E,DAYSTT(D)
+	ADDM E,WEEKST(D)
+	AOBJN D,.-2
+	MOVE D,[DAYSTT,,YESDST]
+	BLT D,YESDST+NMSGST-1
+	SETZM DAYSTT
+	MOVE D,[DAYSTT,,DAYSTT+1]
+	BLT D,DAYSTT+NMSGST-1
+	MOVEI D,^D24*^D3600
+	ADDM D,NXTDAY
+	POPJ P,
+
+; Do hourly statistics
+HHOURS:	HRLZI D,-NMSGST
+	MOVE E,MSGS0(D)
+	ADDM E,DAYSTT(D)
+	AOBJN D,.-2
+	MOVE D,[MSGS0,,LASTHR]
+	BLT D,LASTHR+NMSGST-1
+	SETZM MSGS0
+	MOVE D,[MSGS0,,MSGS0+1]
+	BLT D,MSGS0+NMSGST-1
+	MOVEI D,^D3600
+	ADDM D,NXTHR
+	POPJ P,
+
+; Purge the PRINTER directory
+DPURGE:	TRZ 0,DICLDD		; Pickup dictionary changes occasionally
+	MOVEM C,LSTEXP
+	MOVEI A,PRINTR
+	DELDF			; Expunge files deleted 3 hours ago
+	HRLZI A,100121		; Old file only, input group desc.
+	HRROI B,[ASCIZ /PRINTED.*;*/]
+	GTJFN
+	  POPJ P,		; Must be no PRINTED files
+	MOVEM A,SAVJFN#
+; Delete all the printed files
+DELLP:	MOVE A,SAVJFN
+	HRLI A,400000		; Preserve Jfn
+	DELF			; Delete the file
+	  PUSHJ P,JERROR
+	MOVE A,SAVJFN
+	GNJFN
+	  POPJ P,
+	JUMPA DELLP
+
+; Enter here to make another scan through the <PRINTER> directory
+MAINLP:	MOVEM B,OLDALC
+	HRLZI B,(1B2)
+	HRLZI E,-NHOSTS		; Idle
+	ANDCAM B,HSTCON(E)	; Clear dead or busy this pass bit
+	AOBJN E,.-1		; for all serving hosts
+	HRLZI A,100121		; Old file only input file group descriptor
+	HRROI B,[ASCIZ /LPT.*;*/]
+	GTJFN
+	  JUMPA ENDDIR		; Must be no files to print
+	MOVEM A,SAVJFN#		; Save flags for GNJFN
+	HRRZM A,TXTJFN		; Without flags for other JSYS's
+
+; Jump here to check next file in <PRINTER> directory
+SRCHLP:	AND 0,[0,,UNSNTF!DICLDD]	; Zero flags for this file
+	MOVE A,TXTJFN
+	HRLZI B,25
+	MOVEI C,THSFDB
+	GTFDB			; Put the whole FDB in block at THSFDB
+	GTAD
+	SUB A,THSFDB+FDBCRV
+	CAML A,[2,,0]
+	JUMPA [	FERR(Deleted because unprintable for two days)]
+	MOVE A,TXTJFN
+	MOVE E,THSFDB+FDBUSW	; User settable word
+	TLNE E,MANPRT		; Not intended for PSPOOL printing?
+	JUMPA NEXT		; Yes, skip it or delete it
+	TLNE E,COMCPY		; Full copies sent already?
+	TLO 0,ABSTRP!FIRSTS	; Yes, do abstracts, prevent excep. msg.
+	MOVE B,[70000,,200200]	; Read byte size 7, never wait if busy
+	OPENF
+	  PUSHJ P,FOPENF	; If file is busy, skip it
+	LDB C,[POINT 6,THSFDB+FDBBYV,11] ; Byte size
+	MOVEI E,44
+	IDIVI E,(C)		; Get # bytes/word
+	MOVE D,THSFDB+FDBSIZ	; # bytes
+	ADDI D,-1(E)
+	IDIV D,E		; # words in D
+	HRRZ E,THSFDB+FDBUSW	; First text 7-bit byte
+	IDIVI E,5		; Word at which text starts
+	JUMPN F,[FERR(FDBUSW does not point at word boundary)]
+	CAMGE D,E		; Ensure BIN below won't provoke EOF
+	JUMPA DELUNF		; No text in file, delete it
+	ADDI D,777
+	LSH D,-11		; # Tenex pages
+	HRRZ B,THSFDB+FDBBYV	; # pages actually on disk
+	CAMLE D,B
+	JUMPA DELUNF		; Whoops, disagreement, abort
+	HLRZ B,THSFDB+FDBUSE
+	MOVE A,[POINT 7,USRNAM]
+	DIRST			; Name of user initiating printing
+	  PUSHJ P,JERROR
+	SETZB B,1(A)		; Terminate with 0 fill
+	IDPB B,A
+	IDPB B,A
+	IDPB B,A
+	IDPB B,A
+; Set up default information (alphabetical order) which will be modified
+; by stuff in DOCGEN.PRT, file leader, and initial list
+	SETZM NABSTR#		; No extra abstracts
+
+	SETZM ARCID		; No Archive I.D. string in brief
+
+	SETZM BRFMSG		; No brief supplied
+
+	SETZM NCPYS		; No extra copies
+
+	HRROI B,-1		; Current date and time
+	MOVSI C,(1B5!1B7!1B10!1B12!1B13)	; "15 MAY 1973 1346-EDT"
+	MOVE A,[POINT 7,CURDAT]
+	ODTIM
+	MOVEI B,0
+	IDPB B,A
+
+	MOVE A,[POINT 7,WRDATE]	; Index entry's visible date
+	MOVEI B,CURDAT
+	PUSHJ P,CPYSTT
+
+	MOVE A,[ASCII /PRESS/]
+	MOVEM A,DEVICE#		; Default device for tty-format files
+
+	MOVEI B,[ASCIZ /<SECRETARY>DICTIONARY.DIC/]
+	MOVE A,[POINT 7,DICTN0]	; Standard dictionary
+	PUSHJ P,CPYSTT
+
+	SETOM PDEVIC		; Unspecified Press host
+
+	MOVE A,[POINT 7,FRMMSG]
+	MOVEI B,USRNAM
+	PUSHJ P,CPYSTT		; Default From: in Sndmsg
+
+	MOVE A,[POINT 7,PFSETS]
+	MOVEI B,[ASCIZ /GACHA8MRR0/]
+	PUSHJ P,CPYSTT		; Initialize PFONT string to GACHA8
+
+	SETZM INSERT#		; Not an inserted file
+
+	MOVE A,[POINT 7,KEYWRD]
+	MOVEM A,KEYPTR#
+	SETZM KEYWRD
+
+	SETZM OUTLCL#		; LCOLUMNS property not output
+	MOVE B,[LCOLIN,,LNDTAB]
+	BLT B,LNDTAB+11		; Initialize landscape column table
+	MOVE B,[LNDTAB+11,,LNDTAB+12]
+	BLT B,LNDTAB+10*NCPAR+1
+
+	SETZM OUTMAR#		; MARGINS property not output
+	MOVEI A,^D5250		; Original top margin
+	MOVEM A,OTMAR
+	MOVEI A,^D250
+	MOVEM A,OBMAR		; Original bottom margin
+	MOVEM A,OLMAR		; Original left margin
+	MOVEI A,^D4000
+	MOVEM A,ORMAR		; Original right margin
+
+; Setup default name = nnnnn X n compatible with RESPOOL
+	MOVE B,THSFDB+FDBSIZ	; No. bytes in file
+	MOVE A,[POINT 7,DOCID]
+	PUSHJ P,DNOUT
+	MOVEI B,[ASCIZ / x /]
+	PUSHJ P,CPYSTZ
+	LDB B,[POINT 6,THSFDB+FDBBYV,11]	; Byte size
+	PUSHJ P,DNOUT
+
+	SETZB B,OUTPCL#		; PCOLUMNS not given
+	IDPB B,A
+	MOVE B,[PCOLIN,,PORTAB]
+	BLT B,PORTAB+4		; Initialize portrait column table
+	MOVE B,[PORTAB+4,,PORTAB+5]
+	BLT B,PORTAB+10*NCPAR+1
+
+	SETZM PRINBN		; No special breakpage printed-by name
+
+	SETZM REPMSG		; No special printing report
+
+	SETZM XREVIS#		; No revision
+	SETZM REVISS
+
+	SETZM XSUPPL#		; No supplements
+	SETZM SUPPLE
+	SETZM SUPPBY		; Not supplemented by anything
+
+	SETZM SNDHDR		; No distribution names
+	MOVE A,[POINT 7,SENDTO]
+	MOVEM A,SNDPTR
+
+	SETZM DTITLE		; No title
+
+	SETZM BSYMSG		; No host status report
+
+	SETOM PFPAGE		; Default to printing all pages of the press file
+	SETOM PLPAGE
+	SETOM PMODE
+
+; Init pointer for leader properties used during Press conversions
+	MOVE A,[POINT 7,OUTLDR]
+	MOVEM A,OLDRP#
+
+; Get default information from user's DOCGEN.PRT file
+	MOVE A,[POINT 7,MAILBF,6]
+	MOVEI B,USRNAM
+	PUSHJ P,CPYSTZ		; Get user name
+	MOVEI B,[ASCIZ />DOCGEN.PRT/]
+	PUSHJ P,CPYSTT
+	HRROI B,MAILBF
+	HRLZI A,100001		; Old file only
+	GTJFN
+	  JUMPA NODOCG		; Skip it if no DOCGEN file
+	HRRZM A,DCGJFN
+	MOVE B,[70000,,200200]	; Byte size 7, read, never wait
+	OPENF
+	  JUMPA [MOVE B,DCGJFN
+		JUMPA OERRST]
+	PUSHJ P,GETSIZ		; Get no. bytes in file
+	MOVEI D,(B)		; Set up bytes in file in D for call
+
+DCGCLL:	PUSHJ P,GETP		; Set properties from DOCGEN.PRT file
+	  JUMPA DCGABF		; Non-fatal abort--respooling ok
+NODOCG:	HRRZ D,THSFDB+FDBUSW	; Property list length in 7-bit bytes
+	MOVE A,TXTJFN
+LDRCLL:	PUSHJ P,GETP		; Set properties from file leader
+	  JUMPA LDRABF		; Fatal abort--respooling not allowed
+	SETZM ACHISC#		; No history check for legal access
+	MOVE A,TXTJFN
+	SKIPN INSERT		; Inserting a file as the document?
+	JUMPA INICLL		; No, nothing fancy
+	MOVE B,[POINT 7,DOCID]
+	HRLZI A,100001
+	GTJFN			; Insert file whose name is DOCID
+	  JUMPA [MOVE B,[POINT 7,DOCID]
+		JUMPA MERRST]
+	HRRZM A,INSJFN
+	MOVE B,[70000,,200200]	; Byte size 7, read, never wait
+	OPENF
+	  JUMPA [HRRZ B,INSJFN
+		JUMPA OERRST]
+	PUSHJ P,CHKPRT		; Check access to file
+	  SETOM ACHISC		; No access allowed unless in history
+	  CAI 0			; Read access allowed, ok
+	PUSH P,THSFDB+FDBUSE
+	HRLZI B,24		; Full FDB except FDBUSW
+	MOVEI C,THSFDB
+	GTFDB
+	HLLZS FDBUSW		; Indicate leader length = 0
+	POP P,THSFDB+FDBUSE
+INICLL:	PUSHJ P,DGETP		; Set properties from initial list
+	  JUMPA INIABF		; Fatal abort--respooling not allowed
+	MOVEI B,20
+	SFBSZ			; Set byte size to 16
+	LDB B,[POINT 3,THSFDB+FDBUSW,8]
+	MOVEM B,PBYPAS#		; 256-page sections sent by FEARS
+	SETZM TRFMF#		; Indicate font names transformed
+	SETZM OBSFNT#		; No obsolete fonts used
+	SETZM NBRSNT#		; No briefs sent
+	SETZM NQSNT#		; No queued copies/abstracts sent
+	JUMPA REDIST
+
+; Subroutine to check for legal access to JFN in A by original user.
+; Double skip on read and write both ok, skip on read ok, else no skip.
+CHKPRT:	PUSH P,C
+	PUSH P,B
+	PUSH P,A
+	MOVE B,[1,,FDBPRT]	; Read file protection word
+	MOVEI C,FLPROT#		; Place to put it
+	GTFDB
+	MOVE B,A		; Jfn
+	HRROI A,NAMBUF		; Place for directory string
+	HRLZI C,10000		; Print only the directory
+	JFNS
+	MOVEI A,0
+	HRROI B,NAMBUF
+	STDIR
+	  PUSHJ P,JERROR	; No match, impossible
+	  PUSHJ P,JERROR	; Ambiguous, impossible
+	HRLI A,600000		; Accept file prot. in B, return file access
+				; in B and accept directory no. in C
+	MOVE B,FLPROT
+	HLRZ C,THSFDB+FDBUSE	; No. of user printing file
+	GFACC
+	  PUSHJ P,JERROR
+	TRNN B,40		; Read access ok?
+	JUMPA .+4		; No
+	TRNE B,20		; Write access ok?
+	AOS -3(P)		; Yes, double skip return
+	AOS -3(P)		; No, skip return
+	POP P,A
+	POP P,B
+	POP P,C
+	POPJ P,
+
+
+; Subroutine to check for a valid property list at the beginning of a file
+; and to process all the properties and set FDBUSW to the first new
+; word at the end of the property list (if any)
+DGETP:	PUSHJ P,GETSIZ		; Get size of file in 7-bit bytes
+	MOVE D,B
+	HRRZ B,THSFDB+FDBUSW
+	SUB D,B			; 7-bit bytes remaining in file
+	TLO 0,DOCSCN
+	PUSHJ P,GETP
+	  JUMPA DGETP1		; No list
+	  POPJ P,		; Error
+	RFPTR
+	  PUSHJ P,JERROR
+	MOVEI B,5(B)		; Set to next word boundary skipping <LF>
+	IDIVI B,5
+DGETP0:	IMULI B,5
+	HRRM B,THSFDB+FDBUSW	; Fix up FDBUSW
+	JUMPA GPSRET
+
+DGETP1:	HRRZ B,THSFDB+FDBUSW	; Set file pos. back to end of leader
+	CAMN A,INSJFN
+	MOVEI B,0		; or beginning if inserting
+	SFPTR
+	  PUSHJ P,JERROR
+	MOVEI B,10
+	SFBSZ			; Switch to 8-bit bytes
+	PUSHJ P,GETSIZ		; Get size in 8-bit bytes
+	MOVE D,B
+	RFPTR
+	  PUSHJ P,JERROR
+	SUB D,B			; Length of file in 8-bit bytes
+	TLO 0,DOCSCN		; Set flag controlling errors
+	PUSHJ P,GETP
+	  JUMPA GPSRET		; No list
+	  POPJ P,		; Error
+	RFPTR
+	  PUSHJ P,JERROR
+	MOVEI B,4(B)		; Set to next word boundary, skipping <LF>
+	LSH B,-2
+	JUMPA DGETP0
+
+; Subroutine to process successive properties in the file with Jfn in
+; A until the byte count in D is exhausted.  Returns .+1 on any error
+; with error pointer in B, .+2 on success.  Clobbers B, C, D, E, F
+GETP:	SETZM PNAME
+	SETZM PNAME+1
+	MOVE C,[POINT 7,PNAME]
+	TLZ 0,DALTER!DSNAME!RDNAME!LONGST!TOM!CCM!XPND!UPCONV
+GPFBIN:	SOJL D,GPSRET
+	BIN
+	CAILE B,"Z"		; Flush non-alphabetic chars.
+	CAIL B,"a"
+	CAIGE B,"A"
+	JUMPA GPFBIN
+	CAILE B,"z"
+	JUMPA GPFBIN
+	HRLZI E,-13		; Ten-char. limit on names
+GNMLP:	TRZ B,40		; Convert to upper case for recog.
+	AOBJP E,GETPER
+	IDPB B,C		; Build string
+GNMLP1:	SOJL D,GETPER
+	BIN
+	CAIE B,15		; End of name?
+	CAIN B,40		; End of name?
+	JUMPA GPENAM		; Yes, terminate string
+	CAIN B,":"		; Flush ":"
+	JUMPA GNMLP1
+	CAIL B,"A"		; Check for legitimate character
+	JUMPA GNMLP
+GETPER:	TLZE 0,DOCSCN		; Looking for "DOCUL" command
+	POPJ P,			; Yes, no properties
+	MOVEI B,[ASCIZ /Non-alphanumeric characters in property name/]
+	JUMPA GPERRR
+
+; Decode name
+GPENAM:	HRLZI C,-NPROPS
+	TLZN 0,DOCSCN		; Beginning document scan?
+	JUMPA PNCLP		; No, must find a property
+	MOVE B,PNAME		; Yes, must find "DOCUL" property
+	CAME B,[ASCII /DOCUL/]
+	POPJ P,
+	AOS (P)
+	JUMPA GETP
+
+PNCLP:	MOVE B,PNAME
+	HRRZ E,PNTAB(C)		; Point at name string
+	CAMN B,(E)		; Match on first five chars.?
+	JUMPA PNCOM2		; Yes
+	AOBJN C,.-3		; No, loop
+	MOVEI B,[ASCIZ /Undefined property name/]
+	JUMPA GPERRR
+
+PNCOM2:	HLRZ E,PNTAB(C)
+	JUMPA (E)		; Dispatch to routine
+
+GPSRET:	TLZN 0,DOCSCN
+	AOS (P)
+GPERRR:	POPJ P,
+
+; Property names are limited to 10 characters
+PNTAB:	SETABS,,[ASCII /ABSTRACTS/]
+	SETARC,,[ASCII /ARCID/]
+	SATABS,,[ASCII /ATABS/]
+	SETBIG,,[ASCII /BIG/]
+	SETBRF,,[ASCII /BRIEF/]
+	CCLIST,,[ASCII /C/]
+	SETCPY,,[ASCII /COPIES/]
+	SWDATE,,[ASCII /DATE/]
+	SETDEV,,[ASCII /DEVICE/]
+	SETDIC,,[ASCII /DICT/]
+	GPSRET,,[ASCII /ENDLIST/]
+	SETFRM,,[ASCII /FROM/]
+	INSFIL,,[ASCII /INSERT/]
+	INVLIS,,[ASCII /INVTO/]
+	ISAVE,,[ASCII /ISAVE/]
+	SETKEY,,[ASCII /KEYWORDS/]
+	SETLCL,,[ASCII /LCOLUMNS/]
+	LREDUC,,[ASCII /LREDUCE/]
+	MARGIN,,[ASCII /MARGINS/]
+	STNAME,,[ASCII /NAME/]
+	STPGS,,[ASCII /PAGES/]
+	SETPCL,,[ASCII /PCOLUMNS/]
+	SETPDV,,[ASCII /PDEVICE/]
+	SETPRF,,[ASCII /PFONTS/]
+	PREDUC,,[ASCII /PREDUCE/]
+	PRINBY,,[ASCII /PRINBY/]
+	SQUEUE,,[ASCII /QUEUE/]
+	SETREC,,[ASCII /RECORD/]
+	SETRMS,,[ASCII /REPMSG/]
+	SETREP,,[ASCII /REPORT/]
+	SREVIS,,[ASCII /REVISE/]
+	PROPSK,,[ASCII /SECRETARY/]
+	SETTIT,,[ASCII /SUBJECT/]
+	SETSPB,,[ASCII /SUPLEMBY/]
+	SETSPL,,[ASCII /SUPPLEMENT/]
+	TOLIST,,[ASCII /TO/]
+; OBSOLETE
+	PROPSK,,[ASCII /FONT/]
+	PROPSK,,[ASCII /EDEVICE/]
+	PROPSK,,[ASCII /XDEVICE/]
+	PROPSK,,[ASCII /LANDSCAPE/]
+NPROPS==.-PNTAB
+
+
+; Pass over argument to <cr>
+PROPSK:	SOJL D,GPERRR
+	BIN
+	CAIE B,12
+	CAIN B,15
+	JUMPA GETP
+	CAIN B,"E"-100
+	JUMPA PRDSKP
+	CAIE B,"V"-100
+	JUMPA PROPSK
+	SOJL D,GPERRR
+	BIN
+	JUMPA PROPSK
+
+; Skip characters to the next control-D, using control-V as quote char.
+PRDSKP:	SOJL D,GPERRR
+	BIN
+	CAIN B,"V"-100
+	JUMPA [	SOJL D,GPERRR
+		BIN
+		JUMPA PRDSKP]
+	CAIE B,"D"-100
+	JUMPA PRDSKP
+	JUMPA GETP
+
+; Suboutine to build output leader for current property in preparation for
+; Press conversion
+BOLDR:	HRRZ B,-1(P)
+	CAIE B,LDRCLL+1		; Only build for leader
+	POPJ P,
+	RFPTR
+	  PUSHJ P,JERROR
+	PUSH P,B		; Save position
+	EXCH A,OLDRP		; Pointer to output being built
+	MOVEI B,PNAME
+	PUSHJ P,CPYSTZ		; Copy property name
+	MOVE C,A
+	EXCH A,OLDRP
+	BKJFN
+	  PUSHJ P,JERROR
+	PUSH P,D
+	JUMPA .+2
+BOLDR0:	SOJL D,BOLDRE
+	BIN
+	IDPB B,C
+	CAIN B,"E"-100		; Beginning long string?
+	JUMPA BOLDR1
+	CAIN B,"V"-100		; Quoting next char?
+	JUMPA [	BIN
+		IDPB B,C
+		JUMPA BOLDR0]
+	CAIE B,12		; End of property?
+	JUMPA BOLDR0
+BOLDRX:	MOVEM C,OLDRP
+	POP P,D
+	POP P,B
+	SFPTR
+	  PUSHJ P,JERROR
+	POPJ P,
+
+BOLDR1:	SOJL D,BOLDRE
+	BIN
+	IDPB B,C
+	CAIN B,"V"-100		; Quoting next char?
+	JUMPA [	BIN
+		IDPB B,C
+		JUMPA BOLDR1]
+	CAIE B,"D"-100		; End of long string?
+	JUMPA BOLDR1
+	JUMPA BOLDRX
+
+BOLDRE:	POP P,D
+	SUB P,[2,,2]
+	MOVEI B,[ASCIZ /End of leader inside property/]
+	JUMPA GPERRR
+
+GETDNM:	TLO 0,DSNAME		; Turn-on "/" checks
+	MOVE C,[POINT 7,NAMBUF]
+	MOVEI B,[ASCIZ /Distribution name or file longer than 64 chars./]
+; Subroutine accepting string-too-long message pointer in B, maximum byte
+; count to read from source in D, source designator in A, byte pointer
+; to place to build string in C.  Reads text from source into buffer,
+; terminating result with 0.  Pointer to terminator is returned in E.
+; Skip if no error.
+GETFIL:	MOVEI E,5*15-1		; Length limit on source name
+GETSTR:	PUSH P,B
+GETSLP:	SOJL D,BADSTR
+	BIN
+	TLNE 0,LONGST		; Control-D terminated string
+	JUMPA [	CAIN B,"D"-100
+		JUMPA TERSTR
+		JUMPA GSQUOT]
+	CAIN B,"E"-100		; Entering long string mode?
+	JUMPA [	TLO 0,LONGST	; Yes, indicate
+		JUMPA GETSLP]
+	TLNE 0,DSNAME		; Reading distribution list file or name?
+	JUMPA [	CAIN B,"/"	; Yes, "/" is terminator
+		JUMPA TERSTR
+		CAIE B,15
+		JUMPA GSQUOT
+		MOVEI B,[ASCIZ /<cr> inside dist. name/]
+		JUMPA BADGRT]
+	CAIN B,15
+	JUMPA TERSTR
+GSQUOT:	CAIN B,"#"		; "#" is PRINTHISTORY separator
+	JUMPA [	TLNN 0,RDNAME
+		JUMPA .+1
+		MOVEI B,[ASCIZ /"#" is illegal char. for NAME/]
+		JUMPA BADGRT]
+	CAIL B,"a"
+	CAILE B,"z"
+	JUMPA .+3
+	TLNE 0,UPCONV
+	ANDCMI B,40
+	IDPB B,C
+	CAIN B,"V"-100		; Quote next char.?
+	JUMPA [	SOJL D,BADSTR
+		BIN
+		SOJGE E,GSQUOT
+		JUMPA BADSTR]
+	SOJGE E,GETSLP
+	POP P,B
+	POPJ P,
+
+TERSTR:	TLZ 0,RDNAME!LONGST!DSNAME
+	MOVE E,C
+	MOVEI B,0
+	IDPB B,E
+	AOS -1(P)
+BADGRT:	SUB P,[1,,1]
+	POPJ P,
+
+BADSTR:	MOVEI B,[ASCIZ /End of property list inside property value/]
+	JUMPA BADGRT
+
+
+; Set name for breakpage, print report, and respooling
+STNAME:	MOVE C,[POINT 7,DOCID]
+	TLO 0,RDNAME
+	MOVEI B,[ASCIZ /NAME arg. longer than 64 chars./]
+	PUSHJ P,GETFIL
+	  JUMPA GPERRR
+	MOVEM C,DOCIPT#		; Save for possible version number insertion
+	JUMPA GETP
+
+; Set authors for document
+SETFRM:	MOVE C,[POINT 7,FRMMSG]
+	MOVEI E,5*40-1
+	MOVEI B,[ASCIZ /FROM arg. longer than 159 chars./]
+GETSCL:	PUSHJ P,GETSTR
+	  JUMPA GPERRR
+	JUMPA GETP
+
+; Set date for index entries
+SWDATE:	MOVE C,[POINT 7,WRDATE]
+	MOVEI B,[ASCIZ /DATE arg longer than 39 chars./]
+	MOVEI E,5*10-1
+	JUMPA GETSCL
+
+; Set Archive I.D. string
+SETARC:	MOVE C,[POINT 7,ARCID]
+	MOVEI B,[ASCIZ /ARCID arg longer than 64 chars./]
+	MOVEI E,5*15-1
+	JUMPA GETSCL
+
+; Set brief for document
+SETBRF:	MOVE C,[POINT 7,BRFMSG]
+	MOVEI E,5*640-1		; Length limit
+	MOVEI B,[ASCIZ /BRIEF arg. longer than 1919 chars./]
+	JUMPA GETSCL
+
+; Set message for printing report
+SETRMS:	MOVE C,[POINT 7,REPMSG]
+	MOVEI E,5*140-1
+	MOVEI B,[ASCIZ /REPMSG arg. longer than 479 chars./]
+	JUMPA GETSCL
+
+; Set doc. index ID string for document
+SETTIT:	MOVE C,[POINT 7,DTITLE]
+	MOVEI E,5*40-1
+	MOVEI B,[ASCIZ /SUBJECT arg. longer than 163 chars./]
+	JUMPA GETSCL
+
+; Set dictionary file name
+SETDIC:	MOVE C,[POINT 7,DICTN0]
+	MOVEI B,[ASCIZ /DICT arg. longer than 64 chars./]
+	TRO 0,STDDIC
+GETFCL:	PUSHJ P,GETFIL
+	  JUMPA GPERRR
+	JUMPA GETP
+
+; Set name for "Printed by" field on breakpage
+PRINBY:	PUSHJ P,BOLDR		; Save property for conversion leader
+	MOVE C,[POINT 7,PRINBN]
+	MOVEI B,[ASCIZ /PRINBY arg. longer than 39 chars./]
+	MOVEI E,5*10-1
+	JUMPA GETSCL
+
+; Append to key words list
+SETKEY:	MOVE C,KEYPTR
+	CAMN C,[POINT 7,KEYWRD]
+	JUMPA SKEY1
+	MOVEI B,","
+	IDPB B,C
+	MOVEI B," "
+	IDPB B,C
+SKEY1:	MOVEI E,KEYWRD+137
+	MOVEI B,[ASCIZ /Key word list longer than 475 chars./]
+	SUBI E,(C)
+	IMULI E,5		; Compute length limit (conservative by 2 to 7)
+	PUSHJ P,GETSTR
+	  JUMPA GPERRR
+	MOVEM C,KEYPTR
+	JUMPA GETP
+
+; Collect parameters for Ears-format document reduction.
+LREDUC:	TRZA 0,MAPP
+PREDUC:	TRO 0,MAPP
+	PUSHJ P,BOLDR		; Save property for conversion leader
+	TDO 0,[LONGST,,REDUCF]	; Reduction, turn on 0 to 11000 checks and LSH -1
+	PUSHJ P,GETDEC
+	  MOVEI B,[ASCIZ /Bad reduced top margin/]
+	MOVEM B,RTMAR#
+	PUSHJ P,GETDEC
+	  MOVEI B,[ASCIZ /Bad reduced bottom margin/]
+	MOVEM B,RBMAR#
+	PUSHJ P,GETDEC
+	  MOVEI B,[ASCIZ /Bad reduced left margin/]
+	MOVEM B,RLMAR#
+	PUSHJ P,GETDEC
+	  MOVEI B,[ASCIZ /Bad reduced bottom margin/]
+	MOVEM B,RRMAR#
+	TLZ 0,LONGST
+	PUSHJ P,GETDEC
+	MOVEM B,NHCOLS#		; Number of columns wide
+	PUSHJ P,GETDEC
+	MOVEM B,NVCOLS#		; Number of columns high
+	MOVE C,[POINT 7,XFNBUF]
+	MOVEI B,[ASCIZ /Reduction transform file name longer than 64 chars/]
+	JUMPA GETFCL
+
+
+; Collect margins of original document for (possible) current or future
+; use in reduction.
+MARGIN:	SETOM OUTMAR#		; Indicate BLDINI should output MARGINS
+	TLO 0,LONGST
+	PUSHJ P,GETDEC
+	  MOVEI B,[ASCIZ /Bad original top margin/]
+	MOVEM B,OTMAR#
+	PUSHJ P,GETDEC
+	  MOVEI B,[ASCIZ /Bad original bottom margin/]
+	MOVEM B,OBMAR#
+	PUSHJ P,GETDEC
+	  MOVEI B,[ASCIZ /Bad original left margin/]
+	MOVEM B,OLMAR#
+	PUSHJ P,GETDEC
+	  MOVEI B,[ASCIZ /Bad original right margin/]
+	MOVEM B,ORMAR#
+	JUMPA GETP
+
+; Initialization table for column parameters
+; Column right margins only significant for tab stops; some press printers
+; cannot use upper .4 inches of a page.
+RADIX 10
+LCOLIN:	<250/2>*8		; Top margin (4000ths in.)
+	CAIL AA,<8340/2>*8	; Bottom margin test (4000ths in.)
+	500/2			; Left margin (500ths in.)
+	5250/2			; Right margin (500ths in.)
+	LNDTAB+<1*NCPAR>	; Pointer to next column or 0
+	<250/2>*8
+	CAIL AA,<8340/2>*8
+	5750/2
+	10500/2
+	0
+
+PCOLIN:	<10500/2>*8
+	CAIGE AA,<200/2>*8
+	1000/2
+	8000/2
+	0
+RADIX 8
+
+; Set column structure.  Arguments are top, bottom, left, and right
+; margins in mils relative to an origin of (0,0) in the lower left corner,
+; separated by commas or blanks followed by a link to the next column
+; or 0 if end of page.  These five-tuples are repeated for each column,
+; separated by ";"
+SETLCL:	SETOM OUTLCL#		; Indicate BLDINI should output LCOLUMNS
+	TLO 0,DALTER		; Indicate landscape mode
+	MOVE E,[-10,,LNDTAB]	; Landscape columns
+	JUMPA SCLOOP
+
+SETPCL:	SETOM OUTPCL#		; Indicate BLDINI should output PCOLUMNS
+	MOVE E,[-10,,PORTAB]	; Portrait columns
+SCLOOP:	TLO 0,LONGST		; Indicate font margin bounds check
+	PUSHJ P,GETDEC		; Read number into B, terminator into C
+	  MOVEI B,[ASCIZ /Bad top margin for column/]
+	LSH B,3			; Convert to 1/500ths * 10
+	MOVEM B,TOPMAR(E)
+	PUSHJ P,GETDEC
+	  MOVEI B,[ASCIZ /Bad bottom margin for column/]
+	LSH B,3			; Convert to 1/500ths*10
+	MOVEI C,(E)
+	CAIL C,LNDTAB
+	CAIL C,LNDTAB+NCPAR*10
+	TLOA B,(CAIGE AA,0)
+	TLO B,(CAIL AA,0)	; Setup bottom margin test
+	MOVEM B,BOTTST(E)
+	PUSHJ P,GETDEC
+	  MOVEI B,[ASCIZ /Bad left margin for column/]
+	MOVEM B,LFTMAR(E)
+	PUSHJ P,GETDEC
+	  MOVEI B,[ASCIZ /Bad right margin for column/]
+	MOVEM B,RGTMAR(E)
+	TLZ 0,LONGST
+	PUSHJ P,GETDEC
+	CAIL B,0
+	CAIL B,10
+	JUMPA [	MOVEI B,[ASCIZ /Bad next column for column/]
+		JUMPA GPERRR]
+	IMULI B,NCPAR
+	MOVEM B,CLINK(E)
+	MOVEI B,LNDTAB
+	CAILE B,(E)
+	MOVEI B,PORTAB
+	SKIPE CLINK(E)
+	ADDM B,CLINK(E)
+	CAIN C,15		; Last column?
+	JUMPA [	SETZM NCPAR(E)
+		SETZM NCPAR+1(E)
+		JUMPA GETP]
+	CAIE C,";"
+	JUMPA [	MOVEI B,[ASCIZ /Column separator is not ";"/]
+		JUMPA GPERRR]
+	ADDI E,NCPAR-1
+	AOBJN E,SCLOOP
+	FERR(More than 8 columns specified)
+
+; Collect upper case list of press fonts
+SETPRF:	MOVE C,[POINT 7,PFSETS]
+	MOVEI B,[ASCIZ /PFONTS arg. longer than 1279 chars./]
+	TLO 0,UPCONV
+	MOVEI E,5*400-1
+	JUMPA GETSCL
+
+
+; Collect first and last pages to print for a press file
+STPGS:	PUSHJ P,GETDEC		; Collect decimal number
+	JUMPLE B,STPGSE
+	CAIL B,^D1000
+	JUMPA STPGSE		; 1 to 1000 are reasonable
+	MOVEM B,PFPAGE		; First page to print
+	PUSHJ P,GETDEC
+	CAIE C,15
+	JUMPA [	MOVEI B,[ASCIZ /Bad chars at end of PAGES property/]
+		JUMPA GPERRR
+	      ]
+	JUMPLE B,STPGSF
+	CAIL B,PFPAGE
+	CAIL B,^D1000
+	JUMPA STPGSF
+	MOVEM B,PLPAGE
+	JUMPA GETP
+
+STPGSE:	MOVEI B,[ASCIZ /Bad 1st arg for PAGES/]
+	JUMPA GPERRR
+
+STPGSF:	MOVEI B,[ASCIZ /Bad 2nd arg for PAGES/]
+	JUMPA GPERRR
+
+
+; Collect up to 25 absolute tabs in mils
+SATABS:	HRLZI E,-31
+GATBLP:	PUSHJ P,GETDEC
+	CAIL B,0
+	CAIL B,^D11000
+	JUMPA [	MOVEI B,[ASCIZ /ATAB outside range 0 to 11000/]
+		JUMPA GPERRR
+	      ]
+	MOVEM B,ATABT(E)	; Save in mils now, convert to micas
+				; for Press format later
+	CAIE C,","
+	JUMPA .+4
+	AOBJN E,GATBLP
+	MOVEI B,[ASCIZ /More than 25 ATABS/]
+	JUMPA GPERRR
+	CAIE C,15
+	JUMPA [	MOVEI B,[ASCIZ /Separators other than "," in ATABS/]
+		JUMPA GPERRR
+	      ]
+	JUMPA GETP
+
+; Subroutine accepting max. char. count in D, JFN or string pointer in A,
+; Returns decimal number from source in B, terminating char. in C
+GETDEC:	MOVEI C,0
+GETDLP:	SOJGE D,.+4
+BADNUM:	MOVEI B,[ASCIZ /Bad number in property/]
+	SUB P,[1,,1]
+	JUMPA GPERRR
+	BIN
+	CAIE B,";"
+	CAIN B,","
+	JUMPA GTDNM
+	CAIE B,15
+	CAIN B," "
+	JUMPA GTDNM
+	CAIL B,60
+	CAIL B,72
+	JUMPA BADNUM
+	IMULI C,12
+	ADDI C,-60(B)
+	JUMPA GETDLP
+
+GTDNM:	EXCH B,C
+	TLNN 0,LONGST
+	POPJ P,
+	CAIL B,0
+	CAILE B,^D11000
+	JUMPA [	POP P,B
+		XCT (B)		; Put error message in B
+		JUMPA GPERRR]
+	LSH B,-1
+	JUMPA SKPRET
+
+
+; Set no. abstracts to be printed
+SETABS:	TLO 0,DALTER
+; Set # copies to be printed
+SETCPY:	PUSHJ P,BOLDR		; Save property for conversion leader
+	MOVEI C,0
+SETCLP:	SOJGE D,.+3
+BADCPY:	MOVEI B,[ASCIZ /Bad value for COPIES or ABSTRACTS/]
+	JUMPA GPERRR
+	BIN
+	CAIN B,15
+	JUMPA [	TLNN 0,DALTER	; Doing ABSTRACTS?
+		MOVEM C,NCPYS
+		TLZE 0,DALTER
+		MOVEM C,NABSTR#
+		JUMPA GETP]
+	CAIL B,60
+	CAIL B,72
+	JUMPA BADCPY
+	IMULI C,12
+	ADDI C,-60(B)
+	JUMPA SETCLP
+
+; Request SNDMSG or terminal link-message notification after sending
+SETREP:	PUSHJ P,BOLDR		; Save for conversion leader
+	TLZ 0,TERNOT!SNDMN!BSYNOT
+	SOJL D,BADREP
+	BIN
+	ANDCMI B,40
+	CAIN B,"S"
+	TLO 0,SNDMN		; SNDMSG report
+	CAIN B,"T"
+	TLO 0,TERNOT!SNDMN	; TTY report if logged in
+	CAIN B,"B"
+	TLO 0,BSYNOT		; TTY report on busy else nothing
+	CAIN B,"X"
+	TLO 0,BSYNOT!SNDMN	; TTY report on busy else SNDMSG
+	CAIN B,"Y"
+	TLO 0,TERNOT		; TTY report if logged in else nothing
+	TLNN 0,TERNOT!SNDMN!BSYNOT
+	JUMPA BADREP
+	SOJL D,BADREP
+	BIN
+	CAIN B,15
+	JUMPA GETP
+BADREP:	HRROI B,[ASCIZ /Bad value for REPORT/]
+	JUMPA GPERRR
+
+SQUEUE:	TRO 0,QUEUE		; Queue abstracts and copies if possible
+	PUSHJ P,BOLDR		; Save property for conversion leader
+	JUMPA PROPSK
+
+ISAVE:	TROA 0,BLDF		; Indicate build output file at NAME
+SETBIG:	TRO 0,BIGDOC		; Suppress big document checks
+	PUSHJ P,BOLDR		; Save property for conversion leader
+	JUMPA PROPSK
+
+INVLIS:	TLO 0,DALTER		; Top level, no record
+	JUMPA GETDIS
+
+CCLIST:	TLO 0,CCM!DALTER!XPND	; Top level, C message, print names
+	JUMPA GETDIS
+
+TOLIST:	TLO 0,TOM!DALTER!XPND	; Top level, TO message, print names
+GETDIS:	PUSHJ P,BOLDR		; Save property for conversion leader
+	HRRZ B,-1(P)
+	CAIN B,INICLL+1		; Processing the initial list?
+	TLO 0,UPDHIS		; Yes, indicate history items
+	MOVEI B,1
+	MOVEM B,PRFTAB		; Prefer abstract for abstract requestors
+	MOVEI B,2
+	MOVEM B,PRFTAB+1	; Prefer brief for brief requestors
+	MOVEI B,4
+	MOVEM B,PRFTAB+2	; Prefer copy for copy requestor
+	PUSHJ P,NEWNAM		; Read distribution list
+	  JUMPA GPERRR
+	JUMPA GETP
+
+; Subroutine accepting source designator in A, bytes to read from
+; source in D.  Appends distribution names to SENDTO, pointers to SRTTBL.
+NEWNAM:	SOJL D,[MOVEI B,[ASCIZ /No CR terminating TO, C, or INVTO/]
+		TLZN 0,DALTER	; Top level?
+		AOS (P)		; No
+		POPJ P,]	; End-of-file?
+	BIN
+	CAIN B,15
+	JUMPA [	TLZE 0,DALTER	; CR is terminator for top level
+		JUMPA SKPRET
+		JUMPA .+1]
+	CAIN B,":"		; ":" begins a file name
+	JUMPA SETDIS
+	CAIL B,"A"
+	CAILE B,"z"
+	JUMPA NEWNAM		; Flush non-alphabet
+	BKJFN			; Backup Jfn
+	  PUSHJ P,JERROR
+	PUSHJ P,GETDNM		; Collect name up to "/"
+	  POPJ P,
+	TLNN E,760000		; Zero-filled last word?
+	JUMPA .+3		; Yes
+	IDPB B,E
+	JUMPA .-3
+	BIN
+	ANDI B,37
+	CAIN B,"L"-100		; Title only?
+	JUMPA [	TLNN 0,TOM!CCM	; Flush title if not printing titles now
+		JUMPA NEWNAM
+		MOVEI B,0
+		JUMPA ADDNAM]
+	CAIE B,0
+	CAIL B,4		; A, B, or C?
+	SKIPA B,[2]		; Replace illegal modes by brief
+	MOVE B,PRFTAB-1(B)
+	TLNE 0,UPDHIS
+	LSH B,3			; Indicate previous distribution
+	TLNN 0,XPND
+	JUMPA ADDNM1
+ADDNAM:	TLNE 0,TOM		; String to "TO"?
+	IORI B,400000
+	TLNE 0,CCM		; String to "C"?
+	IORI B,200000
+ADDNM1:	MOVEI C,NAMBUF
+	PUSHJ P,SNDNAM
+	  POPJ P,
+	JUMPA NEWNAM
+
+; Set distribution list file name
+SETDIS:	PUSHJ P,GETDNM
+	  POPJ P,
+	MOVEI B,[ASCIZ /Too much nesting of distribution file names/]
+	CAML P,[-13,,0]
+	POPJ P,
+	PUSH P,PRFTAB
+	PUSH P,PRFTAB+1
+	PUSH P,PRFTAB+2
+	HRLZI E,-3		; Map preferences for A, B, and C
+PRFMLP:	SOJL D,[MOVEI B,[ASCIZ /Unfinished preferences for distribution file name/]
+		JUMPA SDERR1]
+	BIN
+	ANDI B,37
+	CAIE B,0
+	CAIL B,4
+	JUMPA [	MOVEI B,[ASCIZ /Bad preference for distribution file name/]
+		JUMPA SDERR1]
+	CAIN B,3
+	MOVEI B,4
+	MOVEM B,PRFTAB(E)
+	AOBJN E,PRFMLP
+; Get the distribution list names from the distribution list file and
+; append them to the SENDTO list
+	PUSH P,A
+	PUSH P,D
+	PUSH P,0
+	PUSH P,DISJFN
+	TLZN 0,XPND		; Printing all names?
+	TLZ 0,CCM!TOM		; No, turn off all printing
+	TLZ 0,DALTER		; Turn off top level
+	HRROI B,NAMBUF		; Look for dist. list file
+	MOVEI A,GJSTAB		; Default to <SECRETARY> and .DIS
+	GTJFN
+	  JUMPA [MOVE B,[POINT 7,NAMBUF]
+		JUMPA MERRST]
+	HRRZM A,DISJFN
+	MOVE B,[70000,,200200]
+	OPENF			; Byte size = 7, read, never wait if busy
+	  JUMPA [MOVE B,DISJFN
+		JUMPA OERRST]
+	PUSHJ P,CHKPRT		; Check for legal access by this user
+	  JUMPA NOSDLF
+	  CAI 0			; Write access not needed
+	PUSHJ P,GETSIZ		; No. 7-bit bytes in file
+	MOVE D,B		; No. bytes in file
+	PUSHJ P,NEWNAM		; Recursively call NEWNAM
+	  JUMPA SDERR
+	MOVEI E,NEWNAM
+SDISR:	MOVEI A,DISJFN
+	PUSHJ P,CLSFIL
+	POP P,DISJFN
+	POP P,0
+	POP P,D
+	POP P,A
+SDISR1:	POP P,PRFTAB+2
+	POP P,PRFTAB+1
+	POP P,PRFTAB
+	JUMPA (E)
+
+NOSDLF:	MOVEI B,[ASCIZ /Access not permitted to /]
+	MOVE A,[POINT 7,MESSAG+15]
+	PUSHJ P,CPYSTZ
+	HRRZ B,DISJFN
+	JUMPA JFNSAB
+
+SDERR:	JSP E,SDISR
+	POPJ P,
+
+SDERR1:	JSP E,SDISR1
+	POPJ P,
+; Subroutine to append the name pointed to by C with the print and
+; distribution control in B to SRTTBL
+SNDNAM:	HRLI C,440700
+	TRNN B,177777		; Title only?
+	JUMPA NOUPR		; Yes, don't upper case
+	PUSH P,C
+UPRLP:	ILDB E,C
+	CAIL E,"a"
+	CAILE E,"z"
+	JUMPA .+3
+	ANDCMI E,40
+	DPB E,C
+	JUMPN E,UPRLP
+	POP P,C
+NOUPR:	PUSH P,D		; Save registers clobbered by LOOKUP
+	EXCH B,C		; Setup new name pointer in B
+	PUSH P,B
+	PUSH P,A
+	PUSH P,C		; Save mode and printout flags
+	MOVEI A,SNDHDR
+	PUSHJ P,LOOKUP
+	  JUMPA INSNAM		; No match
+	  JUMPA INSNAM		; Ambiguous partial match
+	  JUMPA INSNAM		; Unique partial match
+; Exact match.  Have value in C = flags, pointer to entry in B
+	POP P,A			; New flags
+	IORI A,(C)		; Union of old and new flags
+	TRNE A,400000		; "To" set?
+	ANDCMI A,200000		; Yes, clear "C"
+	TRNE A,6!70		; "Brief", "copy", or previous anything set?
+	ANDCMI A,1		; Yes, clear abstract
+	TRNE A,20		; Previous brief?
+	ANDCMI A,2		; Yes, prevent new brief.
+	TRNE A,40		; Previous copy?
+	ANDCMI A,4		; Yes, prevent new copy
+	HRLM A,(B)		; Save revised value
+	POP P,A
+	POP P,C
+	POP P,D
+	JUMPA SKPRET
+
+; Insert new entry at (B)
+INSNAM:	MOVE E,SNDPTR		; First free location in SENDTO
+	CAIL E,SENDTO+4000-16
+	JUMPA DLTLNG
+	MOVEI F,-SNDHDR(E)	; New entry loc. rel. SNDHDR
+	POP P,A			; New flags
+	HRLI F,(A)		; New table entry flags,,pointer
+	AOS A,SNDHDR		; Increase no. words in index part
+	CAILE A,1777
+	JUMPA SRTOVF
+	SUBI A,-SRTTBL(B)	; No. entries to exchange
+	MOVN A,A
+	HRL B,A
+	EXCH F,(B)		; Move up entries above new one
+	AOBJN B,.-1
+	POP P,A			; Restore A
+	POP P,C			; Restore new string pointer
+	MOVE B,(C)
+	ADDI C,1
+	MOVEM B,(E)
+	TRNE B,376
+	AOJA E,.-4
+	MOVEI E,1(E)
+	MOVEM E,SNDPTR
+	POP P,D
+	JUMPA SKPRET
+
+DLTLNG:	MOVEI B,[ASCIZ /Distribution list longer than 2032 words/]
+	POPJ P,
+
+SRTOVF:	MOVEI B,[ASCIZ /Exceeded 1023 distribution names/]
+	POPJ P,
+
+; Collect name of Mca or Ethernet host where Press files are sent or
+; "CONVERT" if converting to Ears format.
+SETPDV:	MOVEI B,[ASCIZ /PDEVICE arg longer than 79 chars/]
+	PUSHJ P,GETHST
+	  JUMPA GPERRR
+	MOVEI B,[ASCIZ /Unknown host for PDEVICE/]
+	MOVE C,NAMBUF
+	CAME C,[ASCII /CONVE/]
+	JUMPA SPDV1
+	SETZM PDEVIC#
+	JUMPA GETP
+
+SPDV1:	PUSHJ P,FNDHST
+	TLNN E,(1B5)
+	JUMPA GPERRR
+	MOVEM C,PDEVIC#
+	JUMPA GETP
+
+; Subroutine to read string into NAMBUF for XDEVICE, EDEVICE, or PDEVICE
+GETHST:	TLO 0,UPCONV		; Indicate upper case conversion
+	MOVEI E,-20*5-1
+	MOVE C,[POINT 7,NAMBUF]
+	JUMPA GETSTR
+
+; Subroutine to find the host name in NAMBUF in the HSTLST table, returning
+; pointer to HSTLST entry in C and entry in E
+FNDHST:	PUSH P,B
+	PUSH P,D
+	PUSH P,F
+	HRLZI F,-NHOSTS		; Loop over all known hosts
+DVFLP:	MOVE D,HSTLST(F)
+	HRLI D,440700
+	MOVE E,[POINT 7,NAMBUF]
+CDCLP:	ILDB B,D
+	ILDB C,E
+	CAIE B,(C)
+	JUMPA NOMAT
+	JUMPN B,CDCLP
+	MOVEI C,HSTLST(F)
+	POP P,F
+	POP P,D
+	POP P,B
+	MOVE E,(C)
+	POPJ P,
+
+NOMAT:	AOBJN F,DVFLP
+	POP P,F
+	POP P,D
+	POP P,B
+	SUB P,[1,,1]
+	JUMPA GPERRR
+
+; Setup default device as Xgp, Ears, or Press
+SETDEV:	SETZM DEVICE#
+	HRLZI E,-6		; Set char. length limit
+	MOVE C,[POINT 7,DEVICE]
+SETDLP:	SOJL D,BADDEV
+	BIN
+	CAIN B,15
+	JUMPA SETDLE
+	AOBJP E,BADDEV
+	TRZ B,40		; Convert to upper case
+	IDPB B,C
+	JUMPA SETDLP
+
+SETDLE:	MOVE B,DEVICE
+	CAMN B,[ASCII /PRESS/]
+	JUMPA GETP
+BADDEV:	HRROI B,[ASCIZ /Bad value for DEVICE/]
+	JUMPA GPERRR
+
+
+; Insert file whose name is given by the NAME property as the initial list
+; and text of the document.
+INSFIL:	HRRZ B,0(P)
+	CAIE B,LDRCLL+1		; Only legal in leader
+	JUMPA [FERR(INSERT only legal in leader)]
+	SETOM INSERT
+	JUMPA GETP
+
+
+; Index number for obsolete version of document being recorded
+SREVIS:	PUSHJ P,BOLDR		; Save property for conversion leader
+	PUSHJ P,GETDEC
+	MOVEM B,XREVIS
+	CAIL B,LOWVER
+	CAILE B,-1
+	JUMPA [	MOVEI B,[ASCIZ /REVISE index position illegal/]
+		JUMPA GPERRR]
+	MOVEI B,[ASCIZ /Index i.d. of REVISE not terminated by comma/]
+	CAIE C,","		; Check number termination
+	JUMPA GPERRR
+	MOVE C,[POINT 7,REVISS]
+	MOVEI B,[ASCIZ /REVISE I.D. length .G. 64 chars/]
+	JUMPA GETFCL
+
+; Index position and I.D. of document being supplemented
+SETSPL:	PUSHJ P,BOLDR		; Save property for conversion leader
+	PUSHJ P,GETDEC
+	MOVEM B,XSUPPL
+	CAIL B,LOWVER
+	CAILE B,-1
+	JUMPA [	MOVEI B,[ASCIZ /SUPPLEMENT index position illegal/]
+		JUMPA GPERRR]
+	MOVEI B,[ASCIZ /SUPPLEMENT index position not followed by comma/]
+	CAIE C,","
+	JUMPA GPERRR
+	MOVE C,[POINT 7,SUPPLE]
+	MOVEI B,[ASCIZ /SUPPLEMENT I.D. length .G. 64 chars/]
+	JUMPA GETFCL
+
+; Collect "Supplemented by: " string
+SETSPB:	MOVEI B,[ASCIZ /SUPPLEBY string length .G. 739 chars/]
+	MOVE C,[POINT 7,SUPPBY]
+	MOVEI E,5*200-1
+	JUMPA GETSCL
+
+; RECORD must open the necessary index files during GETP processing since
+; the assignment of a version number must be made at this time, and it
+; is necessary to prevent races and check for "index busy" initially.
+; After the document has successfully been sent for printing, the actual
+; construction of the new descriptor is carried out, and it is entered
+; into the index.  All necessary error checks have to be made during
+; GETP, so that entry into the index doesn't fail after printing has taken
+; place.  The only errors which might be possible during actual index
+; entry are catastrophic ones.
+
+SETREC:	TROE 0,RECDOC		; Multiple RECORDs are illegal
+	JUMPA [FERR(Illegal to RECORD in two indexes at once)]
+	HRRZ B,0(P)		; Get address of GETP's caller
+	CAIE B,LDRCLL+1		; Must be in leader of file
+	JUMPA [	MOVEI B,[ASCIZ /RECORD illegal outside leader/]
+		JUMPA GPERRR]
+	PUSHJ P,BOLDR		; Save property for conversion leader
+	PUSHJ P,GETDEC		; Read internal i.d.
+	JUMPE B,.+4		; 0 is free choice
+	CAIL B,LOWVER
+	CAILE B,-1
+	JUMPA BADIRN
+	MOVEM B,IXPOS#
+	CAIE C,","
+	JUMPA BADIRN
+; Open DOCGEN.INDEX, creating new index if necessary and legal.
+	MOVE C,RECBLK+3		; Byte pointer for building directory name
+	MOVEI E,5*10-1
+	MOVEI B,[ASCIZ /RECORD directory name longer than 39 char./]
+	PUSHJ P,GETSTR
+	  JUMPA GPERRR
+	PUSH P,A		; Save source designator
+	PUSH P,D		; Save byte count
+	MOVE C,[440000,,300200]	; Arg for OPENF
+	PUSHJ P,OPNOIX		; Try old index first
+	  JUMPA MAKNW0		; No such file error
+	  JUMPA GVBSY		; File busy
+	  JUMPA ABFILE		; Bad error, pointer in B
+; Pspool allows RECORD by anyone who has read access to  DOCGEN.INDEX.
+; He cannot find any useful information by reading DOCGEN.INDEX, so the
+; only way this protection fails is in allowing him to record garbage in the index.
+	HRRZ A,INDJFN
+	PUSHJ P,CHKPRT		; Check for legal access to index
+	  JUMPA [FERR(Illegal to access index)]
+	  CAI 0			; Read access is enough
+OPNID1:	MOVE A,[440000,,300200]	; Value for OPENF's
+	PUSHJ P,OPNSV		; Open DOCGEN.SYMBOLS and DOCGEN.VALUES
+	  JUMPA ABFILE		; Non-existent file error
+	  JUMPA GVBSY		; File busy error
+	  JUMPA ABFILE		; Bad error, pointer in B
+	POP P,D
+	POP P,A
+	JUMPA GETP
+
+
+; Jump here when no DOCGEN.INDEX.  Make a new index if legal.
+MAKNW0:	MOVEI A,0		; Exact match, default device
+	HRROI B,IDXDIR		; String pointer to directory name
+	PUSHJ P,CHKDPR		; Check this user's access to directory
+	  JUMPA [FERR(Not allowed to make new index in directory)]
+	PUSHJ P,OPNNIX		; Create new DOCGEN.INDEX
+	  JUMPA ABFILE		; No such file error (impossible?)
+	  JUMPA GVBSY		; File busy error
+	  JUMPA ABFILE		; Bad error, message in B
+	JUMPA OPNID1
+
+BADIRN:	FERR(Bad index position for RECORD)
+
+; Loop back here if no copies
+REDIST:	MOVE GG,[POINT 7,EXCMSG] ; Buffer for non-fatal error msg
+	MOVEM GG,EXCMP#		; Save starting pointer for APNEXC
+	SETZM EXCMSG
+REDIS1:	SETZB AA,NABS#		; Count names on BRFL, indicate no abstracts
+	SETZB G,EE		; Count names on DISTL and QUEUEL
+	TLNN 0,ABSTRP		; If not already doing abstracts
+	SKIPN NABSTR		; And have abstracts to do...
+	JUMPA .+2
+	SETOM NABS		; Indicate they must be done
+	MOVE A,[POINT 7,TOMSG]	; Indicate no distribution titles
+	MOVEM A,TOPTR#
+	IDPB G,A
+	MOVE A,[POINT 7,CCMSG]
+	MOVEM A,CCPTR#
+	IDPB G,A
+	MOVE A,[POINT 7,TOREC]
+	MOVEM A,TORPTR#
+	MOVE A,[POINT 7,CCREC]
+	MOVEM A,CCRPTR#
+	HRRZ E,SNDHDR		; No. of strings
+	JUMPA DLNMLE
+
+DLNMCP:	MOVE B,SRTTBL(E)	; String pointer
+	MOVE F,B		; Flags in l.h.
+	HRLI B,440700		; String pointer to name
+	ADDI B,SNDHDR
+	PUSHJ P,PRQNAM		; Queue the name and build messages
+DLNMLE:	SOJGE E,DLNMCP		; Loop over all names
+	SKIPE ACHISC		; Allowed access?
+	JUMPA [FERR(Access not permitted and not queued for you)]
+	TLNN 0,ABSTRP		; Doing abstracts?
+	SKIPA D,NCPYS		; No, get no. of extra copies
+	MOVE D,NABSTR		; Yes, get no. of extra abstracts
+	JUMPG G,DISTRX		; Any distribution specified?
+	JUMPG AA,DISTRX
+	JUMPG EE,DISTRX
+	TDNE 0,[ABSTRP,,RECDOC]	; Or doing abstracts now or putting in index
+	JUMPA DISTRX
+	MOVE B,[POINT 7,USRNAM]
+	SOJA D,.+2		; No, first extra copy is for him
+DISTRL:	MOVE B,[POINT 7,[ASCIZ /DISTRIBUTION/]]
+	MOVEM B,DISTL(G)
+	ADDI G,1		; Count copies/abstracts
+DISTRX:	CAIGE G,^D450		; About to overflow DISTL?
+	SOJGE D,DISTRL
+	MOVEM AA,NBRFS#		; Count names on BRFL
+	MOVEM EE,NQUCP#		; Count queued copies or abstracts
+	MOVEM G,NCPYS		; No. DLIST entries
+; Always go through first part of copies code to setup DOCSIZ
+	JUMPN G,DOCPYS		; At least one copy?
+	JUMPN EE,DOCPYS		; No, at least one queued copy?
+	SKIPN NABS		; Undone abstracts?
+	JUMPA DOCPYS		; No, must be only briefs, etc.
+	TLO 0,ABSTRP!FIRSTS	; Yes, rescan distribution list
+	JUMPA REDIS1
+
+; Subroutine to queue the name on one of the four queues and build C
+; and TO messages and histories appropriately.
+PRQNAM:	MOVEM B,NAMPTR#
+	TLNN 0,UPDHIS		; Making new or updating old history?
+	JUMPA PRQN0		; No, skip history list update
+	TLNN F,400000		; Putting in "TO" message?
+	SKIPA A,CCRPTR		; No, other stuff in C history
+	MOVE A,TORPTR		; Yes, only these in TO history
+	TLNE F,44		; New or previous copy?
+	PUSHJ P,MHISC
+	TLNE F,11		; New or previous abstract?
+	PUSHJ P,MHISA
+	TLNE F,22		; New or previous brief?
+	PUSHJ P,MHISB
+	TLNE F,400000
+	MOVEM A,TORPTR
+	TLNN F,400000
+	MOVEM A,CCRPTR
+PRQN0:	TLZN F,200000		; Name to "C" message?
+	JUMPA PRQN1
+	MOVE A,CCPTR
+	MOVEI C,(A)
+	CAIL C,CCMSG+200-20	; About to overflow?
+	JUMPA CHKPR1		; Yes, don't chance it
+	MOVEI B,[ASCIZ /, /]
+	CAME A,[POINT 7,CCMSG]
+	PUSHJ P,CPYSTZ
+	MOVE B,NAMPTR
+	PUSHJ P,CPYSTL
+	MOVEM A,CCPTR
+	IDPB C,A		; Terminate in case last
+PRQN1:	TLZN F,400000		; Name to TO message?
+	JUMPA CHKPR1
+	MOVE A,TOPTR
+	MOVEI C,(A)
+	CAIL C,TOMSG+200-20	; About to overflow?
+	JUMPA CHKPR1		; Yes, don't chance it
+	MOVEI B,[ASCIZ /, /]
+	CAME A,[POINT 7,TOMSG]
+	PUSHJ P,CPYSTZ
+	MOVE B,NAMPTR
+	PUSHJ P,CPYSTL
+	MOVEM A,TOPTR
+	IDPB C,A
+CHKPR1:	MOVE B,NAMPTR
+	TLZE F,2		; Brief requested?
+	JUMPA BRREQ
+CHKPR2:	TLNE 0,ABSTRP		; Doing abstracts now?
+	JUMPA PRQN2		; Yes, different
+	TLZE F,1		; An abstract?
+	SETOM NABS		; Indicate must do abstract pass
+	TLZN F,4		; Full copy?
+	POPJ P,
+CPREQ:	CAIGE EE,1000		; Overflowed queued name buffer?
+	TRNN 0,QUEUE		; No, queuing printout?
+	JUMPA MAKCP1		; No, skip queuing stuff
+	MOVEI A,0		; Exact match
+	STDIR			; Must have Maxc account to queue
+	  JUMPA MAKCP1		; No Maxc dir.
+	  JUMPA MAKCP1		; Ambig. match
+	MOVE B,NAMPTR
+	MOVEM B,QUEUEL(EE)
+	AOJA EE,CPOPJ
+
+MAKCP1:	MOVE B,NAMPTR
+MAKCP2:	CAIL G,^D450		; About to overflow DISTL?
+	JUMPA [	MOVEI B,[ASCIZ /Can't send more than 512 copies/]
+		TLNE 0,ABSTRP
+		MOVEI B,[ASCIZ /Can't send more than 512 abstracts/]
+		JUMPA ABFILE]
+	MOVEM B,DISTL(G)
+	AOJA G,CPOPJ
+
+PRQN2:	TLZE F,1		; An abstract?
+	JUMPA CPREQ		; Yes, queue it
+	POPJ P,			; No, finished.
+
+; Queue brief if name is a Maxc account, else substitute abstract (if any)
+BRREQ:	MOVEI A,0		; Exact match required
+	STDIR
+	  JUMPA CSBRF		; No match
+	  JUMPA CSBRF		; Ambiguous partial match
+	CAIL AA,1000
+	JUMPA [FERR(Can't send more than 512 briefs)]
+	MOVE B,NAMPTR
+	MOVEM B,BRFL(AA)
+	AOJA AA,CHKPR2
+
+CSBRF:	TLNE F,4		; Ignore if also giving copy
+	JUMPA CHKPR1
+	TLNE 0,ABSTRP
+	JUMPA MAKCP1		; Abstract instead if pass 2
+	SETOM NABS		; Else indicate must do abstract pass
+	JUMPA CHKPR1
+
+MHISC:	PUSHJ P,CPYSTZ
+	MOVEI B,[ASCIZ "/C"]
+MHACC:	SKIPE ACHISC		; Access allowed?
+	TLNN F,70		; No, this name in history?
+	JUMPA CPYSTZ
+; Access not allowed to file--permit if user name in history
+	MOVE E,NAMPTR
+	MOVEI D,0		; Index for compare loop
+	MOVE C,USRNAM(D)
+	CAME C,(E)
+	JUMPA CPYSTZ		; Not this user
+	ADDI E,1
+	TRNE C,376		; Last word of name?
+	AOJA D,.-5
+	SETZM ACHISC		; Yes, match, allow access
+	JUMPA CPYSTZ
+
+MHISB:	MOVE B,NAMPTR
+	PUSHJ P,CPYSTZ
+	MOVEI B,[ASCIZ "/B"]
+	JUMPA MHACC
+
+MHISA:	MOVE B,NAMPTR
+	PUSHJ P,CPYSTZ
+	MOVEI B,[ASCIZ "/A"]
+	JUMPA MHACC
+
+; Have number copies or abstracts in G, queued copies in EE
+DOCPYS:	PUSHJ P,RECCHK		; Setup for build doc and record
+	TLZ 0,SCNFGS		; Clear scan flags
+	LDB C,[POINT 6,THSFDB+FDBBYV,11] ; File byte size
+	MOVE D,THSFDB+FDBSIZ	; No. bytes in file
+	HRRZ E,THSFDB+FDBUSW	; Pos. of first text byte
+	SKIPN A,INSJFN
+	MOVE A,TXTJFN
+	CAIN C,44		; Created with byte size = 36?
+	JUMPA BS36		; Yes, could be anything
+	CAIN C,20		; Created with byte size = 16?
+	JUMPA BS16
+	CAIN C,10		; Or byte size = 8?
+	JUMPA BS8
+	CAIN C,40		; Or byte size = 32?
+	JUMPA BS32
+	CAIN C,7		; Byte size = 7?
+	JUMPA BS7SET		; Yes
+	FERR(<Creation byte size wasn't 7, 36, 8, 16, or 32>)
+
+; Might be xgp formatted 7-bit file or unformatted--check
+BS7CK:	TLNE 0,ASC8		; Was byte size = 36?
+	JUMPA XSTEST		; No, unformatted 8-bit file
+	MOVE D,THSFDB+FDBSIZ
+	IMULI D,5		; Byte length of file
+BS7SET:	HRRZ E,THSFDB+FDBUSW	; Byte pos. of first text word
+	MOVEM E,ASTART#
+	SUB D,E
+	JUMPLE D,DELUNF		; No text in file--delete
+	MOVEM D,REMCHR
+	MOVEM D,DATASZ#		; Save number of data characters in file
+	MOVEI B,7
+	MOVEM B,DATBSZ#		; Save byte size of data
+	SFBSZ			; Set byte size to 7
+	MOVEI C,(E)
+	RIN
+	CAIE B,177		; First two chars = rubout and ^C?
+	JUMPA XSTEST		; No, unformatted
+	BIN
+	CAIN B,3
+	JUMPA NEXT		; Yes, XGP with 7-bit chars.
+; Have unformatted file
+XSTEST:	MOVE A,[ASCII /TTY/]
+	MOVEM A,FTYPE#		; Save file type
+	MOVE A,DEVICE
+	CAMN A,[ASCII /PRESS/]
+	JUMPA FPRESS
+	JUMPA NEXT		; Yes, send to an xgp
+
+BS32:	LSH D,1			; Convert to # 8-bit bytes
+BS16:	LSH D,1			; Convert to # 8-bit bytes
+BS8:	TLOA 0,ASC8
+BS36:	LSH D,2			; No. of 8-bit bytes
+	IDIVI E,5		; Starting word
+	LSH E,1
+	MOVEM E,RSTART#		; Starting 16-bit text byte pos.
+	LSH E,1
+	MOVEM E,ASTART#		; Starting byte pos. of 8-bit text
+	MOVEI B,10
+	MOVEM B,DATBSZ#		; Save data byte size for document construction
+	MOVE C,E
+	LSH C,-1		; Byte pos. of first 16-bit byte
+	RIN
+	MOVE C,D		; Total 8-bit bytes
+	SUB D,E
+	JUMPLE D,DELUNF
+	MOVEM D,REMCHR#		; Total text in 8-bit bytes
+	MOVEM D,DATASZ#
+	CAIN B,177B27+3		; 1st two 8-bit char = rubout-^C?
+	JUMPA NEXT		; Yes, Xgp file
+	TRNE D,777		; Must be multiple of 256 16-bit words
+				; if it is an Ears or Press format file
+	JUMPA BS7CK		; Otherwise, can't be Ears or Press
+
+	SUBI C,1000		; Get byte pos. of password string
+	LSH C,-1
+	RIN			; Read 16-bit password
+	CAIN B,^D27183		; Check for Press password
+	JUMPA PRFORM
+	CAIE B,^D31415		; Check for Ears password
+	JUMPA BS7CK		; No, not formatted yet
+	MOVE A,[ASCII /EARS/]
+	MOVEM A,FTYPE		; Save file type
+	FERR(EARS-format file no longer printable)
+
+
+; Subroutine to SIN-SOUT source file to network
+TRRECS:	SKIPN A,INSJFN
+	MOVE A,TXTJFN
+	MOVE B,[POINT 16,EFTMSG+EFTHDR]
+	MOVNI C,400
+	SIN
+	PUSHJ P,SNDREC
+	SOJG F,TRRECS
+	POPJ P,
+
+; Subroutine called to GTJFN on output file and setup for RECORD
+RECCHK:	SKIPN INSERT		; Must be PRESS conversion if inserting and
+	TRNN 0,RECDOC!BLDF	; also saving or recording
+	POPJ P,
+	MOVE A,THSFDB+FDBUSW
+	TLNE A,RESPA!RESPC	; Respooling?
+	POPJ P,
+	TRNN 0,RECDOC
+	JUMPA RECC1		; Simply open output file if not indexing
+	MOVEI B,[ASCIZ /No SUBJECT specified--must supply title/]
+	SKIPN DTITLE
+	JUMPA ABFILE
+	SKIPE NABS
+	JUMPA RECC1		; Don't Assign index position if pass 1 of 2
+	MOVE A,IXPOS
+	PUSHJ P,PICKID		; Assign index position
+	  JUMPA GVBSY		; File busy wait...
+	  JUMPA ABFILE
+; Version defaulted to next higher
+RECC1:	HRLZI A,400001		; Output use
+	HRROI B,DOCID
+	GTJFN
+	  JUMPA [MOVE B,[POINT 7,DOCID]
+		JUMPA MERRST]
+	MOVEM A,NEWJFN
+	MOVE B,A
+	HRROI A,DOCID
+	MOVE C,[11110,,1]
+	JFNS			; Necessary to redo i.d. for Press conversions
+	HRROI A,NAMBUF
+	HRLZI C,10000
+	JFNS			; Get directory name string
+	HRROI B,NAMBUF
+	PUSHJ P,CHKDPR		; Check directory protection
+	  JUMPA BNAMER		; No access allowed
+	POPJ P,			; Can add new files
+
+BNAMER:	MOVEI B,[ASCIZ /Not allowed to build document in directory /]
+	PUSH P,[0,,NAMBUF]
+	JUMPA BBERR
+
+; Subroutine to process PFONT string and build Press font directory in FD,
+; font height, width, and interline separation in FNTTAB, and font
+; character width table in FS.
+;
+; The PFONT string has been upper-cased and consists of font names
+; separated by commas with blanks or tabs allowed before and after commas.
+; Each font name is of the following form:
+;	{familyname}{ptsize}{M|B|L}{R|I}{R|C|E}{0|90}
+; The family name is built into NAMBUF for lookup in FNTFAM.
+; The font directory is built in FD, where up to 16 entries are of the
+; following form:
+;
+; Wd 0	entry length(16), font set(8), font(8)
+; Wd 1	bc(8), ec(8), strlength(8), ch1(8)
+; Wd 2	ch2(8), ch3(8), ch4(8), ch5(8)
+; Wd 3	...
+; Wd 4	...
+; Wd 5	...
+; Wd 6	ch18(8), ch19(8), face(8), source(8)
+; Wd 7	size(16), rotation(16)
+;
+; In these entries entry length is always 16, source always equals bc,
+; bc is always 0, ec always 127, strlength and ch1 to ch19 are the BCPL
+; string for the family name, size is the font size in points (positive) or
+; micas (negative--size in micas = ptsize*2540/72), rotation = 0 (portrait)
+; or 90*60 (landscape), and face is 0+{2 if bold}+{4 if light}+
+; {1 if italic}+{6 if condensed}+{12 if expanded}.
+
+PFNTSU:	SETZM FD
+	MOVE B,[FD,,FD+1]
+	BLT B,FD+177		; Zero font directory
+	SETZM FNTTAB
+	MOVE B,[FNTTAB,,FNTTAB+1]
+	BLT B,FNTTAB+17		; Zero FNTTAB
+	MOVE B,[FS,,FS+1]
+	SETZM FS
+	BLT B,FS+10000-1	; Zero 400*20 words of FS
+	MOVE BB,[POINT 7,PFSETS]
+	MOVEI DD,FD		; Point at block for this font
+	HRLZI AA,-1		; Only one font set allowed
+	HRLZI CC,-17		; AOBJN counter for loop over fonts in set
+PFFBLP:	MOVE EE,[POINT 8,1(DD),23]	; BP to build name in FD
+	SETZB C,NAMBUF		; BCPL string length
+	MOVE B,[NAMBUF,,NAMBUF+1]
+	BLT B,NAMBUF+5
+	MOVE D,[POINT 7,NAMBUF]	; BP to build name for family lookup
+; Skip leading junk before font family name
+PFLSKP:	ILDB B,BB		; Next char from PFSETS
+	JUMPE B,CPOPJ		; Finished
+	CAIN B,","
+	JUMPA PFNOFT		; No font
+	CAIE B,"I"-100
+	CAIN B," "
+	JUMPA PFLSKP		; Skip leading junk
+	CAILE B,"Z"
+	JUMPA .+3
+	CAIL B,"A"
+	AOJA C,PFAMBD
+	FERR(1st char of font name not alphabetic)
+; Build font family name
+PFAMBD:	IDPB B,EE		; Build family name in FD
+	IDPB B,D		; Build family name for index search
+	ILDB B,BB		; Next char from PFSETS
+	CAIL B,"A"		; Family name entirely alphabetic
+	CAILE B,"Z"
+	JUMPA .+2
+	AOJA C,PFAMBD
+	CAIL C,24
+	JUMPA [	FERR(Font family name longer than 19 chars)]
+	DPB C,[POINT 8,1(DD),23]	; Store BCPl string length
+	MOVEI C,20
+	DPB C,[POINT 16,0(DD),15]	; Entry length
+	DPB AA,[POINT 8,0(DD),23]	; Font set
+	DPB CC,[POINT 8,0(DD),31]	; Font in font set
+
+	MOVEI C,177
+	DPB C,[POINT 16,1(DD),15]	; BC and EC (0 and 177 for now)
+	PUSHJ P,PGNUM
+	JUMPA PFMBL
+	FERR(Non-numeric font point size)
+
+PFMBL:	CAIL C,^D51
+	JUMPA [	FERR(Point size greater than 50 illegal)]
+	DPB C,[POINT 16,7(DD),15]	; Size in points
+	MOVEM C,PPTSIZ#
+	IMULI C,^D127
+	MOVEM C,PTSCAL#		; Save scale factor for fractional widths
+	MOVEM B,PTHICK#		; Save character for error messages
+	MOVEI C,0		; Begin constructing "face"
+	CAIN B,"M"
+	JUMPA PFRI
+	CAIN B,"B"
+	JUMPA PFBOLD
+	CAIN B,"L"
+	JUMPA PFLITE
+	SETZM PTHICK
+	JUMPA PNOMBL
+
+PFLITE:	ADDI C,2
+PFBOLD:	ADDI C,2
+PFRI:	ILDB B,BB		; Next char from PFSETS
+PNOMBL:	MOVEM B,PSLOPE#		; Save char for error messages
+	CAIN B,"I"
+	TROA C,1
+	CAIN B,"R"
+	JUMPA .+3
+	SETZM PSLOPE
+	JUMPA .+2
+	ILDB B,BB
+	MOVEM B,PCONDN#
+	CAIN B,"R"
+	JUMPA PFWIDX
+	CAIN B,"C"
+	JUMPA PFCOND
+	CAIN B,"E"
+	JUMPA PFEXPD
+	SETZM PCONDN
+	JUMPA PNORCE
+
+PFEXPD:	ADDI C,6
+PFCOND:	ADDI C,6
+PFWIDX:	ILDB B,BB		; Next char from PFSETS
+PNORCE:	DPB C,[POINT 8,6(DD),23]	; Save face
+	MOVEM C,PFACE#
+	PUSHJ P,PGNUM
+	JUMPA PFFSKP
+	MOVEI C,0
+	JUMPA PFFSKP
+
+PGNUM:	CAIL B,"0"
+	CAILE B,"9"
+	JUMPA SKPRET		; Error return
+	MOVEI C,-60(B)
+PGNLP:	ILDB B,BB
+	CAIL B,"0"
+	CAILE B,"9"
+	POPJ P,
+	IMULI C,12
+	ADDI C,-60(B)
+	JUMPA PGNLP
+
+; Here to pass trailing blanks and tabs after font string before ","
+PFFSKL:	ILDB B,BB		; Next char from PFSETS
+PFFSKP:	JUMPE B,PFFDON
+	CAIN B,","
+	JUMPA PFFDON
+	CAIE B," "
+	CAIN B,"I"-100
+	JUMPA PFFSKL
+BADPFX:	FERR(Bad chars after point size in font name)
+
+PFFDON:	MOVEM C,PROTAT#
+	JUMPE C,PFPORT		; Portrait
+	CAIE C,^D90
+	JUMPA BADPFX
+	MOVEI C,^D5400
+PFPORT:	DPB C,[POINT 16,7(DD),31]	; Save rotation in minutes
+	MOVEM C,PMROT#
+; Now done setting up FD entry for the font and have family name
+; in NAMBUF.  Next step is to look up the family name in FNTFAM.
+	MOVE E,NFFAM		; AOBJN pointer for FNTFAM
+PFFMLU:	HLRZ C,FNTFAM(E)	; Point at FNTFAM string
+	MOVEI B,NAMBUF		; Point at string being looked up
+PFFCMP:	MOVE D,0(C)		; Compare next word
+	CAME D,0(B)
+	JUMPA PFFMNM
+	TRNN D,377		; Last word?
+	JUMPA PFFMAT
+	ADDI B,1
+	AOJA C,PFFCMP
+
+PFFMNM:	AOBJN E,PFFMLU
+	MOVEI B,[ASCIZ /Unknown font family /]
+	JUMPA PFNERR
+
+; Found family name in table.  Now find width index entry
+PFFMAT:	HRRZ D,FNTFAM(E)	; Get family name code
+	LSH D,11
+	ADD D,PFACE		; Family name code and face for lookup
+	HRRZM D,PNMFAC#
+	MOVEI E,(CC)		; Font
+	LSH E,10
+	ADDI E,FS		; E/ FS+(font * 400) = loc char space table
+	SETZM PFRAC#		; Indicate that fractional spec ok
+	MOVE A,FWIJFN
+	MOVE G,NWDIXE		; AOBJN ptr for loop over wi entries
+	SETZM PFNMTC#		; Indicate no matching fonts yet
+WILULP:	HLRZ B,FNTWDS(G)	; Family code and face for next wi entry
+	CAME B,PNMFAC		; Match?
+	JUMPA NOMAWI		; No.
+	HLRZ B,FNTWDS+1(G)	; Size of the font segment
+; if size is 0, then have fractional width specification, else abs in micas
+	JUMPE B,WIXABS
+	IMULI B,^D72		; Convert to size in points
+	ADDI B,^D1270
+	IDIVI B,^D2540
+	CAME B,PPTSIZ
+	JUMPA NOMAWI
+WIXABS:	MOVE B,FNTWDS+2(G)	; Starting address of font segment
+	SFPTR
+	  PUSHJ P,JERROR
+	MOVE B,[POINT 16,FM]	; Use FM as a buffer
+	MOVN C,FNTWDS+3(G)	; - Length of font segment
+	SIN
+	LDB C,[POINT 9,FNTWDS(G),35]	; EC
+	MOVEM C,PEC#
+	LDB C,[POINT 9,FNTWDS(G),26]	; BC
+	MOVEM C,PBC#
+
+; Font bounding box parameters are arranged so that the baseline of
+; each char is the current X (landscape) or Y (portrait), so no
+; baseline adjustment is needed when fonts are changed.
+; The width segment entries are structured as follows:
+;
+; Wd 0	FBBox(16), FBBoy(16)
+; Wd 1	FBBdx(16), FBBdy(16)
+; Wd 2	XWidthFixed(1), YWidthFixed(1), Spare(14), XWdata...
+; Wd 3-n	...YWdata...
+;
+; where there is 1 16-bit byte of XWdata if XWidthFixed is 1, else
+; there are ec-bc+1 16-bit bytes of XWdata.  XWdata is followed by 1
+; 16-bit byte of YWdata if YWidthFixed is 1, else by ec-bc+1 16-bit bytes of
+; YWdata.
+	MOVE B,FM+2
+	HRRZ C,FNTWDS+1(G)	; Rotation
+	JUMPE C,PPRTWH		; Jump if entry is for portrait font
+	CAIE C,^D5400		; Skip if entry is for landscape font
+	JUMPA NOMAWI		; Ignore if oddball rotation
+; Setup for landscape mode
+	MOVE EE,[POINT 16,FM+3]	; ILDB pointer to 1st Y-width if 1 X-width
+	TLNE B,400000		; Skip if full array of X-widths
+	JUMPA PLFIXX		; Jump if only 1 X-width
+	MOVE C,PEC
+	SUB C,PBC		; C/ EC-BC = nxwidths-1
+	TRNE C,1
+	IBP EE
+	LSH C,-1
+	ADDI EE,(C)
+PLFIXX:	TLNN B,200000		; Skip if YWidthFixed = 1 (fixed pitch)
+	JUMPA PMNYLW		; No.  Individual widths for chars
+	ILDB C,EE		; The fixed Y-width for all chars
+	JUMPA PLNPOF
+
+
+; Variable width portrait font
+PMNYPW:	MOVE EE,[POINT 16,FM+2,15]	; ILDB pointer for widths
+PMNYLW:	MOVE D,[POINT 36,(E)]	; IDPB pointer for FS table
+	MOVE B,PBC
+	ADDI D,(B)
+	SUB B,PEC
+	HRLZI FF,-1(B)		; AOBJN pointer for loop (BC-EC-1,,0)
+	HLRZ B,FNTWDS+1(G)
+	JUMPE B,PLWREL		; Jump if fractional width spec.
+; *Wrong rotation unacceptable except for fractional specification
+	HRRZ B,FNTWDS+1(G)	; Rotation of this font
+	CAME B,PMROT		; Match desired rotation?
+	JUMPA NOMAWI		; No skip it
+PABSLP:	ILDB B,EE
+	CAIN B,100000		; Undefined?
+	MOVEI B,0		; Yes.  Use width = 0
+	IDPB B,D
+	AOBJN FF,PABSLP		; Loop to fill FS table
+	SETOM PFRAC		; Make fractional spec illegal
+	JUMPA GOTFMC
+
+; Fractional width specification.  Scale fractions by 2540*ptsize/72000
+; = (ptsize*127+1800)/3600
+PLWREL:	ILDB B,EE
+	CAIN B,100000		; Undefined?
+	MOVEI B,0		; Yes.  Use width 0
+	IMUL B,PTSCAL
+	ADDI B,^D1800
+	IDIVI B,^D3600
+	IDPB B,D
+	AOBJN FF,PLWREL
+	JUMPA GOTFMC
+
+; Setup for portrait mode
+PPRTWH:	TLNN B,400000		; Skip if XWidthFixed = 1 (fixed pitch)
+	JUMPA PMNYPW		; No, individual widths for chars
+	LDB C,[POINT 16,FM+2,31]
+; Fixed-pitch font
+PLNPOF:	HLRZ B,FNTWDS+1(G)
+	JUMPN B,PABSWD		; Jump if absolute size
+	IMUL C,PTSCAL
+	ADDI C,^D1800
+	IDIVI C,^D3600		; Abssize = fracsize*ptsize*2540/72000
+	JUMPA PFRACW
+
+PABSWD:	SETOM PFRAC
+; *Wrong rotation unacceptable except for fractional specification
+	HRRZ B,FNTWDS+1(G)
+	CAME B,PMROT
+	JUMPA NOMAWI
+PFRACW:	MOVE D,PBC
+	ADDI D,1(E)
+	HRLI D,-1(D)
+	MOVEM C,-1(D)
+	MOVE B,PEC
+	ADDI B,(E)
+	BLT D,(B)		; Fill width table from BC to EC
+
+GOTFMC:	SETOM PFNMTC		; Indicate got a matching font
+NOMAWI:	SKIPE PFRAC
+	JUMPA GOTEXA
+	ADDI G,3
+	AOBJN G,WILULP
+	SKIPN PFNMTC
+	JUMPA NOFWIE
+; Start constructing FNTTAB entry
+GOTEXA:	SKIPN PROTAT		; Skip if landscape font
+	TDZA D,D		; Indicate portrait
+	MOVEI D,10000		; Indicate landscape
+; Tentatively compute interline separation as (10/9)*(ptsize/72) inches =
+; (6350*ptsize+81)/162 micas.  Ptsize is supposed to = interline
+; separation of closely spaced text lines.
+	MOVE B,PPTSIZ
+	IMULI B,^D6350
+	ADDI B,^D81
+	IDIVI B,^D162
+	ADDI D,(B)		; Interline sep in FNTTAB[24:35]
+; Compute font height as ptsize/72 inches = (ptsize*635+9)/18 micas
+; (used for superscripting and subscripting, changing interline
+; separation)
+	MOVE B,PPTSIZ
+	IMULI B,^D635
+	ADDI B,^D9
+	IDIVI B,^D18
+	LSH B,^D24
+	ADD D,B			; Font height in FNTTAB[0:11]
+; Compute "average font width" as 4*space of "a" + space of "A"
+; divided by 5, or in alternate way if "a" or "A" doesn't exist.
+	MOVE B,141(E)
+	JUMPE B,PALTFW
+	LSH B,2
+	SKIPN C,101(E)
+	JUMPA PALTFW
+	ADD B,C
+	IDIVI B,5
+PFWAX:	LSH B,^D13
+	ADD D,B
+	MOVEM D,FNTTAB(CC)
+	ADDI DD,10
+	LDB B,BB
+	JUMPE B,CPOPJ
+PFNOFT:	AOBJN CC,PFFBLP
+	FERR(.G. 15 fonts in font set not allowed)
+
+; Alternate font width calculation when "a" or "A" non-existent
+; = (ptsize/72)*(7/11)*2540 = ptsize*8890/396
+PALTFW:	MOVE B,PPTSIZ
+	IMUL B,^D4445
+	IDIVI B,^D198
+	JUMPA PFWAX
+
+NOFWIE:	MOVEI B,[ASCIZ /Ptsize or face not in FONTS.WIDTHS for /]
+PFNERR:	MOVE A,[POINT 7,MESSAG+15]
+	PUSHJ P,CPYSTZ
+	MOVEI B,NAMBUF
+	PUSHJ P,CPYSTZ
+	MOVE B,PPTSIZ
+	MOVEI C,12
+	NOUT			; Append pt size
+	  PUSHJ P,JERROR
+	SKIPE B,PTHICK
+	IDPB B,A
+	SKIPE B,PSLOPE
+	IDPB B,A
+	SKIPE B,PCONDN
+	IDPB B,A
+	SKIPN B,PROTAT
+	JUMPA .+3
+	NOUT
+	  PUSHJ P,JERROR
+	MOVEI B,0
+	IDPB B,A
+	MOVEI B,MESSAG+15
+	JUMPA ABFILE
+
+; Format file and send it to Press host
+FPRESS:	TRO 0,PRSFLG		; Indicate press format output
+	SETZM NPGS
+	SETZM PRECDS		; Initialize document directory stuff
+	SETZM PPARTS
+	GTAD
+	HLRZ B,A		; Current no. days since 17 Nov. 1858
+	SUBI B,^D15385		; Adjust to no. days since 1 Jan 1901
+	IMULI B,^D3600*^D24	; Convert days to seconds
+	ADDI B,(A)		; Add seconds in this day
+	MOVEM B,PCREDT+1	; Low part of creation date
+	LSH B,-20
+	MOVEM B,PCREDT		; High part of creation date
+	MOVEI A,1
+	MOVEM A,PFCOPY
+	MOVE A,NCPYS
+	MOVEM A,PLCOPY
+	MOVE A,[-10,,LNDTAB]
+	PUSHJ P,EPCCON		; Convert ears columns to press columns
+	MOVE A,[-10,,PORTAB]
+	PUSHJ P,EPCCON
+	HRLZI E,-32		; Convert ATABS in mils to micas
+	MOVE A,ATABT(E)
+	IMULI A,^D2540
+	IDIVI A,^D1000
+	MOVEM A,ATABT(E)
+	AOBJN E,.-4
+	PUSHJ P,PFNTSU		; Setup FD and FNTTAB for fonts
+	MOVEI B,0
+	PUSHJ P,PFXFNT		; Get parameters for font 0
+	MOVE B,FONTW
+	MOVEM B,DFONTW#		; Default font set width for tabs
+	MOVEI B,10
+	PUSHJ P,STABST		; Initialize tab settings
+	PUSHJ P,PCONNC		; Connect to Press device
+	SKIPN A,INSJFN
+	MOVE A,TXTJFN
+	MOVEI B,44
+	SFBSZ
+	HRLZ C,A
+	MOVEM C,TXTHND#		; Handle for page 0 of file
+	MOVEI C,1
+	MOVEM C,NCHR#		; Init nchars in file
+	MOVEM C,CONCHR#		; Init ncontrolchars in file
+
+; E/ line position for tab interpretation
+; F/ byte pointer for DL insertions
+; G/ Count of bytes left in source window page
+; AA/ Current Y location in micas
+; BB/ Byte pointer into EL
+; CC/ Index into part directory
+; DD/ -number of bytes in DL,,current byte pos
+; EE/ -number of bytes in EL,,current byte number
+; FF/ Current column number
+; GG/ Byte pointer into source window page
+; FONTN/ B,,FS+(Current font number * 128)
+; FONTIX/ current font number
+; FONTH/ Current font height
+; ILPOS/ Y-displacement for linefeed
+; VOFSET/ Y-displacement due to super & subscripting
+
+	SETZB DD,FLAGST
+	SETZB G,SUBMSG		; Indicate no subheading message
+	SETZB CC,VOFSET#		; No offset to line location
+	SETZM PREVF1#
+	SETZM PREVF2#
+
+; Get here at the beginning of a new output page.
+; Reset page position stuff.
+PPAGE:	MOVEI B,PADVPG
+	MOVEM B,PNEWC#
+	MOVEI B,PPAGEX
+	MOVEM B,PNEWP#
+PPAGEX:	MOVEI E,0
+	MOVE F,[POINT 8,DL]
+	MOVEI FF,LNDTAB
+	MOVEM FF,LNDCOL#		; Initialize landscape column
+	MOVE AA,TOPMAR(FF)
+	SUB AA,VOFSET
+	MOVEM AA,LNDPOS#		; Initialize landscape position
+	MOVEI FF,PORTAB
+	MOVEM FF,PORCOL#		; Initialize portrait column
+	MOVE AA,TOPMAR(FF)
+	SUB AA,VOFSET
+	MOVEM AA,PORPOS#		; Initialize portrait position
+	TRNN 0,LANDSC
+	JUMPA PNPRP
+	MOVE FF,LNDCOL
+	MOVE AA,LNDPOS
+	JUMPA PNPRP
+
+PADVPG:	MOVEI B,PLINE
+	MOVEM B,PNEWC
+	MOVEI B,PLEOF
+	MOVEM B,PNEWP
+	CAIGE CC,DL-PD		; ****
+	JUMPA PBEGPG		; Print in sections if .G. 256 pages
+	SOSGE C,PBYPAS		; Have we been sending?
+	JUMPA [	PUSHJ P,MRKBIG
+		JUMPA PSNDPD ]	; Yes, mark 256 pages sent
+	SETZB CC,PPARTS		; No, continue after reset
+; Apply heuristic to detect non-ascii files.
+PBEGPG:	MOVEI DD,(DD)
+	ADDB DD,NCHR
+	CAIG DD,600		; If enough chars...
+	JUMPA .+4
+	IDIV DD,CONCHR
+	CAIG DD,10		; More than 12% control chars.
+	JUMPA TMCC		; Yes, abort transmission
+	HRLZI DD,-<EL-DL>*4
+	MOVEM DD,PLCNT#		; Save char. count for <Show characters> later
+	HRLZI EE,-<ELEND-EL>*4+33	; 3 bytes here, 30 at end for trailer
+	MOVE BB,[POINT 8,EL,23]
+	MOVE C,FONTIX		; Current font number
+	ADDI C,160		; B/ <Set font> command
+	LSH C,14
+	MOVEM C,EL		; 16-bit word of zeroes, followed by <Set font>
+; Here at beginning of new line (non null, CR, LF, FF, TAB, or blank)
+; Have the character in B
+PLINE:	MOVE GG,LSTBP
+	MOVEM E,PUNDH#		; Save horizontal pos. in case underlining
+	JUMPA PCHAR2
+
+TMCC:	FERR(Too many control chars--file probably non-text)
+DLOVF:	FERR(DL overflowed 21504 chars)
+
+; The tags below are the main entries for the source file character dispatch
+PCCHAR:	AOS CONCHR		; Here on control characters
+PCHAR:	ADD E,@FONTN		; Advance position by character width
+PCHAR1:	AOBJP DD,DLOVF
+	IDPB B,F
+PCHAR2:	ILDB B,GG
+	SOJGE G,@PDISP(B)
+	PUSHJ P,GETBUF
+	AOJA G,PCHAR2
+
+PDISP:	0,,PCHAR2		; Flush nulls
+	REPEAT 5,<0,,PCCHAR>
+	0,,PCONTF
+	REPEAT 2,<0,,PCCHAR>
+	0,,PTAB
+	0,,PLINEF
+	0,,PCCHAR
+	0,,PELPG
+	0,,PCR
+	REPEAT 21,<0,,PCCHAR>
+	0,,PCEOL
+	REPEAT 140,<0,,PCHAR>
+	REPEAT 200,<0,,PCHAR>
+
+
+GETNCH:	SOJGE G,.+2
+	PUSHJ P,GETBUF
+	ILDB B,GG
+	POPJ P,
+
+; Here on ^F.  Following characters are specially interpreted.
+PCONTF:	PUSHJ P,GETNCH		; Get next input character
+	CAIGE B,21		; Legal font selection?
+	SOJGE B,PCHFNT		; Yes, change
+	CAIN B,"*"
+	JUMPA PCFNT1		; Restore previous font
+	CAIN B,"Q"-100		; Move to column?
+	JUMPA PGOCOL
+	CAIN B,"R"-100		; Change interline sep. for this font?
+	JUMPA [	PUSHJ P,GETNCH
+		MOVEM B,ILSNUM#	; Numerator
+		PUSHJ P,GETNCH
+		MOVEM B,ILSDIV#	; Divisor
+		MOVE B,FONTH
+		IMUL B,ILSNUM
+		IDIV B,ILSDIV	; New interline separation in micas
+		MOVE C,FONTIX
+		DPB B,[POINT 12,FNTTAB(C),35]
+		HRRZM B,ILPOS#
+		TRNE 0,LANDSC
+		MOVNM B,ILPOS
+		JUMPA PCHAR2 ]
+	CAIN B,"S"-100		; Set intertab separation?
+	JUMPA [	PUSHJ P,GETNCH
+		PUSHJ P,STABST
+		JUMPA PCHAR2 ]
+	CAIN B,"T"-100		; Set or goto absolute tabs?
+	JUMPA [	PUSHJ P,TSTOP
+		JUMPA PGATAB
+		JUMPA PCHAR2 ]
+	CAIN B,"U"-100		; Start underlining?
+	JUMPA [	TLNE 0,UNDERL
+		JUMPA PCHAR2	; No-op if already underlining
+		PUSHJ P,PTERMS	; Terminate current <Show char.>, if any
+		TLO 0,UNDERL
+		JUMPA PNPRT ]
+	CAIN B,"V"-100		; Stop underlining?
+	JUMPA [	TLNN 0,UNDERL
+		JUMPA PCHAR2
+		PUSHJ P,PTERMS	; Terminate current show characters and underline
+		TLZ 0,UNDERL
+		JUMPA PNPRT ]
+	CAIN B,"W"-100		; Overstrike following char.?
+	JUMPA [	PUSHJ P,GETNCH
+		AOBJP DD,DLOVF
+		IDPB B,F
+		PUSHJ P,PTERMS
+		JUMPA PNPRT ]
+	CAIN B,"X"-100		; Collect subheading message
+	JUMPA PSUBHD
+	CAIN B,"Y"-100		; Sub or super-scripting?
+	JUMPA PSCRIP
+PNATCF:	ADD GG,[70000,,0]
+	TLNE 0,ASC8
+	ADD GG,[10000,,0]
+	MOVEI B,"F"-100
+	AOJA G,PCCHAR
+
+PSCRIP:	PUSHJ P,PTERMS
+	PUSHJ P,GETNCH		; Get next char
+	SUBI B,16
+	IMUL B,FONTH
+	ADDI B,7
+	IDIVI B,16
+	EXCH B,VOFSET
+	TRNE 0,LANDSC
+	MOVNS VOFSET
+	SUB B,VOFSET		; Old offset - new
+	ADD AA,B
+	JUMPA PNPRT
+
+PSUBHD:	PUSHJ P,GETNCH
+	MOVE D,[POINT 7,SUBMSG]
+	CAIN B,"D"-100		; If ^D, plug in current subheading
+	JUMPA PINSSB
+PCOLSL:	CAIN B,15
+	JUMPA [	PUSHJ P,GETNCH
+		MOVEI B,0
+		IDPB B,D
+		JUMPA PCHAR2 ]
+	IDPB B,D
+	CAMN D,[POINT 7,SUBMSG+27,27]
+	JUMPA .-3
+	PUSHJ P,GETNCH
+	JUMPA PCOLSL
+
+PINSSB:	ILDB B,D
+	JUMPE B,PCHAR2
+	ADD E,@FONTN
+	AOBJP DD,DLOVF
+	IDPB B,F
+	JUMPA PINSSB
+
+PGOCOL:	PUSHJ P,GETNCH		; Get next input character
+	CAILE B,10
+	JUMPA [	CAMG DD,[-<EL-DL>*4+1,,0]
+		JUMPA PPAGE
+		PUSHJ P,PTERMS
+		JUMPA PLEOF ]
+	IMULI B,NCPAR
+	MOVEI FF,PORTAB-NCPAR(B)
+	TRNE 0,LANDSC
+	MOVEI FF,LNDTAB-NCPAR(B)
+	SKIPE BOTTST(FF)
+	JUMPA PCHAR2
+	FERR(Bad column number for ^F^Qn sequence)
+
+PCFNT1:	MOVEI B,0
+	EXCH B,PREVF2
+	EXCH B,PREVF1
+	SKIPN FNTTAB(B)
+	JUMPA PNATCF		; Treat ^F as natural char if font undefined
+	JUMPA PCFNT2
+
+PCHFNT:	SKIPN FNTTAB(B)		; Font defined?
+	JUMPA PNATCF		; No, treat as natural character
+	MOVE C,PREVF1
+	MOVEM C,PREVF2
+	MOVE C,FONTIX
+	MOVEM C,PREVF1
+PCFNT2:	PUSH P,B
+	PUSHJ P,PTERMS
+	MOVE B,0(P)
+	ANDI B,17
+	ADDI B,160		; <Set font> directive
+	AOBJP EE,ELOVF
+	IDPB B,BB
+	POP P,B
+	PUSHJ P,PFXFNT		; Setup for new font
+	JUMPA PNPRT
+
+ELOVF:	FERR(Overflowed 24576 bytes of EL)
+
+; Get here when EOF has been detected by the GETBUF subroutine.
+; P is already popped to cancel the call to GETBUF and EOFFLG is set.
+PEOF:	CAMN F,[POINT 8,DL]	; Anything output to this page?
+	JUMPA PSNDPD		; No.  Skip to end-of-file stuff
+	PUSHJ P,PTERMS		; Do last <Show characters>, if any
+; Get here when a complete page has been converted.  Have to finish off
+; EL and transmit page.  Have already counted EE for 30 bytes of EL trailer here.
+PLEOF:	AOS NPGS		; Count pages in document
+	SKIPE PBYPAS
+	JUMPA PPAGE		; Skipping 256-page hunk
+	TLNN EE,1		; Skip if next byte output is odd
+	JUMPA .+4
+	AOBJP EE,ELOVF		; No. Have to start EL trailer at word boundary
+	MOVEI B,377
+	IDPB B,BB		; Output NOP command
+	ADD BB,[1000,,0]	; Convert to 16-bit byte size
+	MOVEI B,0
+	IDPB B,BB		; Entity type and font set = 0
+	IDPB B,BB		; 4 bytes of begin byte in DL (= 0)
+	IDPB B,BB
+	HRROI B,-<EL-DL>*4
+	HLRO C,DD
+	SUB C,B			; Number of bytes in DL
+	ADDI C,3		; Round to two-word boundary, so that EL
+	ANDCMI C,3		; starts on PDP-10 word boundary
+	LDB B,[POINT 16,C,19]
+	IDPB B,BB		; Store 4 bytes of byte length
+	IDPB C,BB
+	LSH C,-1
+	MOVEM C,PNWRDS#		; No. words in DL for this page
+	LSH C,-1
+	MOVEM C,PDLEND#		; No. PDP-10 words in DL
+	MOVEI B,0
+	IDPB B,BB		; Two bytes of Xe = 0
+	IDPB B,BB		; Two bytes of Ye = 0
+	IDPB B,BB		; Two bytes of left margin = 0
+	IDPB B,BB		; Two bytes of bottom margin = 0
+	MOVEI B,^D21590
+	IDPB B,BB		; Two bytes of width = maximum
+	MOVEI B,^D27940		; Two bytes of height = maximum
+	IDPB B,BB
+	HLRO B,EE		; Number of bytes in EL including trailer
+	ADDI B,<ELEND-EL>*4-2	; B/ EL length in bytes (excluding EL length word)
+	LSH B,-1		; B/ Length of EL in words
+	IDPB B,BB		; Two bytes of EL length in words
+	ADDI B,1		; Add 1 for EL length 16-bit byte
+	ADDM B,PNWRDS		; Accumulate words in this part
+
+	MOVE B,PRECDS
+	LSH B,4
+	MOVEM B,PD(CC)		; 16-bit type (= 0), 16-bit record number
+	MOVE B,PNWRDS
+	ADDI B,377
+	LSH B,-10		; No. records in page
+	ADDM B,PRECDS		; Total records in document
+	MOVEI F,(B)
+	LSH B,10		; Total 16-bit bytes in these records
+	SUB B,PNWRDS		; - useful 16-bit bytes = excess 16-bit bytes
+	MOVEI C,(F)
+	LSH C,20
+	ADDI C,(B)
+	LSH C,4			; One 16-bit word nrecds in page
+				; one 16-bit word nwords of entity list padding
+	MOVEM C,PD+1(CC)
+	MOVE B,[EL,,DL]
+	ADD B,PDLEND
+	MOVE C,PNWRDS
+	ADDI C,1
+	LSH C,-1
+	ADDI C,DL
+	BLT B,-1(C)		; Concatenate DL and EL
+	HRLZI B,DL
+	PUSHJ P,SNDRCM		; Transmit the records
+	SOJG F,.-1
+	AOS PPARTS		; Count parts in document
+
+
+PPGADV:	ADDI CC,2
+; Jump here after an EOF is encountered or after 256 pages have been sent.
+PSNDPD:	TLZN 0,EOFFLG		; End-of-file encountered?
+	JUMPA PPAGE		; No.  Loop to do next page
+	LDB B,[POINT 3,THSFDB+FDBUSE,8]
+	LSH B,10
+	ADD B,NPGS
+	MOVEM B,DOCSIZ#		; Set up total length for brief
+; Send font directory
+	MOVE B,PRECDS
+	ADDI B,200000
+	LSH B,4
+	MOVEM B,PD(CC)		; 16-bit type = 1, 16-bit record no.
+	HRLZI B,4		; 16-bit length = 1 record, 16-bit garbage
+	MOVEM B,PD+1(CC)
+	HRLZI B,FD
+	PUSHJ P,SNDRCM
+	ADDI CC,2
+	AOS PPARTS
+	AOS B,PRECDS
+	MOVEM B,PPARTD		; Record no. where part directory begins
+; Send part directory
+	MOVEI F,177(CC)
+	LSH F,-7		; No. records in part directory
+	ADDM F,PRECDS
+	MOVEM F,PNPD
+	HRLZI B,PD
+	PUSHJ P,SNDRCM
+	SOJG F,.-1
+	AOS PRECDS		; Count document directory record
+	MOVE GG,EXCMP		; Restore exception message pointer
+	TRNN 0,LANDSC		; Count landscape or portrait files
+	AOSA MSGS16
+	AOS MSGS17
+; Setup document directory for transmission
+PRSFIN:	HRLZI C,-15
+	MOVE B,[POINT 16,DL]
+	MOVE D,PPASSW(C)
+	IDPB D,B
+	AOBJN C,.-2
+	MOVEI D,-1
+	IDPB D,B		; -1 in odd 16-bit part of 36-bit word
+	HRROI B,777760
+	MOVEM B,DL+7
+	MOVE B,[DL+7,,DL+10]
+	BLT B,DL+77		; -1 into unused 16-bit bytes
+	JUMPA PSEOF
+
+; Subroutine to convert the Ears-format column tables to Press format
+; At beginning have
+;	TOPMAR	top margin in 1/4000ths inches
+;	BOTTST	contains instruction to skip if above bottom margin in 1/4000ths
+;	LFTMAR	column left margin in 1/500ths
+;	RGTMAR	column right margin in 1/500ths
+;	CLINK	next column number or 0 (end of page)
+
+EPCCON:	MOVE B,TOPMAR(A)
+	IMULI B,^D2540
+	ADDI B,^D2000		; Rounding
+	IDIVI B,^D4000		; B/ top margin in micas = 1/2540 inches
+	MOVEM B,TOPMAR(A)
+
+	HRRZ B,BOTTST(A)
+	IMULI B,^D2540
+	ADDI B,^D2000
+	IDIVI B,^D4000
+	HRRM B,BOTTST(A)	; Skip if above bottom margin in micas
+
+	MOVE B,LFTMAR(A)
+	IMULI B,^D2540
+	ADDI B,^D250
+	IDIVI B,^D500
+	HRLI B,E		; Indicate indexing by E
+	MOVEM B,LFTMAR(A)
+
+	MOVE B,RGTMAR(A)
+	IMULI B,^D2540
+	ADDI B,^D250
+	IDIVI B,^D500
+	MOVEM B,RGTMAR(A)
+
+	SKIPN CLINK(A)
+	POPJ P,
+	ADDI A,NCPAR-1
+	AOBJN A,EPCCON
+	POPJ P,
+
+
+; Subroutine to setup for new font.  Have FNTTAB index in B.
+PFXFNT:	SKIPN C,FNTTAB(B)	; Font height, width, and interline separation
+	JUMPA [	FERR(Selected font not in font table)]
+	MOVEM B,FONTIX#
+	LSH B,10
+	ADD B,[B,,FS]		; Construct indirect pointer into width table
+	MOVEM B,FONTN#
+	LDB B,[POINT 11,C,22]
+	MOVEM B,FONTW#		; New font width
+	LDB B,[POINT 12,C,11]
+	EXCH B,FONTH#		; New font height
+	ANDI C,17777
+	TRZE C,10000		; Changing to landscape font?
+	JUMPA PFXLSF
+	MOVEM C,ILPOS		; No, set interline separation
+	TRZN 0,LANDSC		; Clear landscape mode
+	POPJ P,
+	MOVEM AA,LNDPOS		; Save landscape pos.
+	MOVEM FF,LNDCOL
+	MOVE AA,PORPOS
+	MOVE FF,PORCOL
+	POPJ P,
+
+PFXLSF:	MOVNM C,ILPOS		; - interline separation in micas
+	TROE 0,LANDSC
+	POPJ P,
+	MOVEM AA,PORPOS
+	MOVEM FF,PORCOL
+	MOVE AA,LNDPOS
+	MOVE FF,LNDCOL
+	POPJ P,
+
+PCR:	PUSHJ P,PTERMS
+	MOVEI E,0
+	JUMPA PNPRP
+
+PCEOL:	PUSHJ P,PTERMS		; Finish current string
+	TDZA E,E
+PLINEF:	PUSHJ P,PTERMS
+; Subroutine entered after an EOL, CR, LF, FF, or tab to process all the
+; non-printing null, blank, EOL, CR, LF, FF, tab, and blank characters
+; up to the next printing or formatting character.
+PNPRL:	SUB AA,ILPOS
+PNPRT:	XCT BOTTST(FF)		; Check for end-of-column
+	JUMPA PNPRE
+PNPRP:	SOJGE G,.+2
+	PUSHJ P,GETBUF
+	MOVEM GG,LSTBP#
+	ILDB B,GG
+	JUMPE B,PNPRP		; Flush nulls
+	CAIN B,37		; EOL = <cr><lf>
+	TDZA E,E
+	CAIN B,12
+	JUMPA PNPRL
+	CAIN B,15
+	JUMPA [	MOVEI E,0
+		JUMPA PNPRP ]
+	CAIN B,14
+	JUMPA PNPRE
+	CAIN B,"I"-100
+	JUMPA PPNTAB
+	AOJA G,@PNEWC		; Goes to PADVPG on 1st page, else to PLINE
+
+
+PELPG:	PUSHJ P,PTERMS
+	MOVEI E,0
+PNPRE:	SKIPN FF,CLINK(FF)	; More columns on page?
+	JUMPA @PNEWP		; No.  Go to PPAGEX on 1st page, else to PLEOF
+	MOVE AA,TOPMAR(FF)	; Start at top margin
+	SUB AA,VOFSET		; Sub and super-scription
+	JUMPA PNPRP
+
+PTAB:	PUSHJ P,PTERMS		; Show current string
+PPNTAB:	HRLZI C,-^D40
+	MOVE B,TABTAB(C)
+	CAIGE E,(B)
+	JUMPA PGOTTB
+	AOBJN C,.-3
+	JUMPA PNPRP		; Ignore character if no tab stop defined
+
+PGATAB:	PUSH P,B
+	PUSHJ P,PTERMS		; Terminate string preceding abs. tab
+	POP P,B
+PGOTTB:	MOVEI E,(B)
+	JUMPA PNPRP
+
+; Subroutine called immediately upon a <Show characters> termination
+PTERMS:	CAMN DD,PLCNT		; Skip if characters have been output
+	POPJ P,			; No.  Return
+	EXCH E,PUNDH		; Save new hor. pos., get old hor. pos.
+	ADD EE,[7,,7]		; 7 bytes for <Set X>, <Set Y>, and <Show chars immed.>
+	JUMPGE EE,ELOVF
+; Output <Set X> and <Set Y> directives to the position given in AA,
+; E, and LFTMAR(FF).  The assumption here is that both portrait
+; and landscape fonts are arranged so that the characters extend from the
+; baseline upward and to the right, so that no <Set X> and <Set Y> directives
+; are required when switching fonts.
+	MOVEI B,@LFTMAR(FF)
+	MOVEI C,356
+	TRNE 0,LANDSC
+	XORI C,1
+	IDPB C,BB		; <Set X> to hor. pos. + left margin (Y if landscape)
+	LDB D,[POINT 8,B,27]
+	IDPB D,BB
+	IDPB B,BB
+	XORI C,1		; <Set Y> to vert. pos. (X if landscape)
+	IDPB C,BB
+	TLNE 0,UNDERL		; Skip if not underlining
+	JUMPA PUNDLN
+PTERS1:	LDB C,[POINT 8,AA,27]
+	IDPB C,BB
+	IDPB AA,BB
+	HLRO B,DD
+	HLRO C,PLCNT
+	SUB B,C
+	CAIGE B,40		; Skip if have to use long form
+	SOJA B,.+4
+	AOBJP EE,ELOVF
+	MOVEI C,360		; <Show characters>
+	IDPB C,BB
+	IDPB B,BB		; Character count
+	MOVEM DD,PLCNT
+	MOVE E,PUNDH		; Restore horizontal pos.
+	POPJ P,
+
+; Draw a rectangle from the old horizontal pos. in E and old vertical pos.
+; offset 100 microns below baseline to the current pos.
+PUNDLN:	ADD EE,[10,,10]		; Five bytes in <Rectangle>
+	JUMPGE EE,ELOVF
+	MOVEI D,-100(AA)	; Set vert. pos. 100 mils below baseline
+	TRNE 0,LANDSC
+	MOVEI D,100(AA)
+	LDB C,[POINT 8,D,27]
+	IDPB C,BB		; Finish off <Set Y> (<Set X> if landscape)
+	IDPB D,BB
+	MOVEI C,376		; <Show rectangle>
+	IDPB C,BB
+	MOVE C,PUNDH
+	SUBI C,(E)		; Width (portrait) or height (landscape)
+	MOVEI D,33		; Height (portrait) or width (landscape)
+	TRNN 0,LANDSC
+	EXCH C,D
+	LDB B,[POINT 8,D,27]
+	IDPB B,BB
+	IDPB D,BB
+	MOVEI B,(C)
+	LSH B,-10
+	IDPB B,BB
+	IDPB C,BB
+	MOVEI C,356
+	TRNN 0,LANDSC
+	MOVEI C,357
+	IDPB C,BB		; Start <Set Y> (<Set X> if landscape) for <Show char>
+	JUMPA PTERS1
+
+; Press format file
+PRFORM:	TRO 0,PRSFLG		; Indicate Press file
+	SKIPE PDEVIC		; Converting?
+	JUMPA PRTRAN		; Transmit Press file
+	FERR(No longer convert PRESS files to EARS format)
+
+
+; Transmit Press file
+PRTRAN:	MOVE A,[ASCII /PRESS/]
+	MOVEM A,FTYPE
+	LSH D,-11		; No. 256-word x 16-bit records
+	MOVEM D,PRECDS
+	SKIPN A,INSJFN
+	MOVE A,TXTJFN
+	BIN
+	CAME B,PRECDS
+	JUMPA [FERR(Document length and NRECDS mismatch)]
+	BIN			; Get no. of parts including font directory part
+	MOVEM B,PPARTS
+	SUBI B,1		; **For now assume NPages = NParts-1**bug
+	MOVEM B,NPGS		; Guess at no. of pages
+	MOVEM B,DOCSIZ		; Save size for brief also
+	BIN
+	MOVEM B,PPARTD		; Record no. where part dir. begins
+	BIN
+	MOVEM B,PNPD		; NRecords in part dir.
+	BIN			; Skip back pointer to obs. doc. dir.
+	BIN
+	MOVEM B,PCREDT		; Save two 16-bit bytes of creation date
+	BIN
+	MOVEM B,PCREDT+1
+	HRLZI D,-5
+	BIN			; Copy bytes into table through PMODE
+	MOVEM B,PFCOPY(D)
+	AOBJN D,.-2
+	MOVEI B,1
+	MOVEM B,PFCOPY		; No. of first copy printed
+	TRNE 0,REDUCF		; No reduction code at present
+	JUMPA [FERR(Cannot reduce Press files)]
+	JUMPN G,.+3		; Really got copies to print?
+	JUMPN EE,DQCPY		; No, queued copies?
+	JUMPN CC,DQCPY		; Anything at all?
+	MOVE A,NCPYS
+	MOVEM A,PLCOPY		; No. of last copy printed
+	PUSHJ P,PCONNC
+	SKIPN A,INSJFN
+	MOVE A,TXTJFN
+	MOVE B,RSTART
+	SFPTR
+	  PUSHJ P,JERROR
+	MOVE F,PRECDS
+	SUBI F,1
+	PUSHJ P,TRRECS		; Transmit all of the records except DD
+	AOS MSGS18		; Count simple press transmissions
+	JUMPA PRSFIN
+
+; Subroutine to build first part of initial list common to Press
+; conversion code and to Record code.  Does not output FONT, LANDSCAPE,
+; NAME, INVTO, REPORT, PCOLUMNS, nor LCOLUMNS.
+; TO and C histories are output iff UPDHIS=1.
+BLDINI:	HRROI B,[ASCIZ /DOCULIST/]
+	MOVEI C,0
+	SOUT
+	TLNN 0,UPDHIS		; Putting in "To" and "C" histories?
+	JUMPA NOTOCC
+	HRROI B,[ASCIZ /
+To: /]
+	SOUT
+	HRROI B,TOREC
+	SOUT
+	HRROI B,[ASCIZ /
+C: /]
+	SOUT
+	HRROI B,CCREC
+	SOUT
+NOTOCC:	SKIPN PFSETS
+	JUMPA NOFNTS
+	HRROI B,[ASCIZ /
+PFont: /]
+	SOUT
+; Entry here also from Press converter
+NOFNTS:	HRROI B,[ASCIZ /
+From: /]
+	SOUT
+	HRROI B,FRMMSG
+	SOUT
+	SKIPN BRFMSG
+	JUMPA PNOBRF
+	HRROI B,[ASCIZ /
+Brief: /]
+	SOUT
+	HRROI B,BRFMSG
+	SOUT
+	MOVEI B,"D"-100
+	BOUT
+PNOBRF:	SKIPN KEYWRD
+	JUMPA PNOKEY
+	HRROI B,[ASCIZ /
+Keywords: /]
+	SOUT
+	HRROI B,KEYWRD
+	SOUT
+PNOKEY:	SKIPN REPMSG
+	JUMPA PNOREP
+	HRROI B,[ASCIZ /
+Repmsg: /]
+	SOUT
+	HRROI B,REPMSG
+	SOUT
+	MOVEI B,"D"-100
+	BOUT
+PNOREP:	SKIPN DTITLE
+	JUMPA PNOTIT
+	HRROI B,[ASCIZ /
+Subject: /]
+	SOUT
+	HRROI B,DTITLE
+	SOUT			; Subject: document title
+PNOTIT:	TRNN 0,STDDIC
+	JUMPA PNODIC
+	HRROI B,[ASCIZ /
+Dict: /]
+	SOUT
+	HRROI B,DICTN0
+	SOUT
+
+PNODIC:	HRLI A,FDBUSE
+	HRLZI B,-1		; Bits being changed
+	HLLZ C,THSFDB+FDBUSE
+	CHFDB			; Set last writer of file
+	MOVEI A,(A)
+	MOVE B,FTYPE
+	CAME B,[ASCII /TTY/]
+	JUMPA PNOCOL
+	SKIPN OUTPCL		; Default Pcolumns?
+	JUMPA PLCCHK		; Yes, skip it
+	HRROI B,[ASCIZ /
+Pcolumns: /]
+	SOUT
+	MOVE E,[-10,,PORTAB]
+	PUSHJ P,CONCOL		; Print out PCOLUMNS property
+PLCCHK:	SKIPN OUTLCL		; Default Lcolumns?
+	JUMPA PNOCOL		; Yes, skip it
+	MOVEI C,0
+	HRROI B,[ASCIZ /
+Lcolumns: /]
+	SOUT
+	MOVE E,[-10,,LNDTAB]
+	PUSHJ P,CONCOL		; And LCOLUMNS property
+PNOCOL:	MOVE B,FTYPE
+	SKIPE OUTMAR		; Default Margins?
+	CAME B,[ASCII /EARS/]
+	JUMPA PNOMAR
+	MOVEI C,0
+	HRROI B,[ASCIZ /
+Margins: /]
+	SOUT
+	MOVE B,OTMAR
+	LSH B,1
+	PUSHJ P,DNOUT
+	MOVE B,OBMAR
+	LSH B,1
+	PUSHJ P,CMNOUT
+	MOVE B,OLMAR
+	LSH B,1
+	PUSHJ P,CMNOUT
+	MOVE B,ORMAR
+	LSH B,1
+	PUSHJ P,CMNOUT
+PNOMAR:	MOVEI C,0
+	SKIPN ARCID		; "Archive I.D." string?
+	JUMPA PNOARC
+	HRROI B,[ASCIZ /
+Arcid: /]
+	SOUT
+	HRROI B,ARCID
+	SOUT
+PNOARC:	HRROI B,[ASCIZ /
+Date: /]
+	SOUT
+	HRROI B,WRDATE
+	SOUT
+	POPJ P,
+
+; Accept -10,,PORTAB or -10,,LNDTAB in E.  Output value for PCOLUMNS
+; or LCOLUMNS.
+CONCOL:	MOVEI D,(E)
+	MOVEI C,12
+CONCLP:	MOVE B,TOPMAR(E)	; Top margin
+	LSH B,-2		; in mils
+	PUSHJ P,XNOUT
+	HRRZ B,BOTTST(E)
+	LSH B,-2
+	PUSHJ P,CMNOUT		; Output "," followed by number in B
+	MOVE B,LFTMAR(E)
+	LSH B,1
+	PUSHJ P,CMNOUT
+	MOVE B,RGTMAR(E)
+	LSH B,1
+	PUSHJ P,CMNOUT
+	SKIPE B,CLINK(E)
+	SUBI B,(D)
+	PUSHJ P,CMNOUT
+	SKIPN NCPAR(E)		; Done yet?
+	POPJ P,			; Yes
+	ADDI E,NCPAR-1
+	AOBJP E,CPOPJ
+	MOVEI B,";"
+	BOUT
+	MOVEI C,0
+	JUMPA CONCLP
+
+
+; Output ";" followed by number in B, radix in C
+SMNOUT:	PUSH P,B
+	MOVEI B,";"
+	JUMPA CMNOU1
+
+; Output "," followed by number in B, radix in C
+CMNOUT:	PUSH P,B
+	MOVEI B,","
+CMNOU1:	BOUT
+	POP P,B
+	JUMPA XNOUT
+
+; Format file and send it to an Ears host
+FEARS:	FERR(No longer produce EARS format)
+
+
+MRKBIG:	LDB C,[POINT 3,THSFDB+FDBUSW,8]
+	CAIL C,7		; Exceeded 7*256 pages?
+	JUMPA [	FERR(Printing aborted after 1792 pages)]
+	ADDI C,1
+	DPB C,[POINT 3,THSFDB+FDBUSW,8]
+	TRNN 0,BIGDOC
+	JUMPA [FERR(Document longer than 256 pages reject--use BIG)]
+	TRO 0,DONTSN		; Indicate don't finish yet
+	POPJ P,
+
+
+; Subroutine to PMAP next page of text file and reset byte pointer
+; in GG and byte count in G from REMCHR and ASC8.
+GETBUF:	SKIPN GG,REMCHR		; Finished yet?
+	JUMPA EOFX		; Yes
+	PUSH P,C
+	TLNN 0,ASC8
+	SKIPA G,[5000]
+	MOVEI G,4000
+	MOVE A,TXTHND		; Page source
+	TRNN A,-1		; Is this page 0?
+	SUB G,ASTART		; Yes, correct by leader length
+	CAMLE G,REMCHR		; More than one page of chars. left?
+	MOVE G,REMCHR		; No
+	SUB GG,G		; Yes
+	MOVEM GG,REMCHR		; Remaining bytes
+	MOVE B,[400000,,TXTPG]	; Page destination (this fork)
+	HRLZI C,100000		; Read access
+	PMAP
+	TLNN 0,ASC8
+	SKIPA GG,[POINT 7,TXTPG*1000]
+	MOVE GG,[POINT 8,TXTPG*1000]
+	TRNE A,-1		; 0th page?
+	JUMPA .+4
+	HRRZ A,THSFDB+FDBUSW	; Yes, advance byte pointer over leader
+	IDIVI A,5
+	ADD GG,A
+	MOVEI G,-1(G)
+	AOS TXTHND		; Advance file page handle
+	POP P,C
+	POPJ P,
+
+TSTOP:	PUSHJ P,GETNCH
+	MOVE C,[POINT 7,NAMBUF]
+	CAILE B,"Z"-100
+	JUMPA SATBE		; Set absolute tabs
+	JUMPE B,[FERR(Illegal null char after ^F^T)]
+	CAIN B,"Z"-100
+	JUMPA RESTPS		; Restore previous pos. after ^F^T^Z
+; Save positions before ATAB's for possible restore (3 levels)
+	MOVE C,SAVPS1
+	MOVEM C,SAVPS2#
+	MOVE C,SAVPS
+	MOVEM C,SAVPS1#
+	MOVEM E,SAVPS#
+	MOVE B,ATABT-1(B)	; Get absolute tab in 500ths
+	POPJ P,
+
+; Restore position saved at last ATAB and pop 3-level stack
+RESTPS:	MOVE B,SAVPS
+	MOVE C,SAVPS1
+	MOVEM C,SAVPS
+	MOVE C,SAVPS2
+	MOVEM C,SAVPS1
+	POPJ P,
+
+; Collect up to 25 absolute pos. in mils relative to left margin
+; Tabs are given as decimal strings separated by commas, terminated by
+; <cr><lf>, EOL, or null.
+SATBLP:	SOJGE G,.+2
+	PUSHJ P,GETBUF
+	ILDB B,GG
+SATBE:	CAIE B," "		; Flush blanks
+	CAIN B,15
+	JUMPA SATBLP		; Get char after CR also
+	CAIE B,37
+	CAIN B,12
+	MOVEI B,0
+	JUMPE B,SATBX
+	CAIL B,"0"
+	CAILE B,"9"
+	CAIN B,","
+	JUMPA SATBX
+	FERR(Char in ^F^T sequence not digit or comma)
+SATBX:	IDPB B,C
+	JUMPN B,SATBLP
+	HRLZI D,-^D25
+	MOVE A,[POINT 7,NAMBUF]
+SATLP1:	MOVEI C,12
+	NIN			; NIN leaves byte pointer pointing at separator
+	  JUMPA [FERR(NIN error in ^F^T sequence)]
+	CAILE B,^D11000
+	JUMPA [FERR(Abs tab in ^F^T sequence not in range 0 to 11000)]
+	TRNE 0,PRSFLG
+	JUMPA [	IMULI B,^D2540
+		IDIVI B,^D1000
+		JUMPA SATLP3 ]
+	LSH B,-1
+SATLP3:	MOVEM B,ATABT(D)
+	LDB B,A
+	JUMPE B,SKPRET
+SATLP2:	AOBJN D,SATLP1
+	FERR(More than 25 numbers in ^F^T sequence)
+
+; Setup tabs to have spacing in B
+STABST:	IMUL B,DFONTW		; Convert chars. to 500ths
+	MOVEI C,0		; Start at left margin
+	HRLZI A,-^D40
+	MOVEM C,TABTAB(A)
+	ADD C,B
+	AOBJN A,.-2
+	TLO 0,INTABS		; Turn on tab interpretation
+	POPJ P,
+
+; Done with file, close it (retaining JFN), finish up
+EOFX:	TLO 0,EOFFLG
+	SUB P,[1,,1]
+	MOVE A,DEVICE
+	CAMN A,[ASCII /PRESS/]
+	JUMPA PEOF
+	HALT .
+
+PSEOF:	MOVE A,NPGS
+	IMUL A,NCPYS
+	MOVEI B,[ASCIZ /Pages x copies > 500 reject (use BIG)/]
+	CAIG A,^D500
+	TRZA 0,BIGDOC		; Clear big document flag
+	TRNE 0,BIGDOC		; Give error if not BIG
+	JUMPA SNDEF1
+	JUMPA ABFILE
+
+SNDEF1:	TRNN 0,PRSFLG		; Skip if Press file
+	JUMPA SNDEF2
+	MOVE A,[BYTE(8) 40,40,40,40]
+	MOVEM A,DL+100
+	MOVE A,[DL+100,,DL+101]
+	BLT A,DL+135		; Blank fill strings (40 also bcpl string length)
+SNDEF2:	MOVEI B,DOCID		; Setup breakpage name (51 chars)
+	MOVE A,[POINT 8,DL+100]
+	TRNE 0,PRSFLG
+	IBP A,A			; Skip bcpl string length = 40 for Press files
+	PUSHJ P,CPYSTZ		; Copy--don't worry about overflow
+	TRNE 0,PRSFLG		; Skip if Ears file
+	JUMPA .+4		; No term. for bcpl strings
+	MOVEI C,376
+	IDPB C,A		; Terminate Ears file as if no overflow
+	DPB C,[POINT 8,DL+114,31]	; Terminate in case of overflow
+	MOVE A,[POINT 8,DL+115]
+	TRNE 0,PRSFLG
+	IBP A,A			; Skip bcpl string length for Press files
+	MOVEI B,USRNAM
+	SKIPE PRINBN
+	MOVEI B,PRINBN		; Use supplied breakpage name, if any
+	PUSHJ P,CPYSTZ
+	MOVEI B,[ASCIZ / on /]
+	PUSHJ P,CPYSTZ
+	MOVEI B,MXNAME
+	PUSHJ P,CPYSTZ
+	TRNE 0,PRSFLG		; Terminate Ears strings
+	JUMPA .+4
+	MOVEI C,376
+	IDPB C,A		; Again, terminate as if no overflow
+	DPB C,[POINT 8,DL+124,31]	; And in case of overflow
+	MOVE A,[POINT 8,DL+125]
+	TRNE 0,PRSFLG
+	IBP A,A
+	MOVE B,THSFDB+FDBCRV	; Creation date and time (31 chars.)
+	HRLZI C,312221		; "SATURDAY 30 NOV 1974 15:06-PST"
+	ODTIM
+	TRNE 0,PRSFLG
+	JUMPA .+3
+	MOVEI B,376
+	IDPB B,A		; Terminate string
+
+XSEOF:	HRLZI B,DL
+	PUSHJ P,SNDRCM
+; Have completed sending file to Ears.  Send EOF message and carry out
+	PUSHJ P,CLSEOF		; Send EOF and close transmission
+; Jump here direct if no copies/abstracts to print, just queued ones
+DQCPY:	MOVE B,DOCSIZ		; Number of pages in document
+	MOVE A,[POINT 7,PAGES]
+	PUSHJ P,DNOUT
+	MOVEI C,0
+	IDPB C,A
+	MOVE A,THSFDB+FDBUSW	; Pick up print control flags
+	TRNN 0,DONTSN		; Finished sending document?
+	TLNE A,RESPA!RESPC	; Yes, respooling?
+	JUMPA NOHIST		; Don't repeat postprinting stuff
+	SKIPG F,NQUCP		; Got any queued copies/abstracts?
+	JUMPA NOCPY
+	MOVEI A,EQMSGT		; Pointer to table for building message
+	TRNE 0,PRSFLG
+	MOVEI A,PQMSGT
+	PUSHJ P,MSGDES		; Build message at MESSAG
+DQCPL:	MOVE A,QUEUEL-1(F)	; Pointer to user name
+	MOVEM A,QTO		; Fix GTJFN table pointer
+	MOVEI A,QUEBLK
+	HRROI B,[ASCIZ /DOCGEN.QUEUE;1/]
+	GTJFN
+	  JUMPA CCQCP		; Must have screwed up DOCGEN.QUEUE;1
+	HRRZM A,DQJFN
+	MOVE B,[70000,,21000]	; Byte size 7, append, wait if busy
+	OPENF
+CCQCP:	  JUMPA [MOVEI A,[ASCIZ /
+Couldn't queue copy for /]
+		MOVE B,QTO
+		PUSHJ P,APNEXC
+		JUMPA EQCPL1]
+	MOVE B,[POINT 7,DOCID]
+	PUSHJ P,ZOUT
+	HRROI B,[ASCIZ '/C,']
+	TLNE 0,ABSTRP
+	HRROI B,[ASCIZ '/A,']
+	SOUT
+EQCPL1:	MOVEI A,DQJFN
+	PUSHJ P,CLSFIL
+	AOS NQSNT		; Count queued distribution
+	MOVE A,QTO
+	PUSHJ P,SNDM
+	  PUSHJ P,[MOVEI A,[ASCIZ /
+Couldn't report queued memo to /]
+		MOVE B,QTO
+		JUMPA APNEXC]
+	SOJG F,DQCPL
+NOCPY:	SKIPE NABS		; Any abstracts requested?
+	JUMPA NOHIST		; Yes, must do another pass over document
+	MOVEI A,BMSGT		; Pointer to table for building brief
+	TRNN 0,RECDOC		; Recording in index?
+	JUMPA .+4
+	MOVE B,DESPOS		; Replacing an existing item?
+	CAME B,DWNPOS
+	MOVEI A,RPMSGT		; Yes, special update message
+	PUSHJ P,MSGDES		; Build message
+	MOVEI E,0
+	TLNE 0,ABSTRP		; Doing abstracts now?
+	SKIPE NPGS		; And something printed or queued?
+	JUMPA .+2		; Yes, no briefs for abstract requestors
+	EXCH E,NCPYS		; Wasn't any abstract--give brief
+	MOVE F,NBRFS
+	JUMPA TRANBR
+
+BRFSLP:	MOVE A,BRFL(F)	; Get byte pointer
+BRFALP:	PUSHJ P,SNDM
+	  JUMPA [MOVEI A,[ASCIZ /
+Couldn't deliver brief to /]
+		MOVE B,TO
+		PUSHJ P,APNEXC
+		JUMPA .+2]
+	AOS NBRSNT		; Count briefs delivered for report
+TRANBR:	SOJGE F,BRFSLP
+
+	MOVE A,DISTL-1(E)
+	MOVE B,0(A)
+	MOVE C,1(A)
+	CAMN B,[ASCII /DISTR/]
+	CAME C,[ASCII /IBUTI/]
+	JUMPA .+4
+	MOVE B,2(A)
+	CAMN B,[ASCII /ON/]
+	JUMPA .+2
+	SOJGE E,BRFALP
+BRFDON:	TRNN 0,RECDOC		; Recording the document?
+	JUMPA BLDDOC		; No, bypass index insertion
+; Have DOCGEN.INDEX, DOCGEN.VALUES, and DOCGEN.SYMBOLS open for
+; index entry.  Carry out index insertion/replacement and revision.
+; Previously have done PICKID.
+	PUSHJ P,FITDES		; Put the brief in DOCGEN.DESn
+	MOVE B,DESPOS
+	CAMLE B,DWNPOS		; Replacing another descriptor?
+	JUMPA XRECOR		; No, simply insertion
+	MOVEI A,OSYMST		; Pointer to old symbol byte pointers
+	PUSHJ P,UINDEX		; Remove symbols from hash table
+	  PUSHJ P,HTIER3
+; ***Should remove "Revised by:" and "Supplemented by:" lines for
+; ***briefs pointing at one being replaced by following OSUPS and OREVS
+XRECOR:	MOVEI A,NSYMST		; Pointer to table of new symbol byte pointers
+	PUSHJ P,DINDEX		; Add symbols to hash table
+	  PUSHJ P,HTIERR
+	SKIPN A,XREVIS		; Revising also?
+	JUMPA BLDDOC		; No
+	MOVE B,[70000,,300200]	; Arg for OPENF
+	PUSHJ P,RDDESC		; Read the descriptor being revised
+	  JUMPA HTIER2		; File busy error
+	  JUMPA HTIER2		; Bad error, pointer in B
+	PUSHJ P,RINDEX		; Add "obsolete" keyword
+	  PUSHJ P,HTIER1
+	MOVEI A,RVMSGT		; Pointer to revision message table
+	PUSHJ P,MSGDES		; Build descriptor in MESSAG
+	PUSHJ P,FITDES		; Put revised descriptor into DOCGEN.DESn
+	SKIPN A,XSUPPL		; Supplementing a document?
+	JUMPA BLDDOC		; No.
+	MOVE B,[70000,,300200]	; Byte size 7, read, write, never wait
+	PUSHJ P,RDDESC
+	  JUMPA HTIER4		; File busy error
+	  JUMPA HTIER4		; Bad error
+	MOVE A,[POINT 7,OSUPID]
+	LDB B,[POINT 7,OSUPID,6]
+	JUMPE B,ADDSUP		; Already supplemented?
+	ILDB B,A		; Yes, pass over
+	JUMPN B,.-1
+	ADD A,[70000,,0]
+	MOVEI B,[ASCIZ /, /]
+	PUSHJ P,CPYSTZ
+ADDSUP:	MOVEI B,DOCID
+	PUSHJ P,CPYSTT
+	MOVEI A,MSFRO
+	PUSHJ P,MSGDES		; Rebuild brief
+	PUSHJ P,FITDES		; Insert it
+	JUMPA BLDDOC
+
+RVMSGT:	0,,OEDATE		; Entry date
+	-17,,.+1
+	ODATE,,[ASCIZ /Date: /]
+	OSNDR,,[ASCIZ /Sender: /]
+	OFROM,,[ASCIZ /From: /]
+	OSUBJ,,[ASCIZ /Subject: /]
+	OTO,,[ASCIZ /To:   /]
+	OCC,,[ASCIZ /C:    /]
+	OBCC,,[ASCIZ /Bc:   /]
+	OID,,[ASCIZ /I.D.: /]
+	OARCID,,[ASCIZ /Archive I.D.: /]
+	OREVS,,[ASCIZ /Revises: /]
+	OSUPS,,[ASCIZ /Supplements: /]
+	OSUPID,,[ASCIZ /Supplemented by: /]
+	OKEY,,[ASCIZ /Key words: /]
+	OPAGES,,[ASCIZ /Pages: /]
+	DOCID,,[ASCIZ /Revised by: /]
+	POINT 7,OHDR
+	POINT 7,OCOMM
+
+RPMSGT:	0,,[-1]			; Index entry date always current
+	-16,,.+1
+	ODATE,,[ASCIZ /Date: /]
+	USRNAM,,[ASCIZ /Sender: /]
+	FRMMSG,,[ASCIZ /From: /]
+	DTITLE,,[ASCIZ /Subject: /]
+	TOMSG,,[ASCIZ /To: /]
+	CCMSG,,[ASCIZ /C: /]
+	DOCID,,[ASCIZ /I.D.: /]
+	ARCID,,[ASCIZ /Archive I.D.: /]
+	OREVDT,,[ASCIZ /Revised: /]	; Augmented with current date
+	REVISS,,[ASCIZ /Revises: /]
+	SUPPLE,,[ASCIZ /Supplements: /]
+	SUPPBY,,[ASCIZ /Supplemented by: /]
+	KEYWRD,,[ASCIZ /Key words: /]
+	PAGES,,[ASCIZ /Pages: /]
+	POINT 7,[0]
+	POINT 7,BRFMSG
+
+EQMSGT:	0,,[-1]			; Current date
+	-6,,.+1
+	CURDAT,,[ASCIZ /Date: /]
+	USRNAM,,[ASCIZ /Sender: /]
+	FRMMSG,,[ASCIZ /From: /]
+	DTITLE,,[ASCIZ /Subject: /]
+	DOCID,,[ASCIZ /I.D.: /]
+	PAGES,,[ASCIZ /Pages: /]
+	POINT 7,[0]
+	POINT 7,[ASCIZ /Queued for you (print with EARS <esc>.)/]
+
+PQMSGT:	0,,[-1]			; Current date
+	-6,,.+1
+	CURDAT,,[ASCIZ /Date: /]
+	USRNAM,,[ASCIZ /Sender: /]
+	FRMMSG,,[ASCIZ /From: /]
+	DTITLE,,[ASCIZ /Subject: /]
+	DOCID,,[ASCIZ /I.D.: /]
+	PAGES,,[ASCIZ /Pages: /]
+	POINT 7,[0]
+	POINT 7,[ASCIZ /Queued for you (print with PRESS <esc>.)/]
+
+BMSGT:	0,,[-1]
+	-15,,.+1
+	WRDATE,,[ASCIZ /Date: /]
+	USRNAM,,[ASCIZ /Sender: /]
+	FRMMSG,,[ASCIZ /From: /]
+	DTITLE,,[ASCIZ /Subject: /]
+	TOMSG,,[ASCIZ /To:   /]
+	CCMSG,,[ASCIZ /C:    /]
+	DOCID,,[ASCIZ /I.D.: /]
+	ARCID,,[ASCIZ /Archive I.D.: /]
+	REVISS,,[ASCIZ /Revises: /]
+	SUPPLE,,[ASCIZ /Supplements: /]
+	SUPPBY,,[ASCIZ /Supplemented by: /]
+	KEYWRD,,[ASCIZ /Key words: /]
+	PAGES,,[ASCIZ /Pages: /]
+	POINT 7,[0]
+	POINT 7,BRFMSG
+
+HTIER4:	PUSH P,B
+	MOVEI B,[ASCIZ /
+After index entry, trouble adding "Supplemented by" to related brief:
+/]
+	PUSHJ P,HTIER0
+	JUMPA BLDDOC
+
+HTIER3:	PUSH P,B
+	MOVEI B,[ASCIZ /
+After index entry, trouble deindexing obsolete brief's symbols:
+/]
+	JUMPA HTIER0
+
+HTIER2:	PUSH P,B		; Save error message pointer
+	MOVEI B,[ASCIZ /
+After index entry, trouble reading brief for revision:
+/]
+	PUSHJ P,HTIER0
+	JUMPA BLDDOC
+
+HTIER1:	PUSH P,B	; Save error message pointer
+	MOVEI B,[ASCIZ /
+After index entry, trouble obsoleting revision:
+/]
+	JUMPA HTIER0
+
+HTIERR:	PUSH P,B		; Save error message
+	MOVEI B,[ASCIZ /
+After putting brief in index, trouble indexing symbols:
+/]
+HTIER0:	PUSHJ P,APBEXC
+	POP P,B
+	JUMPA APBEXC
+
+
+; Table of byte pointers for new index insertions
+NSYMST:	POINT 7,FRMMSG	; "From"
+	POINT 7,DTITLE	; "Subject"
+	POINT 7,KEYWRD	; "Key words"
+	POINT 7,TOMSG	; "To" phrases
+	POINT 7,DOCID	; "I.D." string
+	POINT 7,ARCID	; "Archive I.D. string"
+
+; Building a document for general distribution.
+BLDDOC:	TDNN 0,[UPDHIS,,BLDF]	; If the document must be written...
+	JUMPA NOHIST
+	MOVEI B,0
+	IDPB B,TORPTR		; Terminate TO history string
+	IDPB B,CCRPTR		; and C history string
+	TRNN 0,BLDF
+	JUMPA NOTDOC
+	SKIPE INSERT		; Illegal to also INSERT
+	JUMPA [	MOVEI B,[ASCIZ /
+Illegal SAVE-INSERT combination--printing ok but no document built.
+Report bug to FIALA/]
+		PUSHJ P,APBEXC
+		JUMPA NOHIST]
+	MOVE B,DATBSZ		; Get data byte size
+	MOVE A,NEWJFN		; JFN for document construction
+	LSH B,36		; Left-justify byte size
+	HRRI B,101000		; Write, always wait if busy
+	OPENF
+; ***Got a crash here***
+	  PUSHJ P,JERROR
+	PUSHJ P,BLDINI		; Build the first part of the initial list
+	HRROI B,[ASCIZ /
+ENDLIST
+/]
+	SOUT
+	RFPTR			; File position--fill to word boundary
+	  PUSHJ P,JERROR
+	MOVE D,DATBSZ		; Byte size of data
+	CAIE D,10
+	SKIPA D,[5]		; Bytes/word
+	MOVEI D,4
+	IDIVI B,(D)		; Compute number of null bytes to next word
+				; boundary = (size-rem(pos/size))mod size
+	JUMPE C,APNDOC
+	SUBI D,(C)		; Number of null bytes to add
+	MOVEI B,0
+	BOUT
+	SOJG D,.-1
+APNDOC:	SKIPN A,INSJFN
+	MOVE A,TXTJFN
+	MOVE B,DATBSZ
+	SFBSZ
+	MOVE B,ASTART		; Position of data beginning
+	SFPTR
+	  PUSHJ P,JERROR
+	MOVE D,DATASZ
+	MOVE B,DATBSZ
+	CAIE B,10
+	JUMPA APN7L		; Append text in 7-bit size
+APN8L:	HRROI C,-40000*4	; Use all of FM
+	CAIGE D,40000*4
+	MOVN C,D
+	MOVE E,C		; Preserve count for SOUT
+	ADD D,C
+	MOVE B,[POINT 8,FM]
+	SKIPN A,INSJFN
+	MOVE A,TXTJFN
+	SIN
+	MOVE A,NEWJFN
+	MOVE C,E
+	MOVE B,[POINT 8,FM]
+	SOUT
+	JUMPG D,APN8L
+	JUMPA NOHIST
+
+APN7L:	HRROI C,-40000*5
+	CAIGE D,40000*5
+	MOVN C,D
+	MOVE E,C
+	ADD D,C
+	MOVE B,[POINT 7,FM]
+	SKIPN A,INSJFN
+	MOVE A,TXTJFN
+	SIN
+	MOVE A,NEWJFN
+	MOVE C,E
+	MOVE B,[POINT 7,FM]
+	SOUT
+	JUMPG D,APN7L
+	JUMPA NOHIST
+
+
+BADHIS:	MOVE A,GG
+	MOVEI B,[ASCIZ /
+Unable to open document for history update: /]
+	PUSHJ P,CPYSTZ
+	PUSHJ P,APPERR		; Append ERSTR
+	MOVE GG,A
+	JUMPA NOHIST
+
+; Here to do history update.  Presently, don't do update when inserting
+; because only situation under which INSERT is used is unqueuing, in
+; which case name is already in history.
+NOTDOC:	SKIPE INSJFN
+	JUMPA NOHIST
+	HRLZI A,500001		; Yes, old file output use
+	HRROI B,DOCID		; Point at name
+	GTJFN
+	  JUMPA BADHIS
+	HRRZM A,UPDJFN
+	MOVE B,DATBSZ		; Get data byte size
+	LSH B,36
+	HRRI B,301000		; Read, write, wait if busy
+	OPENF
+	  JUMPA BADHIS
+	MOVEI C,[ASCIZ /
+ENDLIST
+/]
+	PUSHJ P,RTOSTR		; Read past initial list
+; Have file position in B
+	MOVE C,B
+	MOVE E,DATBSZ		; File byte size
+	CAIE E,10
+	SKIPA E,[5]		; Bytes/word
+	MOVEI E,4
+	IDIVI C,(E)
+	JUMPE D,GOTISP		; Got position if word full
+	SUBI B,(D)
+	ADDI B,(E)		; Position of first data byte
+GOTISP:	MOVEM B,DWNPOS
+	SETZM DESPOS
+	CAIE E,4
+	SKIPA A,[POINT 7,MESSAG]
+	MOVE A,[POINT 8,MESSAG]
+	PUSHJ P,BLDINI		; Build the initial list in MESSAG
+	MOVEI B,[ASCIZ /
+ENDLIST
+/]
+	PUSHJ P,CPYSTZ
+	MOVEI D," "
+FILLW:	LDB B,[POINT 6,A,5]
+	CAIE B,4
+	CAIN B,1		; Last word filled?
+	JUMPA EFILL
+	IDPB D,A
+	JUMPA FILLW
+EFILL:	IDPB C,A		; Terminate
+	MOVEI A,-MESSAG+1(A)
+	IMULI A,5
+	MOVEM A,DESLEN		; Save length
+	MOVE A,UPDJFN
+	PUSHJ P,INSMSG		; Insert new history in place of old
+
+; Build form "*Sent PALO 2 x 23 pages, FILENAME, #USER, DATE-TIME"
+NOHIST:	MOVE A,[POINT 7,MESSAG]
+	MOVEI B,[ASCIZ /*Sent /]
+	PUSHJ P,CPYSTZ
+	SKIPN NCPYS
+	JUMPA NOCOPS
+	MOVE D,HLPTR		; Pointer to HSTLST entry for this file
+	SETZM HSTCON-HSTLST(D)	; Clear in case deferred or dead
+	MOVE B,(D)
+	PUSHJ P,CPYSTZ		; HOST
+	MOVEI B,40
+	IDPB B,A
+	MOVE B,NCPYS
+	PUSHJ P,DNOUT
+	MOVEI B,[ASCIZ / x /]
+	PUSHJ P,CPYSTZ
+	MOVE B,NPGS
+	PUSHJ P,DNOUT
+NOCOPS:	SKIPN NQSNT		; Any queued copies/abstracts sent
+	JUMPA NQCOPS
+	MOVEI B,[ASCIZ / and queued /]
+	SKIPE NCPYS
+	PUSHJ P,CPYSTZ
+	MOVE B,NQSNT
+	PUSHJ P,DNOUT
+	MOVEI B,[ASCIZ / queued/]
+	SKIPN NCPYS
+	PUSHJ P,CPYSTZ
+NQCOPS:	MOVE E,NCPYS
+	ADD E,NQSNT
+	JUMPE E,NXCOPS
+	MOVEI B,[ASCIZ / copies/]
+	CAIGE E,2
+	MOVEI B,[ASCIZ / copy/]
+	TLNE 0,ABSTRP
+	JUMPA [MOVEI B,[ASCIZ / abstracts/]
+		CAIGE E,2
+		MOVEI B,[ASCIZ / abstract/]
+		JUMPA .+1]
+	PUSHJ P,CPYSTZ
+NXCOPS:	SKIPN NBRSNT
+	JUMPN E,NBSNT
+	JUMPE E,BRFONY
+	MOVEI B,[ASCIZ / + /]
+	PUSHJ P,CPYSTZ
+BRFONY:	MOVE B,NBRSNT
+	PUSHJ P,DNOUT
+	MOVEI B,[ASCIZ / briefs/]
+	MOVE C,NBRSNT
+	CAIGE C,2
+	MOVEI B,[ASCIZ / brief/]
+	PUSHJ P,CPYSTZ
+NBSNT:	MOVE C,THSFDB+FDBUSW	; Value for bits being changed
+	TRNE 0,DONTSN		; Done with printing?
+	JUMPA FINP0		; No
+	TLZ C,7000		; Clear progress bits
+	SKIPN NABS		; Any abstracts not done yet?
+	JUMPA FINFIL		; No, finished
+	SETOM OLDALC		; Yes, pass over file again
+
+	TLOA C,COMCPY
+; SNDEOF and ABFILE both finish here to terminate the message in a
+; standard way and put it in PRINTHISTORY, on user's terminal, and/or in
+; his MESSAGE.TXT file (as indicated).  Then the file is either marked
+; "copies printed" or it is marked "completely printed" and renamed.
+; A byte pointer to the last byte of the message is in A at entry here.
+FINFIL:	HRLZI C,PRNTED		; Value for changed bits
+FINP0:	HRLZI B,447000		; Bits being changed
+	PUSH P,A		; Preserve MESSAGE pointer
+	MOVE A,TXTJFN
+	HRLI A,FDBUSW
+	CHFDB
+	AOS MSGS8		; Count files finished
+	TRNN 0,DELETF		; Bad file?
+	TLNN C,PRNTED		; No, done with file yet?
+	JUMPA FINP1		; No, have abstracts to do
+	MOVEI B,(A)		; Jfn
+	MOVE A,[POINT 7,RNAMBF+1,20]	; After "PRINTED."
+	HRLZI C,100		; Extension
+	JFNS			; "PRINTED.USER"
+	PUSHJ P,CLSTXT		; Close TXTJFN
+FINP2A:	HRLZI A,600001		; Output use, new file only
+FINP2:	HRROI B,RNAMBF
+	GTJFN
+	  JUMPA [ PUSH P,SAVJFN
+		PUSHJ P,DPURGE
+		POP P,SAVJFN
+		JUMPA FINP2A ]
+	MOVEI B,(A)
+	MOVE A,TXTJFN		; Must have non-0 bits in l.h. to avoid
+	HRLI A,400000
+	RNAMF			; automatic CLOSF after rename
+	  JUMPA [CAIE A,RNMX10	; Source busy error?
+		PUSHJ P,JERROR
+		HRRZ A,SAVJFN
+		MOVE B,[1,,FDBVER]
+		MOVEI C,D
+		GTFDB		; File version to l.h. of D
+		RLJFN
+		  PUSHJ P,JERROR
+		HLRZ A,D
+		HRLI A,600001	; Retry at next higher version
+		AOJA A,FINP2]
+	GTAD			; Time and date into 1
+	MOVE C,A		; Value for changed bits
+	MOVEI A,(B)
+	HRLI A,21		; FDB word affected
+	HRROI B,-1		; Bits being changed
+	CHFDB			; Prevent Bsys backup
+	MOVEI A,(A)
+	RLJFN
+	  PUSHJ P,JERROR
+FINP1:	POP P,A
+	MOVEI B,[ASCIZ /, /]
+	PUSHJ P,CPYSTZ
+	MOVEI B,DOCID
+	PUSHJ P,CPYSTZ
+	MOVE G,A		; Save message pos. for shorter message
+				; sent to user at terminal or by SNDMSG
+	MOVEI B,[ASCIZ /, #/]	; "#" signals user name in Printhistory
+	PUSHJ P,CPYSTZ
+	MOVEI B,USRNAM
+	PUSHJ P,CPYSTZ
+
+	PUSHJ P,MSGTER		; Terminate message with date
+	HRROI B,MESSAG
+	MOVE A,THSFDB+FDBUSW
+	TLNN A,RESPC!RESPA	; No PRINTHISTORY message if respooling
+	PUSHJ P,PHSEND
+	MOVE A,G
+	TRNE 0,ERRF		; Error encountered?
+	JUMPA EOHMSG		; Yes, skip special reports
+	MOVEI B,[ASCIZ /
+*You should replace obsolete fonts used in the document*/]
+	SKIPE OBSFNT
+	PUSHJ P,CPYSTZ
+	IDPB C,GG		; Terminate exception message
+	MOVEI B,EXCMSG
+	PUSHJ P,CPYSTZ		; Append exception message
+	LDB C,[POINT 7,REPMSG,6]
+	JUMPE C,NORPMG
+	CAIE C,15
+	PUSHJ P,CPYCRL		; <cr><lf>
+	MOVEI B,REPMSG
+	PUSHJ P,CPYSTZ		; Append special report message
+NORPMG:	MOVE G,A		; Save string pointer for Sndmsg report
+	MOVEI B,[ASCIZ /
+*The output hopper of the printer may overflow--please check it*/]
+	TRNE 0,BIGDOC
+	PUSHJ P,CPYSTZ
+; Host status messages omit LF after CR
+	MOVE B,[POINT 8,BSYMSG]
+HSTMLP:	ILDB C,B
+	JUMPE C,EOHMSG
+HMCRLP:	IDPB C,A
+	CAIE C,15
+	JUMPA HSTMLP
+	MOVEI C,12		; Insert missing LF
+	JUMPA HMCRLP
+
+EOHMSG:	MOVEI B,[ASCIZ /
+
+
+/]
+	PUSHJ P,CPYSTT
+; Force user to receive distribution report if there were delivery
+; exceptions or if REPMSG contains some text or if the document is big
+	SKIPE EXCMSG		; Exceptions?
+	JUMPA FSNDM		; Yes, force sndmsg to insure permanent record
+	SKIPN REPMSG		; No, special report?
+	TRNE 0,BIGDOC!DELETF	; Big document message or error?
+	TLO 0,SNDMN		; Yes, force some message
+RPMSG:	TLNN 0,TERNOT		; Notifying user at his terminal(s)?
+	JUMPA NOTTER		; No
+	HLRZ B,THSFDB+FDBUSE	; User number for report
+	PUSHJ P,TTYRPT		; Send to terminal
+	  JUMPA NOTTER		; No, check sndmsg
+	JUMPA NOTSM
+NOTTER:	TLNN 0,SNDMN		; Notifying user via Sndmsg?
+	JUMPA NOTSM		; No
+FSNDM:	MOVE A,G
+	PUSHJ P,MSGFIN
+	MOVEI A,REPMST		; Pointer to report message table
+	PUSHJ P,MSGDES		; Build message
+	MOVE A,[POINT 7,USRNAM]
+	PUSHJ P,SNDM		; Sndmsg
+	  PUSHJ P,JERROR
+NOTSM:	TRNN 0,DELETF		; Error necessitating file deletion?
+	JUMPA NEXT
+	JUMPA DELUNF		; Yes, delete it
+
+REPMST:	0,,[-1]
+	-4,,.+1
+	CURDAT,,[ASCIZ /Date: /]
+	[ASCIZ /Pspool/],,[ASCIZ /From: /]
+	USRNAM,,[ASCIZ /To:   /]
+	[ASCIZ /Printing/],,[ASCIZ /Subject: /]
+	POINT 7,[0]
+	POINT 7,MESSAG
+
+; Error in DOCGEN.PRT file--allow respooling after fix to still do queuing and briefs
+DCGABF:	PUSH P,B		; Save message
+	MOVEI B,[ASCIZ /*Error in DOCGEN.PRT--/]
+	TLO 0,TERNOT
+	JUMPA FABORT
+
+; Error in file leader--respooling no good
+LDRABF:	PUSH P,B		; Save message
+	MOVEI B,[ASCIZ /*Error in file leader--/]
+	JUMPA FABORT
+
+; Error in initial list--respooling no good
+INIABF:	PUSH P,B		; Save message
+	MOVEI B,[ASCIZ /*Error in initial list--/]
+	JUMPA FABORT
+
+BBERR:	MOVE A,[POINT 7,MESSAG+15]
+	PUSHJ P,CPYSTZ
+	POP P,B
+	PUSHJ P,CPYSTT
+	MOVEI B,MESSAG+15
+	JUMPA ABFILE
+
+; Abort file, message pointer in B
+ABFILE:	PUSH P,B
+	HRLI B,-1		; String pointer to abort reason
+	MOVEI C,0		; Abort reason = external sender abort
+	PUSHJ P,SNDABO		; Send abort, shut down timer fork if connected
+EABF:	MOVEI B,[ASCIZ /*/]
+FABORT:	TROA 0,DELETF!ERRF	; Fatal abort
+NABORT:	TRO 0,ERRF		; Non-fatal abort
+	MOVE A,[POINT 7,MESSAG]
+	PUSHJ P,CPYSTZ
+	POP P,B
+	PUSHJ P,CPYSTZ
+	JUMPA FINFIL
+
+; Append message in B to EXCMSG
+APBEXC:	MOVE A,GG
+	PUSHJ P,CPYSTZ
+	MOVE GG,A
+	POPJ P,
+
+
+; Append name pointed to by B to EXCMSG, preceding with ", " if earlier
+; names in the same category are already on the list, else with the
+; message pointed to by A
+APNEXC:	CAME GG,EXCMP		; First exception of this type?
+	MOVEI A,[ASCIZ /, /]	; No
+	EXCH A,GG
+	EXCH B,GG
+	PUSHJ P,CPYSTZ
+	MOVE B,GG
+	PUSHJ P,CPYSTL
+	MOVE GG,A
+	POPJ P,
+
+; OPENF failed on a TXTJFN
+FOPENF:	CAIE A,OPNX9		; File busy?
+	JUMPA JERROR
+	JUMPA NEXT
+
+GVBSYO:	PUSHJ P,CPYSTT
+	MOVEI B,MESSAG+15
+GVBSY:	TLO 0,TERNOT		; Force terminal notification
+GVBSYX:	MOVE A,[POINT 7,MESSAG]
+	PUSHJ P,CPYSTZ
+	MOVE G,A
+	JUMPA SNDBRP
+
+; OPENF errors on user files come here with error in A, Jfn in B
+OERRST:	PUSH P,A
+	PUSH P,B
+	MOVE A,[POINT 7,MESSAG+15]
+	MOVEI B,[ASCIZ /On /]
+	PUSHJ P,CPYSTZ
+	POP P,B
+	MOVE C,[11110,,1]
+	JFNS			; Build complete file name
+	MOVEI B,[ASCIZ /, file busy wait .../]
+	POP P,C
+	CAIN C,OPNX9
+	JUMPA GVBSYO		; File busy message
+OERRF:	MOVEI B," "
+	IDPB B,A
+	PUSHJ P,APPERR		; Append jsys error
+	MOVEI B,0
+	IDPB B,A
+OERRG:	MOVEI B,MESSAG+15
+	SKIPE TXTJFN		; PSPOOL initialization?
+	JUMPA ABFILE
+	PUSHJ P,ERROR		; Otherwise program bug
+	HALT .
+
+
+; GTJFN errors on user files come here with byte pointer to name in B
+MERRST:	MOVE A,[POINT 7,MESSAG+15]
+	PUSH P,B
+	MOVEI B,[ASCIZ /On /]
+	PUSHJ P,CPYSTZ
+	POP P,B
+CPYFNL:	ILDB C,B		; Special for lists of file names
+	CAIE C," "
+	CAIN C,","
+	JUMPA OERRF
+	JUMPE C,OERRF
+	IDPB C,A
+	JUMPA CPYFNL
+
+JFNSAB:	MOVE C,[11110,,1]
+	JFNS			; Append complete file name to message
+	JUMPA OERRG
+
+; Append last jsys error to destination designator in A
+APPERR:	HRLOI B,400000
+APPXE:	MOVEI C,0
+	ERSTR
+	  JUMPA JERROR
+	  JUMPA JERROR
+	POPJ P,
+
+; Subroutine to close all the stuff except TXTJFN
+CLFILS:	HRROI A,-1
+	MOVEI C,0
+	MOVE B,[400000,,TXTPG]
+	PMAP
+	PUSH P,D
+	MOVE D,[DISJFN-SYMJFN-1,,DISJFN]
+CLSFLP:	MOVEI A,(D)
+	PUSHJ P,CLSFIL		; Choose CLOSF, RLJFN, or noop
+	AOBJN D,CLSFLP
+	POP P,D
+	POPJ P,
+
+
+; Unmap pages and close the TXTJFN file, preserving the JFN
+CLSTXT:	HRROI A,-1
+	MOVE B,[400000,,TXTPG]
+	MOVEI C,0
+	PMAP			; Remove file page in fork map (if any)
+	MOVE A,TXTJFN
+	GTSTS
+	JUMPL B,CLSFL0
+	POPJ P,
+
+
+; Subroutine to build string "**HOSTNAME message, DAY DATE TIME" where
+; host name is pointed to by C and message by B.  Byte pointer to
+; destination buffer in A
+BHSTMS:	PUSH P,B
+	MOVEI B,"*"
+	IDPB B,A
+	IDPB B,A
+	MOVE B,C
+	PUSHJ P,CPYSTZ		; Copy host name
+	POP P,B
+	PUSHJ P,CPYSTZ
+	MOVE G,A		; Save byte pointer for retermination
+; Subroutine to place ", dateCR-LF" after byte pointer A
+MSGTER:	MOVEI B,[ASCIZ /, /]
+	PUSHJ P,CPYSTZ
+	HRROI B,-1
+	HRLZI C,44201		; "10-26-74 22:31"
+	ODTIM
+MSGFIN:	MOVEI B,[ASCIZ /
+/]
+CPYSTT:	PUSHJ P,CPYSTZ
+	IDPB C,A
+	POPJ P,
+
+
+; Add <cr><lf> at the byte pointer in A
+CPYCRL:	MOVEI B,[ASCIZ /
+/]
+; Copy ASCIZ string pointed to by B to string pointed to by A
+CPYSTZ:	HRLI B,440700
+	JUMPA CPYSTL
+CPYSLP:	CAME A,[POINT 7,EXCMSG+777,27]
+	CAMN A,[POINT 7,MESSAG+3777,27]
+	POPJ P,			; CPYSTZ is usually used for appending
+				; to EXCMSG or MESSAG, which might overflow
+	IDPB C,A
+CPYSTL:	ILDB C,B
+	JUMPN C,CPYSLP
+	POPJ P,
+
+; Output ASCIZ string
+ZOUT:	MOVEI C,0
+	SOUT
+	POPJ P,
+
+; Check this user's permission to add a file to the directory whose
+; designator is in B.  Return caller+1 on illegal, caller+2 on ok.
+CHKDPR:	MOVEI A,0
+	STDIR			; Get the directory number of the file
+	  POPJ P,		; Unknown directory name
+	  POPJ P,		; Ambiguous directory name
+	HRLI A,200000		; Indicate proxy protection check
+	HLRZ C,THSFDB+FDBUSE	; User's directory number
+	GFACC
+	  PUSHJ P,JERROR
+; 1/  if B[30]=0, no access allowed; if B[31]=1 open subject to file protection,
+; if B[32]=1 owner privileges.
+	TRNE A,40		; Error if no access allowed
+	TRNN A,24		; OK if filed can be added or access allowed
+				; according to file protection
+	POPJ P,
+	JUMPA SKPRET
+
+
+; Subroutine to place message pointed to by B in PRINTHISTORY file
+; Clobbers A,C
+PHSEND:	PUSH P,B
+	HRROI B,[ASCIZ /<SECRETARY>PRINTHISTORY.;1/]
+	HRLZI A,400001		; Output
+	GTJFN
+	  PUSHJ P,JERROR
+	HRRZM A,PHJFN
+	MOVE B,[70000,,21000]	; Byte size = 7, append, wait if busy
+	OPENF
+	  PUSHJ P,JERROR
+	POP P,B
+APFILE:	MOVEI C,0
+	SOUT
+	MOVEI A,PHJFN
+	JUMPA CLSFIL
+DEFINE GETSTT(NAME)
+<	NAME=TABLEP
+	TABLEP==TABLEP+2
+	MOVE A,[SIXBIT /NAME/]
+	MOVEI D,NAME
+	PUSHJ P,SYSFET>
+
+; Accepts SIXBIT name in A, table pointer address in D, transfers
+; system table into local table, sets up xwd E,table pointer at 0(D)
+; and - length at 1(D)
+SYSFET:	SYSGT			; Get xwd -length, table i.d. in B
+	JUMPE B,[MOVEI B,[ASCIZ /No such GETAB table/]
+		JUMPA ERROR]
+	HLRE C,B
+	MOVN C,C		; Get table length
+	MOVNM C,1(D)		; - length at 1(D)
+	MOVE E,TPTR#
+	HRLI E,E
+	MOVEM E,0(D)
+	ADDI E,(C)
+	MOVEM E,TPTR
+	MOVE D,0(D)
+	HRLZI E,D
+	HLLZ C,B		; Xwd -length, 0
+SFLP:	MOVEI A,(B)		; Table i.d.
+	HRLI A,(C)
+	GETAB
+	  PUSHJ P,JERROR
+	HRRI E,(C)
+	MOVEM A,@E
+	AOBJN C,SFLP
+	POPJ P,
+
+; Subroutine to send MESSAG to user at terminal.  At call user number
+; is in B.  Return caller+1 if not logged in, caller+2 if message sent.
+TTYRPT:	PUSH P,B		; Save user number
+	SETZM TREPTS#		; Count terminal reports
+	MOVEI A,RESVLC
+	MOVEM A,TPTR#
+	GETSTT(JOBTTY)		; Get control tty,,top fork
+	GETSTT(JOBRT)		; Job run time (neg. if job doesn't exist)
+	GETSTT(JOBDIR)		; Get attached directory,,login directory
+	HRLZ E,JOBDIR+1		; Setup AOBJN pointer for JOBDIR scan
+CNXTLP:	MOVE B,0(P)		; Get user number
+	HRRZ C,@JOBDIR		; Get login directory #
+	CAME C,B
+	JUMPA CNXTJB		; Ignore if not this user
+	SKIPL @JOBRT		; Job exists?
+	SKIPGE @JOBTTY		; Yes, is job detached?
+	JUMPA CNXTJB		; Yes, ignore
+	AOS TREPTS#		; Count successful reports (-1 at TMRINT)
+	MOVE A,TFRKH		; No, notify
+	MOVEI B,TMRFRK		; Starting address
+	SFORK			; Start up timer fork
+	HLRZ A,@JOBTTY
+	ADDI A,400000		; Make designator
+	RFCOC			; Read character output control words
+	PUSH P,B
+	PUSH P,C
+	ANDCM B,[3B15+3B21+3B27] ; Change so bell, CR, and LF really
+	IOR B,[2B15+2B21+2B27]	; Get sent to the terminal
+	SFCOC
+	MOVEI C,0
+	HRROI B,[ASCIZ /
+
+*From Pspool: /]
+; Timer fork catches bomb out at TTS1+1, TTS2+1
+TTS1:	SOUT
+	MOVE B,[POINT 7,MESSAG,6]
+TTS2:	SOUT
+	POP P,C
+	POP P,B
+	SFCOC
+	MOVE A,TFRKH
+	HFORK			; Stop timer fork
+
+CNXTJB:	AOBJN E,CNXTLP		; Give terminal message to all user's jobs
+	POP P,B
+	SKIPLE TREPTS		; Any reports sent?
+	AOS (P)			; Yes, skip return
+	POPJ P,			; No.
+
+; SNDM accepts a byte pointer to a username in A, message built at
+; MESSAG, and message length in DESLEN.  It sends the message to the user.
+SNDM:	MOVEM A,TO
+	MOVE B,A		; Get the directory no.
+	MOVEI A,0
+	STDIR
+	  JUMPA MAILCK		; No match
+	  JUMPA MAILCK		; Ambiguous
+	MOVEI A,(A)		; Zero l.h.
+	CAIN A,1		; System direc. no.?
+	JUMPA SKPRET		; Yes, no message
+SNDM0:	MOVEI A,GJFTAB		; "TO" pointer is in GJFTAB
+	HRROI B,[ASCIZ /MESSAGE.TXT;1/]
+	GTJFN
+	  JUMPA MAIL		; GTJFN failed--if legal, must have
+				; MESSAG.TXT on other Maxc
+	MOVE  C,A		; Save Jfn
+	MOVE B,[70000,,20200]
+	OPENF
+	  JUMPA [CAIE A,OPNX9	; "File busy"
+		  JUMPA OPFAIL
+		MOVE A,C
+		RLJFN
+		  PUSHJ P,JERROR
+		JUMPA MAIL]
+	MOVE B,[POINT 7,MESSAG]
+OUTMSG:	MOVN C,DESLEN
+	SOUT
+	CLOSF
+	  PUSHJ P,JERROR
+	JUMPA SKPRET
+
+OPFAIL:	EXCH A,C
+	RLJFN
+	  PUSHJ P,JERROR
+	EXCH A,C
+	POPJ P,
+
+; Setup first part of file name for MAILER
+MAILNM:	MOVE A,[POINT 7,MAILBF,6]	; Pass over "<SENDER>"
+	ILDB B,A
+	CAIE B,">"
+	JUMPA .-2
+	MOVEI B,[ASCIZ /[--UNSENT-MAIL--]./]
+	PUSHJ P,CPYSTZ
+	MOVE B,TO
+	POPJ P,
+
+; If name contains "@", setup file for MAILER
+MAILCK:	PUSHJ P,MAILNM
+MAILCL:	ILDB C,B
+	JUMPE C,CPOPJ		; Non-directory name and no "@" error
+	CAIN C,"@"
+	JUMPA MAIL1
+	IDPB C,A
+	JUMPA MAILCL
+
+MAIL1:	MOVEI C,"V"-100		; Quote char for file names
+	IDPB C,A
+	MOVEI C,"@"
+	IDPB C,A
+	ILDB C,B
+	JUMPN C,.-2		; Copy to end-of-name
+	JUMPA MAIL2
+
+MAIL:	PUSHJ P,MAILNM		; Setup first part of file name for MAILER
+	PUSHJ P,CPYSTL		; Copy directory name as extension
+	MOVEI B,[BYTE (7) "V"-100,"@"]
+	PUSHJ P,CPYSTZ
+	PUSHJ P,CPYSTL
+MAIL2:	MOVEI B,[ASCIZ /;P770000/]
+	PUSHJ P,CPYSTZ
+	IDPB C,A		; Terminate name
+	HRROI B,MAILBF
+	HRLZI A,600001		; Output use, new file only
+	GTJFN
+	  POPJ P,
+	MOVE C,A
+	MOVE B,[70000,,100000]
+	OPENF
+	  JUMPA [MOVE A,C
+		RLJFN
+		  PUSHJ P,JERROR
+		POPJ P,]
+	MOVE B,[POINT 7,MESSAG]
+	ILDB C,B		; Date and length not included in MAILER file
+	CAIN C,12
+	JUMPA .-2
+	PUSHJ P,OUTMSG
+	  POPJ P,
+	HLRZ B,THSFDB+FDBUSE	; User no. doing sending
+	IDIVI B,44
+	HRLZI A,400000
+	MOVN C,C
+	ROT A,C
+	IORM A,FLGPG*1000(B)
+	JUMPA SKPRET
+
+; Wait for logging teletype output done, then send **HOSTNAME followed by
+; message in B.
+HSTTYP:	MOVE A,[POINT 7,MESSAG]
+	MOVE C,@HLPTR
+	PUSHJ P,BHSTMS		; Construct "**HOST message, DAY DATE TIME"
+	HRROI B,MESSAG
+; Wait for logging teletype output done, then send message in B
+TMSG:	MOVEI A,101
+	DOBE
+	MOVE A,B
+	PSOUT
+	POPJ P,
+
+
+; Table of names and locations typed by ERROR routine
+BURPS:	0,,[ASCIZ 'A/  ']
+	P,,-4
+	0,,[ASCIZ 'B/  ']
+	0,,ERRBSV
+	0,,[ASCIZ 'C/  ']
+	P,,-3
+	0,,[ASCIZ 'D/  ']
+	P,,-2
+	0,,[ASCIZ 'E/  ']
+	P,,-1
+	0,,[ASCIZ 'F/  ']
+	P,,0
+	0,,[ASCIZ '-1(P)/ ']
+	P,,-6
+	0,,[ASCIZ '-2(P)/ ']
+	P,,-7
+	0,,[ASCIZ '-3(P)/ ']
+	P,,-10
+NBURPS==<.-BURPS>/2
+
+ERMSGT:	0,,[-1]
+	-2,,.+1
+	CURDAT,,[ASCIZ /Date: /]
+	PSPNAM,,[ASCIZ /From: /]
+	POINT 7,[0]		; No extra header items
+	POINT 7,MESSAG
+
+; Fatal JSYS errors get here by PUSHJ P,JERRC with error no. in C
+JERRC:	MOVEM C,ERRBSV#		; Save error number
+	JUMPA .+2
+; Fatal JSYS errors get here by PUSHJ P,JERROR with error no. in A
+JERROR:	MOVEM A,ERRBSV#
+	PUSH P,A
+	EXCH B,ERRBSV
+	PUSH P,C
+	MOVE A,[POINT 7,MESSAG+15]
+	HRLI B,400000		; This fork
+	PUSHJ P,APPXE		; Type error string
+	IDPB C,A
+	POP P,C
+	POP P,A
+	MOVEI B,MESSAG+15
+; Unexpected failure, message pointer in B
+ERROR:	PUSH P,A
+	PUSH P,C
+	PUSH P,D
+	PUSH P,E
+	PUSH P,F
+	PUSH P,B		; Save message pointer
+	MOVE A,[POINT 7,MESSAG]
+	MOVEI B,[ASCIZ /I am crashing due to
+/]
+	PUSHJ P,CPYSTZ
+	POP P,B
+	PUSHJ P,CPYSTZ
+	MOVEI B,[ASCIZ / at location /]
+	PUSHJ P,CPYSTZ
+	HRRZ B,-5(P)
+	SUBI B,1
+	PUSHJ P,CNOUT
+	MOVEI B,[ASCIZ /
+Working on /]
+	PUSHJ P,CPYSTZ
+	MOVEI B,DOCID
+	PUSHJ P,CPYSTZ
+	MOVEI B,[ASCIZ / for /]
+	PUSHJ P,CPYSTZ
+	MOVEI B,USRNAM
+	PUSHJ P,CPYSTZ
+	HRLZI D,-NBURPS
+BURPLP:	MOVEI B,[ASCIZ /
+/]
+	PUSHJ P,CPYSTZ
+	MOVE B,BURPS(D)
+	PUSHJ P,CPYSTZ		; Type out name of quantity
+	MOVE B,@BURPS+1(D)	; Get value of location
+	PUSHJ P,CNOUT
+	ADDI D,1
+	AOBJN D,BURPLP
+	PUSH P,A		; Save position for retermination
+	MOVEI B,[ASCIZ /
+/]
+	PUSHJ P,CPYSTT
+	SKIPN DBUGSW		; Connected to a terminal?
+	JUMPA .+4		; No, fancy.
+	HRROI B,MESSAG
+	PUSHJ P,TMSG		; Yes, report to it.
+	JUMPA XERROR
+	MOVEI B,FIALAN		; Report to Fiala if possible
+	PUSHJ P,TTYRPT
+	  JUMPA .+2
+	JUMPA XERROR		; Successful, restore state and halt
+	MOVEI A,ERMSGT
+	PUSHJ P,MSGDES		; Build message
+	MOVE A,[POINT 7,[ASCIZ /FIALA/]]
+	PUSHJ P,SNDM
+	  HALTF
+XERROR:	SUB P,[1,,1]
+	MOVE B,ERRBSV		; Sometimes has B before crash
+	POP P,F
+	POP P,E
+	POP P,D
+	POP P,C
+	MOVE A,[^D8*^D60*^D1000]
+	DISMS			; Wait 8 minutes for Fiala to attach
+	POP P,A
+	JUMPA START		; Then restart automatically
+
+; File data error (PSI level 2)
+DERROR:	PUSH P,A
+	MOVEM B,ERRBSV#
+	PUSH P,C
+	HRLZI C,-NFILES
+DERRLP:	SKIPN A,FILTBL(C)	; File in use?
+	JUMPA DERR1		; No.
+	GTSTS			; Get file status
+	TLNN B,400		; Data error?
+	JUMPA DERR1		; No.
+	MOVE C,DERRTB(C)	; Yes, get instructions
+	EXCH C,0(P)		; Save dispatch address, restore C
+	HLRZ B,0(P)		; Address of error message
+	POPJ P,			; Dispatch to handler
+
+DERR1:	AOBJN C,DERRLP
+	POP P,C
+	MOVEI B,[ASCIZ /Data error in unfindable context/]
+ERCALL:	MOVE A,RET2
+	EXCH A,0(P)
+	PUSH P,A
+	MOVEI A,ERROR
+	JUMPA DERRX
+
+EROUT:	MOVEI B,[ASCIZ /Mysterious data error in output file/]
+	JUMPA ERCALL
+
+DERR0:	MOVEI A,ABFILE
+DERRX:	HRRM A,RET2
+	POP P,A
+	DEBRK
+
+ERDCG:	MOVEI A,GPERRR
+	JUMPA DERRX
+
+ERDIS:	MOVEI A,BADGRT
+	TLNN 0,DSNAME		; Data on stack?
+	MOVEI A,CPOPJ		; No, give error return
+	HRRZ B,RET2		; Get address of BIN or SIN + 1
+	CAIN B,PRFMLP+2
+	MOVEI A,SDERR1
+	MOVEI B,[ASCIZ /Data error in distribution list file/]
+	JUMPA DERRX
+
+; Instruction trap (level 1)
+ITRAP:	MOVEM B,ERRBSV
+	MOVEI B,[ASCIZ /Instruction trap/]
+LEV1TP:	PUSH P,RET1
+	PUSH P,B
+	MOVEI B,ERROR
+	HRRM B,RET1
+	POP P,B
+	DEBRK
+
+; Memory read trap (level 1)
+RTRAP:	MOVEM B,ERRBSV
+	MOVEI B,[ASCIZ /Illegal memory read trap/]
+	JUMPA LEV1TP
+
+; Memory write trap (level 1)
+WTRAP:	MOVEM B,ERRBSV
+	MOVEI B,[ASCIZ /Illegal memory write trap/]
+	JUMPA LEV1TP
+
+; Memory execute trap (level 1)
+XTRAP:	MOVEM B,ERRBSV
+	MOVEI B,[ASCIZ /Illegal memory execute trap/]
+	JUMPA LEV1TP
+
+; End-of-file (PSI level 2)
+EOF:	MOVEM B,ERRBSV
+	PUSH P,A
+	SKIPN A,INSJFN
+	SKIPE A,TXTJFN
+	JUMPA EOF1
+EOF0:	MOVEI B,[ASCIZ /EOF with no source file open/]
+	JUMPA ERCALL
+
+EOF1:	GTSTS
+	TLNN B,(1B8)		; Past EOF?
+	JUMPA EOF2
+	MOVEI B,[ASCIZ /Inexplicable EOF in source file/]
+	JUMPA DERR0
+
+EOF2:	MOVEI B,[ASCIZ /Unexpected EOF other than in source file/]
+	JUMPA DERR0
+
+BADINT:	HALTF
+
+
+REPEAT 0,<
+; Subsidiary fork termination
+SFTER:	PUSH P,A
+	PUSH P,B
+	PUSH P,C
+	HRLZI C,-34		; Count of relative fork handles
+SFTER0:	MOVEI A,400001(C)	; Get fork handle
+	RFSTS			; Get status, PC
+	HLRZ A,A
+	ANDI A,777
+	CAIE A,3
+	CAIN A,2
+	JUMPA SFTER1		; Yes, service
+SFTER2:	AOBJN D,SFTER0		; No
+	HALTF
+
+SFTER1:	TLC A,-1
+	TLCN A,-1		; Undefined handle?
+	JUMPA SFTER2		; Yes
+	TLNN A,100000		; Voluntary termination or never started?
+	HALTF			; No, forced.
+	MOVEI A,400001(C)	; Recover fork handle
+	KFORK			; Erase fork
+	POP P,C
+	POP P,B
+	POP P,A
+	DEBRK
+>
+
+; Timer and interrupt stuff for ensuring SOUT to tty doesn't hang
+; indefinitely.
+
+; Fork started to do the timing
+TMRFRK:	MOVEI A,^D60000		; Wait one minute
+	DISMS
+	MOVEI A,-1		; If still alive, SOUT hung
+	MOVSI B,(1B0)		; Give superior timeout interrupt
+	IIC
+	JUMPA TMRFRK
+
+; Timer fork code for PUP timeout
+TIMPUP:	MOVE A,EFTBLK+SOCTIM
+	DISMS			; Wait for specified timeout
+	SOSLE A,EFTBLK+SOCTC
+	  JUMPA TIMPUP
+	JUMPL A,XWAIT
+	MOVEI A,-1
+	HRLZI B,400000
+	IIC
+	JUMPA TIMPUP
+
+XWAIT:	WAIT			; Hang indefinitely
+
+; Timer interrupt routine initiated from timer fork
+TMRINT:	PUSH P,A
+	HRRZ A,RET3		; Get return PC
+	CAIE A,TTS1+1		; At the first SOUT instruction?
+	CAIN A,TTS2+1		; Or the second SOUT?
+	TLO A,(1B5)		; Yes, set user mode bit to change the PC
+	TLNE A,(1B5)
+	SOS TREPTS
+	CAIL A,XPUPI		; Timeout of PUPI?
+	CAILE A,XPUPIE
+	JUMPA TMINT1		; No.
+	POP P,A
+	MOVEI A,XPUPIF
+	MOVEM A,RET3
+	DEBRK
+TMINT1:	IORM A,RET3		;   so that DEBRK restarts after the SOUT
+	POP P,A
+	DEBRK
+
+LEVTAB:	RET1#
+	RET2#
+	RET3#
+
+CHNTAB:	3,,TMRINT
+	REPEAT 11,<1,,BADINT>
+	2,,EOF			; End-of-file
+	2,,DERROR		; Data error
+	REPEAT 3,<1,,BADINT>
+	1,,ITRAP		; Illegal instruction
+	1,,RTRAP		; Illegal memory read
+	1,,WTRAP		; Illegal memory write
+	1,,XTRAP		; Illegal memory execute
+	1,,BADINT		; Subsidiary fork termination
+	REPEAT 20,<1,,BADINT>
+        

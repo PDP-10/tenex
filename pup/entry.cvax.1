@@ -1,0 +1,72 @@
+# define _sprocess struct s_process
+_sprocess { /* keep stack at top! */
+	int *stack;			/* *processes stack */
+	int *savedsp;			/* old stack pointer */
+	int entry_address;		/* address for entry */
+	short int first;		/* true on first call */
+	short int halted;		/* true if process halted */
+	short int killed;		/* true if process dead */
+	int timer, timer1;		/* >0 if set by s_tdisms */
+	int (*edisms)();		/* != 0 if address of event */
+					/*   dismiss routine */
+	short int pflag;		/* 0 if no parameter passed, els 1 */
+	int eparm;			/* parameter for above routine */
+	} *s_cur;			/* active processes ptrs */
+int *temp, fp, nfp;
+int stack[200];
+int s_little ();
+_sprocess pr1; 
+main () {
+    int sp, *tp; 
+    int i, entry;
+
+    entry = (int)s_little;
+    s_cur = &pr1;    
+    s_cur->stack = (int *)&stack[0];
+    tp = s_cur->stack + 199;
+    *tp-- = 1;				/* value of passed parmeter */
+    sp = (int)tp;
+    *tp-- = 1;				/* 1 parms always  */
+    *tp-- = 0;				/* 0 dummy for poping on RET from */
+					/* resume (its n-params word) */
+    *tp-- = entry + 2;			/* starting pc - skip e mask */
+    *tp-- = sp;				/* starting fp */
+    *tp-- = sp;				/* starting ap */
+    *tp-- = 04000000000;		/* b29 psl - calls instr simulated */
+    *tp = 0;				/* 0 longword */
+    s_cur->savedsp = tp;		/* our fp pointer for resumption */
+    for (i=0; i<10; ++i) {
+        printf ("\nLeaving main!");
+        s_resume ();			/* switch stacks-call little;  */
+        printf ("\nBack to main!");
+	}
+    printf ("\nbye...!\n");
+    }
+
+s_little (i) int i;
+    {int j;
+    j = 1;
+    printf ("\nTop of little:");
+    while (1) {
+        printf ("\n    In little, passed %d, %dth call", i, j);
+        s_suspend ();
+	++j;
+        }
+    }
+
+s_resume () {
+    temp = (int *)&s_cur->savedsp;
+    asm	("	movl	*_temp,_nfp");		/* get new context */
+    asm ("	movl	fp,*_temp");		/* save old stack context */
+    asm ("	movl	_nfp,fp");		/* execute NEW context */
+    }
+
+s_suspend () {
+    temp = (int *)&s_cur->savedsp;
+    asm	("	movl	*_temp,_nfp");		/* get old context */
+    asm ("	movl	fp,*_temp");		/* save current context */
+    asm ("	movl	_nfp,fp");		/* execute OLD context */
+    }
+
+
+

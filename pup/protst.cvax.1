@@ -1,0 +1,190 @@
+int l_firstfree[16000];
+# define npros 20
+# define newp 0
+# define byep 1
+# define byeme 2
+# define proceed 3
+# define mem 4
+
+int pros[npros];
+int pcnt;
+int protst () 
+    {int i, alive;
+    printf ("protest is here!!\n");
+    for (i = 0; i < npros; i++) pros[i] = -1;
+    pcnt = 0;		/* none to speak of (i'm not conceited) */
+    alive = 1;
+    while (alive)
+	{switch (tryme ())
+	    {case newp: initp (); break;
+	    case byep:	zapp (); break;
+	    case byeme: 
+		if (pcnt == 0) alive = 0;
+		else 
+		    {printf ("women and children first!\n");
+		    printf ("there are %d left aboard\n", pcnt);
+		    }
+		break;
+	    case proceed:
+	        break;
+	    case mem: spillmem (); break;
+	    default: printf ("??\n");
+	    }
+	s_suspend ();
+	}
+    printf ("oh no! not me...");
+    s_killp (-1);		/* and finally, me.... */
+    }
+char buf[80];
+# define l1_chunk struct chunk
+l1_chunk {/* memory chunk structure */
+	l1_chunk *previous;	/* previous free chunk or 0 */
+	l1_chunk *next;		/* next free or 0	    */
+	short size;		/* bit 15 = 0 if free, 1 if taken */
+			        /*     14 - 0  size in words	  */
+	};
+extern l1_chunk *l1_memhead;
+int spillmem ()
+	{/* spill out our memory allocation scheme */
+	l1_chunk *funrun;
+	funrun = l1_memhead;	/* start of list */
+	printf("..............memory map..............\n");
+	while (1)
+	    {int size, notfree;
+	    printf("address: %o", funrun);
+	    size = funrun->size;
+	    notfree = size & 0100000; size &= 077777;
+	    printf("  words: %d", size);
+	    if (notfree) printf (" free:  no ");
+	    else 
+		printf (" free: yes ");
+	    printf ("\n");
+	    if (!(funrun->next)) break;
+	    funrun = funrun->next;
+	    }
+	}
+char *herald= "init, zap, selfdestruct, proceed, mem (i, z, s, p, m)?: ";
+int tryme () 
+    {while (1)
+        {ttyread (herald, buf);
+	switch (buf[0])
+	    {case 'i':
+	    case  'I': return(newp);
+
+	    case  'z': 
+	    case  'Z': return(byep);
+
+	    case  's':
+	    case  'S': return(byeme);
+
+	    case  'p':
+	    case  'P': return(proceed);
+
+	    case  'm':
+	    case  'M': return(mem);
+	    default: printf("what's this %s", buf);
+	    }
+        }
+    }
+int dumdum (), updown ();
+int initp ()
+    {/* initialize a process */
+    int *p, n;
+    if (pcnt == npros) {printf ("you have to zap one first!\n"); return;}
+    for (n = 0; n < npros; n++) if (pros[n] == -1) break;
+    if (!camellion ()) p = (int *)dumdum;
+    else
+        p = (int *)updown;
+    switch (hiorlo ())    
+        {case 0:/* hi */
+	    pros[n] = s_hipinit (p, 1, n, 1);
+	    break;
+	case  1:/* low */
+	    pros[n] = s_mdpinit (p, 1, n, 1);
+	}
+    if (pros[n] == -1) printf ("sorry, no more room at the inn!\n");
+    else
+	++pcnt;
+    }
+
+int camellion ()
+    {/* change its priority */
+    if (confirm ("\nnew process changes its priority? ")) return(1);
+    return(0);
+    }
+int confirm (s) char *s;
+    {while (1) {
+	ttyread (s, buf);
+	switch (buf[0]) {
+	    case 'Y': case 'y': return (1);
+	    case 'N': case 'n': return (0);
+	    default: printf ("Y or N?\n");
+		break;
+	    }
+	}
+    }
+int hiorlo ()
+    {/* hi or low prioity */
+    while (1)
+        {ttyread ("\nhi or low priority (h or l)? ", buf);
+	switch (buf[0])
+	    {case 'h':
+	    case  'H': return(0);
+
+	    case  'l': 
+	    case  'L': return(1);
+	
+	    default: printf ("\nhmmm...what is this '%s' b.s.?", buf);
+	    }
+        }
+    }
+int zapp ()
+    {/* zap a process */
+    int i;
+    if (pcnt == 0) {printf ("there ain't any, turkey!\n"); return;}
+    for (i = 0; i < npros; i++) 
+        {
+	if (pros[i] < 0) continue;
+	printf ("zapping process number %d\n", pros[i]);
+        if (!s_killp (pros[i])) 
+	    {printf ("\nsome thing is amok, couldn't zap process %d!",
+		    pros[i]);
+	    return;
+	    }
+        --pcnt;
+	pros[i] = -1;		/* need more room */
+	return;
+	}
+    printf ("there's a bug somewhere, pcnt = %d, but no processes!\n");
+    }
+int dumdum (n) int n; 
+    {short s; int i, j;
+    s = 1; i = 2; j = 3;
+    while (1)
+        {printf (">%d< i=%d j=%d s=%d \n", pros[n], i, j, s++); 
+	s_suspend ();
+	}
+    }
+
+int updown (n) int n; 
+    {int entered;
+    entered = -3;
+    while (1)
+        {
+	if (entered < 0) printf (">%d< i'm low\n", pros[n]); 
+	if (entered >= 0) printf (">%d< i'm high\n", pros[n]); 
+	if (++entered == 0) s_tohigh ();
+	if (entered == 1) 
+	    {entered = -3; 
+	    s_tolow ();
+	    printf (" >%d< i'm low\n", pros[n]); 
+	    }
+	s_suspend ();
+	}
+    }
+int l_memcount () {return(16000);}
+ttyread (s, b) char *s, *b;
+    {printf ("%s", s); 
+    gets (b); 
+    }
+

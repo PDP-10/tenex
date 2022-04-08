@@ -1,0 +1,306 @@
+;<134>SRIARC.MAC;11    11-JAN-76 21:38:38    EDIT BY TAFT
+; Add some EXTERNs
+;<134>SRIARC.MAC;10    11-JAN-76 00:08:03    EDIT BY TAFT
+; Remove GTPSW jsys -- no longer possible to get passwords
+; Revise LOCK/UNLOCKs for new scheduler strategy
+;<133>SRIARC.MAC;9     3-DEC-75 23:13:53    EDIT BY TAFT
+; Remove EXTERNs of error mnemonics
+;<133>SRIARC.MAC;8     4-JAN-75 20:48:48    EDIT BY TAFT
+;<132>SRIARC.MAC;6    24-JUL-74 01:12:39    EDIT BY TAFT
+; Revise .CHKAC and .GTPSW to use new fork group logic
+;<132>SRIARC.MAC;4    23-JUL-74 22:01:12    EDIT BY TAFT
+; Rename FLGLCK to be FGLCK due to conflict with SWPMON
+;<131>SRIARC.MAC;3    17-MAY-74 15:24:44    EDIT BY TAFT
+; Put NOINTs in front of LOCKs
+;<131>SRIARC.MAC;2    27-MAR-74 16:33:02	EDIT BY TAFT
+; Replace NOSKED/OKSKED with LOCK/UNLOCK FGLCK.
+; Use nonresident storage for FLGWRD and FLGPSW.
+; Test ACCIFG before BUGCHKing if can't GTJFN <SYSTEM>FLAGS.SAV
+;<XTENEX>SRIARC.MAC;11    14-MAR-73 13:44:44	EDIT BY VICTOR
+;<XTENEX>SRIARC.NLS;1, 14-MAR-73 13:25 KEV ;
+;<XTENEX>SRIARC.MAC;9    14-MAR-73  0:51:08	EDIT BY VICTOR
+;<XTENEX>SRIARC.MAC;6    14-MAR-73  0:11:09	EDIT BY VICTOR
+;<XTENEX>SRIARC.NLS;3, 13-MAR-73 15:25 KEV ;  sriarc.mac
+;<XTENEX>SRIARC.KEV;8     8-MAR-73 17:20:09	EDIT BY VICTOR
+;<XTENEX>SRIARC.KEV;7     8-MAR-73 14:23:42	EDIT BY VICTOR
+;<XTENEX>SRIARC.NLS;1, 7-MAR-73 8:19 KEV ;  SRIARC.KEV
+;<XTENEX>SRIARC.KEV;3     7-MAR-73  2:47:46	EDIT BY VICTOR
+;<WALLACE>SRIARC.MAC;1    18-NOV-72 16:11:37	EDIT BY WALLACE
+	SEARCH STENEX,PROLOG
+IFDEF SRIARC,<
+	TITLE SRIARC
+	SUBTTL SRI-ARC MODS AND ADDITIONS - K.VICTOR, D.C.WALLACE
+
+	SWAPCD
+
+INTERN	.SJBST,.RJBST,.GTPSW,.CHKAC
+INTERN .FLGIN,.TSTFG,.SETFG,.RSTFG
+EXTERN ERABRD,GETDDB,JOBDIR,MAPDIR,FKDIR,FKGRPS,FORKX
+EXTERN BITS,MJRSTF,ITRAP1
+EXTERN CAPENB,MENTR,MRETN
+
+; Error macro definitions
+
+DEFINE ERABRT(ERRORN,EXTRA)<
+	JRST [
+		EXTRA
+		IFDIF <ERRORN><>,<MOVEI A,ERRORN>
+		JRST ERABRD ] >
+
+REPEAT 0,<
+	SJBST - JSYS - SET USER JOB STATUS
+		accepts:
+			in 1 and 2: user job status
+		returns:
+			+1: always, with previous user job status in 1 and 2, and having set the user job status
+	> ;end of REPEAT 0
+
+JS UJOBST,2
+
+.SJBST:
+	EXCH 1,UJOBST	;set new setting and get old setting
+	EXCH 2,UJOBST+1
+	XCT MJRSTF		;return to user
+
+
+REPEAT 0,<
+	RJBST - JSYS - READ USER JOB STATUS
+		accepts:
+			nothing
+		returns:
+			+1: always, with user job status in 1 and 2
+				(1 and 2 will be zero if this job has not issued a SJBST)
+	> ;end of REPEAT 0
+
+.RJBST:
+	MOVE 1,UJOBST	;get user job status
+	MOVE 2,UJOBST+1
+	XCT MJRSTF		;return to user
+
+REPEAT 0,<
+	GTPSW - JSYS - GET PASSWORD OF CONNECTED DIRECTORY
+		accepts:
+			3) string pointer
+		returns:
+			+1) always, having deposited the password of the connected directory and updating 3
+	> ;end of REPEAT 0
+
+.GTPSW:
+	JRST UJSYS##		; This operation is no longer possible
+
+REPEAT 0,<
+	JSYS MENTR			;GET PASSWORD OF CONNECTED DIRECTORY
+	MOVE 1,JOBNO
+	HRRZ 2,JOBDIR(1)		;LOGGED IN ?
+	JUMPN 2,.+2			;YES
+	ERABRT(CNDIX5)
+	MOVE 1,FORKX			; Get fork no.
+	SKIPGE 1,FKDIR(1)		; Skip if top fork in group
+	MOVE 1,FKDIR(1)			; Get connected,,login dir of top fork
+	HLRZ 1,1			; Get ddb for connected dir
+	PUSHJ P,GETDDB
+	JFCL
+	UMOVE 3,3			;get and store the password and update 3
+	JUMPGE 3,.+3
+	CAML 3,[777777000000]
+	HRLI 3,(<POINT 7,0>)
+	HLRZ 2,DDBNAM(1)
+	ADDI 2,DIRORG
+	HRLI 2,(<POINT 7,0,35>)
+	UMOVEM 3,3
+	ILDB 4,2
+	XCTMU [IDPB 4,3]
+	JUMPN 4,.-3
+	PUSHJ P,USTDIR##
+	JRST MRETN
+> ; End REPEAT 0
+
+REPEAT 0,<
+	CHKAC - JSYS - CHECK ACCES TO A DIRECTORY
+		accepts:
+			1) directory number to which acces is being checked
+		returns:
+			+1) always, with the six (6) access bits that this user currently has to the passed directory
+	> ;end of REPEAT 0
+
+.CHKAC:
+	JSYS MENTR			;CHECK ACCES TO A DIRECTORY
+	PUSHJ P,GETDDB		;DOES THE DIERECTORY EXIST ?
+	 ERABRT(GTDIX2)
+	UNLOCK DIRLCK,,HIQ		;YES
+	UMOVE 1,1
+	MOVE B,CAPENB		;WHEEL OR OPERATOR ?
+	TRNE B,WHEEL!OPR
+	 JRST [
+		MOVEI 1,77		;YES, RETURN TOTAL ACCESS
+		UMOVEM 1,1
+		JRST MRETN ]
+	SETO 2,		;FOR NEW MAPDIR CALLING SEQUENCE
+	PUSHJ P,MAPDIR	;GET DESTINATION DIRECTORY
+	UMOVE 1,1		;GET DIR NUM
+	MOVE B,DIRPRT	;GET DIR PROTECTION
+	MOVE C,FORKX		; Current fork no.
+	SKIPGE D,FKDIR(C)	; Get fork no. of top fork in group
+	MOVE C,D
+	MOVE D,FKDIR(C)		; Get connected,,login dir of fork
+	CAIN 1,(D)		; Login same as destination dir?
+	JRST RETOWN		; Yes
+	HLRZ D,D
+	CAIN 1,(D)		; Connected same as destination dir?
+	JRST RETOWN		; Yes
+	MOVE A,FKGRPS(C)	; No, get user groups of this fork
+	TDNE A,DIRGRP	;CHECK DEST. DIR GROUPS
+	LSH B,-6		;RETURN GROUP OR OTHER ACCESS
+	JRST .+2
+RETOWN:
+	LSH B,-14		;RETURN OWNER PROTECTION
+	ANDI B,77
+	UMOVEM B,1
+	JRST MRETN
+
+REPEAT 0,<
+	FLGIN - JSYS - INITIALIZE FLAG WORD AND PASSWORDS
+		accepts: nothing
+		returns:
+			+1) always, having initialized the flagword and passwords
+				(this jsys is a nop if not issued by job 0 or an enabled wheel or operator)
+	> ;end of REPEAT 0
+
+NGS FLGWRD,1
+NGS FLGPSW,^D36
+NGS FGLCK,1		; Lock for uses of FLGWRD
+
+.FLGIN:
+	JSYS MENTR		;save the world
+	SKIPE JOBNO		;job 0 or wheel or operator capability enabled ?
+	JRST [
+		MOVE 1,CAPENB
+		TRNN 1,WHEEL+OPER
+		JRST MRETN	;no, return
+		NOINT
+		LOCK FGLCK
+		JRST .+1]
+	MOVSI 1,(1B2+1B17)	;get jfn for file
+	HRROI 2,[ASCIZ /<SYSTEM>FLAGS.SAV/]
+	GTJFN
+	JRST FLGIN1		;cant gtjfn
+	MOVE 4,1		;save jfn and open file read, 36 bit bytes
+	MOVE 2,[44B5+1B19]
+	OPENF
+	JRST [MOVE 1,4	;openf failed
+	      RLJFN
+	      JFCL
+	      JRST FLGIN2]
+	BIN			;get flag initial settings
+	MOVEM 2,FLGWRD
+	MOVE 2,[POINT 36,FLGPSW]
+	MOVNI 3,^D36	;get flag passwords
+	SIN
+	MOVE 1,4
+	CLOSF		;close the file
+	BUG(CHK,<FLGIN - CANT CLOSF FLAG FILE>)
+	JRST FLGINX		;return
+
+
+FLGIN1:
+	SKIPE ACCIFG##		; Don't complain if no file system yet
+	BUG(CHK,<FLGIN - CANT GTJFN FLAG FILE>)
+	JRST FLGINX
+FLGIN2:
+	BUG(CHK,<FLGIN - CANT OPENF FLAG FILE>)
+FLGINX:	UNLOCK FGLCK
+	JRST MRETN
+
+REPEAT 0,<
+	TSTFG - JSYS - TEST SETTING OF BIT IN FLAG WORD
+		accepts:
+			1) bit number to test
+			2) password for that bit
+		returns:
+			+1) bit was 0
+			+2) bit was 1
+		generates illegal instruction psi on the following errors:
+			FLGX1 - flag number not in 0-35
+			FLGX2 - wrong password
+	> ;end of REPEAT 0
+
+.TSTFG:
+	JSYS MENTR		;save the world
+	SKIPL 1		;valid flag number ?
+	CAILE 1,^D35
+	ITERR FLGX1		;no
+	CAME 2,FLGPSW(1)	;correct password ?
+	ITERR FLGX2		;no
+	MOVE 1,BITS(1)	;test the bit and give proper return
+	NOINT
+	LOCK FGLCK		; Prevent races
+	TDNE 1,FLGWRD
+	AOS 0(P)		;skip return
+	UNLOCK FGLCK
+	JRST MRETN
+
+
+REPEAT 0,<
+	SETFG - JSYS - TEST AND SET BIT IN FLAG WORD
+		accepts:
+			1) bit number to test
+			2) password for that bit
+		returns:
+			+1) bit was and is now 1
+			+2) bit was 0 and is now 1
+		generates illegal instruction psi on the following errors:
+			FLGX1 - flag number not in 0-35
+			FLGX2 - wrong password
+	> ;end of REPEAT 0
+
+.SETFG:
+	JSYS MENTR		;save the world
+	SKIPL 1		;valid flag number ?
+	CAILE 1,^D35
+	ITERR FLGX1		;no
+	CAME 2,FLGPSW(1)	;correct password ?
+	ITERR FLGX2		;no
+	MOVE 1,BITS(1)	;get proper test bit
+	NOINT
+	LOCK FGLCK		; Prevent races
+	TDNN 1,FLGWRD	;give skip return if bit not set
+	AOS 0(P)
+	IORM 1,FLGWRD	;turn bit on
+	UNLOCK FGLCK
+	JRST MRETN		;return to user
+
+
+REPEAT 0,<
+	RSTFG - JSYS - TEST AND RESET BIT IN FLAG WORD
+		accepts:
+			1) bit number to test
+			2) password for that bit
+		returns:
+			+1) always, having reset bit to 0, and with previous setting of bit in 1
+		generates illegal instruction psi on the following errors:
+			FLGX1 - flag number not in 0-35
+			FLGX2 - wrong password
+	> ;end of REPEAT 0
+
+.RSTFG:
+	JSYS MENTR		;save the world
+	SKIPL 1		;valid flag number ?
+	CAILE 1,^D35
+	ITERR FLGX1		;no
+	CAME 2,FLGPSW(1)	;correct password ?
+	ITERR FLGX2		;no
+	MOVE 1,BITS(1)	;get proper test bit
+	SETZ 2,		;default to return r1=0
+	NOINT
+	LOCK FGLCK		; Prevent races
+	TDNE 1,FLGWRD	;check to return proper r1
+	MOVEI 2,1		;return r1=1
+	ANDCAM 1,FLGWRD	;turn bit off
+	UNLOCK FGLCK
+	UMOVEM 2,1		;return result to user
+	JRST MRETN		;return to user
+
+> ;END OF IFDEF SRIARC ON PAGE 1
+
+	END
+

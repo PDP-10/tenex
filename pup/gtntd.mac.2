@@ -1,0 +1,474 @@
+	TITLE GTNTD
+	SUBTTL  Get network directory  TCR 12/26/80
+
+	SEARCH STENEX
+
+A=1
+B=2
+C=3
+D=4
+X=5
+Y=6
+Z=7
+PTR=10
+P=17
+
+NPDL=100	; PDL length
+NTDPG==600	; Page to start mapping network directory
+NTDADR==NTDPG*1000
+
+; Indexes into network directory file (16-bit words)
+NNMBLK==0	; # of name blocks
+ANMTBL==1	; Address of name lookup table
+
+; Indexes into entry block
+.ENAD==1	; Byte index to first address block ptr
+
+; Indexes into name block
+.NMEN==1	; Byte index to owning entry for name block
+.NMST==2	; Byte index to name string for name block
+
+; Indexes into address block
+.ADNX==0	; Byte index to next address block for entry
+.ADNH==2	; Byte index to net/host part of adr
+.ADSK==3	; Byte index to first 16 bits of socket adr
+
+; FDB entry symbols
+FDBBYV==11	; FDB word for # pgs in file
+
+; Storage for name information
+NROUT==140	; Number of routing table entries
+NNTWK==4	; Number of networks
+NHSTN==40	; Number of hosts per network
+NWRDH==6	; Number of words of storage per name entry (string,
+		; xct, net,,host, socket
+MXNTW==NNTWK
+MXHST==NNTWK*NHSTN
+MXSKT==NHSTN
+MXOTH==NHSTN
+MXDAT==<MXNTW+MXHST+MXSKT+MXOTH>*NWRDH
+
+	LOC 100000
+
+INTEGER	TOPS20,HOSTAB,SKTTAB,OTHTAB
+INTEGER	NETFRE,HSTFRE,SKTFRE,OTHFRE,DATFRE,NTDJFN,NTDSIZ
+ARRAY	PUPROU,NETIDX[NROUT]	; PUPROU table
+ARRAY	%NETTB[MXNTW]		; Array of network ptrs
+ARRAY	%HSTTB[MXHST]		; Array of host ptrs (by network)
+ARRAY	%SKTTB[MXSKT]		; Array of socket ptrs
+ARRAY	%OTHTB[MXOTH]		; Array of other entry ptrs
+ARRAY	%DATTB[MXDAT]		; Array for data elements
+ARRAY	PDL[NPDL]
+
+	RELOC
+
+START:	RESET			; Reset the world
+	MOVE P,[IOWD NPDL,PDL]	; Set stack
+	MOVE A,[VARS,,VARS+1]	; Clear variables
+	SETZM -1(A)
+	BLT A,EVARS
+	PUSHJ P,INITBS		; Go initialize the tables
+	PUSHJ P,RDNTD		; Read net dir into net/host/skt tbls
+	PUSHJ P,UMPNTD		; Unmap the file pages
+	PUSHJ P,SRTNAM		; Alphabetize the names
+	HALTF
+
+; Routine to initialize things for scanning PUP network directory
+; Entry:   n/a
+; Call:    PUSHJ P,INITBS
+; Return:  +1, x = file adr of next name block
+;	       y = file adr of next adr block
+;	       z = aobjn ptr into name lookup table
+INITBS:	PUSHJ P,MAPNTD		; Map the network directory
+	 0
+	PUSHJ P,GTPROU		; Get the PUPROU table
+	 0
+	MOVEI A,NNMBLK		; Fetch number of name blocks
+	PUSHJ P,GT16B
+	MOVN Z,A		; z _ -# of name blocks,,0
+	HRLZS Z
+	MOVEI A,ANMTBL		; a _ adr of the name table
+	PUSHJ P,GT16B
+	HRR Z,A			; z _ aobjn ptr into file name lkup tbl
+	SETZB X,Y		; Show we're just starting
+	PUSHJ P,STPENT		; Set up the first entry
+	MOVEI A,%NETTB-1	; Ptr to network table
+	MOVEM A,NETFRE
+	MOVEI A,%SKTTB-1	; Ptr to socket table
+	PUSH A,[-2,,[ASCIZ /Socket names/]]
+	MOVEM A,SKTFRE
+	MOVEI A,%OTHTB-1	; Ptr to other table
+	PUSH A,[-2,,[ASCIZ /Other names/]]
+	MOVEM A,OTHFRE
+	MOVEI A,%DATTB		; Ptr to free data space
+	MOVEM A,DATFRE
+	POPJ P,
+
+
+; Routine to read the network directory and categorize names
+; Entry:   PUP network directory mapped
+;	   x = file ptr to next name block
+;	   y = file ptr to next adr block for this name
+;	   z = aobjn ptr into name lookup table
+; Call:    PUSHJ P,RDNTD
+; Return:  +1, network directory loaded into our data structure
+RDNTD:	PUSHJ P,GNENT		; Get the next name/adr entry
+	 JRST RDNTDF		; No more, go finish up
+	JUMPE B,[MOVEI D,SKTFRE	; Take care of socket specs
+		 JRST RDNTD1 ]
+	JUMPN C,[MOVEI D,OTHFRE	; Take care of "other" specs
+		 JRST RDNTD1 ]
+	HRRZ C,B		; c _ host #
+	HLRZS B			; b _ net #
+	SKIPG PUPROU-1(B)	; Network accessible?
+	 JRST  [HRRM A,DATFRE	; No, recover space from entry
+		JRST RDNTD ]	; And fetch next entry
+	SKIPE D,NETIDX-1(B)	; Already seen this net?
+	 JRST RDNTD0		; Yes
+	PUSH P,B		; No, save the net #
+	HLRZ B,NETFRE		; b _ adr for hosts on this net
+	IMULI B,NHSTN
+	ADDI B,%HSTTB-1
+	PUSH B,[-2,,[0]]	; Init null net name entry
+	MOVE D,NETFRE		; d _ network ptr word
+	PUSH D,B		; Enter ptr word for hosts
+	MOVEM D,NETFRE		; Save net ptr word for next net
+	POP P,B			; b _ net #
+	HRRZS D			; Check for overflow
+	CAIL D,%NETTB+MXNTW
+	 JRST  [HRROI A,[ASCIZ /Network table overflow/]
+		JRST NTDERR ]
+	MOVEM D,NETIDX-1(B)	; Save the ptr word to add on hosts
+RDNTD0:	JUMPN C,RDNTD1		; If host spec, go add it on
+	SUBI D,%NETTB		; Network name, d _ adr of host tbl
+	IMULI D,NHSTN
+	ADDI D,%HSTTB
+	HRRM A,0(D)		; Store the network name ptr
+	JRST RDNTD		; And do the next entry
+
+; Here we have a new host, socket, or other name
+RDNTD1:	MOVE B,0(D)		; b _ ptr word for hosts on this net
+	PUSH B,A		; Add this host name
+	HLRZ C,B		; Check for overflow
+	CAIL C,NHSTN
+	 JRST  [HRROI A,[ASCIZ /Table overflow/]
+		JRST NTDERR ]
+	MOVEM B,0(D)		; OK, save the new ptr word
+	JRST RDNTD		; And do the next entry
+
+; Here we have scanned all the entries.  Now tidy up the ptrs
+RDNTDF:	HLRZ A,SKTFRE		; Setup socket specs
+	MOVEI B,1		; Number in empty list (name str there)
+	PUSHJ P,CKNPTR			
+	 HRRI A,%SKTTB
+	MOVEM A,SKTTAB
+	HLRZ A,OTHFRE		; Setup "other" specs
+	PUSHJ P,CKNPTR
+	 HRRI A,%OTHTB
+	MOVEM A,OTHTAB
+	HLRZ A,NETFRE		; Setup network specs
+	SETZ B,			; Number in empty list
+	PUSHJ P,CKNPTR
+	 HRRI A,%NETTB
+	MOVEM A,HOSTAB
+	JUMPGE A,CPOPJ		; Quit if no networks
+	MOVE Z,A		; z _ aobjn ptr through host tables
+RDNTF3:	HLRZ A,0(Z)		; a _ # hosts on this net
+	MOVEI B,1		; Number in empty list (net name there)
+	PUSHJ P,CKNPTR
+	 JRST  [MOVEI B,-%NETTB(Z)  ; b _ start of host entries
+		IMULI B,NHSTN
+		ADDI B,%HSTTB
+		HRRI A,0(B)	; Form aobjn ptr
+		JRST .+1 ]
+	MOVEM A,0(Z)		; Install real ptr
+	AOBJN Z,RDNTF3		; Do them all
+	POPJ P,			; All done
+
+
+; Routine to check for a significant number of entries in a list.
+; Return an appropriate aobjn ptr.
+; Entry:   a = # items on list
+;	   b = count for empty list
+; Call:    PUSHJ P,CKNPTR
+; Return:  +1, non-trivial list, a = -# entries,,0
+;	   +2, trivial list, a = 0
+CKNPTR:	CAIG A,0(B)		; Trivial list?
+	 JRST  [SETZ A,		; Yes
+		JRST SKPRET ]	; Return +2
+	MOVNS A			; No, set up aobjn ptr
+	HRLZS A
+	POPJ P,
+
+; Routine to map the PUP-NETWORK.DIRECTORY starting at page NTDPG.
+; Entry:   n/a
+; Call:    PUSHJ P,MAPNTD
+; Return:  +1, error (code in a)
+;	   +2, success (jfn in a and NTDJFN)
+MAPNTD:	SKIPE NTDJFN		; Already there?
+	 JRST CPOPJ1		; Yes
+	PUSH P,B		; Save working ac's
+	PUSH P,C
+	PUSH P,D
+	MOVSI A,100001		; Old file, short form
+	HRROI B,[ASCIZ /<SYSTEM>PUP-NETWORK.DIRECTORY/]
+	GTJFN
+	 JRST MAPRTN		; No go
+	MOVEM A,NTDJFN		; Save the jfn
+	MOVEI B,1B19!1B25	; Open it read, thawed
+	OPENF
+	 JRST  [PUSH P,A	; Save the error code
+		MOVE A,NTDJFN	; Release the jfn
+		RLJFN
+		 JFCL
+		POP P,A		; Recover the error
+		JRST MAPRTN ]
+	MOVE B,[1,,FDBBYV]	; Fetch the file size
+	MOVEI C,D		; Into d
+	GTFDB
+	HRRZS D			; Keep # pages only
+	MOVEM D,NTDSIZ		; Save the size
+	HRLZS A			; a _ net dir jfn,,page #
+	MOVE B,[400000,,NTDPG]	; Place to map pgs in core
+	MOVSI C,100000		; Read only
+MAPNT0:	PMAP			; Get a page
+	ADDI A,1		; Bump pg ptrs
+	ADDI B,1
+	SOJG D,MAPNT0		; Do them all
+	AOS -3(P)		; Show successful
+	MOVE A,NTDJFN		; a _ net dir jfn
+MAPRTN:	POP P,D			; Recover ac's
+	POP P,C
+	POP P,B
+	POPJ P,
+
+
+; Routine to unmap network directory
+; Entry:   Network directory mapped to NTDPG
+; Call:    PUSHJ P,UMPNTD
+; Return:  +1, file unmapped and closed
+UMPNTD:	SKIPG NTDJFN		; Any file there?
+	 POPJ P,		; No
+	PUSH P,A		; Save working ac's
+	PUSH P,B
+	PUSH P,C
+	SETO A,			; Set to unmap things
+	MOVE B,[400000,,NTDPG]	; From our core
+	MOVE C,NTDSIZ		; c _ number of pages
+UMPNT0:	PMAP			; Unmap one
+	ADDI B,1		; Bump page ptr
+	SOJG C,UMPNT0		; Do them all
+	MOVE A,NTDJFN		; Release the jfn
+	CLOSF
+	 JFCL			; Shouldn't happen
+	SETZM NTDJFN
+	POP P,C			; Recover ac's
+	POP P,B
+	POP P,A
+	POPJ P,
+
+
+; Routine to load the PUPROU table
+; Entry:   n/a
+; Call:    PUSHJ P,GTPROU
+; Return:  +1, error, string about error in a
+;	   +2, success -- PUPROU loaded into table PUPROU
+GTPROU:	MOVE A,[SIXBIT /PUPROU/]  ; Get the PUPROU table
+	SYSGT
+	 JUMPE B,[HRROI A,[ASCIZ /PUPROU table not found/]
+		  POPJ P, ]
+	HRROI A,0(B)		; a _ -1,,table #
+	HLRZ C,B		; Check table size
+	CAIGE C,-NROUT
+	 JRST  [HRROI A,[ASCIZ /PUPROU table too big/]
+		POPJ P, ]
+	HRRI B,PUPROU		; OK, fetch the data
+	PUSHJ P,.GTBLT
+	 JRST  [HRROI A,[ASCIZ /Error fetching PUPROU data/]
+		POPJ P,]
+	JRST SKPRET		; Done
+
+; Routine to do GTBLT JSYS, faking it on TOPS-20
+; Entry:   a = start index,,table #
+;	   b = -# entries,,buffer adr
+; Call:    PUSHJ P,.GTBLT
+; Return:  +1, error
+;	   +2, success
+.GTBLT:	SKIPE TOPS20		; TOPS-20 site?
+	 JRST .GTBL0		; Yes
+	GTBLT
+	 POPJ P,		; No go
+CPOPJ1:
+SKPRET:	AOS 0(P)
+CPOPJ:	POPJ P,
+
+; Here to fake GTBLT JSYS
+.GTBL0:	TLC A,-1		; Whole table?
+	TLCN A,-1
+	 HRRZS A		; Yes, start at 0
+.GTBL1:	MOVE C,A		; Save this entry arg
+	GETAB			; Get an entry
+	 POPJ P,		; No go
+	MOVEM A,0(B)		; Save it
+	MOVSI A,1		; Bump to next entry
+	ADD A,C
+	AOBJN B,.GTBL1		; Do them all
+	JRST SKPRET
+
+; Routine to fetch an arbitrary 16-bit byte in the network directory
+; file.  16-bit bytes are packed two per 36-bit PDP-10 word.
+; Entry:   a = adr of 16-bit byte sought
+;	   Network directory file mapped starting at NTDADR
+; Call:    PUSHJ P,GT16B
+; Return:  +1, byte in a
+GT16B:	PUSH P,B		; Save an ac
+	LSHC A,-1		; a _ PDP-10 wd index, b(1b0) _ byte index
+	JUMPL B,[MOVE B,[POINT 16,NTDADR(A),31]  ; Get odd byte
+		 JRST .+2 ]
+	MOVE B,[POINT 16,NTDADR(A),15]  	 ; Get even byte
+	LDB A,B			; a _ desired byte
+	POP P,B			; Restore ac
+	POPJ P,
+
+
+; Routine to convert a BCPL string to ASCIZ.
+; Entry:   a = TENEX dest ptr for string
+;          b = adr of first 16-bit word of BCPL string
+; Call:    PUSHJ P,GTSTR
+; Return:  +1, updated ptr in a
+GTSTR:	TLC A,-1		; Convert to real str ptr
+	TLCN A,-1
+	 HRLI A,(<POINT 7,0>)
+	PUSH P,C		; Save working ac's
+	PUSH P,D
+	LSHC B,-1		; b _ PDP-10 wd idx, c(1b0) _ byte idx
+	ADDI B,NTDADR		; b _ 8-bit byte ptr to string length
+	JUMPL B,[HRLI B,(<POINT 8,0,23>)
+		 JRST .+2 ]
+	HRLI B,(<POINT 8,0,7>)
+	LDB C,B			; c _ length of string
+GTSTR0:	SOJL C,GTSTR1		; If length exhausted, quit
+	ILDB D,B		; No, d _ next char
+	IDPB D,A		; Store it
+	JRST GTSTR0		; Do them all
+
+; Here we have end of string
+GTSTR1:	PUSH P,A		; Save ptr to end of string
+	MOVEI C,0		; Make sure things are ASCIZ
+	IDPB C,A
+	TLNE A,760000		; 0's to end of word
+	 JRST .-2
+	POP P,A			; a _ ending str ptr
+	POP P,D			; Restore working ac's
+	POP P,C
+	POPJ P,
+
+; Routine to fetch the next network directory entry into data space
+; Entry:   x = file adr to name block
+;	   y = file adr to adr block for this name
+;	   z = aobjn ptr into name lookup table
+; Call:    PUSHJ P,GNENT
+; Return:  +1, no more entries
+;	   +2, a = adr of data block for entry
+;	       b = net #,,host #
+;	       c = socket #
+;	       x, y, and z updated to point to next entry
+GNENT:	JUMPG Z,CPOPJ		; Quit if no more entries
+	HRRO A,DATFRE		; a _ ptr to store string
+	PUSH P,A		; Save it for return
+	MOVEI B,.NMST(X)	; b _ adr of name string in name blk
+	PUSHJ P,GTSTR		; Fetch the name string
+	IBP A			; a _ ptr to adr part of entry
+	MOVEI A,2(A)
+	MOVE B,[PUSHJ P,CONMAX]	; Fix first data word
+	MOVEM B,-1(A)
+	SETZM 0(A)		; Clear net #,,host #
+	MOVEM A,DATFRE		; Update free space ptr
+	MOVEI A,.ADNH(Y)	; a _ net/host part of adr
+	PUSHJ P,GT16B
+	DPB A,[POINT 8,@DATFRE,35]  ; Save the host part
+	LSH A,-^D8		; And the net part
+	DPB A,[POINT 8,@DATFRE,17]
+	AOS A,DATFRE		; Bump entry ptr
+	SETZM 0(A)		; Clear it for the socket #
+	MOVEI A,.ADSK(Y)	; Get 1st part of socket
+	PUSHJ P,GT16B
+	DPB A,[POINT 16,@DATFRE,19]  ; Save it
+	MOVEI A,.ADSK+1(Y)	; Get 2nd part of socket
+	PUSHJ P,GT16B
+	DPB A,[POINT 16,@DATFRE,35]  ; Save it
+	AOS C,DATFRE		; Bump entry ptr
+	CAIL C,%DATTB+MXDAT	; Overflow?
+	 JRST  [HRROI A,[ASCIZ /Data space overflow/]
+		JRST NTDERR ]
+	SETZM 0(C)		; Clear it
+	PUSH P,-2(C)		; Save the net #,,host #
+	PUSH P,-1(C)		; And the socket #
+	PUSHJ P,STPENT		; Step to the next entry
+	POP P,C			; c _ socket #
+	POP P,B			; b _ net #,,host #
+	POP P,A			; a _ ptr to data block
+	HRLI A,(<POINT 7,0>)
+	JRST SKPRET		; Success return
+
+
+; Routine to step x, y, z ptrs to next entry in network directory
+; Entry:   x, y, and z set to current entry (x,y = 0 for first)
+; Call:    PUSHJ P,STPENT
+; Return:  +1, x = file adr of next name block
+;	       y = file adr of next adr block
+;	       z = aobjn ptr into name lookup table
+STPENT:	JUMPG Z,CPOPJ		; Don't do anything if exhausted file
+	JUMPE X,STPEN0		; First time, set up current name
+	MOVEI A,.ADNX(Y)	; a _ ptr to next adr block this name
+	JRST STPEN1		; Set it up
+
+; Here to set a new entry from the name lookup table entry
+STPEN0:	MOVEI A,0(Z)		; x _ adr of next name block
+	PUSHJ P,GT16B
+	HRRZ X,A
+	MOVEI A,.NMEN(A)	; a _ adr of owning entry block for name
+	PUSHJ P,GT16B
+	MOVEI A,.ENAD(A)	; a _ adr of address block for name
+STPEN1:	PUSHJ P,GT16B
+	JUMPE A,STPEN2		; If not valid, try for another name
+	HRRZ Y,A		; OK, y _ ptr to next adr block (name)
+	POPJ P,
+
+
+; Here to step to the next entry in the name lookup table
+STPEN2:	AOBJN Z,STPEN0		; No, try for next name table entry
+	SETZB X,Y		; All done, clear ptrs
+	POPJ P,
+
+
+; Here for error in processing Network Directory
+; Entry:   a = str ptr to error cause
+NTDERR:	PUSHJ P,.CRLF		; New line
+	PSOUT			; Print the msg
+	HRROI A,[ASCIZ / -- call system programmer!/]
+	PSOUT
+	PUSHJ P,.CRLF
+	PUSHJ P,.CRLF
+	HALTF
+
+; Here to do output crlf
+.CRLF:	PUSH P,A
+	HRROI A,[ASCIZ /
+/]
+	PSOUT
+	POP P,A
+	POPJ P,
+
+SRTNAM:
+CONMAX:	POPJ P,
+
+	LOC
+
+VARS:	BLOCK 1
+	VAR
+EVARS:	
+
+	RELOC
+
+	END START

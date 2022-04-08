@@ -1,0 +1,182 @@
+# include "version.h"
+/****************************************************************************
+	Patches:
+	   1. added l0_nFreeBufs to keep track of how many free buffers
+	      there are.		WJY  July 4, 1981 11:02 pm
+
+	   2. changed parameters for socket packet allocation to
+	      ALWAYS allow 2 input packets even if output allocation
+	      is taken. This will prevent some possible deadlocks.
+
+****************************************************************************/
+
+l1_route l1_Rtable[routeEntries]; 	/* the space        */
+int *rBase {l1_Rtable};
+int l1_rPTRs[routeEntries];	      	/* pointers to entries */
+char l1_rFree[routeEntries];		/* =-1 if free entry.  */
+extern int g_Entries;			/* Counts routing table entries */
+
+/* number of input buffers to allocate */
+# define nBIG 10
+# define OutperSock 5			/* number of output-PUPs/socket */
+int l0_nFreeBufs;			/* maintained in pupl1q */
+l0_Q *l0_NDBq;				/* pointer to NDB queue	*/
+l0_Q *l0_FreeQ;           		/* FreeQ is free list of BIG paks */
+l0_Q *l1_GateQ;      			/* paks for GateWay */
+l0_Q *l0_RawIQ;				/* Raw input Queue */
+l0_Q *l0_Discards;			/* thrown away output Packets */
+l0_Q *l1_sQ;				/* socket Q pointer	       */
+
+/* IP routing stuff if needed */
+# define ip 0
+#ifdef iprouting
+# define ip 1
+extern int *puplip();			/* ip process */
+l0_Q *l0_ipQ;				/* queue for ip packets */
+short l1_cip;				/* count of queued ip paks. Max = */
+					/* ipmax  */
+#endif
+
+/* define out queues now */
+# define nQs (6+ip)
+int *Qs[nQs] {l0_FreeQ, l1_GateQ, l0_RawQ, l0_discards, l1_sQ, l0_NDBq
+# ifdef iprouting
+	      ,l0_ipQ
+# endif
+	      };
+
+int MaxAllo, MaxIN, MaxOut;		/* for socket allocation */
+
+extern int e0_NetInit ();
+#ifdef NET1	
+extern int e1_NetInit ();	/* 1 per network */
+#endif
+/* Net init routines */
+int (*l1_Ninit[nNets])() {e0_NetInit
+# ifdef NET1
+			 ,e1_NetInit
+# endif
+			 };  
+/* HOSTS - FOR directly connected nets */
+int l1_gH[nNets] {0
+# ifdef NET1
+		  ,0
+# endif
+		  };	
+
+extern int g_GateWay (), p_FeedNets ();
+#define es 0
+#ifdef wantEchoServer
+#define es 1
+extern int l1_echo ();
+#endif
+
+# define nProcs (2+ip+es)
+int *l1_procs[nProcs] {g_GateWay, p_FeedNets
+# ifdef wantEchoServer
+		       ,l1_echo
+# endif
+# ifdef iprouting
+		       ,puplip
+# endif
+		       };
+
+#ifndef PDP1105
+# define gatestack 0
+# define feedstack 0
+# define echostack 1
+# define ipstack   1
+# endif
+
+# ifdef PDP1105
+# define gatestack 2			/* 160 words */
+# define feedstack 1			/* 128 words */
+# define echostack 2
+# define ipstack   1
+# endif
+
+int l1_sz[nProcs] {gatestack, feedstack
+# ifdef wantechoserver
+		   ,echostack
+# endif
+# ifdef iprouting
+		   ,ipstack
+# endif
+		   };		
+int l1_Init ()
+	{int procQ[nProcs], i;
+	l0_NDB *lNDB;
+	l1_Qinit ();			/* initialize all queues */
+	lNDB = l0_NDBq->qHead;
+	i = 0;
+	while (lNDB) 			/* init nets */
+	    {(*l1_Ninit[i]) (lNDB); 
+	    i++; lNDB = lNDB->link;
+	    }
+	l1_Routeinit ();		/* initialize routing table */
+	for (i = 0; i < nProcs; i++) 	/* HIP init other processes */
+	    procQ[i] = s_HIPinit (l1_procs[i], 0, 0, l1_sz[i]);
+	MaxIN = (nBIG >> (nNets - 1)) - 4; 
+	MaxOUT = OutperSock;
+	if (MaxIN < 2) MaxIN = 2;
+	MaxAllo = MaxIN-2+OutperSock;		/* max totol per socket */
+	/* Always allow at least 2 input packets */
+	If (MaxAllo < OutperSock+2) MaxAllo = OutperSock+2;
+	}
+
+int l1_Qinit ()
+	{/* initialize Q pointers */
+	int i, *x; l0_Q *qq; l0_NDB *NDB; l0_BIGpak *BIG;
+	for (i=0; i < nQs; i++)
+	    {x = Qs[i];
+	    qq = l1_GetMEM (Qsize); 		/* address of Queue */
+	    *x = qq;				/* into q pointer */    
+	    qq->qHead = 0; qq->qTail = 0;	    
+	    }
+	/* some particular initializations */
+	l0_NDBq->qHead = l1_GetMEM (nNets * NDBsize);
+	NDB = l0_NDBq->qHead;
+	l0_NDBq->qTail = NDB;
+	for (i=0; i < nNets; i++)
+	    {l_zero (NDB, NDBsize);		/* clear the NDB */
+	    if (i == (nNets - 1)) NDB->link = 0;
+	    else
+		{NDB->link = ++NDB; l0_NDBq->qTail = NDB;}
+	    }
+	/* the freeQ (our input buffers) */
+	l0_FreeQ->qHead = l1_GetMEM (PakMemSize * nBIG);
+	l0_nFreeBufs = nBIG;
+	BIG = l0_FreeQ->qHead;
+	l0_FreeQ->qTail = BIG;
+	for (i=0; i < nBIG; i++)
+	    {int j;
+	    for (j=0; j < pakExtra; j++) BIG->spare[j] = -1;
+	    if (i == (nBIG - 1)) BIG->link = 0;  	/* Terminate */
+	    else
+		{BIG->link = ++BIG; l0_FreeQ->qTail = BIG;}
+	    }
+#ifdef iprouting
+	l1_cip = 0;
+#endif
+	}
+int l1_routeInit ()
+	{/* initialize routine table with known nets */
+	int i, j, base;
+	l0_NDB *lNDB;
+	/* init the table of ptrs < 0 means empty */
+	base = Rbase;
+	for (i=0; i < routeEntries; i++) 
+	    {l1_rPTRs[i] = (base + i * RouteSize);
+	    l1_rFree[i] = -1;			/* all free */
+	    }
+	/* Insert known net(s) DC'd to US */
+	lNDB = l0_NDBq->qHead;
+	j = 0;
+	g_Entries = 0;			/* no entries yet */
+	while (lNDB)
+	    {i = lNDB->localNet;
+	    g_Rinsert (i, lNDB, 0, l1_gH[j++], 0);  
+	    lNDB = lNDB->link;
+	    }
+	}
+

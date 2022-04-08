@@ -1,0 +1,681 @@
+; Copyright Xerox Corporation 1981
+; This file contains the string input routine COLLCR, TERSET,
+; CPYSTZ, CPYSTL, CPYSTT, YESNO, QYESNO, PBINUP, error routines.
+
+
+; Flags in l.h. of 0 at call
+LONGST==400000	; string terminated by ^D rather than EOL or CR
+DISSCN==200000	; reading distribution list
+UPRCAS==100000	; convert input to upper case
+EATSTR==40000	; read source string into buffer before input, save against DEL
+FNTSCN==20000	; reading font string
+FILNS==10000	; reading file name
+ESCRET==4000	; finish on escape, on initial <cr> for file name input
+RFSYMT==2000	; input text must match entry in symbol table
+RDIRNM==1000	; input text must be Tenex directory
+
+; Flags in l.h. of 0 used internally
+FLGS==400	; Scanning distribution flag(s)
+NEEDAN==200	; Need an alphanumeric
+PLGFIL==100	; plugging file into long string
+BCKF==40	; Backing up or erasing one character
+
+EDTFGS==777740	; Union of all edit flags
+ECHFGS==DISSCN!FILNS!FNTSCN!RDIRNM!RFSYMT	; Modes requiring echoing
+
+U(RPDL,300)
+PGU(WPDL,2000)
+PGU(SAVTBF,2000)	; Buffer for remembering old string during collection
+
+; Subroutine to setup terminal wakeup, echo, etc. correctly
+TERSET:	MOVEI A,100
+	RFMOD
+	IORI B,1B20!1B21!1B22!1B23
+	SFMOD
+	MOVEI A,101
+	RFCOC			; Terminal output control char echo
+	ANDCM B,[3B3+3B5+3B13+3B35]	; Turn off output of ^A, ^B, }F, ^Q
+	ANDCM C,[3B1+3B3+3B11+3B13+3B19]	; and ^R, ^S, ^W, ^X, <esc>
+	SFCOC
+	POPJ P,
+
+
+; Copy ASCIZ string pointed to by B to string pointed to by A and terminate
+CPYSTT:	PUSHJ P,CPYSTZ
+	IDPB C,A
+	POPJ P,
+
+CPYCRL:	MOVEI B,[ASCIZ /
+/]
+; Copy ASCIZ string pointed to by B to string pointed to by A
+CPYSTZ:	HRLI B,440700
+	JUMPA .+2
+	IDPB C,A
+CPYSTL:	ILDB C,B
+	JUMPN C,.-2
+	POPJ P,
+
+JERRC:
+JERROR:
+ERRSTR:	MOVEI A,101
+	PUSHJ P,APPERR
+	HALTF
+
+APPERR:	HRLOI B,400000
+	SETZ C,
+	ERSTR
+	  0
+	  0
+	POPJ P,
+
+INIABF:	HRROI A,[ASCIZ /
+Error in initial list--/]
+	JUMPA IERROR
+
+DCGABF:	HRROI A,[ASCIZ /
+Error in DOCGEN.PRT--/]
+IERROR:	PSOUT
+BERROR:	HRROI A,(B)
+PERROR:	PSOUT
+	HALTF
+
+
+; Collect Y or N response to query.
+; YESNO is like QYESNO below, but no "?" message is printed
+YESNO:	MOVEI B,0
+; Accepts A/ string pointer to query message,
+; B/ string pointer to message typed on response errors.
+; Repeats query until Y or N response.  Returns
+; caller+1 on 177 (DEL), caller+2 on "N", caller+3 on "Y"
+QYESNO:	PUSH P,A
+QYESN1:	PSOUT
+	PUSHJ P,PBINUP
+	MOVE C,A
+	MOVEI A,37
+	PBOUT
+	CAIN C,"N"
+	JUMPA QYESNN
+	CAIN C,"Y"
+	JUMPA QYESNY
+	SKIPE A,B
+	CAIN C,177
+	JUMPA QYESND
+	PSOUT
+	MOVE A,0(P)
+	JUMPA QYESN1
+
+QYESNY:	AOS -1(P)
+QYESNN:	AOS -1(P)
+QYESND:	POP P,A
+	POPJ P,
+
+; Read upper case character from terminal
+PBINUP:	PBIN
+PBINU1:	CAIG A,"z"
+	CAIGE A,"a"
+	POPJ P,
+	ANDCMI A,40
+	POPJ P,
+
+; Collect string in collection buffer.  At call, A points to table:
+; 0(A)/ Control flags for string collection
+; 1(A)/ String pointer to message to be typed before input
+; 2(A)/ Byte pointer to next-to-last character in buffer
+; 3(A)/ Byte pointer for insertions
+; 4(A)/ Pointer to ASCIZ string for initial <esc> response (0 for none)
+; 5(A)/ String pointer for "?" response (begin & end with <cr>)
+; 6(A)/ Pointer to GTJFN table when FILNS=1, FNTSCN=1, or DISSCN=1
+;    Pointer to symbol table when RDIRNM=1
+; Return caller+1 after "?" or DEL with the original ASCIZ string
+;   in the collection buffer unchanged.  E contains "?" or DEL.
+; Return caller+2 on normal completion.
+; Return caller+3 on ESCRET=1 and any of the following conditions:
+;   if FILNS=1 or RDIRNM=1 or RFSYMT=1 and <cr> or <eol> typed as
+;   the first input char.
+;   if FILNS=0, RDIRNM=0, and RFSYMT=0 and an <esc> is typed in the
+;   body of the input, or <esc> is typed as the first input char and
+;   4(A) contains 0 (i.e., no initial <esc> response).
+; For all returns C contains a byte pointer to the last character in the
+; collection buffer, and that word is zero-filled.  Clobbers A, B, and D.
+; There is special code for reading font lists (FNTSCN=1), distribution
+; lists (DISSCN=1), file names (FILNS=1), and directory names (RDIRNM=1).
+; UPRCAS=1 should be used in conjunction with FILNS=1 and FNTSCN=1.
+; File names are always returned as <directory>name.extension;version,
+; regardless of how they are typed in.  The extension is also left at
+; NAMBUF+14 and the directory at NAMBUF.  LONGST=1 causes input to be
+; terminated by ^Z rather than EOL and turns "?" into an ordinary
+; character in the body of the string, although "?" as the first
+; character of the response still types 5(A).  EATSTR=1 causes the string
+; originally in the collection buffer to be read in (for editting) and typed.
+; During editting the following chars may be used:
+;   ^A character erase
+;   ^W word erase (special parsing for FILNS=1, FNTSCN=1, and DISSCN=1)
+;   ^Q line erase
+;   ^R line retype
+;   ^S buffer retype
+;   ^B plug in contents of file
+COLLCR:	PUSH P,GG
+	PUSH P,FF
+	PUSH P,EE
+	PUSH P,AA
+	PUSH P,G
+	PUSH P,F
+	MOVE F,A
+	TDO 0,0(F)		; Set collection control flags
+	MOVE A,1(F)
+	PSOUT			; Output message
+	HRROI A,[ASCIZ / (end with ^Z):
+
+/]
+	TLNE 0,LONGST
+	PSOUT
+	MOVE A,[POINT 7,SAVTBF]	; Save initial string in case of "?" or <del>
+	MOVE B,3(F)
+	PUSHJ P,CPYSTL
+	IDPB C,A
+	MOVE C,3(F)		; Pointer for input string
+	MOVEI A,100
+	RFMOD
+	MOVEM B,TMODE#
+; Every character wakeup on distribution and font lists, file names,
+; directory names, and symbol table names
+	TLNE 0,ECHFGS		; Manual echoing?
+	TRZA B,3B25
+	ANDCMI B,1B23		; Else, nonalphanumeric wakeup only
+	SFMOD
+
+COLLCB:	MOVE G,C		; Init. replay pointer to whole string
+	MOVE EE,C		; Init word pointer to beginning also
+	MOVE GG,[-300,,RPDL-1]	; Stack for line pointers
+	MOVE FF,[-2000,,WPDL-1]	; Stack for word pointers
+	MOVEI AA,0
+CERAS1:	MOVE D,C
+COLCL0:	TLNE 0,DISSCN!FNTSCN
+	TLZ 0,FILNS!FLGS
+	TLO 0,NEEDAN		; Indicate regular char. needed
+INSSTR:	TLNN 0,EATSTR!BCKF	; Eating string or erasing char?
+	JUMPA COLCLP
+	ILDB A,D		; Yes, follow it to the end
+	JUMPN A,INFILE
+	TLZE 0,BCKF
+	JUMPA CERAS2
+	TLZ 0,EATSTR
+	JUMPA COLCLP
+
+; Loop here after illegal input chars
+DING:	MOVEI A,"G"-100
+	PBOUT
+COLCLP:	PBIN
+	TLNE 0,UPRCAS		; Converting to upper case
+	PUSHJ P,PBINU1		; Yes, do it.
+	TLNE 0,FILNS		; Inputting file name?
+	JUMPA COLCL1		; Yes, <esc>, ^F, ^X are ok
+	CAIE A,33
+	CAIN A,175
+	JUMPA [	CAMN C,3(F)	; At top level?
+		SKIPN B,4(F)	; And have an <esc> response?
+		JUMPA [	TLNE 0,RDIRNM	; No, reading directory?
+			JUMPA DIRESC	; Yes, try to recognize
+			TLNE 0,ESCRET	; No, return on <esc>?
+			JUMPA EDONE	; Yes.
+			JUMPA DING]	; No.
+		MOVE A,C	; Yes, copy default string
+		PUSHJ P,CPYSTT
+		MOVE C,A
+		JUMPA CORTYP]	; Type string and collect confirmation
+	CAIE A,"X"-100
+	CAIN A,"F"-100
+	JUMPA DING
+COLCL1:	MOVE B,C
+	CAIN A,177		; Rubout?
+	JUMPA COLER
+	CAIN A,"?"
+	JUMPA [	CAME C,3(F)	; At top level?
+		TLNN 0,LONGST	; Or not in long string?
+		JUMPA COLERQ	; Yes, give "?" response
+		JUMPA COLB0]	; No, legal char.
+	IDPB AA,B		; Terminate in case last
+	CAIN A,"A"-100
+	JUMPA CERASE		; Backup one character
+	CAIN A,"W"-100		; Word erase?
+	JUMPA WERASE
+	CAIN A,"Q"-100		; Line erase?
+	JUMPA LERASE
+	CAIN A,"R"-100		; Retype line?
+	JUMPA LRETYP
+	CAIN A,"S"-100		; Complete retype?
+	JUMPA HRETYP
+	CAIN A,"B"-100
+	JUMPA [	TLNN 0,LONGST
+		JUMPA DING
+		HRROI A,[ASCIZ /
+File:  /]
+		PSOUT
+		HRLZI A,120003		; Old file, confirm, in/out in B
+		MOVE B,[100,,101]
+		GTJFN
+		  JUMPA COLCLP
+		HRRZM A,FILJFN#
+		TLO 0,PLGFIL
+		MOVE B,[70000,,200000]
+		OPENF
+		  PUSHJ P,ERRSTR
+		PUSHJ P,GETSIZ	; Get file size
+		JUMPA COLFIL]
+
+INFILE:	CAIN A,"Z"-100		; End of long string?
+	JUMPA [	TLNE 0,PLGFIL
+		JUMPA COLFIL
+		TLZN 0,LONGST
+		JUMPA DING
+		JUMPA DISEND]
+	TLNE 0,LONGST
+	JUMPA COLB2		; EOL, CR, LF regular chars
+	CAIE A,37
+	CAIN A,12
+	MOVEI A,15		; All terminators become CR
+	TLNE 0,DISSCN		; Distribution list building?
+	JUMPA DISCHK		; Yes, variation
+	TLNE 0,FNTSCN		; Reading font list?
+	JUMPA FNTCHK		; Yes, variation
+	TLNE 0,FILNS		; Reading file name?
+	JUMPA FILCHK		; Yes, another variation
+	TLNE 0,RDIRNM		; Reading directory name?
+	JUMPA DIRCHK		; Yes, still another variation
+	CAIN A,15
+	JUMPA DONE
+COLB2:	CAIE A," "		; Check for end-of-word
+	CAIN A,";"
+	JUMPA COLSEP
+	CAIE A,"I"-100
+	CAIN A,","
+	JUMPA COLSEP
+COLB0:	TLZ 0,NEEDAN		; Indicate not in gap between words
+COLBLD:	TLNE 0,BCKF		; No echo if erasing char
+	JUMPA COLB1
+	TLNE 0,ECHFGS!EATSTR!PLGFIL
+	PBOUT
+COLB1:	CAMN C,2(F)		; Check for overflow
+	JUMPA COLOVF
+	CAIN A,37
+	JUMPA [	MOVEI A,15	; Substitute CR-LF for EOL
+		IDPB A,C
+		MOVEI A,12
+		JUMPA COLB1]
+	IDPB A,C
+	CAIE A,12
+	JUMPA COLB3
+	PUSH GG,G		; Push old line pointer
+	MOVE G,C		; Advance line pointer
+COLBW:	TLO 0,NEEDAN		; Indicate in word gap
+	PUSH FF,EE		; Push old word pointer
+	MOVE EE,C		; Advance word pointer
+COLB3:	TLNN 0,PLGFIL
+	JUMPA INSSTR
+COLFIL:	MOVE A,FILJFN
+	SOJL D,COLFND
+	BIN
+	MOVEI A,(B)
+	JUMPA INFILE
+
+COLSEP:	TLOE 0,NEEDAN		; First separator?
+	JUMPA COLBLD		; No, do not advance word
+; Save the word pos., then save char.
+COLBDS:	PUSH FF,EE		; Yes, advance word pointer
+	MOVE EE,C
+	JUMPA COLBLD
+
+; Save the char then push word position
+COLBRK:	TLNE 0,BCKF
+	JUMPA .+3
+	TLNE 0,ECHFGS!EATSTR!PLGFIL
+	PBOUT
+	CAMN C,2(F)
+	JUMPA COLOVF
+	IDPB A,C
+	JUMPA COLBW
+
+COLOVF:	HRROI A,[ASCIZ /
+Just overflowed buffer space.  Response must be shorter.  You may edit
+what is presently in the buffer or rubout and start over.
+/]
+	PSOUT
+	MOVE A,FILJFN
+	TLNN 0,PLGFIL
+	JUMPA COLCLP
+COLFND:	CLOSF
+	  PUSHJ P,ERRSTR
+	TLZ 0,PLGFIL
+	JUMPA COLCLP
+
+DISEND:	MOVEI A,37
+	PBOUT
+	JUMPA DONE
+
+EDONE:	AOS -6(P)		; Double skip return for <esc> finish
+DONE:	AOS -6(P)		; Skip return
+	MOVE B,C		; Return pointer to last char. of reply
+DONE1:	IDPB AA,B		; Make result ASCIZ
+	TLNE B,760000
+	JUMPA .-2
+	TLZ 0,EDTFGS		; Clear editting flags
+	MOVEI A,100
+	MOVE B,TMODE
+	SFMOD			; Restore wakeup and echo modes
+	POP P,F
+	POP P,G
+	POP P,AA
+	POP P,EE
+	POP P,FF
+	POP P,GG
+	POPJ P,
+
+COLERQ:	SKIPA A,5(F)		; Get "?" response string
+COLER:	HRROI A,[ASCIZ / XXX
+/]
+	PSOUT
+	MOVE A,3(F)
+	MOVEI B,SAVTBF		; Restore original value in buffer
+	PUSHJ P,CPYSTT
+	JUMPA DONE1
+
+INICRR:	CAIE A,15
+	POPJ P,
+	TLNE 0,ESCRET		; Special return for initial <cr>?
+	CAME C,3(F)		; And no input?
+	POPJ P,			; No.
+	MOVEI A,37
+	PBOUT			; Echo
+	SUB P,[1,,1]
+	JUMPA EDONE		; Double skip return
+
+; Get here during file name input
+FILCHK:	CAIN A,"X"-100
+	JUMPA LERASE
+	PUSHJ P,INICRR		; Initial <cr> and ESCRET=1?
+	CAIE A,15		; No
+	CAIN A,"F"-100
+	JUMPA FILS1
+	CAIE A,33		; <esc>?
+	CAIN A,175		; Another <esc>?
+	JUMPA FILS1
+	CAIE A,","
+	CAIN A," "
+	JUMPA DING
+	JUMPA COLB0
+
+FILS1:	MOVEM A,FLGCHR#
+	MOVE B,EE
+	PUSHJ P,DOGTJ
+	  JUMPA DING
+	MOVE C,[11110,,1]	; Get full name punctuated
+	MOVE A,EE
+	JFNS
+	MOVE C,A
+	MOVE A,DISJFN
+	RLJFN
+	  PUSHJ P,ERRSTR
+	MOVE A,FLGCHR
+	CAIE A,33
+	CAIN A,175
+	JUMPA COLCLP		; Confirm after recognition chars
+	CAIN A,37
+	JUMPA DISEND
+	JUMPA DING		; Other terminators
+
+; Subroutine to do GTJFN on text pointed to by B, termination char
+; in A, GTJFN table pointed to by 6(F).
+DOGTJ:	PUSH P,C
+	PUSH P,A
+	MOVEI A,0
+	IDPB A,C		; For EATSTR=1 case
+	MOVE A,[POINT 7,NAMBUF]
+	PUSHJ P,CPYSTL
+	POP P,B
+	IDPB B,A
+	IDPB C,A
+	POP P,C			; C preserved for "ding" case
+	HRROI B,NAMBUF
+	MOVE A,6(F)
+	GTJFN
+	  POPJ P,
+	MOVEM A,DISJFN#
+	MOVEI A,100
+	BKJFN
+	  PUSHJ P,ERRSTR
+	PBIN
+	MOVEM A,FLGCHR		; Should never clobber "/" if dist list
+	SETZM NAMBUF
+	SETZM NAMBUF+1
+	SETZM NAMBUF+14
+	HRROI A,NAMBUF
+	HRRZ B,DISJFN
+	HRLZI C,10000
+	JFNS			; Directory
+	HRROI A,NAMBUF+14
+	HRLZI C,100
+	JFNS			; Extension
+	MOVE C,[1000,,1]	; Always get name, punctuate
+	MOVE A,NAMBUF+14
+	JUMPA SKPRET
+
+; Get here during font list input.
+FNTCHK:	TLNE 0,NEEDAN		; Any part of name input yet?
+	JUMPA [	CAIN A,15	; Done?
+		JUMPA DISEND
+		CAIE A,","
+		CAIN A," "
+		JUMPA COLBLD
+		CAIN A,";"
+		JUMPA COLBRK
+		TLZ 0,NEEDAN
+		TLO 0,FILNS
+		JUMPA COLBDS]
+	CAIE A,"F"-100
+	CAIN A,15
+	JUMPA FNTS1
+	CAIE A," "
+	CAIN A,","
+	JUMPA FNTS1
+	CAIE A,33		; <esc>?
+	CAIN A,175
+	JUMPA FNTS1
+	JUMPA COLB0
+
+FNTS1:	MOVEM A,FLGCHR		; Save termination char
+	MOVE B,EE
+	PUSHJ P,DOGTJ
+	  JUMPA DING
+	CAME A,[ASCII /EP/]
+	TLO C,100		; Extension if not EP
+	MOVE A,NAMBUF
+	CAME A,[ASCII /FONTS/]
+	TLO C,10000		; Directory if not FONTS
+	MOVE A,EE
+	JFNS
+	MOVE C,A
+	MOVE A,DISJFN
+	RLJFN
+	  PUSHJ P,ERRSTR
+	MOVE A,FLGCHR
+	CAIE A,33		; Confirm after recognition chars
+	CAIN A,175
+	JUMPA COLCLP
+	CAIN A,37
+	JUMPA DISEND
+	CAIE A,","
+	CAIN A," "
+	TLCA 0,FILNS!NEEDAN
+	JUMPA DING
+	JUMPA COLBDS
+
+; Get here for distribution name input.
+DISCHK:	TLNE 0,NEEDAN		; Any part of name input yet?
+	JUMPA [	CAIN A,","
+		JUMPA COLBLD	; "," or no sep. is ok
+		CAIN A,"/"
+		JUMPA DING
+		CAIN A,15	; Done?
+		JUMPA DISEND
+		CAIN A,":"	; Start file name?
+		TLO 0,FILNS
+		JUMPA COLB0]
+	CAIE A,":"
+	CAIN A,","
+	JUMPA DING
+	CAIN A,15
+	JUMPA DING
+	TLNN 0,FLGS
+	JUMPA DISSLS
+	ANDCMI A,40		; Upper case
+	CAIL A,"A"
+	CAILE A,"C"
+	JUMPA DING
+	SOJG DD,COLBLD
+	TLZ 0,FLGS
+	JUMPA COLBRK
+
+DISSLS:	MOVEM A,FLGCHR
+	CAIE A,33
+	CAIN A,175		; Know FILNS=1 if got <esc>
+	JUMPA DISS1
+	CAIN A,"F"-100		; Or if got ^F
+	JUMPA DISS1
+	CAIE A,"/"
+	JUMPA COLBLD
+	MOVEI DD,1		; One flag after user name
+	TLNN 0,FILNS
+	JUMPA DISS2
+	TLNE 0,BCKF		; Don't screw up in CERASE
+	JUMPA [	MOVEI DD,3
+		JUMPA DISS3]
+	MOVEI A," "
+DISS1:	MOVEI DD,3		; Three flags after file name
+; Lookup file name if necessary
+	MOVE B,EE
+	ILDB D,B		; Skip ":"
+	CAIE D,":"
+	JUMPA .-2
+	PUSHJ P,DOGTJ
+	  JUMPA DING
+	CAME A,[ASCII /DIS/]
+	TLO C,100		; Get extension if not "DIS"
+	MOVE A,NAMBUF
+	CAME A,[ASCII /SECRE/]
+	TLO C,10000		; Get directory if not "SECRETARY"
+	MOVE A,NAMBUF+1
+	CAME A,[ASCII /TARY/]
+	TLO C,10000
+	MOVE A,EE
+	ILDB D,A		; Skip ":"
+	CAIE D,":"
+	JUMPA .-2
+	JFNS
+	MOVE C,A
+	MOVE A,DISJFN
+	RLJFN
+	  PUSHJ P,ERRSTR
+	MOVE A,FLGCHR
+	CAIE A,"/"
+	JUMPA COLCLP
+DISS3:	TLZ 0,FILNS
+DISS2:	TLO 0,FLGS
+	JUMPA COLBLD
+
+; Get here for <esc> during directory name input
+DIRESC:	MOVE B,3(F)
+	HRLZI A,400000		; Neg. for recognition
+	STDIR			; Convert string to directory no.
+	  JUMPA DING		; No match
+	  JUMPA DING		; Ambiguous
+	MOVE A,C
+	MOVE C,B
+	IDPB AA,B		; Terminate completed string
+	PSOUT			; Echo rest of directory name
+	JUMPA COLCLP		; Resume string collection
+
+; Here on <cr>, <eol>, or <lf> termination to directory name input
+DIRCHK:	PUSHJ P,INICRR		; Check for initial <cr>
+	CAIE A,15
+	JUMPA COLB0
+	MOVEI A,0		; 0 for no recognition
+	MOVE B,3(F)		; Point at beginning of string
+	STDIR
+	  JUMPA DING		; No match
+	  JUMPA DING		; Ambiguous
+	JUMPA DISEND		; Exact, finish
+
+LRETYP:	MOVEI A,37
+	PBOUT
+	CAMN C,3(F)		; Nothing to type if at beginning
+	JUMPA COLCLP
+	CAMN C,G		; Type previous line if at beginning of line
+	SKIPA A,0(GG)
+CORTYP:	MOVE A,G
+	PSOUT
+	JUMPA COLCLP
+
+; Line erase
+LERASE:	CAMN C,3(F)
+	JUMPA DING
+	HRROI A,[ASCIZ /___
+/]
+	PSOUT
+	CAMN C,G		; At begining of line?
+	POP GG,G		; Yes, backup one line
+	MOVE C,G		; Reset position to beginning of line
+	POP FF,EE		; Backup word pointers to position
+	CAME EE,C
+	JUMPA .-2
+	JUMPA COLCL0
+
+; Complete retype
+HRETYP:	MOVEI A,37
+	PBOUT
+	MOVE A,3(F)		; Point at beginning of input
+	PSOUT
+	JUMPA COLCLP
+
+; Word erase
+WERASE:	CAMN C,3(F)		; At beginning?
+	JUMPA DING		; Yes, cannot backup
+	CAMN C,G		; At beginning of line?
+	POP GG,G		; Yes, backup line pointer
+	CAMN C,EE		; At beginning of word?
+	POP FF,EE		; Yes, backup word pointer
+	MOVE C,EE
+	MOVEI A,"\"
+	PBOUT
+	MOVE A,C
+	PSOUT
+	MOVEI A,"\"
+	PBOUT
+	JUMPA COLCL0		; Go reset state and continue
+
+; Backup one character on input.  Echo "/<char>", get <CR><LF> as one.
+CERASE:	CAMN C,3(F)		; Ding if cannot backup
+	JUMPA DING
+	LDB D,C			; Get char being erased
+CERAS0:	MOVEM D,BCKCH#		; Save it
+	TLO 0,BCKF
+	CAMN C,G
+	POP GG,G
+	CAMN C,EE
+	POP FF,EE
+	DPB AA,C		; Terminate string
+	MOVE C,EE		; Reread from beginning of word
+	JUMPA CERAS1
+
+CERAS2:	MOVE B,BCKCH
+	CAIN B,12		; Get CR-LF together
+	JUMPA [	LDB D,C
+		CAIE D,15
+		JUMPA .+1
+		MOVEI D,37
+		JUMPA CERAS0]
+	MOVEI A,"\"
+	PBOUT
+	MOVEI A,(B)
+	PBOUT
+	JUMPA COLCLP
+      

@@ -1,0 +1,673 @@
+; Copyright Xerox Corporation 1981
+; Common code shared by DIST and EARS
+
+; Flags in r.h. of 0
+PREDF==400000	; Portrait reduction
+IDPRIN==200000	; Translate i.d. to file name
+BIGDOC==100000	; Big listing
+UNQUD==40000	; Unqueuing DOCGEN.QUEUE printing requests
+SAVPEC==20000	; Save Press-to-Ears conversion
+SUBCMS==4000	; Process subcommands
+QUEUE==2000	; Queue output for receivers rather than printing now
+ASC8==1000	; 8-bit byte size
+DOCSCN==400	; Looking for properties at beginning of document
+MAKHIS==200	; Make distribution history
+RECDOC==100	; Enter document into index
+NEWIDX==40	; Making a new index
+
+U(FTYPE,10)	; Buffer for input file's extension
+U(FEXT,2)	; Correct extension (= FTYPE unless Press conversion)
+U(CONDN,10)	; Connected directory
+U(SOURCE,16)	; Source file name
+U(REDUBF,20)
+U(NAMBUF,50)
+U(DOCID,15)	; For document ID
+U(PDVNAM,10)	; Host name for Press printing or CONVERT
+U(EDVNAM,10)	; Host name for Ears printing
+U(DVNAM,2)	; Device name (EARS or PRESS)
+U(PDL,100)	; Push down list
+U(FSETS,400)	; For FONT string
+PGU(PCOLBF,100)
+PGU(LCOLBF,100)
+PGU(CCBUF,200)
+PGU(TOBUF,200)
+PGU(INVBUF,200)
+PGU(MESSAG,4000)
+
+ERR:	MOVEI A,100
+	BKJFN
+	  PUSHJ P,ERRSTR
+	PBIN
+	CAIN A,177
+	JUMPA [	HRROI A,[ASCIZ / XXX/]
+		JUMPA PERROR]
+	HRROI A,[ASCIZ/ /]
+	ESOUT
+	JUMPA ERR1
+
+START:	RESET
+	MOVE P,[-100,,PDL-1]
+	PUSHJ P,TERSET		; Setup terminal stuff
+	SETZM COPIES#
+	SETZB 0,EDVNAM
+	SETZM PDVNAM
+	SETZM NABSTR#
+	SETZM PCOLBF
+	SETZM LCOLBF
+	SETZM REDUBF
+	SETZM FSETS
+	SETZM TOBUF
+	SETZM CCBUF
+	SETZM INVBUF
+	SETZM FEXT+1
+	GJINF
+	MOVEM A,LOGIND#
+	MOVE A,[POINT 7,CONDN]
+	DIRST
+	  PUSHJ P,ERRSTR
+	IDPB 0,A
+	MOVEI A,100
+	BKJFN
+	  PUSHJ P,ERRSTR
+ERR1:	PBIN
+	CAIE A,"I"-100
+	CAIN A," "
+	JUMPA GTSRX
+	CAIE A,37
+	JUMPA GTSRC1
+GETFQ1:	HRROI A,FILQRY
+	PSOUT
+GTSRX:	PBIN
+GTSRC1:	CAIE A,"?"
+	JUMPA GTSRC		; Continue in EARS.MAC or DIST.MAC
+	HRROI A,FILQST
+	PSOUT
+	JUMPA GETFQ1
+
+; Confirm command line input
+CON:	PBIN
+	CAIN A,177
+	JUMPA [	HRROI A,[ASCIZ / XXX/]
+		JUMPA PERROR]
+	CAIN A,","		; Entering subcommand mode?
+	JUMPA [	PBIN		; Confirm
+		TRO 0,SUBCMS	; Indicate collect subcommands
+		JUMPA .+1]
+	CAIN A,"X"-100
+	JUMPA [	HRROI A,[ASCIZ /___
+/]
+		PSOUT
+		JUMPA GTSRX]
+	CAIN A,37
+	POPJ P,
+	CAIE A,33
+	CAIN A,175
+	JUMPA CON		; Additional confirm after <esc>
+	HRROI A,[ASCIZ /
+/]
+	ESOUT
+	JUMPA GETFQ1
+
+COLSTR:	PUSHJ P,COLLCR
+	  JUMPA SUBCLP
+; Collect subcommands
+SUBCLP:	MOVE P,[-100,,PDL-1]
+	HRROI A,[ASCIZ /@@/]
+	PSOUT
+	PBIN
+	CAIG A,"z"
+	CAIGE A,"a"
+	JUMPA .+2
+	ANDCMI A,40		; Upper case convert
+	CAIN A,"A"
+	JUMPA SETABS
+	CAIN A,"B"
+	JUMPA SBIG		; Indicate big document
+	CAIN A,"C"
+	JUMPA COLCOP		; Copies
+	CAIN A,"F"
+	JUMPA COLFNT		; Go collect font names
+	CAIN A,"H"
+	JUMPA COLHST		; Go collect host for EDEVICE or PDEVICE
+	CAIN A,"I"
+	JUMPA INSUBC
+	CAIN A,"L"
+	JUMPA LCOLMN		; Go collect landscape columns
+	CAIN A,"P"
+	JUMPA PCOLMN		; Go collect portrait columns
+	CAIN A,"Q"
+	JUMPA QPRIN		; Queue printing
+	CAIN A,"V"
+	JUMPA VIEWP		; View properties
+	CAIN A,"?"
+	JUMPA [	HRROI A,NSQRY
+		JUMPA PSLOOP]
+	CAIE A,15
+	CAIN A,37
+	JUMPA BLDLDR		; EOL = done
+	CAIN A,177		; Rubout?
+	JUMPA DELTRM
+	JUMPA SUBCFF		; Particular code for EARS or DIST
+
+BADTRM:	HRROI A,[ASCIZ /
+/]
+ESLOOP:	ESOUT
+	DOBE
+	MOVEI A,^D500
+	DISMS
+	MOVEI A,100
+	CFIBF
+	JUMPA SUBCLP
+
+; Have "?" string pointer in E, message string pointer in A.
+; Confirm action
+CONF:	PSOUT
+	PBIN
+	CAIN A,37
+	POPJ P,
+	CAIN A,177
+	JUMPA DELTRM
+	CAIE A,"?"
+	JUMPA BADTRM
+	SKIPA A,E
+DELTRM:	HRROI A,[ASCIZ / XXX
+/]
+PSLOOP:	PSOUT
+	JUMPA SUBCLP
+
+BSLOOP:	HRROI A,(B)
+	PSOUT
+	JUMPA BADTRM
+
+; Subroutine to output most of leader
+BLDLDR:	HRLZI A,600001
+	HRROI B,[ASCIZ /LPT:/]
+	GTJFN
+	  PUSHJ P,ERRSTR
+	MOVE B,[440000,,100000]
+	OPENF
+	  PUSHJ P,ERRSTR
+	MOVEM A,OUTJFN#
+	HRROI B,[ASCIZ /Name/]
+	HRROI C,DOCID
+	SPPAR
+	  PUSHJ P,ERRSTR
+	SKIPN NABSTR
+	JUMPA NOABSO
+	MOVE A,[POINT 7,NAMBUF]
+	MOVE B,NABSTR
+	PUSHJ P,DNOUT
+	MOVEI B,0
+	IDPB B,A
+	MOVE A,OUTJFN
+	HRROI B,[ASCIZ /Abstracts/]
+	HRROI C,NAMBUF
+	SPPAR
+	  PUSHJ P,ERRSTR
+NOABSO:	SKIPN C,COPIES		; Copies?
+	JUMPA NOCOP
+	HRROI B,[ASCIZ /Copies/]
+	SPPAR
+	 PUSHJ P,ERRSTR
+NOCOP:	TRNN 0,BIGDOC
+	JUMPA NOTBIG
+	HRROI B,[ASCIZ /Big/]
+	HRROI C,[ASCIZ //]
+	SPPAR
+	  PUSHJ P,ERRSTR
+NOTBIG:	LDB B,[POINT 7,REDUBF,6]
+	JUMPE B,NORED
+	HRROI B,[ASCIZ /Lreduce/]
+	TRNE 0,PREDF
+	HRROI B,[ASCIZ /Preduce/]
+	HRROI C,REDUBF
+	SPPAR
+	  PUSHJ P,ERRSTR
+NORED:	SKIPN INVBUF
+	JUMPA NOINV
+	HRROI B,[ASCIZ /Invto/]
+	HRROI C,INVBUF
+	SPPAR
+	  PUSHJ P,ERRSTR
+NOINV:	SKIPN CCBUF
+	JUMPA NOCC
+	HRROI B,[ASCIZ /C/]
+	HRROI C,CCBUF
+	SPPAR
+	  PUSHJ P,ERRSTR
+NOCC:	SKIPN TOBUF
+	JUMPA NOTO
+	HRROI B,[ASCIZ /To/]
+	HRROI C,TOBUF
+	SPPAR
+	  PUSHJ P,ERRSTR
+NOTO:	TRNN 0,QUEUE
+	JUMPA NOQU
+	HRROI B,[ASCIZ /Queue/]
+	HRROI C,[ASCIZ //]
+	SPPAR
+	  PUSHJ P,ERRSTR
+
+NOQU:	TRNN 0,SAVPEC
+	JUMPA NOSAV
+	HRROI B,[ASCIZ /Isave/]
+	HRROI C,[ASCIZ //]
+	SPPAR
+	  PUSHJ P,ERRSTR
+NOSAV:	SKIPN EDVNAM
+	JUMPA NEDEVC
+	HRROI B,[ASCIZ /Edevice/]
+	HRROI C,EDVNAM
+	SPPAR
+	  PUSHJ P,ERRSTR
+NEDEVC:	SKIPN PDVNAM
+	JUMPA NPDEVC
+	HRROI B,[ASCIZ /Pdevice/]
+	HRROI C,PDVNAM
+	SPPAR
+	  PUSHJ P,ERRSTR
+NPDEVC:	SKIPN DVNAM
+	JUMPA NDVNAM
+	HRROI B,[ASCIZ /DEVICE/]
+	HRROI C,DVNAM
+	SPPAR
+	  PUSHJ P,JERROR
+NDVNAM:	JUMPA BLDDOC
+
+OLOOP:	HRRZ A,INJFN
+	MOVE B,[POINT 36,SAVTBF]
+	MOVNI C,1000
+	SIN
+	HRRZ A,OUTJFN
+	MOVE B,[POINT 36,SAVTBF]
+	MOVE E,C
+	MOVNI C,1000(C)
+	JUMPE C,CLOSE
+	SOUT
+	JUMPE E,OLOOP
+CLOSE:	CLOSF
+	  PUSHJ P,ERRSTR
+	MOVE A,INJFN
+	HRLI A,400000
+	CLOSF
+	  PUSHJ P,ERRSTR
+	MOVE A,INJFN
+	GNJFN
+	  JUMPA .+2
+	JUMPA NEXT
+	MOVEI A,37
+	PBOUT
+	HALTF
+
+; Subroutine to display most of properties
+VIEWP:	HRROI A,[ASCIZ /iew properties/]
+	HRROI E,[ASCIZ /
+VIEW types the property list which will be sent with the document
+to direct Pspool in handling it.
+/]
+	PUSHJ P,CONF
+	SKIPN B,NABSTR
+	JUMPA SEECOP
+	HRROI A,[ASCIZ /
+Abstracts /]
+	PSOUT
+	MOVEI A,101
+	PUSHJ P,DNOUT
+SEECOP:	SKIPN B,COPIES
+	JUMPA SEEBIG
+	HRROI A,[ASCIZ /
+Copies /]
+	PSOUT
+	MOVEI A,101
+	PUSHJ P,DNOUT
+SEEBIG:	HRROI A,[ASCIZ /
+Big/]
+	TRNE 0,BIGDOC
+	PSOUT
+	LDB B,[POINT 7,REDUBF,6]
+	JUMPE B,SEETO
+	HRROI A,[ASCIZ /
+Lreduce /]
+	TRNE 0,PREDF
+	HRROI A,[ASCIZ /
+Preduce /]
+	PSOUT
+	HRROI A,REDUBF
+	PSOUT
+SEETO:	LDB B,[POINT 7,TOBUF,6]
+	JUMPE B,SEECC
+	HRROI A,[ASCIZ /
+To: /]
+	PSOUT
+	HRROI A,TOBUF
+	PSOUT
+SEECC:	LDB B,[POINT 7,CCBUF,6]
+	JUMPE B,SEEINV
+	HRROI A,[ASCIZ /
+C: /]
+	PSOUT
+	HRROI A,CCBUF
+	PSOUT
+SEEINV:	LDB B,[POINT 7,INVBUF,6]
+	JUMPE B,SEENAM
+	HRROI A,[ASCIZ /
+Invto: /]
+	PSOUT
+	HRROI A,INVBUF
+	PSOUT
+SEENAM:	HRROI A,[ASCIZ /
+Name /]
+	PSOUT
+	HRROI A,DOCID
+	PSOUT
+	HRROI A,[ASCIZ /
+Queue/]
+	TRNE 0,QUEUE
+	PSOUT
+	HRROI A,[ASCIZ /
+Isave/]
+	TRNE 0,SAVPEC
+	PSOUT
+	SKIPN EDVNAM
+	JUMPA ENDDEV
+	HRROI A,[ASCIZ /
+Edevice /]
+	PSOUT
+	HRROI A,EDVNAM
+	PSOUT
+ENDDEV:	SKIPN PDVNAM
+	JUMPA NOPDV
+	HRROI A,[ASCIZ /
+Pdevice /]
+	PSOUT
+	HRROI A,PDVNAM
+	PSOUT
+NOPDV:	JUMPA VIEWPP
+
+; Indicate big listing
+SBIG:	HRROI A,[ASCIZ /ig listing [confirm]/]
+	HRROI E,[ASCIZ /
+The BIG command is required to prevent print-rejection when the number
+of pages to be printed is greater than 500.
+/]
+	PUSHJ P,CONF
+	TRO 0,BIGDOC
+	JUMPA SUBCLP
+
+; Collect new INVTO distribution
+INSUBC:	MOVEI A,INVTB
+	JUMPA DISCOL
+
+INVTB:	DISSCN!EATSTR,,0
+	POINT 7,[ASCIZ /nvisible to:  /]
+	POINT 7,INVBUF+177,27
+	POINT 7,INVBUF-1,34
+	0
+	POINT 7,DISQST
+	0,,DISGJF
+
+; Collect new C distribution
+CSUBC:	MOVEI A,CCTAB
+	JUMPA DISCOL
+
+CCTAB:	DISSCN!EATSTR,,0
+	POINT 7,[ASCIZ /c:  /]
+	POINT 7,CCBUF+177,27
+	POINT 7,CCBUF-1,34
+	0
+	POINT 7,DISQST
+	0,,DISGJF
+
+; Collect new TO distribution
+TOSUBC:	MOVEI A,TOTB
+DISCOL:	TRNN 0,UNQUD
+	JUMPA COLSTR
+	HRROI A,[ASCIZ / illegal when unqueuing
+/]
+	JUMPA ESLOOP
+
+TOTB:	DISSCN!EATSTR,,0
+	POINT 7,[ASCIZ /o:  /]
+	POINT 7,TOBUF+177,27
+	POINT 7,TOBUF-1,34
+	0
+	POINT 7,DISQST
+	0,,DISGJF
+
+; GTJFN defaulting for distribution files
+DISGJF:	100000,,0
+	100,,101
+	0
+	POINT 7,[ASCIZ /SECRETARY/]
+	0
+	POINT 7,[ASCIZ /DIS/]
+	REPEAT 3,<0>
+
+DISQST:	ASCIZ &
+
+Enter a list of distribution files and users terminated by <cr>.
+The distribution file names must be preceded by ":" and followed
+by "/" and three flags.  For example,
+   :CSL/ABC	gives the names in <SECRETARY>CSL.DIS abstracts (A),
+		briefs (B), or copies (C) according to their requests.
+   :CSL/BBB	gives the names in CSL.DIS briefs, regardless of what
+		they requested.
+   :CSL/CCC	gives the names in CSL.DIS copies, regardless of what
+		they requested.
+User names, or names of people without Maxc accounts, must be
+followed by "/" and one flag.  For example,
+   User/C	will print (or queue) a copy for "User"
+   User/B	will mail a brief by Sndmsg for "User"
+   User/A	will print (or queue) an abstract for "User"
+A complete distribution list will then look like the following:
+   :CSL/ABC,:SSL/BBB,Pake/C
+
+Abstracts (A) only exist in a document which has been specially
+prepared to contain an abstract.  The system will send briefs instead,
+if the document doesn't have an abstract.
+
+The distinction among "To", "Xc", and "Invisible to" is that the "To"
+and "C" titles appear in the Sndmsg brief, while "Invisible to" does not.
+
+&
+
+; Indicate queue printing
+QPRIN:	HRROI A,[ASCIZ /ueue printing illegal when unqueuing
+/]
+	TRNE 0,UNQUD
+	JUMPA PSLOOP
+	HRROI A,[ASCIZ /ueue printing [confirm]/]
+	HRROI E,QQST
+	PUSHJ P,CONF
+	TRO 0,QUEUE
+	JUMPA SUBCLP
+
+QQST:	ASCIZ /
+Append printing requests to DOCGEN.QUEUE files of Maxc accounts
+in the distribution, rather than printing now.  Receivers unqueue
+at their convenience.  Names in the distribution which are not Maxc
+accounts are not affected by queuing.
+/
+
+
+; Set number of extra abstracts
+SETABS:	MOVE B,FTYPE
+	CAME B,[ASCII /EARS/]
+	CAMN B,[ASCII /PRESS/]
+	JUMPA SETAB1
+	HRROI A,[ASCIZ / Abstracts don't exist except for Ears and Press files.
+/]
+	JUMPA ESLOOP
+
+SETAB1:	MOVEI A,ABSTB
+	PUSHJ P,COLABC
+	MOVEM B,NABSTR
+	JUMPA SUBCLP
+
+ABSQST:	ASCIZ /
+Specify the number of abstracts to be printed in addition to those
+for names in distribution lists.  This is a no-op, if the document
+has no abstract.
+/
+
+ABSTB:	0
+	POINT 7,[ASCIZ /bstracts = /]
+	POINT 7,NAMBUF+4,27
+	POINT 7,NAMBUF-1,34
+	POINT 7,[ASCIZ /0/]
+	POINT 7,ABSQST
+
+; Get # copies
+COLCOP:	MOVEI A,COPTB
+	PUSHJ P,COLABC
+	MOVEM B,COPIES
+	JUMPA SUBCLP
+
+COPQST:	ASCII /
+Specify the number of copies to be printed in addition to those for
+names in distribution lists.  By default one copy is printed for you,
+if no distribution is specified, else copies and abstracts are printed
+and briefs are mailed according to the distribution.
+/
+
+COPTB:	0
+	POINT 7,[ASCIZ /opies = /]
+	POINT 7,NAMBUF+4,27
+	POINT 7,NAMBUF-1,34
+	POINT 7,[ASCIZ /0/]
+	POINT 7,COPQST
+
+COLABC:	TRNE 0,UNQUD
+	JUMPA [	HRROI A,[ASCIZ / illegal when unqueuing
+/]
+		JUMPA ESLOOP]
+	PUSHJ P,COLLCR
+	  JUMPA SUBCLP
+	MOVE A,[POINT 7,NAMBUF-1,34]
+	MOVEI C,12
+	NIN
+	  JUMPA BADTRM
+	LDB C,A
+	JUMPN C,BADTRM
+	JUMPL B,BADTRM
+	CAIL B,^D512
+	JUMPA [	HRROI A,[ASCIZ /Limit for Pspool is 512.
+/]
+		JUMPA ESLOOP]
+	CAIGE B,^D200
+	POPJ P,
+	HRROI A,[ASCIZ /Really? [Y or N]  /]
+	PUSHJ P,YESNO
+	  JUMPA BADTRM
+	  JUMPA SUBCLP
+	POPJ P,
+
+PCOLTB:	0
+	POINT 7,[ASCIZ /ortrait columns = /]
+	POINT 7,NAMBUF,27
+	POINT 7,NAMBUF-1,34
+	POINT 7,[ASCIZ /1/]
+	0
+
+; Collect PCOLUMNS property
+PCOLMN:	MOVE B,FTYPE
+	HRROI E,PTQST		; TTY question
+	CAME B,[ASCII /PRESS/]
+	CAMN B,[ASCII /EARS/]
+	HRROI E,PEQST		; Ears or Press question
+	MOVEM E,PCOLTB+5
+	MOVEI A,PCOLTB
+	PUSHJ P,COLCLR
+	  JUMPA [TRO 0,PREDF
+		MOVE B,[0,,[ASCIZ //]
+			0,,[ASCIZ /10900,100,100,8400,2,1,REDUCE.P2/]
+			0,,[ASCIZ /10900,100,100,8400,3,1,REDUCE.P3/]
+			0,,[ASCIZ /10900,100,100,8400,2,2,REDUCE.P4/]](D)
+		JUMPA REDSTR]
+	MOVE B,[0,,[ASCIZ //]
+		0,,[ASCIZ /10900,100,700,4000,1;10900,100,4500,7800,0/]
+		0,,[ASCIZ /10900,100,500,2667,1;10900,100,3167,5334,2;10900,100,5834,8000,0/]
+		0,,[ASCIZ /10900,5600,500,4000,1;10900,5600,4500,8000,2;5400,100,500,4250,3;5400,100,4500,8000,0/]](D)
+	MOVE A,[POINT 7,PCOLBF]
+	PUSHJ P,CPYSTT
+	JUMPA SUBCLP
+
+COLCLR:	PUSHJ P,COLLCR
+	  JUMPA SUBCLP
+	MOVE B,[POINT 7,NAMBUF-1,34]
+	ILDB A,B
+	CAIL A,"1"
+	CAILE A,"4"
+	JUMPA BADTRM
+	MOVEI D,-61(A)
+	ILDB A,B
+	JUMPN A,BADTRM
+	MOVE C,FTYPE
+	CAME C,[ASCII /EARS/]
+	CAMN C,[ASCII /PRESS/]
+	  POPJ P,
+	JUMPA SKPRET
+
+PTQST:	ASCIZ |
+Type n = 1, 2, 3, or 4 to setup 1 x 1, 2 x 1, 3 x 1, or 2 x 2
+columns so that n source pages print as n equal-size output
+columns/page.
+|
+
+PEQST:	ASCIZ |
+Type n = 1, 2, 3, or 4 to transform n source pages into 1 x 1, 2 x 1,
+3 x 1, or 2 x 2  columns/output page.  The source fonts must be given
+by name, must be portrait, and must be mapped in the reduction file
+<FONTS>REDUCE.Pn.  N = 4 is appropriate for size reduction by a
+factor of four, although only larger fonts have equivalents which are
+small enough to make this work.  The transformation may work better
+if the margins are also specified (M subcommand).
+|
+
+LCOLTB:	0
+	POINT 7,[ASCIZ /andscape columns = /]
+	POINT 7,NAMBUF,27
+	POINT 7,NAMBUF-1,34
+	POINT 7,[ASCIZ /2/]
+	0
+
+; Collect LCOLUMNS value
+LCOLMN:	MOVE B,FTYPE
+	HRROI E,LTQST
+	CAME B,[ASCII /PRESS/]
+	CAMN B,[ASCII /EARS/]
+	HRROI E,LEQST
+	MOVEM E,LCOLTB+5
+	MOVEI A,LCOLTB
+	PUSHJ P,COLCLR
+	  JUMPA [TRZ 0,PREDF
+		MOVE B,[0,,[ASCIZ /10900,100,100,8400,1,1,REDUCE.L1/]
+			0,,[ASCIZ /10900,100,100,8400,2,1,REDUCE.L2/]
+			0,,[ASCIZ /10900,100,100,8400,3,1,REDUCE.L3/]
+			0,,[ASCIZ /10900,100,100,8400,4,1,REDUCE.L4/]](D)
+		JUMPA REDSTR]
+	MOVE B,[0,,[ASCIZ /250,8400,1000,10000,0/]
+		0,,[ASCIZ //]
+		0,,[ASCIZ /250,8400,500,3500,1;250,8400,4000,7000,2;250,8400,7500,10500,0/]
+		0,,[ASCIZ /250,8400,500,2625,1;250,8400,3125,5250,2;250,8400,5750,7875,3;250,8400,8375,10500,0/]](D)
+	SKIPA A,[POINT 7,LCOLBF]
+REDSTR:	MOVE A,[POINT 7,REDUBF]
+	PUSHJ P,CPYSTT
+	JUMPA SUBCLP
+
+
+LTQST:	ASCIZ |
+Type n = 1, 2, 3, or 4 to setup 1 x 1, 2 x 1, 3 x 1, or 4 x 1
+columns so that n source pages print as n output columns/page.
+Note:  You must also select a landscape font (extension "EL").
+|
+
+LEQST:	ASCIZ |
+Type n = 1, 2, 3, or 4 to transform n source pages into 1 x 1, 2 x 1,
+3 x 1, or 4 x 1 columns/output page.  The source fonts must be given
+by name, must all be portrait, and must be mapped in the reduction
+file <FONTS>REDUCE.Ln.  Only REDUCE.L2 is actively maintained--this is
+appropriate for size reduction by a factor of two.  The transformation
+may work better if you also specify the margins (M subcommand).
+|
+         

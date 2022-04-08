@@ -1,0 +1,1003 @@
+
+
+; PUP.MAX;2 & PUP.MAX;1 30-Jul-82 1120	PAGE 1
+
+
+
+LINE 1, PAGE 1
+1)	;<134>PUP.MAC;109    28-MAY-81 14:50:03    EDIT BY TAFT
+1)	; Fix foreign address selection in PUPOPN -- just plain didn't work!
+1)	;<134>PUP.MAC;108    27-MAY-81 19:46:30    EDIT BY TAFT
+1)	; Adjust maximum BSP allocations to assume that all Pups are maximum-size.
+1)	; This ensures that the byte allocation doesn't run out before the Pup
+1)	; allocation, which confuses some BSP implementations (though not this one).
+1)	;<134>PUP.MAC;106    15-MAR-81 14:00:27    EDIT BY TAFT
+1)	;<134>PUP.MAC;105    14-MAR-81 20:09:30    EDIT BY TAFT
+1)	; Fix long-standing Pup performance problems:
+1)	; Time-stamp outgoing Pup earlier in SNDBSP so as not to confuse CHKADA.
+1)	; Implement adaptive timeout for BSP transmissions.
+1)	; Make retransmission timeout be double the measured round-trip delay,
+1)	; and make the AData/retransmission cutoff be half the round-trip delay.
+1)	; Disable the overlapped Data/Ack feature to reduce the "shooting down
+1)	; your Ack" effect.
+1)	;<134>PUP.MAC;104    10-MAR-81 12:29:23    EDIT BY TAFT
+1)	; Invoke Maxc2 CSUM16 opcode for Pup checksum.
+1)	;<134>PUP.MAC;103     2-MAR-81 11:00:55    EDIT BY TAFT
+1)	;<134>PUP.MAC;102    28-FEB-81 13:41:22    EDIT BY TAFT
+1)	; Remove Pup format definitions to separate UNIVERSAL file PUPFMT.MAC
+1)	;<134>PUP.MAC;101    27-FEB-81 15:14:29    EDIT BY TAFT
+1)	; Put NTDCHF flag in PUPPAR table
+1)	;<134>PUP.MAC;100    17-FEB-81 18:24:08    EDIT BY TAFT
+1)	; Add timeout option to PUPI.
+1)	; Improve net number defaulting in PUPO.
+1)	; Add "default" net number to PUPPAR table.
+1)	;<134>PUP.MAC;99    10-FEB-81 16:16:39    EDIT BY TAFT
+1)	; Make primitive queue routines internal for new PUPNM
+1)	;<134>PUP.MAC;98    15-OCT-80 15:07:43    EDIT BY TAFT
+1)	; Speed ADDTQI queue search by unrolling the loop.
+1)	;<134>PUP.MAC;97    13-OCT-80 15:08:37    EDIT BY TAFT
+1)	; Speed Pup checksum computation by running the main loop in the ACs.
+1)	;<134>PUP.MAC;96     8-OCT-80 10:58:43    EDIT BY TAFT
+1)	; Do not use stack for address table in PNMDEC -- causes
+1)	; stack overflow when PUP OPENF executed from inside another JSYS.
+1)	;<134>PUP.MAC;95     5-OCT-80 18:48:09    EDIT BY TAFT
+1)	; Make BSP stream buffer setup routines externally callable (for MTANET).
+1)	;<134>PUP.MAC;94    27-JAN-80 17:15:01    EDIT BY TAFT
+1)	; Fix SNDINT to save args around call to DOBSPL
+1)	;<134>PUP.MAC;93    17-MAY-79 13:06:41    EDIT BY TAFT
+LINE 1, PAGE 1
+2)	;<134>PUP.MAC;93    17-MAY-79 13:06:41    EDIT BY TAFT
+
+
+; PUP.MAX;2 & PUP.MAX;1 30-Jul-82 1120	PAGE 2
+
+
+
+LINE 2, PAGE 2
+1)	; Copyright Xerox Corporation 1979, 1980, 1981
+1)	
+1)	; The following declaration ensures that the symbols are linked externally
+1)	; rather than binding to local PC values in the UNIVERSAL file.
+1)		EXTERN PPUPUN,PPBPHN,PPBPHH,PPBPHS,PUPLEN,PUPTCB,PUPTYP
+1)		EXTERN PUPID,PPUPDN,PPUPDH,PPUPD0,PPUPD1,PPUPSN,PPUPSH,PPUPSS
+1)	
+1)		SEARCH STENEX,PROLOG,PUPFMT
+1)		TITLE PUP
+LINE 2, PAGE 2
+2)		SEARCH STENEX,PROLOG
+2)		TITLE PUP
+
+
+LINE 41, PAGE 2
+1)	; PB=10		; Packet Buffer pointer
+1)	  BSP=12	; BSP data block pointer
+1)	
+1)	; If UCSUMF=1 then invoke CSUM16 microcode for Pup checksum
+1)	UCSUMF==MX(0,1)
+1)	
+LINE 34, PAGE 2
+2)	  PB=10		; Packet Buffer pointer
+2)	  BSP=12	; BSP data block pointer
+2)	
+
+
+LINE 50, PAGE 2
+1)	
+LINE 1, PAGE 3
+2)	^L
+2)	; Parameters and byte pointers defining the structure of a Packet Buffer (PB)
+2)	
+2)	PBSIZE==0
+2)	 PBLCKF==1B0			; PB is locked in core
+2)	 PPUPUN: POINT 9,PBSIZE(PB),17	; Unit # of owning port
+2)	 ; B18-35			; Size of PB in words
+2)	
+2)	PBPHYS==1	; Physical packet parameters, passed to/from NVIO
+2)	 PPBPHN: POINT 8,PBPHYS(PB),7	; Physical network number
+2)	 PPBPHH: POINT 8,PBPHYS(PB),15	; Physical host number
+2)	 PPBPHS: POINT 16,PBPHYS(PB),31	; Packet size (Maxc words)
+2)	
+2)	PBBSID==PBPHYS	; Byte ID, right-justified (used by BSP input)
+2)	
+2)	PBIOBQ==2	; I/O buffer queue link word
+2)			; 0 => not on any queue, -1 => being output by NVIO
+2)	
+
+
+; PUP.MAX;2 & PUP.MAX;1 30-Jul-82 1120	PAGE 3
+
+
+2)	PBBSPQ==3	; BSP buffer queue link word
+2)			; 0 => not owned by BSP processor
+2)			; -1 => owned by BSP but not on any queue
+2)	
+2)	PBTIME==4	; Time stamp (TODCLK format), used for BSP output
+2)	
+2)	PBBSBC==PBTIME	; Byte count for data (used by BSP input)
+2)	
+2)	PBHEAD==5	; Start of Pup Header
+2)	 PUPLEN: POINT 16,PBHEAD(PB),15	; Pup Length
+2)	 PUPTCB: POINT 8,PBHEAD(PB),23	; Transport Control Byte
+2)	 PUPTYP: POINT 8,PBHEAD(PB),31	; Pup Type
+2)	
+2)	; PBHEAD+1
+2)	 ; B0-31			; Pup ID
+2)	
+2)	; PBHEAD+2
+2)	 PPUPDN: POINT 8,PBHEAD+2(PB),7	; Destination Network
+2)	 PPUPDH: POINT 8,PBHEAD+2(PB),15  ; Destination Host
+2)	 PPUPD0: POINT 16,PBHEAD+2(PB),31  ; High 16 bits of Destination Socket
+2)	
+2)	; PBHEAD+3
+2)	 PPUPD1: POINT 16,PBHEAD+3(PB),15  ; Low 16 bits of Destination Socket
+2)	 PPUPSN: POINT 8,PBHEAD+3(PB),23  ; Source Network
+2)	 PPUPSH: POINT 8,PBHEAD+3(PB),31  ; Source Host
+2)	
+2)	; PBHEAD+4
+2)	 PPUPSS: POINT 32,PBHEAD+4(PB),31  ; Source Socket
+2)	
+2)	PBCONT==PBHEAD+5  ; Start of Pup Contents
+2)	
+2)	MNPLEN==^D22	; Minimum Pup Length (bytes), incl header and checksum
+2)	MXPLEN==^D554	; Maximum Pup Length (=> 532 data bytes)
+2)	MNPBLN==PBHEAD+<MNPLEN+3>/4  ; Minimum size of PB, in words
+2)	MXPBLN==PBHEAD+<MXPLEN+3>/4  ; Maximum size of PB, in words
+2)	
+
+
+LINE 51, PAGE 3
+1)	DEFNET:	<GATEWF>B0+<NTDCHF>B1+DFPNET ; (2) B0 set if we are a gateway
+1)				; B1 set if network directory is cached rather than kept in entirety
+1)				; B18-35: Default directly-connected net number
+1)	
+LINE 51, PAGE 5
+2)		<GATEWF>B0	; (2) B0 set if we are a gateway
+2)	
+
+
+; PUP.MAX;2 & PUP.MAX;1 30-Jul-82 1120	PAGE 4
+
+
+
+LINE 4, PAGE 7
+1)	MXBSIP==<MAXIQW/MXPBLN>-1	; Max # Pups we allow on BSP input queue
+1)	MXBSIB==MXBSIP*<MXPLEN-MNPLEN>	; Max # bytes we allow on BSP input queue
+1)	MXBSOP==<MAXOQW/MXPBLN>-1	; Max # Pups we allow on BSP output queue
+1)	MXBSOB==MXBSOP*<MXPLEN-MNPLEN>	; Max # bytes we allow on BSP output queue
+1)	MXSACK==0		; Max # Pos/NegAck blocks per Ack Pup
+LINE 4, PAGE 9
+2)	MXBSIP==3*MAXIQB/4	; Max # Pups we allow on BSP input queue
+2)	MXBSIB==3*<4*MAXIQW>/4	; Max # bytes we allow on BSP input queue
+2)	MXBSOP==3*MAXOQB/4	; Max # Pups we allow on BSP output queue
+2)	MXBSOB==3*<4*MAXOQW>/4	; Max # bytes we allow on BSP output queue
+2)	MXSACK==0		; Max # Pos/NegAck blocks per Ack Pup
+
+
+LINE 19, PAGE 7
+1)	RETINT==^D100		; Nominal retransmission interval (ms)
+1)	MINRET==^D25		; Minimum retransmission interval
+1)	MAXRET==^D10000		; Maximum retransmission interval
+1)	HLDINT==^D1000		; Hold interval (expiration forces AData)
+LINE 19, PAGE 9
+2)	RETINT==^D250		; Nominal retransmission interval (ms)
+2)	MAXRET==^D2500		; Maximum retransmission interval
+2)	HLDINT==^D1000		; Hold interval (expiration forces AData)
+
+
+LINE 26, PAGE 7
+1)	ALLPCT==^D0		; % of total allocation (Pups or bytes)
+1)				;  below which an AData is sent to request
+1)				;  new allocation.  0 = don't overlap Data/Acks.
+1)	
+LINE 25, PAGE 9
+2)	ALLPCT==^D25		; % of total allocation (Pups or bytes)
+2)				;  below which an AData is sent to request
+2)				;  new allocation
+2)	
+
+
+LINE 23, PAGE 12
+1)		TLNE B,(177777B17)	; Routing directly to network?
+1)		SKIPN C			; No, already have saved index?
+1)		 MOVE C,D		; Local or no index yet, save index
+1)		TLNN B,(177777B17)	; Routing directly to net?
+LINE 23, PAGE 14
+2)		SKIPN C			; Ok, already have saved index?
+2)		 MOVE C,D		; No, save index
+2)		TLNN B,(177777B17)	; Routing directly to net?
+
+
+; PUP.MAX;2 & PUP.MAX;1 30-Jul-82 1120	PAGE 5
+
+
+
+LINE 58, PAGE 15
+1)	; Setup read/write bit appropriately for this opening of port
+LINE 58, PAGE 17
+2)	
+2)	; Setup read/write bit appropriately for this opening of port
+
+
+LINE 7, PAGE 16
+1)	PUPSI1:	PUSHJ P,PUPSIP		; Here when buffer empty: try for next
+1)		 POPJ P,		; Error or EOF, return with no data
+1)		 JRST BAKWAT		; None now, back out and wait
+1)	
+1)	PUPSQI:	SOSGE FILCNT(JFN)	; Decrement and test byte count
+LINE 7, PAGE 18
+2)	PUPSQI:	SOSGE FILCNT(JFN)	; Decrement and test byte count
+
+
+LINE 17, PAGE 16
+1)	; Get and set up next Pup for sequential input.
+1)	; Returns +1: error or EOF
+1)	;	+2: none available now, must wait; A/ EDISMS arg
+1)	;	+3: successful
+1)	
+1)	PUPSIP::HLRZ UNIT,DEV		; Get Pup unit #
+1)		PUSHJ P,LCKBSQ		; Lock port, check for BSP
+LINE 13, PAGE 18
+2)	; Here when input Pup used up, attempt to get next
+2)	PUPSI1:	HLRZ UNIT,DEV		; Get Pup unit #
+2)		PUSHJ P,LCKBSQ		; Lock port, check for BSP
+
+
+LINE 31, PAGE 16
+1)			 JRST PUPSQW	; No, must wait
+1)			TLO IOS,(BSENDF)  ; Yes, set End encountered flag
+LINE 23, PAGE 18
+2)			 JRST ULKWAT	; No, back out and wait for data
+2)			TLO IOS,(BSENDF)  ; Yes, set End encountered flag
+
+
+LINE 36, PAGE 16
+1)		CAIN A,PT.AMA		; AMark?
+1)		 JRST [	ILDB A,PBBSID(PB)  ; Yes, get the byte
+LINE 28, PAGE 18
+2)		 CAIN A,PT.AMA		; AMark?
+2)		 JRST [	ILDB A,PBBSID(PB)  ; Yes, get the byte
+
+
+; PUP.MAX;2 & PUP.MAX;1 30-Jul-82 1120	PAGE 6
+
+
+
+LINE 49, PAGE 16
+1)		JRST SK2RET##		; Success return
+1)	
+LINE 41, PAGE 18
+2)		JRST PUPSQI		; Back to get first byte
+2)	
+
+
+LINE 58, PAGE 16
+1)	
+1)	; Here if no data; caller must wait.
+1)	PUPSQW:	PUSHJ P,ULKBSP		; Unlock port
+1)		JRST SKPRET##		; Return +2
+1)	^L
+LINE 1, PAGE 19
+2)	^L
+
+
+LINE 8, PAGE 17
+1)	PUPSO1:	PUSHJ P,PUPSOP		; Here when buffer full: try for next
+1)		 POPJ P,		; Error
+1)		 JRST BAKWAT		; None now, back out and wait
+1)	
+1)	PUPSQO:	SOSGE FILCNT(JFN)	; Decrement and test byte count
+LINE 8, PAGE 20
+2)	PUPSQO:	SOSGE FILCNT(JFN)	; Decrement and test byte count
+
+
+LINE 18, PAGE 17
+1)	; Get and set up next Pup for sequential output.
+1)	; Returns +1: error
+1)	;	+2: none available now, must wait; A/ EDISMS arg
+1)	;	+3: successful
+1)	; Saves and restores RH of A (byte being output)
+1)	
+1)	PUPSOP::HRLM A,0(P)		; Save the byte to be output
+1)		HLRZ UNIT,DEV		; Get Pup unit #
+LINE 14, PAGE 20
+2)	; Here when output Pup full, attempt to send it and start another
+2)	PUPSO1:	HRLM A,0(P)		; Save the byte to be output
+2)		HLRZ UNIT,DEV		; Get Pup unit #
+
+
+; PUP.MAX;2 & PUP.MAX;1 30-Jul-82 1120	PAGE 7
+
+
+
+LINE 35, PAGE 17
+1)		 JRST PUPSQW		; No, must wait
+1)		PUSHJ P,BLDDAT		; Yes, build virgin Data packet
+1)		 JRST PUPSQW		; Failed to allocate space
+1)		MOVEM A,FILCNT(JFN)	; Store byte count
+LINE 26, PAGE 20
+2)		 JRST ULKWAT		; No, back out and wait for Ack
+2)		PUSHJ P,BLDDAT		; Yes, build virgin Data packet
+2)		 JRST ULKWAT		; Failed to allocate space
+2)		MOVEM A,FILCNT(JFN)	; Store byte count
+
+
+LINE 42, PAGE 17
+1)		JRST SK2RET##		; Succeeded, return +2
+1)	^L
+LINE 33, PAGE 20
+2)		JRST PUPSQO		; Back to store it
+2)	^L
+
+
+LINE 12, PAGE 24
+1)	PNMDEC:	PUSH P,A
+1)		MOVEI B,ADRBSZ+1	; Allocate space for address table
+1)		PUSHJ P,ASGPFR
+1)		 JRST [	POP P,A		; Failed
+1)			POPJ P,]
+1)		MOVEI B,1(A)		; Address table loc for PUPNM
+1)		EXCH A,0(P)		; Restore string ptr
+1)		EXCH E,0(P)		; Save E, E_ address table ptr
+1)		MOVEI D,"U"		; Default mode is user-relative
+LINE 12, PAGE 27
+2)	PNMDEC:	MOVEI B,1(P)		; Set address tbl loc for PUPNM
+2)		ADD P,[ADRBSZ,,ADRBSZ]	; Allocate space on stack
+2)		JUMPGE P,MSTKOV##	; Check for overflow
+2)		MOVEM A,0(P)		; Save string ptr
+2)		MOVEI D,"U"		; Default mode is user-relative
+
+
+LINE 28, PAGE 24
+1)		ADD A,[7B5]		; Non-null, back up string ptr
+1)		HRLI B,(1B0+<ADRBSZ>B17)  ; Name to address, set size
+LINE 24, PAGE 27
+2)		MOVE A,0(P)		; Non-null, recover string ptr
+2)		HRLI B,(1B0+<ADRBSZ>B17)  ; Name to address, set size
+
+
+; PUP.MAX;2 & PUP.MAX;1 30-Jul-82 1120	PAGE 8
+
+
+
+LINE 10, PAGE 25
+1)		CAME C,2(E)		; Consistent with first?
+1)		 JRST PNMDE9		; No, bad
+LINE 10, PAGE 28
+2)		CAME C,-ADRBSZ+2(P)	; Consistent with first?
+2)		 JRST PNMDE9		; No, bad
+
+
+LINE 26, PAGE 25
+1)		CAME C,1(E)
+1)		 SETZM 1(E)		; No, make fully wildcard
+1)		AOBJN B,.+1		; Repeat for all adr tbl entries
+1)		AOBJN B,PNMDE5
+1)		MOVE C,1(E)		; Done, get resulting net/host
+1)		SETZ B,			; Convert to <net>B7 + <host>B15
+LINE 26, PAGE 28
+2)		CAME C,-ADRBSZ+1(P)
+2)		 SETZM -ADRBSZ+1(P)	; No, make fully wildcard
+2)		AOBJN B,.+1		; Repeat for all adr tbl entries
+2)		AOBJN B,PNMDE5
+2)		MOVE C,-ADRBSZ+1(P)	; Done, get resulting net/host
+2)		SETZ B,			; Convert to <net>B7 + <host>B15
+
+
+LINE 36, PAGE 25
+1)		AOS -1(P)		; Preset skip return
+1)	
+1)	; Here to return from PNMDEC
+1)	PNMDE9:	PUSH P,A		; Save result
+1)		EXCH B,E
+1)		PUSHJ P,RELPFR		; Release address table
+1)		MOVE B,E
+1)		POP P,A
+1)		POP P,E
+1)		POPJ P,			; Non-skip return
+LINE 36, PAGE 28
+2)		AOS -ADRBSZ(P)		; Preset skip return
+2)	
+2)	; Here to fail return from PNMDEC
+2)	PNMDE9:	SUB P,[ADRBSZ,,ADRBSZ]	; Flush address table
+2)		POPJ P,			; Non-skip return
+
+
+; PUP.MAX;2 & PUP.MAX;1 30-Jul-82 1120	PAGE 9
+
+
+
+LINE 13, PAGE 28
+1)	;		B3: Use timeout specified in 3, give PUPX3 error upon expiration
+1)	;		RH: JFN for port open in raw packet mode
+1)	;	2/	LH: Length of user block (36-bit words)
+1)	;		RH: Address of user block
+1)	;	3/	Timeout in milliseconds, 50000 maximum
+1)	; Returns +1:  Unsuccessful, 1/ Error #
+LINE 13, PAGE 31
+2)	;		RH: JFN for port open in raw packet mode
+2)	;	2/	LH: Length of user block (36-bit words)
+2)	;		RH: Address of user block
+2)	; Returns +1:  Unsuccessful, 1/ Error #
+
+
+LINE 26, PAGE 28
+1)		 JRST PUPI1		; Empty
+1)		LDB A,PUPLEN		; Get Pup Length in bytes
+LINE 24, PAGE 31
+2)		 JRST WATRAW		; Empty, back out and wait for input
+2)		LDB A,PUPLEN		; Get Pup Length in bytes
+
+
+LINE 2, PAGE 29
+1)	; PUPI (cont'd)
+1)	; Input queue empty
+1)	
+1)	PUPI1:	TLZN E,(1B3)		; Timeout specified?
+1)		 JRST WATRAW		; No, go wait or fail immediately
+1)		TLO E,(1B0)		; Yes, set to fail immediately on next call
+1)		XCTUU [HLLM E,1]
+1)		UMOVE A,3		; Get timeout
+1)		CAILE A,^D50000		; Limit to 50 seconds
+1)		 MOVEI A,^D50000
+1)		ADD A,TODCLK		; Compute ending time
+1)		ADDI A,177		; Round up to next unit of 128 ms
+1)		TRZ A,177
+1)		LSH A,^D20		; B0-8 _ (ending time / 128) mod 512
+1)		TLO A,(UNIT)		; Insert Pup port index
+1)		HRRI A,PUPIWT		; Scheduler test routine
+1)		JRST BAKWAT		; Back out and wait
+1)	
+1)	USE RESPC
+1)	
+1)	; Scheduler test routine for Pup input ready or timeout
+1)	
+1)	PUPIWT:	LDB B,[POINT 9,A,35]	; Get Pup port index
+1)		HRRZ C,PUPIBQ(B)	; Get head of queue
+1)		CAIE C,PUPIBQ(B)
+1)		 JRST 1(D)		; Not empty, awaken
+
+
+; PUP.MAX;2 & PUP.MAX;1 30-Jul-82 1120	PAGE 10
+
+
+1)		TRZ A,777
+1)		LSH A,-2		; Shift (ending time / 128) mod 512 into position
+1)		SUB A,TODCLK		; Compute (then - now) mod 512
+1)		ANDI A,177600
+1)		CAIG A,^D50000		; Expired?
+1)		 JRST 0(D)		; No
+1)		JRST 1(D)		; Yes, awaken
+1)	
+1)	USE SWAPPC
+1)	^L
+1)	; Output Pup in raw packet mode
+LINE 2, PAGE 32
+2)	; Output Pup in raw packet mode
+
+
+LINE 36, PAGE 30
+1)	; Substitute defaults for zero elements in the Pup destination
+1)		SKIPN D,PUPFPT(UNIT)	; Get foreign port descriptor
+1)		 MOVEI D,[EXP 0,0]-1	; None, default all zeroes
+1)		LDB A,PPUPDN		; Destination net
+1)		JUMPN A,PUPO1		; Jump if specified
+1)		HLRZ A,1(D)		; Unspecified, get default
+1)		JUMPN A,.+2		; Jump if have one
+1)		HRRZ A,DEFNET		; None, use default directly-connected net
+1)		DPB A,PPUPDN		; Store replacement value
+LINE 36, PAGE 32
+2)	; Check that the Pup source is consistent with the local port
+2)	; and Maxc's network address, and default elements where necessary.
+2)		LDB A,PPUPSN		; Get source net from Pup
+2)		LDB B,PPRTLN		; Get local net from port
+2)		JUMPN A,.+3		; Net specified in Pup?
+2)		MOVE A,B		; No, get from port specification
+2)		DPB A,PPUPSN		; Default source net in Pup
+2)		CAME A,B		; Pup and port agree?
+2)		 JUMPN B,PUPOAE		; No, fail if port not wildcard
+2)		CAIL A,1		; Net in range?
+2)		 CAILE A,NPNETS
+2)		 ERUNLK(PUPX2,<PUSHJ P,RELPKT>)  ; No, give address error
+2)		HRRZ C,PUPROU-1(A)	; Yes, get Maxc address on net
+2)		JUMPE C,PUPOAE		; Fail if not on net
+2)	
+2)		LDB A,PPUPSH		; Get source host from Pup
+2)		LDB B,PPRTLH		; Get local host from port
+2)		JUMPE A,.+3		; Host specified in Pup?
+2)		CAME A,C		; Yes, agree with Maxc address?
+2)		 ERUNLK(PUPX2,<PUSHJ P,RELPKT>)  ; No, give address error
+2)		JUMPE B,.+3		; Host specified in port?
+2)		CAME B,C		; Yes, agree with Maxc address?
+2)		 ERUNLK(PUPX2,<PUSHJ P,RELPKT>)  ; No, give address error
+2)		DPB C,PPUPSH		; Deposit required Maxc host #
+2)	
+
+
+; PUP.MAX;2 & PUP.MAX;1 30-Jul-82 1120	PAGE 11
+
+
+2)		LDB A,PPUPSS		; Get source socket from Pup
+2)		JUMPN A,.+3		; Socket specified in Pup?
+2)		MOVE A,PUPLSK(UNIT)	; No, get local socket from port
+2)		DPB A,PPUPSS		; Default source socket in Pup
+2)		CAME A,PUPLSK(UNIT)	; Pup and port agree?
+2)	PUPOAE:	 ERUNLK(PUPX2,<PUSHJ P,RELPKT>)  ; No, give address error
+2)	^L
+2)	; PUPO (cont'd)
+2)	
+2)	; Substitute defaults for zero elements in the Pup destination
+2)		SKIPE D,PUPFPT(UNIT)	; Get foreign port descriptor
+2)		CAMGE D,[-2,,0]		; Multiple?
+2)		 MOVEI D,[EXP 0,0]-1	; Yes, can't default
+2)		LDB A,PPUPDN		; Destination net
+2)		JUMPN A,PUPO1		; Jump if specified
+2)		HLRZ A,1(D)		; Unspecified, get default
+2)		JUMPE A,PUPOAE		; Error if multiple or wildcard
+2)		DPB A,PPUPDN		; Store replacement value
+
+
+LINE 50, PAGE 30
+1)		JUMPN B,.+3		; Jump if specified
+1)		HRRZ B,1(D)		; Unspecified, get default
+1)		DPB B,PPUPDH		; Store replacement value
+1)	
+1)		LDB A,PPUPD0		; Destination socket
+1)		MOVE B,PBHEAD+3(PB)
+1)		LSHC A,^D16
+1)		JUMPN A,PUPO4		; Jump if specified
+1)		MOVE A,2(D)		; Unspecified, get default
+LINE 18, PAGE 33
+2)		JUMPN B,PUPO2		; Jump if specified
+2)		HRRZ B,1(D)		; Unspecified, get default
+2)		JUMPE B,[MOVE B,PUPROU-1(A)  ; None, check net table
+2)			TLNN B,(BROADF)	; Broadcast allowed?
+2)			 ERUNLK(PUPX2,<PUSHJ P,RELPKT>)  ; No, give error
+2)			JRST PUPO2]	; Yes, allow zero for dest host
+2)		DPB B,PPUPDH		; Store replacement value
+2)	
+2)	PUPO2:	LDB A,PPUPD0		; Destination socket
+2)		MOVE B,PBHEAD+3(PB)
+2)		LSHC A,^D16
+2)		JUMPN A,PUPO3		; Jump if specified
+2)		MOVE A,2(D)		; Unspecified, get default
+
+
+; PUP.MAX;2 & PUP.MAX;1 30-Jul-82 1120	PAGE 12
+
+
+
+LINE 1, PAGE 31
+1)	^L
+1)	; PUPO (cont'd)
+1)	
+1)	; Check that the Pup source is consistent with the local port
+1)	; and Maxc's network address, and default elements where necessary.
+1)	PUPO4:	LDB A,PPUPSN		; Get source net from Pup
+1)		LDB B,PPRTLN		; Get local net from port
+1)		JUMPN A,PUPO2		; Net specified in Pup?
+1)		SKIPN A,B		; No, get from port specification
+1)		 JRST [	LDB A,PPUPDN	; None there either.  Get dest net
+1)			MOVE B,PUPROU-1(A)
+1)			TRNN B,-1	; Destination directly connected?
+1)			 LDB A,[POINT 8,B,9] ; No, use immediate gateway net
+1)			SKIPGE B	; Present in routing table?
+1)			 HRRZ A,DEFNET	; No, use default directly-connected net
+1)			DPB A,PPUPSN
+1)			JRST PUPO3]
+1)	PUPO2:	DPB A,PPUPSN		; Default source net in Pup
+1)		CAME A,B		; Pup and port agree?
+1)		 JUMPN B,PUPOAE		; No, fail if port not wildcard
+1)	PUPO3:	CAIL A,1		; Net in range?
+1)		CAILE A,NPNETS
+1)		 ERUNLK(PUPX2,<PUSHJ P,RELPKT>)  ; No, give address error
+1)		HRRZ C,PUPROU-1(A)	; Yes, get Maxc address on net
+1)		JUMPE C,PUPOAE		; Fail if not on net
+1)	
+1)		LDB A,PPUPSH		; Get source host from Pup
+1)		LDB B,PPRTLH		; Get local host from port
+1)		JUMPE A,.+3		; Host specified in Pup?
+1)		CAME A,C		; Yes, agree with Maxc address?
+1)		 ERUNLK(PUPX2,<PUSHJ P,RELPKT>)  ; No, give address error
+1)		JUMPE B,.+3		; Host specified in port?
+1)		CAME B,C		; Yes, agree with Maxc address?
+1)		 ERUNLK(PUPX2,<PUSHJ P,RELPKT>)  ; No, give address error
+1)		DPB C,PPUPSH		; Deposit required Maxc host #
+1)	
+1)		LDB A,PPUPSS		; Get source socket from Pup
+1)		JUMPN A,.+3		; Socket specified in Pup?
+1)		MOVE A,PUPLSK(UNIT)	; No, get local socket from port
+1)		DPB A,PPUPSS		; Default source socket in Pup
+1)		CAME A,PUPLSK(UNIT)	; Pup and port agree?
+1)	PUPOAE:	 ERUNLK(PUPX2,<PUSHJ P,RELPKT>)  ; No, give address error
+1)	
+1)	; Done defaulting address fields
+1)	; Compute checksum if required and queue the Pup for output
+1)		TLNE E,(1B1)		; Want checksum generated?
+1)		 PUSHJ P,SETCKS		; Yes, do so
+LINE 35, PAGE 33
+
+
+; PUP.MAX;2 & PUP.MAX;1 30-Jul-82 1120	PAGE 13
+
+
+2)	
+2)	; Done defaulting address fields
+2)	; Compute checksum if required and queue the Pup for output
+2)	PUPO3:	TLNE E,(1B1)		; Want checksum generated?
+2)		 PUSHJ P,SETCKS		; Yes, do so
+
+
+LINE 31, PAGE 37
+1)	; Instructions are repeated to unroll the loop and thereby speed it up.
+1)		SKIPA B,PUPTQH		; Start at header of timer queue
+1)	ADDTQ2:	MOVE B,0(B)		; Get successor
+1)		CAMG A,PUPTQD(B)	; Compare new time to one on queue
+1)		 JRST ADDTQ3		; New time earlier, found the place.
+1)		MOVE B,0(B)
+1)		CAMG A,PUPTQD(B)
+1)		 JRST ADDTQ3
+1)		MOVE B,0(B)
+1)		CAMG A,PUPTQD(B)
+1)		 JRST ADDTQ3
+1)		MOVE B,0(B)
+1)		CAMLE A,PUPTQD(B)
+1)		 JRST ADDTQ2
+1)	
+1)	; Found the desired place, B/ new successor
+1)	ADDTQ3:	MOVEI A,PUPTMQ(UNIT)	; Compute address of new item
+1)		HLRZ C,0(B)		; Get new predecessor
+LINE 31, PAGE 38
+2)		MOVEI B,PUPTQH		; Start at header of timer queue
+2)	ADDTQ2:	HRRZ B,0(B)		; Get successor
+2)		CAMLE A,PUPTQD(B)	; Compare new time to one on queue
+2)		 JRST ADDTQ2		; Still later, keep searching
+2)	
+2)	; Found the desired place, B/ new successor
+2)		MOVEI A,PUPTMQ(UNIT)	; Compute address of new item
+2)		HLRZ C,0(B)		; Get new predecessor
+
+
+LINE 1, PAGE 38
+1)	^L
+1)	; Delete port from timer queue, callable from process level
+LINE 44, PAGE 38
+2)	
+2)	
+2)	; Delete port from timer queue, callable from process level
+
+
+; PUP.MAX;2 & PUP.MAX;1 30-Jul-82 1120	PAGE 14
+
+
+
+LINE 35, PAGE 42
+1)	; BUG(DPR,<message>,X)
+LINE 35, PAGE 41
+2)	
+2)	; BUG(DPR,<message>,X)
+
+
+LINE 72, PAGE 42
+1)	; Bug-related data
+LINE 73, PAGE 41
+2)	
+2)	; Bug-related data
+
+
+LINE 15, PAGE 50
+1)		MOVE A,TODCLK		; Time stamp the Pup
+1)		MOVEM A,PBTIME(PB)
+1)	
+LINE 15, PAGE 49
+2)	
+
+
+LINE 64, PAGE 50
+1)		PUSHJ P,PUTPUP		; Queue Pup for output
+LINE 62, PAGE 49
+2)		MOVE A,TODCLK		; Time stamp the Pup
+2)		MOVEM A,PBTIME(PB)
+2)		PUSHJ P,PUTPUP		; Queue Pup for output
+
+
+LINE 13, PAGE 51
+1)			PUSH P,A	; Save code and string ptr
+1)			PUSH P,B
+1)			PUSHJ P,DOBSPL	; Ensure BSP data up-to-date
+1)			POP P,B
+1)			POP P,A
+1)			SKIPL BSPSII(BSP)  ; Still outstanding?
+LINE 13, PAGE 50
+2)			PUSHJ P,DOBSPL	; Ensure BSP data up-to-date
+2)			SKIPL BSPSII(BSP)  ; Still outstanding?
+
+
+; PUP.MAX;2 & PUP.MAX;1 30-Jul-82 1120	PAGE 15
+
+
+
+LINE 38, PAGE 51
+1)		HLRZ B,BSPTIM(BSP)	; Get round-trip delay
+1)		LSH B,1			; Double to make retransmission timeout
+1)		ADDI A,(B)		; Compute time for next check
+LINE 34, PAGE 50
+2)		HLRZ B,BSPTIM(BSP)	; Get retransmission timeout
+2)		ADDI A,(B)		; Compute time for next check
+
+
+LINE 62, PAGE 51
+1)	; Send an Abort
+LINE 57, PAGE 50
+2)	
+2)	
+2)	; Send an Abort
+
+
+LINE 1, PAGE 59
+1)	^L
+1)	; Input Pup processing routines (cont'd)
+1)	
+1)	; Acknowledgment (cont'd)
+1)	; --------------
+1)	
+1)	; Revise running estimate of round-trip delay.
+1)	; new estimate _ (7 * old estimate + new sample) / 8.
+1)		MOVE A,TODCLK
+1)		SUB A,BSPATM(BSP)	; Actual time since most recent AData sent
+1)		CAIG A,MINRET		; Keep within reasonable bounds
+1)		 MOVEI A,MINRET
+1)		CAIL A,MAXRET
+1)		 MOVEI A,MAXRET
+1)		HLRZ B,BSPTIM(BSP)	; Get old estimate
+1)		IMULI B,7		; Compute new estimate
+1)		ADD B,A
+1)		LSH B,-3
+1)		HRLM B,BSPTIM(BSP)	; Store new estimate
+1)	
+LINE 66, PAGE 57
+2)	
+
+
+; PUP.MAX;2 & PUP.MAX;1 30-Jul-82 1120	PAGE 16
+
+
+
+LINE 21, PAGE 62
+1)		LSH D,-1		; Make cutoff be now minus half that
+1)		ADD D,PBTIME-PBBSPQ(A)	; Check time stamp of first packet
+LINE 21, PAGE 59
+2)		ADD D,PBTIME-PBBSPQ(A)	; Check time stamp of first packet
+
+
+LINE 33, PAGE 62
+1)		LSH D,-1		; Make cutoff be now minus half that
+1)		MOVN D,D		; Make negative
+LINE 32, PAGE 59
+2)		MOVN D,D		; Make negative
+
+
+LINE 11, PAGE 63
+1)		LSH A,-1		; Make cutoff be now minus half that
+1)		ADD A,BSPATM(BSP)	; Add to time of last AData
+LINE 11, PAGE 60
+2)		ADD A,BSPATM(BSP)	; Add to time of last AData
+
+
+LINE 31, PAGE 63
+1)	CHKALL:
+1)	IFN ALLPCT,<	; If overlapping Data/Acks
+1)		LDB A,PBSOAP		; Get # Pups allocation
+1)		HLRZ B,BSPOQL(BSP)	; Get # Pups already queued
+LINE 30, PAGE 60
+2)	CHKALL:	LDB A,PBSOAP		; Get # Pups allocation
+2)		HLRZ B,BSPOQL(BSP)	; Get # Pups already queued
+
+
+LINE 46, PAGE 63
+1)	>
+1)	IFE ALLPCT,<	; If not overlapping Data/Acks
+1)		LDB A,PBSOAP		; Get # Pups allocation
+1)		JUMPE A,SKPRET##	; Return +2 if exhausted
+1)		HRRZ A,BSPOAL(BSP)	; Get # bytes allocation
+1)		JUMPE A,SKPRET##	; Return +2 if exhausted
+1)		POPJ P,			; Not exhausted, return +1
+1)	>
+1)	^L
+1)	; Routines to compute and store new timeout
+LINE 43, PAGE 60
+2)	
+2)	
+2)	
+2)	; Routines to compute and store new timeout
+
+
+; PUP.MAX;2 & PUP.MAX;1 30-Jul-82 1120	PAGE 17
+
+
+
+LINE 13, PAGE 64
+1)		HLRZ B,BSPTIM(BSP)	; Get round trip delay
+1)		LSH B,1			; Make retransmission timeout be double that
+1)		CAIGE A,(B)		; Hold at least that long
+LINE 57, PAGE 60
+2)		HLRZ B,BSPTIM(BSP)	; Get retransmission timeout
+2)		CAIGE A,(B)		; Hold at least that long
+
+
+LINE 20, PAGE 64
+1)	SETTMR:	HLRZ A,BSPTIM(BSP)	; Get round trip delay
+1)		LSH A,1			; Make retransmission timeout be double that
+1)		JRST SETTM3		; Go set new time
+LINE 63, PAGE 60
+2)	SETTMR:	HLRZ A,BSPTIM(BSP)	; Get retransmission timeout
+2)		JRST SETTM3		; Go set new time
+
+
+LINE 21, PAGE 66
+1)		HLRZ B,BSPTIM(BSP)	; Get round trip delay
+1)		LSH B,1			; Make retransmission timeout be double that
+1)		CAIGE A,(B)		; Use whichever is greater
+LINE 21, PAGE 62
+2)		HLRZ B,BSPTIM(BSP)	; Get retransmission timeout
+2)		CAIGE A,(B)		; Use whichever is greater
+
+
+LINE 54, PAGE 67
+1)	; Now A/ pointer to PBBSPQ of first Pup past hole.   Build PosAck blocks
+1)		MOVSI D,-MXSACK		; Init max # of specific acks
+LINE 54, PAGE 63
+2)	; Now A/ pointer to PBBSPQ of first Pup past hole
+2)	; Build PosAck blocks
+2)		MOVSI D,-MXSACK		; Init max # of specific acks
+
+
+LINE 77, PAGE 67
+1)	; Still in IFG MXSACK conditional
+LINE 78, PAGE 63
+2)	
+2)	; Still in IFG MXSACK conditional
+
+
+; PUP.MAX;2 & PUP.MAX;1 30-Jul-82 1120	PAGE 18
+
+
+
+LINE 13, PAGE 106
+1)	IFE UCSUMF,<	; If no CSUM16 microcode operation present
+1)		PUSH P,D		; Sign bit set if leftover 16-bits
+LINE 13, PAGE 102
+2)		PUSH P,D		; Sign bit set if leftover 16-bits
+
+
+LINE 21, PAGE 106
+1)		ADD P,BHC##+LPCHKL	; Get some stack space to save ACs
+1)		JUMPGE P,MSTKOV##
+1)		MOVSI B,D+1
+1)		HRRI B,-LPCHKL+1(P)
+1)		BLT B,0(P)
+1)		MOVE B,[PCHKLP,,D+1]	; Copy the Pup checksum loop into the ACs
+1)		BLT B,D+LPCHKL
+1)		TLNN C,-1		; Use leftover count first
+1)		 JRST PUPCK4		; None, start full 8-fold cycles
+1)		JRST D+1		; Enter main loop
+1)	
+1)	; Break out of main loop to here every 8 words
+1)	PUPCK3:	PUSHJ P,CKFOLD		; Fold 36 bits to 16
+1)	PUPCK4:	HRLI C,-8		; Set to do next group
+1)		SOJG D,D+1		; Repeat if more to do
+1)		MOVSI B,-LPCHKL+1(P)	; Done, restore ACs
+1)		HRRI B,D+1
+1)		BLT B,D+LPCHKL
+1)		SUB P,BHC##+LPCHKL	; Flush from stack
+1)		POP P,D
+1)	>
+1)	IFN UCSUMF,<	; If CSUM16 microcode operation is available
+1)		MOVN B,C		; Make AOBJN ptr to Pup
+1)		MOVSI B,0(B)
+1)		HRRI B,PBHEAD(PB)
+1)		SETZ C,			; Init checksum to zero
+1)		CSUM16 B,		; Invoke the microcode operation
+1)		MOVE A,C		; Result checksum
+1)		MOVE C,B		; Ending pointer
+1)	>
+1)		JUMPGE D,PUPCK5		; Have a leftover 16 bits?
+1)		MOVE B,0(C)		; Yes, add it in
+LINE 20, PAGE 102
+2)		TLNN C,-1		; Use leftover count first
+2)		 JRST PUPCK4		; None, start full 8-fold cycles
+2)	PUPCK2:	MOVE B,0(C)		; Get a word
+2)		ANDCMI B,17		; Clear garbage bits
+2)		ROT B,^D16		; High 16 bits to B20-35, clear B18-19
+2)		ADDI A,(B)		; Add to checksum
+2)		LSH A,2			; Shift checksum twice
+2)		LSH B,-^D<36-16-1>	; Justify previous low 16 bits to B34
+
+
+; PUP.MAX;2 & PUP.MAX;1 30-Jul-82 1120	PAGE 19
+
+
+2)		ADDI A,(B)		; Add to checksum (pre-shifted)
+2)		AOBJN C,PUPCK2		; Repeat for this group
+2)		PUSHJ P,CKFOLD		; Fold 36 bits to 16
+2)	PUPCK4:	HRLI C,-8		; Set to do next group
+2)		SOJG D,PUPCK2		; Repeat if more to do
+2)		POP P,D			; Done, have a leftover 16 bits?
+2)		JUMPGE D,PUPCK5
+2)		MOVE B,0(C)		; Yes, add it in
+
+
+LINE 1, PAGE 107
+1)	^L
+1)	; PUPCKS (cont'd)
+1)	
+1)	IFE UCSUMF,<
+1)	; Main loop of Pup checksum computation.  Runs in ACs starting at D+1.
+1)	PCHKLP:	MOVE B,0(C)		; Get a word
+1)		ANDCMI B,17		; Clear garbage bits
+1)		ROT B,^D16		; High 16 bits to B20-35, clear B18-19
+1)		ADDI A,(B)		; Add to checksum
+1)		LSH A,2			; Shift checksum twice
+1)		LSH B,-^D<36-16-1>	; Justify previous low 16 bits to B34
+1)		ADDI A,(B)		; Add to checksum (pre-shifted)
+1)		AOBJN C,D+1		; Repeat for this group
+1)		JRST PUPCK3		; Out to fold in the propagated carries
+1)	LPCHKL==.-PCHKLP
+1)	>
+1)	
+LINE 43, PAGE 102
+2)	
+
+
+LINE 1, PAGE 113
+1)	^L
+1)	USE RESPC
+LINE 49, PAGE 106
+2)	
+2)	
+2)	USE RESPC
+
+
+LINE 33, PAGE 114
+1)	
+1)	
+1)	; Check input queue length
+LINE 1, PAGE 107
+2)	^L
+2)	; Check input queue length
+
+
+; PUP.MAX;2 & PUP.MAX;1 30-Jul-82 1120	PAGE 20
+
+
+
+LINE 15, PAGE 117
+1)	INSITQ::			; Same as APPITQ
+1)	
+LINE 15, PAGE 111
+2)	INSITQ:				; Same as APPITQ
+2)	
+
+
+LINE 25, PAGE 117
+1)	APPITQ::HLRZ C,(A)		; Get current tail
+1)		HRLM B,(A)		; Queue tail _ new PB
+LINE 25, PAGE 111
+2)	APPITQ:	HLRZ C,(A)		; Get current tail
+2)		HRLM B,(A)		; Queue tail _ new PB
+
+
+LINE 40, PAGE 117
+1)	REMITQ::HRRZ B,(A)		; Get current head
+1)		CAIN B,(A)		; Empty?
+LINE 40, PAGE 111
+2)	REMITQ:	HRRZ B,(A)		; Get current head
+2)		CAIN B,(A)		; Empty?
+
+
+LINE 57, PAGE 117
+1)	DELITQ::HLRZ B,(A)		; Get this item's predecessor
+1)		HRRZ C,(A)		; Get this item's successor
+LINE 57, PAGE 111
+2)	DELITQ:	HLRZ B,(A)		; Get this item's predecessor
+2)		HRRZ C,(A)		; Get this item's successor
+

@@ -1,0 +1,813 @@
+; 12 February 81 -- Adding another error, notAPup.  Aw, guess... MWA
+; 12 February 81 -- Adding two error counters, in1Err and in2Err, on input
+;		    interrupt routine.  in1Err indicates an error bit was
+;		    on.  in2Err indicates that the input word count was
+;		    zero (i.e. an input overrun) -- MWA
+; 27 January 81 -- Adding GoCount to count the number of times we hit the
+;		   go bit.  If this is different from the number of times
+;		   we interupt, we are getting spurious ones.  MWA
+; 3 December 80 -- Adding a timer and a timeout to wait loop for ether
+; 		   output done.  Lost an ether interupt once, and it killed 
+;		   us.
+; 29 July 80 -- Ten's response to a spurious interupt was killing us.
+;		Chaning reqA2 to treat these right.  MWA
+; 25 July 80 -- Whoops! playing with o.len when I shouldn't be... Also adding
+;		some more debuging to see if we can catch a dropping
+;		interupt.  Removed obsolete IOcontrol word.  MWA
+; 14 July 80 -- Increasing number of input buffers to allow the 20/20 to
+;		clobber us with input on the BSP.  MWA
+; 20 March 80 -- Picking up length to send to the ethernet board from the
+;		 length in the PUP. MWA
+; 11 March 80 -- Changes to isolate input and output.  Changing the names of
+; 		 a few bits.  MWA
+; 7 March 80 -- Extensive debugging stuff added. MWA
+; 5 March 80 -- Adding tests for reset bit. MWA
+; 3 March 80 -- Making changes to implement new 10 <=> 11 communication
+; protocols MWA
+;
+; **********
+; *        *
+; * PUP11  *
+; *        *
+; **********
+;
+;
+; pup service on the 11.  If the pupOnly flag is set, the code will strain
+; out pups only, and will change the ethernet packet type (word two of the
+; packet) to a length, as required by the 10.
+
+
+
+
+; device registers for ether net board
+
+outWordCount	= 160400
+outBuffer	= 160402
+outStatus	= 160404
+outDelay	= 160406
+inWordCount	= 160410
+inBuffer	= 160412
+inStatus	= 160414
+portAddress	= 160416
+
+ena.ether	= 100			; interupt enable
+go.ether	= 1			; go bit on the interface
+promis.ether	= 2			; promisuous bit
+pri.ether	= 340			; priority 7
+
+; vectors
+
+outvec		= 400
+inVec		= 404
+collisionVec	= 410
+
+
+; device registers for the 10 <=> 11 interface
+
+stat1		= 160000
+wDat1		= 160002
+rDat1		= 160004
+ctrl1		= 160006
+stat2		= 160010
+wDat2		= 160012
+rDat2		= 160014
+ctrl2		= 160016
+
+ena.a1		= 100		; enable reqA1 interupt.  Set in STAT1
+sel.a1		= 2		; selects the a1 (as opposed to b1)
+
+ena.a2		= 100		; enable a2 (data ready).  Set in STAT2
+ena.b2		= 40		; enable b2 (ready for more data) "  "  "
+
+; vectors
+
+a1iVec		= 160		; status "A" interupt
+b1iVec		= 164
+a2iVec		= 170		; datao (11 input) interupt
+b2iVec		= 174		; datai (11 output) interupt
+
+pri.ten		= 340
+
+; status register for KW11 line clock
+
+lineClock	= 177546
+
+; vector
+
+clockVec	= 100
+
+ena.clock	= 100
+pri.clock	= 300		; br 6
+
+; bits
+
+co.reset	= 40000		; reset bit
+co.bpo		=  2000		; 10 => 11 begin pup output (obsolete)
+co.cts		=  1000		; 10 => 11 clear to send (formerly co.bpi)
+co.pod		=   200		; 10 => 11 pup output done
+co.rts		=   100		; 10 => 11 request to send
+
+ci.pid		= 4000		; 11 => 10 pup input done
+ci.eod		= 2000		; 11 => 10 ether output done
+ci.cts		= 1000		; 11 => 10 clear to send
+ci.rts		=  400		; 11 => 10 request to send
+
+psw		= 177776	; processor status word
+
+	.macro	intoff
+	mov	@#psw, -(sp)	; save the psw
+	bis	#340, @#psw	; and bump cpu to prio 7
+	.endm
+
+	.macro	inton
+	mov	(sp)+, @#psw	; restore the old psw
+	.endm
+
+	.macro	dClr dw		; double word clear
+	clr	dw
+	clr	dw+2
+	.endm
+
+	.macro	dInc dw, ?l	; double word inc
+	inc	dw
+	bne	l
+	inc	dw+2
+l:	nop
+	.endm
+
+; start of program.  Quam's loader sends us to 1000
+
+start:	reset				; issue hardware reset (sends an 
+					; init to the unibus)
+1$:	bit	#co.reset, @#ctrl1	; is reset still high?
+	bne	1$			; yes, wait till it goes down
+
+	mov	#1000, sp		; set up the stack
+	jmp	main			; for the loader
+
+
+; variables -- Note: The input buffers are all stored at the end of the
+; program.  Thus the last word must be bigBuff.
+
+pupsOnly	= 1		; set to 0 if we want to send ALL packets to 10
+
+highCore	= 77700		; not really, but that's where the boot starts
+numQs		= 10.		; allow us to buffer up a bunch of stuff for BSP
+pkSize		= 540.		; the biggest packet we can get
+maxRetries	= 10.		; number of times to try sending a packet
+etherNet	= 1		; physical network number for the ether net
+pupType		= 1000		; ether net packet type for a pup
+
+; offsets for ethernet packets
+
+source		= 0		; a byte
+dest		= 1		; a byte
+type		= 2		; a word
+
+iAm:		.word	0	; this is where our host number is stored
+physNet:	.word	etherNet	; this is connected network #
+
+; there is only one output buffer
+
+o.pntr:		.word	0	; output word pointer
+o.len:		.word	0	; output length
+o.done:		.word	0	; flag to indicate that we are ready to send
+
+; output ether stuff
+
+e.retry:	.word	0	; number of times to retry the packet
+e.done:		.word	0	; packet has been sent to the ether
+
+; stuff for the input queue:  Queue elements look like
+;
+; +------------------+
+; |     pointer      |
+; +------------------+
+; |     length       |
+; +------------------+
+; | buffer pointer   |
+; +------------------+
+; |  buffer start    |
+; +------------------+
+; |   	 	     |
+; |      buffer      |
+; |	   .  	     |
+; |	   .	     |
+; |	   .	     |
+; +------------------+
+;
+; queue of stuff ready to send is pointed at by i.qHead, end of queue by
+; i.qTail, free elements by freeQ
+
+
+; offsets
+
+q.link		= 0
+q.length	= 2
+q.pntr		= 4
+q.buffer	= 6
+q.data		= 10
+q.Size		= pkSize*2 + q.data - 2
+
+
+i.qHead:	.word	0	; head of the q
+i.qTail:	.word	0	; end of it
+freeQ:		.word	0
+
+i.Current:	.word	0	; queue elemetn being sent to the ten
+e.Current:	.word	0	; queue element the ether is going into
+
+i.busy:		.word	0	; flag for if we are sending a packet to 10
+i.done:		.word	0	; non zero on the last interupt from the 10
+
+badOut:		.word	0	; number of outputs to nothing
+inCollisions:	.word	0	; number of times we get an input with no
+				; request from the 10
+a2extra:	.word	0	; a2 interupt when not receiving a packet
+
+; interupt counters.  Note that these are all double words
+
+a2Count:	.word	0, 0	; count of a2 interupts
+b2Count:	.word	0, 0	; count of b2 interupts
+ceCount:	.word	0, 0
+ieCount:	.word	0, 0 	; count of input ethernet interupts
+oeCount:	.word	0, 0	; count of output ethernet interupts
+goCount:	.word	0, 0	; count of number of go bits
+
+wDatCount:	.word	0, 0	; number of writes to wDat (1 + 2)
+rDatCount:	.word	0, 0	; number of reads from rDat
+
+lenError:	.word	0, 0	; count of length errors
+netError:	.word	0, 0	; count the destination net work errors
+				; (ethernet(R) is the only legal one)
+timeErr:	.word	0, 0	; ethernet interupt has timed out
+in1Err:		.word	0, 0	; ethernet input error (unspecified)
+in2Err:		.word	0, 0	; in1err caused by packet overrun
+notAPup:	.word 	0, 0	; increment if the packet recieved wasn't a pup
+
+; pointer to the ring buffer of interpt ID's and ctrl and stat
+
+a2.ID	= 1
+b2.ID	= 2
+ce.ID	= 3
+ie.ID	= 4
+oe.ID	= 5
+
+ringIndex:	.word	0
+clearRing:	.word	0
+maxRing	= <6 * 40> - 1
+
+; variable to trace a2 enable/disable.  iSetA2 is set when the software sets
+; it, and cleared when software clears it.  SetPC stores the PC where this
+; happens
+
+iSetA2:		.word	0
+setPC:		.word	0
+gettingPacket:	.word	0
+
+; todClk is clock timer.  Gets set to zero when timing starts, and gets 
+; interupt on 60 cycle clock interupt
+
+todClk:		.word	0
+; ring buffer handler -- all interupt routines call this.  Takes an interupt
+; id in r0, stores the id, stat2 and ctrl1 in the ring
+
+; initRing -- initializes the ring.  Gets called if the flag clearRing is
+;	set.  This is so we can re-initialize things while the program is
+; 	running, if we so desire
+
+initRing:
+	mov	r0,-(sp)		; save r0
+	clr	ringIndex		; init the index
+	mov	#maxRing, r0		; clear the maximum number of spots
+ir.100:	clrb	ringBuff(r0)		; clear this spot
+	dec	r0			; any more?
+	bge	ir.100			; yup
+
+	dClr	a2Count			; now initialize all the error counts
+	dClr	b2Count
+	dClr	ieCount
+	dClr	oeCount
+	dClr	ceCount
+	dClr	goCount
+	dClr	wDatCount
+	dClr	rDatCount
+	dClr	lenError
+	dClr	netError
+	dClr	timeErr
+	dClr	in1Err
+	dClr	in2Err
+	dClr	notAPup
+
+	clr	clearRing		; and clear the flag, so we stop doing this
+
+	mov	(sp)+, r0
+	rts	pc
+
+; saveRing -- saves an inturupt id, stat2 and ctrl1
+	
+saveRing:
+	mov	r1, -(sp)		; save r1
+	tst	clearRing		; should we clear the ring first?
+	beq	1$			; nope
+	jsr	pc, initRing
+
+1$:	mov	ringIndex, r1		; get the ringindex
+	mov	r0, ringBuff(r1)	; save the interupt id
+	mov	@#stat2, ringBuff+2(r1)	; save the status reg
+	mov	@#ctrl1, ringBuff+4(r1)	; and the control
+	add	#6, r1			; update the ring
+	cmp	r1, #maxRing		; too big?
+	blt	sr.100
+	clr	r1			; if so, reset
+sr.100:	mov	r1, ringIndex		; save the new pointer
+	mov	(sp)+, r1		; restore the r1
+	rts	pc
+; clock interupt
+
+clockInt:
+	inc	todClk		; wish they were all this hard
+	rti
+
+
+; 10 <=> 11 interupts
+
+
+; 3 Mar, 80 -- removing A1 interupt. MWA
+
+
+; reqA2 is a datao from the 10, i.e. the ten has sent us some data
+
+reqA2:	mov	r0, -(sp)
+	nop				; to patch a halt
+	mov	#a2.ID, r0
+	jsr	pc, saveRing		; mark us as here
+	dInc	a2Count
+	tst	gettingPacket		; are we really receiving?
+	bne	4$			; yup
+	inc	a2extra			; extra a2 this means
+	tst	@#rdat1
+	tst	@#rdat2			; touch the rdat words to clear
+	jmp	ra2900			; and just leave
+	
+4$:	mov	o.pntr, r0		; point to the buffer
+	bne	1$			; if we have one, transfer is in progress
+	mov	#o.buffer, r0		; otherwise, start a new buffer
+	mov	#pkSize, o.len		; set length to buffer size
+	bic	#<ci.eod+ci.cts>, @#stat1	; clear the output done and clear to send
+
+1$:	tst	o.len			; check to make sure we don't overflow
+	bgt	2$			; whew... we have enough room
+	tst	@#rdat1
+	tst	@#rdat2			; just throw away the data
+	dInc	rDatCount
+	inc	badOut			; error counter
+	br	3$
+
+2$:	dec	o.len			; negative word count
+	mov	@#rDat2, (r0)+
+	dec	o.len
+	mov	@#rDat1, (r0)+		; get a word
+	dInc	rDatCount
+3$:	mov	r0, o.pntr		; save the pointer
+	bit	#co.pod, @#ctrl1	; was this the last word?
+	beq	ra2900			; nope, so just continue
+	inc	o.done			; set the ouput done flag
+	clr	iSetA2			; flag the disable
+	mov	pc, setPC		; and save the spot
+	bic	#ena.a2, @#stat2	; make sure the 10 doesn't bother us
+					; until after we have sent the packet.
+					; N.B. hthis bit gets reset in 
+					; tenToEther
+
+ra2900:	mov	(sp)+, r0		; restore
+	rti				; and return
+
+
+; reqB2 is a DATAI from the 10, i.e. we have sent a word, and it is ready
+; for another
+
+reqB2:	mov	r0, -(sp)	
+	mov	r1, -(sp)
+	nop				; to patch a halt
+	mov	#b2.ID, r0
+	jsr	pc, saveRing
+	dInc	b2Count
+	mov	i.Current, r0		; get the current output
+	beq	rb0900			; nope, just return
+	
+	tst	i.done			; is this last of the packet?
+	beq	1$			; nope
+	clr	i.done			; clear the done flag
+	clr	i.busy			; and the busy flag
+	mov	freeQ, q.link (r0)	; add this element to the free list
+	mov	r0, freeQ
+	clr	i.Current
+	bic	#ena.b2, @#stat2	; clear the interupt
+	br	rb0900			; and don't touch the register
+
+1$:	mov	q.pntr(r0), r1		; get the pointer into buffer
+	dec	q.length (r0)		
+	dec	q.length (r0)		; done yet?
+	bgt	rb0100			; no
+
+	bis	#ci.pid, @#stat1	; signal that this is the last word
+	inc	i.done			; and signal to clean up next time
+
+rb0100:	mov	(r1)+, @#wDat2		; send the word
+	mov	(r1)+, @#wDat1
+	dInc	wDatCount
+	mov	r1, q.pntr (r0)		; save the new pointer
+
+rb0900:	mov	(sp)+, r1
+	mov	(sp)+, r0
+	rti
+
+
+
+
+; ether net routines.  These routines are the interupts from the ethernet
+; board, and a couple of support routines for them
+
+
+; rand -- return a random number in r0.  For the time being, just return
+; 	  10, but fix this up
+
+rand:	mov	#12, r0
+	rts	pc
+
+; collideEther -- a collision has take place.  Get a random number, and
+; retry (unless we've tried too much
+
+collideEther:
+	mov	r0, -(sp)
+	nop				; to patch a halt
+	mov	#ce.ID, r0
+	jsr	pc, saveRing
+	dInc	ceCount
+ce0100:	dec	e.retry			; have we done this too much?
+	ble	oe0100			; yup, pretend we sent the packet
+	jsr	pc, rand		; get a random number in r0
+	mov	r0, @#outDelay		; and pause that long
+	mov	#o.buffer, @#outBuffer	; set the buffer pointer
+	mov	o.len, @#outWordCount	; the word count
+	bis	#<ena.ether+go.ether>, @#outStatus	; start the show
+	dInc	goCount			; update go counts
+	mov	(sp)+, r0		; restore
+	rti				; and return
+
+
+; outEther -- have sent the packet
+
+outEther:
+	mov	r0, -(sp)
+	nop				; to patch a halt
+	mov	#oe.ID, r0
+	jsr	pc, saveRing
+	dInc	oeCount
+	tst	@#outStatus		; any kind of error?
+	blt	ce0100			; yes, try to resend the packet
+oe0100:	clr	@#outStatus		; we have sent the packet. clear int
+	clr	o.len
+	clr	e.retry
+	inc	e.done			; set the flag that we did it
+	mov	(sp)+, r0
+	rti
+
+
+; inEther -- we have just recived a packet.
+
+inEther:
+	mov	r0, -(sp)
+	mov	r1, -(sp)
+	nop				; to patch a halt
+	mov	#ie.ID, r0
+	jsr	pc, saveRing
+	dInc	ieCount
+
+	mov	e.Current, r0		; pointer to queue element
+	beq	ie0900
+	tst	@#inStatus		; an error?
+	bge	ie0010			; no, take care of the packet
+
+; we had an input error.  Is it just a random error, or have we recieved
+; a packet that was too big?
+
+	dInc	in1Err			; we mark an in1err in any event
+	tst	@#inWordCount		; did this go zero?
+	bne	ie0100			; nope, just blow off this packet
+	dInc	in2Err			; word count was zero, mark in2err
+	br	ie0100			; and blow off this packet
+
+ie0010:
+
+.if	ne pupsOnly
+	mov	q.buffer(r0), r1	; get a pointer to the packet
+	cmp	type(r1), #pupType	; is this a pup 
+	beq	ie0020			; yup, go to it
+	dInc	notAPup			; keep track of it
+	br	ie0100			; but blow it off
+.endc
+
+ie0020:	mov	@#inWordCount, r1	; get the number of words we read
+	bis	#176000, r1		; for the wierd way they do things
+	add	#pkSize, r1		; this gives us really the word count
+	mov	r1, q.length(r0)	; save the length of the packet
+	mov	q.buffer(r0), q.pntr(r0); set up the transfer pointer
+	mov	freeQ, r1		; do we have a queue element?
+	bne	ie0050			; if we have no element, use this one
+	inc	inCollision		; add one to the error count
+	br	ie0100			; and just use this bufefer
+
+ie0050:	mov	q.link(r1), freeQ	; update the free list
+	clr	q.link(r1)		; and remove this element from it
+	mov	i.qTail, r0		; last element of queue
+	bne	1$			; if there is no queue
+	mov	e.Current, i.qHead	; we need to set the head too
+	bis	#ci.rts, @#stat1	; and tell the 10 we want to send
+	br	2$
+1$:	mov	e.Current, q.link (r0)	; tack this on to the end of the queu
+2$:	mov	e.Current, i.qTail	; and save the new end
+	mov	r1, r0			; put the next element into r1
+
+ie0100:	mov	r0, e.Current		; save the current buffer
+	mov	q.buffer(r0), @#inBuffer
+	mov	#-pkSize, @#inWordCount
+	bis	#<ena.ether+go.ether>, @#inStatus
+	
+
+ie0900:	mov	(sp)+, r1
+	mov	(sp)+, r0
+	rti
+
+
+
+; tenToEther -- the ten has sent us a request to send, and we are not
+;		doing input at the moment.  Tell him he is clear to send,
+;		and wait for the packet
+
+
+tenToEther:
+	clr	o.done			; clear the done flag
+	clr	o.pntr			; reset the pointer
+	clr	o.len			; and the length
+	mov	#1, gettingPacket	; set the software flag
+	bis	#ci.cts, @#stat1	; then tell the 10 he can procede
+
+te.100:	tst	o.done			; has the packet finished yet?
+	beq	te.100			; nope, so wait for it
+
+	clr	o.pntr			; clear pointer
+	clr	gettingPacket		; clear the flag 
+
+.if	ne pupsOnly
+	cmpb	physNet, o.physNet	; are we sending to the ether net?
+	beq	te.150			; yup, take off
+	dInc	netError		; blech
+	jmp	te.200			; pretend we didn't see this stuff
+
+te.150:	mov	#pupType, o.type	; set the packet to type pup
+	swab	o.buffer		; put the ether destination into the
+					; high order byte
+.endc
+
+	movb	iAm, o.buffer		; make sure we identify ouselves right
+	mov	#maxRetries, e.retry 	; how long must I persevere?
+	clr	e.done
+
+	mov	p.length, r0		; calculate the number of words to send
+	inc	r0
+	asr	r0			; number of 16 bit words
+	inc	r0			; add the 2 encapsulation words
+	inc	r0
+	neg	r0			; negative word count
+	mov	r0, @#outWordCount	; set it for the ethernet
+	clr	@#outDelay		; no delay, mail today
+	mov	#o.buffer, @#outBuffer	; buffer location
+	bis	#<ena.ether+go.ether>, @#outStatus ; start things up
+	dInc	GoCount			; update the number of goes
+
+; removed a length calculation.... playing with o.len, which may be used
+; if the packet collides.  MWA
+; including timer in this loop.  I think this is the only loop safe to
+; time out, since the other loops are during a ten <=> eleven transfer.
+; If something fucks up there, we need to know about it.  MWA
+
+	clr	todClk			; clear the timer
+1$:	bit	#co.reset, @#ctrl1	; did the 10 reset us?
+	beq	2$			; no
+	jmp	start			; otherwise, restart
+
+2$:	cmp	todClk, #<5 * 60.>	; have we waited five seconds?
+	blt	3$			; nope 
+	dInc	timeErr		 	; otherwise, signal an error and
+	br	te.200			; pretend we're done
+
+3$:	tst	e.done			; did it get sent?
+	beq	1$			; hurry up and wait
+
+te.200:	bic	#ci.cts, @#stat1	; no longer clear to send
+	clr	e.done
+	clr	o.done
+	mov	#1, iSetA2		; flag the enable
+	mov	pc, setPC		; and the location
+	bis	#ena.a2, @#stat2	; the 10 can bother us again
+	bis	#ci.eod, @#stat1	; tell the 10 that the packet was sent
+	rts	pc			; return
+
+
+
+; etherToTen -- have a packet from the ether in the queue.  Start off the
+; 		transfer
+
+etherToTen:
+	inc	i.busy			; set the busy flag
+	clr	i.done			; we've only just begun...
+	bic	#ci.pid, @#stat1		; clear the done and request to send
+
+	intoff			; interupts off whilst we fiddle with queue
+
+	mov	i.qHead, r0		; get the head of the queue
+	mov	q.link (r0), r1		; update the queue
+	bne	1$
+	clr	i.qTail			; if no element, clear the tail
+	bic	#ci.rts, @#stat1	; and clear the request to send
+1$:	mov	r1, i.qHead
+
+	inton			; fiddling done, interupts back on
+
+	clr	q.link (r0)		; clear this link
+
+.if	ne pupsOnly
+	mov	q.length(r0), r1	; get the length of the packet (in words)
+	dec	r1
+	asr	r1			; convert to pdp10l minus the header
+	nop				; in case we need to patch
+	nop
+	nop
+	mov	q.buffer(r0), r2	; get a pointer to the packet
+	mov	r1, type(r2)		; and set the pup type to the length
+	movb	physNet, dest(r2)	; set up the physical net nubmer for
+					; the 10
+.endc
+
+	mov	r0, i.Current		; save the pointer
+
+	dec	q.length (r0)		; otherwise we need to start it off
+	dec	q.length (r0)
+	mov	q.pntr (r0), r1		; get the buffer pointer
+	mov	(r1)+, @#wdat2		; send the first word
+	mov	(r1)+, @#wdat1
+	dInc	wDatCount
+	mov	r1, q.pntr(r0)		; save the pointer
+	bis	#ena.b2, @#stat2	; enable the interupt
+
+
+3$:	bit	#co.reset, @#ctrl1
+	beq	4$
+	jmp	start
+4$:	tst	i.busy
+	bne	3$
+
+et0900:	rts	pc			; that's all we have to do
+
+
+
+; initQ -- initializes the queue structure
+
+initQ:
+	mov	#bigBuff, r0		; where all the queues start
+	clr	freeQ			; clear out the free q
+	mov	#numQs, r1
+
+iq0100:	mov	r0, r2			; use this to calculate wher the buffer
+	add	#q.data, r2		; this is data
+	mov	r2, q.buffer(r0)
+	mov	freeQ, q.link (r0)	; link in witht the free list
+	mov	r0, freeQ		; update
+	add	#q.size, r0		; bump r0 to next element
+	dec	r1
+	bne	iq0100
+
+	clr	i.qHead
+	clr	i.qTail
+	clr	i.Current
+	clr	e.Current		; zero out variables
+	clr	i.busy
+	clr	i.done
+
+	rts	pc
+
+
+; initVectors -- initalize relevent interupt vectors
+
+initVectors:
+	clr	r0
+	mov	#2, r1
+
+iv0100:	mov	r1, (r0)+		; set up the trap catcher
+	clr	(r0)+
+	add	#4, r1
+	cmp	r0, #400
+	blt	iv0100
+	clr	@#0			; 0 doesn't get a number
+
+; set the clock interupt
+
+	mov	#clockInt, @#clockVec
+	mov	#pri.clock, @#<clockVec + 2>
+	bis	#ena.clock, @#lineClock
+
+
+	mov	#a2iVec, r0		; start at a2 interupt vector
+	mov	#reqA2, (r0)+		; data input ready
+	mov	#pri.ten, (r0)+
+	mov	#reqB2, (r0)+		; data output ready
+	mov	#pri.ten, (r0)+
+
+	mov	#outVec, r0		; vector for ether net stuff
+	mov	#outEther, (r0)+
+	mov	#pri.ether, (r0)+
+	mov	#inEther, (r0)+
+	mov	#pri.ether, (r0)+
+	mov	#collideEther, (r0)+
+	mov	#pri.ether, (r0)+
+
+; find out who we are on the ether net
+	mov	@#portAdress, iAm	; get the port
+	comb	iAm			; and invert the bits (bad design)
+
+; grab the first queue element, and start the ether net
+	mov	freeQ, r0
+	mov	q.link(r0), freeQ	; first element
+	clr	q.link(r0)
+	mov	q.buffer(r0), @#inBuffer
+	mov	#-pkSize, @#inWordCount
+	mov	r0, e.Current		; mark the buffer
+	bis	#<ena.ether + go.ether>, @#inStatus
+
+; prime the 10 <=> 11 stuff
+
+	mov	#1, iSetA2		; flag the first enable
+	mov	pc, setPC		; and the spot
+	bis	#ena.a2, @#stat2	; listen to the 10
+
+	rts	pc
+
+
+
+; main program
+
+main:	jsr	pc, initQ		; set up the queue
+	jsr	pc, initVectors		; and the vectors
+	jsr	pc, initRing
+	clr	inCollision
+	clr	badOut
+	clr	o.pntr
+
+; this is the main loop.  see if have an input packet, send it if we do.
+; Check for an ouput, etc..
+
+
+m0000:	bit	#co.reset, @#ctrl1	; did the 10 reset?
+	beq	m0100			; no, so just spin
+	jmp	start			; yes, go and reset things
+
+
+m0100:	bit	#co.rts, @#ctrl1	; 10 want to send us something?
+	beq	m0200			; nope
+	jsr	pc, tenToEther		; send it off
+
+m0200:	bit	#co.cts, @#ctrl1	; has the 10 asked for anything?
+	beq	m0000			; nope, so spin
+	tst	i.qHead			; do we have anything to send?
+	beq	m0000			; nope
+	jsr	pc, etherToTen		; send the packet
+	br	m0000			; and continue spining
+
+; here we place the input/output buffers
+
+o.buffer:
+o.source:	.byte	0
+o.physNet:		; when the 10 sends it, this byte contains the physical network
+o.dest:		.byte	0
+o.type:		.word	0		; where the packet type goes
+
+p.Length:	.word	0		; this is where the PUP starts
+p.Type:		.byte	0
+p.HopCount:	.byte	0
+p.ID:		.word	0, 0
+p.dstHost:	.byte	0
+p.dstNet:	.byte	0
+p.dstSocket:	.word	0, 0
+p.srcHost:	.byte	0
+p.srcNet:	.byte	0
+p.srcSocket:	.word	0, 0
+p.data:		.word	0		; data starts here
+
+bigBuff		= o.buffer + <pkSize * 2> ; we only have 1 output packet
+
+ringBuff	= bigBuff + <q.size * numQs> + 1000
+progEnd		= ringBuff + maxRing + 1
+
+	.end	start

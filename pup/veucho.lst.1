@@ -1,0 +1,1022 @@
+NEW ether-net board ECHO server for testing.	MACN11   V4.26T   28-Oct-82 20:00:57   PAGE 1
+VUECHO.MAC;8			Table  of  Contents
+
+      4		definitions
+      5		vector addresses and registers.
+     21		input cs bits
+     49		output CS bits.
+    130		The greater of 2 evils!
+    195		little interrupt routines.
+    196		output-mini Error
+    226		output-mini OK
+    237		input-mini OK
+    441		MINI - initialization routine.
+NEW ether-net board ECHO server for testing.	MACN11   V4.26T   28-Oct-82 20:00:57   PAGE 1
+VUECHO.MAC;8
+
+     1						.nlist	bex
+     2						.list	meb
+     3						.title	NEW ether-net board ECHO server for testing.
+     4						.sbttl	definitions
+     5						.sbttl	vector addresses and registers.
+     6		000001			clock=1						; For timer.
+     7		001200			baud=1200					; =1200 slows tty output
+     8		000001			pcbrd= 1				        ; =1 if pc board version
+     9		000400			E0OCV = 400					; Output complete vector
+    10		000404			E0ICV = E0OCV+4					; Input  complete vector
+    11		000410			E0OEV = E0OCV+10				; Output ERROR vector
+    12		160000			E0OWC = 160000					; output word count
+    13		160002			E0OBL = E0OWC+2					; output buffer location
+    14		160004			E0OCS = E0OWC+4					; output control and status
+    15		160006			E0ODE = E0OWC+6					; output delay.
+    16		160010			E0IWC = E0OWC+10				; input word count
+    17		160012			E0IBL = E0OWC+12				; input buffer location
+    18		160014			E0ICS = E0OWC+14				; input control and status
+    19		160016			E0RHA = E0OWC+16				; RAM HOST stuff.
+
+    21						.sbttl	input cs bits
+    22					; INPUT control status register  (16xx14)
+    23					; Some bit definitions:	      bit
+    24		000001			inGO  = 1		;	0		  Input GO bit
+    25		000002			inPR  = 2		;	1		  Promiscuous bit
+    26		000004			inRWE = 4		;	2		  Ram WRITE enable
+    27		000010			inRWV = 10		;	3		  Ram WRITE value (0, 1)
+    28		000020			inRCR = 20		;	4		  Receiver reset.
+    29		000040			inLBK = 40		;	5		  Loop back
+    30		000100			inENA = 100		;	6		  enable
+    31		000200			inDON = 200		;	7		  input DONE
+    32								;	8-9		  N/A
+
+    34						; ERROR BITS FOLLOW 
+    35					.if eq <pcbrd>
+    36					inCAR = 2000		;      10		  carrier on = 1
+    37					inWOV = 4000		;      11	    [=0 ] word count overflow
+    38					.endc
+
+    40					.if ne	<pcbrd>
+    41		002000			inWOV = 2000		;      10	    [=0 ] word count overflow
+    42		004000			inCAR = 4000		;      11		  carrier on = 1
+    43					.endc
+    44		010000			inFOR = 10000		;      12		  FIFO over-run
+    45		020000			inCRC = 20000		;      13		  CRC error
+    46		040000			inNXM = 40000		;      14		  NXM (if NXMok = 1)
+    47		100000			inERR = 100000		;      15		  ERROR bit(See 11 - 14)
+
+    49						.sbttl	output CS bits.
+    50					; OUTPUT control status register  (16xx04)
+    51					; Some bit definitions:	      bit
+    52		000001			outGO  = 1		;	0		  output GO - active/idle
+    53		000002			outWC  = 2		;	1		  Set if word count = 0
+    54		000004			outIOR = 4		;	2		  I/O reset.
+NEW ether-net board ECHO server for testing.	MACN11   V4.26T   28-Oct-82 20:00:57   PAGE 2
+VUECHO.MAC;8	Output CS bits.
+
+    55		000010			outMER = 10		;	3		  Memory error reset
+    56		000020			outTRR = 20		;	4		  transmiter reset
+    57					           		;	5		  N/A
+    58		000100			outENA = 100		;	6		  enable
+    59		000200			outDON = 200		;	7		  output DONE
+    60
+    61						;  ERROR BITS FOLLOW
+    62					.IF EQ <pcbrd>
+    63					outNXM = 400		;	8		  NXM: SSYN NOT received.
+    64								;			  BIT11 ALSO SET.
+    65								;       9		  N/A
+    66					outCAR = 2000		;      10		  compliment of BIT1
+    67					outBGN = 4000		;      11		  Bus grant not received.
+    68								;			  BIT11 and NOT BIT8.
+    69					outFOR = 10000		;      12		  output word count overflow.
+    70					outRET = 20000		;      13		  Retry. Couldn't output
+    71					outCOL = 40000		;      14		  jammed or Collision detect.
+    72					.ENDC
+
+    74					.IF NE <pcbrd>
+    75		001000			outCOL = 1000		;       9		  output collision
+    76		002000			outWOK = 2000		;      10		  compliment of BIT12
+    77		004000			outRET = 4000		;      11		  Retry. Couldn't output.
+    78		010000			outFOR = 10000		;      12		  output word count overflow.
+    79		020000			outBGN = 20000		;      13		  Bus grant not received
+    80		040000			outNXM = 40000		;      14		  NXM: ssyn not received
+    81					.ENDC
+    82		100000			outERB = 100000		;      15		  ERROR bit (See 8 - 14)
+    83						.macro	dinc,value
+    84							add	#1,value+2
+    85						        adc	value
+    86						.endm
+    87						.macro	dclr,value
+    88							clr	value
+    89							clr	value+2
+    90						.endm
+
+NEW ether-net board ECHO server for testing.	MACN11   V4.26T   28-Oct-82 20:00:57   PAGE 3
+VUECHO.MAC;8	Output CS bits.
+
+    92	000000'	000167	000112			jmp	vdecho
+    93	000004'	000124			TOhost:	124			; 	to WHOM we echo
+    94	000006'	000000			nbytes: 0			;	number of data bytes.
+    95	000010'	000000			dtype:	0			; 	0 for 0
+    96									; 	1 for 177777
+    97									; 	2 for 125252
+    98									; 	3 for byte n = n
+    99					;	ERROR stuff
+   100	000012'	000000	000000		inperr:	0,0			;       input errored
+   101	000016'	000000	000000		aderr:  0,0			;	wrong address in pup
+   102	000022'	000000	000000		berr:	0,0			;	bad echo received
+   103	000026'	000000	000000		good:	0,0			;	good echoes
+   104	000032'	000000			badADD:	0			;	most recent bad address.
+
+   106	000034'	000000			prevErr: 0			;	flags previous error to fix ID
+   107	000036'	000000			lHost:	0			; 	our local host from board.
+   108	000040'	000010			delay:	10			; 	output delay.
+   109	000042'	000000			done:	0
+   110		000033			esc=33
+   111		000110			H=110
+   112		000112			J=112
+   113					.if eq <pcbrd>
+   114					OURhi:	.ASCIZ	<esc><H><esc><J>/          11 USER ECHOER(wire wrap)/<15><12>
+   115						.even
+   116					.endc
+
+   118					.if ne <pcbrd>
+   119	000044'	   033	   110	   033	OURhi:	.ASCIZ	<esc><H><esc><J>/          11 USER ECHOER(pc board)/<15><12>
+   120		000116'				.even
+   121					.endc
+
+   123					; 	In line stuff since program will usually be run with flakey boards.
+   124		000055			locNet=55
+   125		000001			gate=1
+   126					.IF NE <gate>
+   127		000111			gatHst=111
+   128					.ENDC 
+
+NEW ether-net board ECHO server for testing.	MACN11   V4.26T   28-Oct-82 20:00:57   PAGE 4
+VUECHO.MAC;8	The greater of 2 evils!
+
+   130						.sbttl	The greater of 2 evils!
+   131						.globl	vdecho
+   132					;
+   133					;	bit 0 SET on console causes a halt at end of pass.
+   134		177570			console=177570
+   135		177776			psw=177776
+   136	000116'				vdecho:
+   137	000116'	000000				HALT				; to insure load.
+   138	000120'	012706	001000			mov	#1000,SP		; set up the stack
+   139	000124'	005037	177776			clr	@#psw			; we run at 0.
+   140	000130'	004767	001352			jsr	pc,MINini		; initialize interface, etc...
+
+   142	000134'	012700	000044'			mov	#ourHI,r0
+   143	000140'	004767	001726			jsr	pc,linOUT		; herald to 10
+
+   145					;	Processing loop below
+   146	000144'				Process:
+   147					;	Do some top of the loop stuff...
+   148	000144'	004767	000116			jsr	pc,etcEtc
+
+   150					;	Now start another i/o pass.
+   151	000150'	012700	000074			mov	#60.,r0
+   152	000154'	004767	000060			jsr	pc,settim
+   153	000160'				Twait:
+   154	000160'	004767	001234			jsr	pc,timeout		; WAIT 1 second
+   155	000164'	103375				bcc	Twait
+
+   157	000166'	004767	001134			jsr	pc,setup; for next try.
+
+
+   160					;	Here we WAIT until input AND output are DONE.
+   161	000172'	012700	000170			mov	#120.,r0
+   162	000176'	004767	000036			jsr	pc,settim		; 2 second wait
+   163	000202'				Owait:
+   164	000202'	022767	000003	177632		cmp	#3,done
+   165	000210'	001755				beq	process			; NOT done on branch.
+   166	000212'	004767	001202			 jsr	pc,timeout
+   167	000216'	103371				 bcc	Owait
+   168	000220'	005267	177610			 inc	prevErr
+   169	000224'	112746	020077			 movb	#"? ,-(Sp)		; Didn't hear from remote host.
+   170	000230'	004767	001550			 jsr	pc,chrOut
+   171	000234'	005726				 tst	(Sp)+
+   172	000236'	000742				 br	process			; timed out
+
+NEW ether-net board ECHO server for testing.	MACN11   V4.26T   28-Oct-82 20:00:57   PAGE 5
+VUECHO.MAC;8	The greater of 2 evils!
+
+   174	000240'				settim:
+   175	000240'	016767	001224	001150		mov	timLOW,tim2
+   176	000246'	016767	001214	001140		mov	timHI,tim1
+   177	000254'	060067	001136			add	r0,tim2			; to low timer
+   178	000260'	005567	001130			adc	tim1			; to high timer
+   179	000264'	000207				rts	pc
+
+NEW ether-net board ECHO server for testing.	MACN11   V4.26T   28-Oct-82 20:00:57   PAGE 6
+VUECHO.MAC;8	The greater of 2 evils!
+
+   181	000266'				etcEtc:
+   182					;	Not much now
+   183	000266'	005067	177550			clr	done
+   184	000272'	032737	000001	177570		bit	#1,@#177570		; Shall we halt?
+   185	000300'	001401				beq	1$			; NOTset.
+   186	000302'	000000				 halt				;  HALT on 1
+   187	000304'				1$:
+   188	000304'	000207				rts	pc
+
+NEW ether-net board ECHO server for testing.	MACN11   V4.26T   28-Oct-82 20:00:57   PAGE 7
+VUECHO.MAC;8	The greater of 2 evils!
+
+   190	000306'				RESETi:
+   191	000306'	012737	000020	160014		mov	#inRCR,@#E0ICS			; reset receiver.
+   192	000314'	012737	000034	160004		mov	#outIOR+outMER+outTRR,@#E0OCS   ; reset transmitter
+   193	000322'	000207				rts	pc
+
+NEW ether-net board ECHO server for testing.	MACN11   V4.26T   28-Oct-82 20:00:57   PAGE 8
+VUECHO.MAC;8	Little interrupt routines.
+
+   195						.sbttl	little interrupt routines.
+   196						.sbttl	output-mini Error
+   197	000324'				oERR:
+   198	000324'	000240				NOP
+   199	000326'	005267	177502			inc	PrevErr
+   200					;	WARNING: DO NOT reset the receiver OR transmitter except for NXM.
+   201	000332'	010046				mov	r0,-(SP)
+   202	000334'	013700	160004			mov	@#E0OCS,r0
+   203					;	bit	#outRET,r0			; retry
+   204	000340'	032700	001000			bit	#outCOL,r0			; collision
+   205	000344'	001405				beq	12$
+   206	000346'	112746	020103			 movb	#"C ,-(Sp)			; type C for observer
+   207	000352'	004767	001426			 jsr	pc,chrOut			; send it...
+   208	000356'	005726				 tst	(Sp)+
+   209	000360'				12$:
+   210					;	IF nxm then also clear receiver.
+   211					.if eq  <pcbrd>
+   212						bic	#173377,r0			; see if 4400 | 4000 | 400
+   213					.endc
+   214					.if ne	<pcbrd>
+   215	000360'	042700	127777			bic	#127777,r0			; see if 40000 | 20000
+   216					.endc
+   217	000364'	001406				beq	13$				; Any kind of NXM?
+   218						 ; CLEAR the world.
+   219	000366'	012737	000034	160004		 mov	#outIOR+outMER+outTRR,@#E0OCS   ; I/O error, Mem err, and 
+   220	000374'	012737	000020	160014	         mov	#inRCR,@#E0ICS			; reset receiver>
+   221	000402'				13$:
+   222	000402'	012767	000003	177432		mov	#3,done				; We are DONE.
+   223	000410'	012600				mov	(SP)+,r0
+   224	000412'	000002				RTI
+
+   226						.sbttl	output-mini OK
+   227	000414'				oIN:
+   228	000414'	000240				NOP
+   229	000416'	005737	160004			tst	@#E0OCS
+   230	000422'	002740				blt	oERR
+   231	000424'	105737	160004			tstb	@#E0OCS
+   232	000430'	002335				bge	oERR			; Interrupt with NO done set
+   233	000432'	052767	000001	177402		bis	#1,done			; output done
+   234	000440'	000002				RTI
+
+
+NEW ether-net board ECHO server for testing.	MACN11   V4.26T   28-Oct-82 20:00:57   PAGE 9
+VUECHO.MAC;8	Input-mini OK
+
+   237						.sbttl	input-mini OK
+   238	000442'				inINT1:
+   239	000442'	005737	160014			tst	@#E0ICS			; input error?
+   240	000446'	002037				bge	2$			; No...
+   241	000450'	000240				 NOP
+   242	000452'	005267	177356			 inc	PrevErr
+   243	000456'					 dinc	inperr
+   244	000456'	062767	000001	177330			add	#1,inperr+2
+   245	000464'	005567	177322			        adc	inperr
+   246	000470'	112746	020111			 movb	#"I ,-(Sp)
+   247	000474'	004767	001304			 jsr	pc,chrOut
+   248	000500'	005726				 tst	(Sp)+
+   249	000502'	032737	040000	160014		 bit	#inNXM,@#E0ICS		;  a NXM?
+   250	000510'	001004				 bne	1$
+   251	000512'	032737	002000	160014		  bit	#inWOV,@#E0ICS		;  word count overflow?
+   252	000520'	001012				  bne	2$
+   253	000522'				1$:				        ;  transmitter reset.
+   254	000522'	012737	000020	160014		  mov	#inRCR,@#E0ICS		;  receiver reset bit
+   255	000530'	012737	000034	160004		  mov	#outIOR+outMER+outTRR,@#E0OCS  ; I/O error, Mem err, and 
+   256	000536'	012767	000003	177276		 mov	#3,done			; ALL done
+   257	000544'	000002				 RTI
+   258	000546'				2$:
+   259					;	See if the dHOST is correct...(debugging too...)
+   260	000546'	126767	001345	177262		cmpb	dHost,lHost		; is this US?
+   261	000554'	001424				beq	3$
+   262	000556'					 dinc   aderr
+   263	000556'	062767	000001	177234			add	#1,aderr+2
+   264	000564'	005567	177226			        adc	aderr
+   265	000570'	005267	177240			 inc	prevErr
+   266	000574'	112746	020101			 movb	#"A ,-(Sp)		; Address error ???
+   267	000600'	116767	001313	177224		 movb	dHost,badADD		; save the sucker.
+   268	000606'	004767	001172			 jsr	pc,chrOut
+   269	000612'	005726				 tst	(Sp)+
+   270	000614'	012767	000003	177220		 mov	#3,done			; Not an echo, so, wait again...
+   271	000622'	000240				 NOP
+   272	000624'	000002				 RTI
+   273	000626'				3$:
+   274					;	See if an ECHO me packet...
+   275		000001			ECHOme=1
+   276		000002			IMecho=2
+   277	000626'	126727	001272	000002		cmpb	pType,#IMecho
+   278	000634'	001415				beq	IMdone
+   279	000636'	005267	177172			 inc	prevErr
+   280	000642'					 dinc	berr
+   281	000642'	062767	000001	177154			add	#1,berr+2
+   282	000650'	005567	177146			        adc	berr
+   283	000654'	112746	020102			 movb	#"B ,-(Sp)		; NOT an echo ME ???
+   284	000660'	004767	001120			 jsr	pc,chrOut
+   285	000664'	005726				 tst	(Sp)+
+   286	000666'	000412				 br	RETI
+   287	000670'				IMdone:
+   288	000670'					 dinc	good
+   289	000670'	062767	000001	177132			add	#1,good+2
+   290	000676'	005567	177124			        adc	good
+NEW ether-net board ECHO server for testing.	MACN11   V4.26T   28-Oct-82 20:00:57   PAGE 10
+VUECHO.MAC;8	Input-mini OK
+
+   291	000702'	112746	020041			 movb	#"! ,-(Sp)
+   292	000706'	004767	001072			 jsr	pc,chrOut
+   293	000712'	005726				 tst	(Sp)+
+   294	000714'				RETI:
+   295	000714'	012767	000003	177120		 mov	#3,done			; Not an echo, so, wait again...
+   296	000722'	000002				 RTI
+
+NEW ether-net board ECHO server for testing.	MACN11   V4.26T   28-Oct-82 20:00:57   PAGE 11
+VUECHO.MAC;8	Input-mini OK
+
+   298		000026			hedlen= 20.+2.
+   299	000724'				SendEC:
+   300					;	Build destination ENCAP
+   301	000724'	116767	177054	001165		movb	TOhost,dHost
+   302	000732'	116767	177100	001156		movb	lHost,sHost
+   303	000740'	012767	001000	001152		mov	#1000,PUPTYP
+   304	000746'	012767	000001	001150		mov	#echoME,pType		; 	for sender
+   305	000754'	012767	000026	001140		mov	#hedlen,PUPLEN		; 	send min pup for now
+   306	000762'	066767	177020	001132		add   	nbytes,PUPLEN		;	number of data bytes.
+   307	000770'	005767	177040			tst	prevErr			;	previous errored?
+   308	000774'	001005				bne	1$			;	yes.
+   309	000776'	005267	001126			inc	IDs+2
+   310	001002'	002002				bge	1$
+   311	001004'	005267	001116			 inc	IDs
+   312	001010'				1$:
+   313	001010'	005067	177020			clr	prevErr			;	for next time
+   314	001014'	112767	000055	001111		movb	#locNet,dPort+1		;	dest. Port
+   315	001022'	116767	176756	001102		movb	TOhost,dPort
+   316	001030'	012767	000000	001076		mov	#0,dSock0
+   317	001036'	012767	000005	001072		mov	#5,dSock1		; 	echo server
+
+   319	001044'	112767	000055	001067		movb	#locNet,sPort+1		;	source Port
+   320	001052'	116767	176760	001060		movb	lHost,sPort
+   321	001060'	012767	044510	001054		mov	#"HI,sSock0
+   322	001066'	012767	054512	001050		mov	#"JY,sSock1
+
+   324					;	find length, and store checksum...
+   325	001074'	016700	001022			mov	PUPLEN,r0		; in bytes-maybe off by 1.
+   326	001100'	005300				dec	r0			; in case odd(drop checksum)
+   327	001102'	006200				asr	r0			; in words(DIV 2)from 0.
+   328	001104'	010001				mov	r0,r1
+   329	001106'	006301				asl	r1			; byte offset(length in bytes less 2)
+   330	001110'	062701	002122'			add	#PUPLEN,r1
+   331	001114'	012711	177777			mov	#-1,(r1)		; which we won't do...
+   332	001120'	004767	000056			jsr	pc,setData		; move in the data.
+
+   334					;	Now for sending the bugger:
+   335	001124'	062700	000003			add	#3,r0			; 2 for encap, 1 checksum.
+   336	001130'	005400				neg	r0			; two's compliment
+   337	001132'	042700	174000			bic	#174000,R0		; 11 bits only...
+   338	001136'	010037	160000			mov	r0,@#E0OWC		; word count
+   339	001142'	000240				NOP
+   340	001144'	012737	002116'	160002		mov	#PAKIN,@#E0OBL		; buffer location.
+   341	001152'	016700	176662			mov	delay,r0		; set delay.
+   342	001156'	005400				neg	r0			; 2's compliment.
+   343	001160'	010037	160006			mov	r0,@#E0ODE		; set delay - 16 bits
+   344	001164'	012737	000101	160004		mov	#outGO+outENA,@#E0OCS	; OUTPUT off and running.
+   345	001172'	000207				rts	pc
+
+NEW ether-net board ECHO server for testing.	MACN11   V4.26T   28-Oct-82 20:00:57   PAGE 12
+VUECHO.MAC;8	Input-mini OK
+
+   347	001174'	000000	177777	125252	dkind:	0,-1,125252		; 0, all 1s, alternating
+   348	001202'				setData:
+   349					;	r0 has number of data words:
+   350	001202'	005700				tst	r0
+   351	001204'	001447				beq	drts			; if nothing to do
+
+   353	001206'	010046				mov	r0,-(Sp)
+   354	001210'	010146				mov	r1,-(Sp)
+   355	001212'	010246				mov	r2,-(Sp)
+   356	001214'	012702	002146'			mov	#pdata,r2		; where it goes
+   357	001220'	026727	176564	000003		cmp	dtype,#3		; standard pattern?
+   358	001226'	002405				blt	1$			; yes
+   359	001230'	012767	000003	176552		 mov	#3,dtype		; to be sure
+   360	001236'	000167	000036			 jmp	nISn			; do the weird case
+   361	001242'				1$:
+   362	001242'	005767	176542			tst	dtype			; >= 0 ?
+   363	001246'	002002				bge	2$
+   364	001250'	005067	176534			 clr	dtype			; < 0 goes to 0
+   365	001254'				2$:
+   366	001254'	016701	176530			mov	dtype,r1		; offset
+   367	001260'	006301				asl	r1			; in bytes
+   368	001262'	062701	001174'			add	#dkind,r1		; base + index IS the pattern
+   369	001266'	011101				mov	(r1),r1			; get it.
+   370	001270'				3$:
+   371	001270'	010122				mov	r1,(r2)+		; data
+   372	001272'	005300				dec	r0
+   373	001274'	003375				bgt	3$
+   374	001276'	000407				br	dexit
+   375	001300'				nISn:
+   376	001300'	012701	000001			mov	#1,r1			; the starting pattern 0,,1
+   377	001304'				1$:
+   378	001304'	010122				mov	r1,(r2)+
+   379	001306'	062702	001002			add	#1002,r2		; (2,,2) + (n,,n+1)= (n+2,,n+3)
+   380	001312'	005300				dec	r0
+   381	001314'	003373				bgt	1$
+   382	001316'				dexit:
+   383	001316'	012602				mov	(Sp)+,r2
+   384	001320'	012601				mov	(Sp)+,r1
+   385	001322'	012600				mov	(Sp)+,r0
+   386	001324'				drts:
+   387	001324'	000207				rts	pc
+
+NEW ether-net board ECHO server for testing.	MACN11   V4.26T   28-Oct-82 20:00:57   PAGE 13
+VUECHO.MAC;8	Input-mini OK
+
+   389						.globl	setup
+   390		000430			tsize=280.				; max PACKET + 1.
+   391	001326'				setup:
+   392	001326'	012737	177350	160010		mov	#-tsize,@#E0IWC		; for catching bug.
+   393	001334'	012737	002116'	160012		mov	#PAKin,@#E0IBL		; input buffer location
+   394	001342'	000240				NOP
+   395	001344'	012737	000101	160014		mov	#inGO+inENA,@#E0ICS     ; wait n seconds for an echo ME.
+   396	001352'	000240				NOP
+   397					;	Send ECHOME PUP to host:
+   398	001354'	026727	176426	000000		cmp	nbytes,#0
+   399	001362'	002002				bge	1$
+   400	001364'	005067	176416			 clr	nbytes			; use 0 if minus.
+   401	001370'				1$:
+   402	001370'	026727	176412	001024		cmp	nbytes,#532.		; 266*2 maximum
+   403	001376'	003403				ble	2$
+   404	001400'	012767	001024	176400		 mov	#532.,nbytes		; use the maximum.
+   405	001406'				2$:
+   406	001406'	004767	177312			jsr	pc,sendEC		; send it
+   407	001412'	000207				rts	pc
+
+NEW ether-net board ECHO server for testing.	MACN11   V4.26T   28-Oct-82 20:00:57   PAGE 14
+VUECHO.MAC;8	Input-mini OK
+
+   409	001414'	000000			tim1:	0				; high timer
+   410	001416'	000000			tim2:	0				; low timer 
+   411	001420'				timeout:
+   412					;	UNSIGNED comparisons:
+   413	001420'	026767	177772	000042		cmp	tim2,timLOW
+   414	001426'	103407				blo	yet			; low< current
+   415	001430'	101004				bhi	nyet			; low> current
+   416	001432'	026767	177756	000026		 cmp	tim1,timHI		; low=current, what about HI?
+   417	001440'	101002				 bhi	yet			;            , HI >
+   418	001442'				nyet:
+   419	001442'	000241				clc				; still waiting...
+   420	001444'	000207				rts	pc
+   421	001446'				yet:
+   422	001446'	000261				sec				; time is up.
+   423	001450'	000207				rts	pc
+
+NEW ether-net board ECHO server for testing.	MACN11   V4.26T   28-Oct-82 20:00:57   PAGE 15
+VUECHO.MAC;8	Input-mini OK
+
+   425	001452'				TRAP4:
+   426	001452'	000000				halt
+   427	001454'	000776				br	TRAP4
+   428	001456'	000004				4
+   429	001460'				TRAP10:
+   430	001460'	000000				halt
+   431	001462'	000776				br	TRAP10
+   432	001464'	000010				10
+
+NEW ether-net board ECHO server for testing.	MACN11   V4.26T   28-Oct-82 20:00:57   PAGE 16
+VUECHO.MAC;8	Input-mini OK
+
+   434	001466'	000000			timHI:	0
+   435	001470'	000000			timLOW:	0
+   436	001472'				timINT:
+   437	001472'	062767	000001	177770		add	#1,timLOW
+   438	001500'	005567	177762			adc	timHI
+   439	001504'	000002				RTI
+
+NEW ether-net board ECHO server for testing.	MACN11   V4.26T   28-Oct-82 20:00:57   PAGE 17
+VUECHO.MAC;8	MINI - initialization routine.
+
+   441						.sbttl	MINI - initialization routine.
+   442						.globl	MINini
+   443		000240			pri5=240			; Do these at pri. 5
+   444	001506'				MINini:
+   445	001506'					dclr	inperr
+   446	001506'	005067	176300				clr	inperr
+   447	001512'	005067	176276				clr	inperr+2
+   448	001516'					dclr	aderr
+   449	001516'	005067	176274				clr	aderr
+   450	001522'	005067	176272				clr	aderr+2
+   451	001526'					dclr	berr
+   452	001526'	005067	176270				clr	berr
+   453	001532'	005067	176266				clr	berr+2
+   454	001536'					dclr	good
+   455	001536'	005067	176264				clr	good
+   456	001542'	005067	176262				clr	good+2
+   457	001546'					dclr	IDs
+   458	001546'	005067	000354				clr	IDs
+   459	001552'	005067	000352				clr	IDs+2
+   460					;	Initialize clock
+   461	001556'	012737	001472'	000100		mov	#timINT,@#100		; vector for clock
+   462	001564'	012737	000300	000102		mov	#300,@#102		; pri 6.
+   463	001572'	012737	000100	177546	 	MOV	#100,@#177546		; turn on interrupt
+
+   465					;	Initialize interface, and vector
+   466					;	First output
+   467	001600'	012737	000034	160004		mov	#outIOR+outMER+outTRR,@#E0OCS	 ; resest the world!
+   468	001606'	005037	160004			clr	@#E0OCS			; clear it.
+   469	001612'	012737	000414'	000400		mov	#oIN,@#E0OCV		; output complete vector
+   470	001620'	012737	000240	000402		mov	#pri5,@#E0OCV+2		; priority
+   471	001626'	012737	000324'	000410		mov	#oERR,@#E0OEV		; out error vector
+   472	001634'	012737	000240	000412		mov	#pri5,@#E0OEV+2		; priority
+
+   474					;	input...
+   475	001642'	012737	000020	160014		mov	#inRCR,@#E0ICS		; reset receiver
+   476					;	Now clear the RAM for address selection
+   477	001650'	012700	000377			mov	#255.,r0
+   478	001654'	005001				clr	r1
+   479	001656'				1$:
+   480	001656'	010137	160016			mov	r1,@#E0RHA		; Ram host address.
+   481	001662'	012737	000004	160014		mov	#inRWE,@#E0ICS		; write a 0. NOTE: dat3 is OFF.
+   482	001670'	005201				inc	r1			; next address
+   483	001672'	005300				dec	r0			; our count
+   484	001674'	002370				bge	1$			; 256 times.
+
+   486					;
+   487					;	local HOST
+   488	001676'	013700	160016			mov	@#E0RHA,r0		; Ram host address 0.
+   489	001702'	010037	160016			mov	r0,@#E0RHA		; Ram host address 0.
+   490	001706'	012737	000014	160014		mov	#inRWE+inRWV,@#E0ICS	; write a 1. NOTE: dat3 is ON.
+   491	001714'	005037	160014			clr	@#E0ICS			; and clear CS bits.
+   492	001720'	010067	176112			mov	r0,lHOST		; We are the source.
+
+   494					;	Now intialize input vector.
+NEW ether-net board ECHO server for testing.	MACN11   V4.26T   28-Oct-82 20:00:57   PAGE 18
+VUECHO.MAC;8	MINI - initialization routine.
+
+   495	001724'	012737	000442'	000404		mov	#inINT1,@#E0ICV		; vector location
+   496	001732'	012737	000240	000406		mov	#pri5,@#E0ICV+2		; and priority.
+
+   498					;	For trap to 4-10
+   499	001740'	012737	001452'	000004		mov	#TRAP4,@#4
+   500	001746'	012737	000340	000006		mov	#340,@#6
+   501	001754'	012737	001460'	000010		mov	#TRAP10,@#10
+   502	001762'	012737	000340	000012		mov	#340,@#12
+
+   504					;	For tty
+   505	001770'	005037	177560			clr	@#ttyICS		; interrupts off.
+   506	001774'	005037	177564			clr	@#ttyOCS
+
+   508	002000'	000207				rts	pc
+
+NEW ether-net board ECHO server for testing.	MACN11   V4.26T   28-Oct-82 20:00:57   PAGE 19
+VUECHO.MAC;8	MINI - initialization routine.
+
+
+   511					;	Here we just put one line to the TTY...simple stuff.
+   512		177560			ttyICS=177560
+   513		177562			ttyIDA=ttyICS+2
+   514		177564			ttyOCS=ttyICS+4
+   515		177566			ttyODA=ttyICS+6
+   516	002002'	000000			chrCnt:	0
+   517					;	2(Sp)	points to char.
+   518	002004'				chrOUT:
+   519	002004'	105737	177564		1$:	tstB	@#ttyOCS	;	ready?
+   520	002010'	002375				bge	1$		;	NO.
+   521	002012'	116637	000002	177566		  movB	2(Sp),@#ttyODA	;	char out
+   522	002020'	005267	177756			  inc	chrCnt
+   523	002024'	022767	000120	177750		  cmp 	#80.,chrCnt
+   524	002032'	001004				  bne	2$
+   525	002034'	112766	000015	000002		   movB	#15,2(Sp)
+   526	002042'	000760				   br	1$
+   527	002044'				2$:
+   528	002044'	022767	000121	177730		  cmp	#81.,chrCnt
+   529	002052'	001006				  bne	3$		; not line feed time
+   530	002054'	005067	177722			   clr	chrCnt
+   531	002060'	112766	000012	000002		   movb	#12,2(Sp)
+   532	002066'	000746				   br	1$
+   533	002070'				3$:
+   534	002070'	000207				rts	pc
+
+NEW ether-net board ECHO server for testing.	MACN11   V4.26T   28-Oct-82 20:00:57   PAGE 20
+VUECHO.MAC;8	MINI - initialization routine.
+
+   536	002072'				linOUT:
+   537	002072'	005067	177704			clr	chrCnt
+   538	002076'	005746				tst	-(Sp)		;	need a stack slot...
+   539	002100'				1$:
+   540	002100'	112016				movB	(r0)+,(Sp)
+   541	002102'	001403				beq	2$		; 	done.
+   542	002104'	004767	177674			 jsr	pc,chrOUT	;	send this char
+   543	002110'	000773				 br	1$
+   544	002112'				2$:
+   545	002112'	005726				tst	(Sp)+		;	stack is back.
+   546	002114'	000207				rts	pc
+
+NEW ether-net board ECHO server for testing.	MACN11   V4.26T   28-Oct-82 20:00:57   PAGE 21
+VUECHO.MAC;8	MINI - initialization routine.
+
+   548						.globl	PAKin
+   549					; INPUT/output Data buffer area:
+   550	002116'				ENCAP:PAKIN:
+   551	002116'	   000			sHOST:	.byte 0
+   552	002117'	   000			dHOST:	.byte 0
+   553	002120'	000000			PUPTYP:	.WORD 0
+   554	002122'	000000			PUPLEN:	.WORD 0
+   555	002124'	000000			PTYPE:	.WORD 0
+   556	002126'	000000	000000		IDs:	.WORD 0,0
+   557	002132'	000000			dPORT:	.WORD 0
+   558	002134'	000000			dSOCK0:	.WORD 0
+   559	002136'	000000			dSOCK1:	.WORD 0
+   560	002140'	000000			sPORT:	.WORD 0
+   561	002142'	000000			sSOCK0:	.WORD 0
+   562	002144'	000000			sSOCK1:	.WORD 0
+   563	002146'				pData:	.REPT 266+1
+   564						.WORD 0
+   565						.ENDR
+   566	002146'	000000				.WORD 0
+   567	002150'	000000				.WORD 0
+   568	002152'	000000				.WORD 0
+   569	002154'	000000				.WORD 0
+   570	002156'	000000				.WORD 0
+   571	002160'	000000				.WORD 0
+   572	002162'	000000				.WORD 0
+   573	002164'	000000				.WORD 0
+   574	002166'	000000				.WORD 0
+   575	002170'	000000				.WORD 0
+   576	002172'	000000				.WORD 0
+   577	002174'	000000				.WORD 0
+   578	002176'	000000				.WORD 0
+   579	002200'	000000				.WORD 0
+   580	002202'	000000				.WORD 0
+   581	002204'	000000				.WORD 0
+   582	002206'	000000				.WORD 0
+   583	002210'	000000				.WORD 0
+   584	002212'	000000				.WORD 0
+   585	002214'	000000				.WORD 0
+   586	002216'	000000				.WORD 0
+   587	002220'	000000				.WORD 0
+   588	002222'	000000				.WORD 0
+   589	002224'	000000				.WORD 0
+   590	002226'	000000				.WORD 0
+   591	002230'	000000				.WORD 0
+   592	002232'	000000				.WORD 0
+   593	002234'	000000				.WORD 0
+   594	002236'	000000				.WORD 0
+   595	002240'	000000				.WORD 0
+   596	002242'	000000				.WORD 0
+   597	002244'	000000				.WORD 0
+   598	002246'	000000				.WORD 0
+   599	002250'	000000				.WORD 0
+   600	002252'	000000				.WORD 0
+   601	002254'	000000				.WORD 0
+NEW ether-net board ECHO server for testing.	MACN11   V4.26T   28-Oct-82 20:00:57   PAGE 22
+VUECHO.MAC;8	MINI - initialization routine.
+
+   602	002256'	000000				.WORD 0
+   603	002260'	000000				.WORD 0
+   604	002262'	000000				.WORD 0
+   605	002264'	000000				.WORD 0
+   606	002266'	000000				.WORD 0
+   607	002270'	000000				.WORD 0
+   608	002272'	000000				.WORD 0
+   609	002274'	000000				.WORD 0
+   610	002276'	000000				.WORD 0
+   611	002300'	000000				.WORD 0
+   612	002302'	000000				.WORD 0
+   613	002304'	000000				.WORD 0
+   614	002306'	000000				.WORD 0
+   615	002310'	000000				.WORD 0
+   616	002312'	000000				.WORD 0
+   617	002314'	000000				.WORD 0
+   618	002316'	000000				.WORD 0
+   619	002320'	000000				.WORD 0
+   620	002322'	000000				.WORD 0
+   621	002324'	000000				.WORD 0
+   622	002326'	000000				.WORD 0
+   623	002330'	000000				.WORD 0
+   624	002332'	000000				.WORD 0
+   625	002334'	000000				.WORD 0
+   626	002336'	000000				.WORD 0
+   627	002340'	000000				.WORD 0
+   628	002342'	000000				.WORD 0
+   629	002344'	000000				.WORD 0
+   630	002346'	000000				.WORD 0
+   631	002350'	000000				.WORD 0
+   632	002352'	000000				.WORD 0
+   633	002354'	000000				.WORD 0
+   634	002356'	000000				.WORD 0
+   635	002360'	000000				.WORD 0
+   636	002362'	000000				.WORD 0
+   637	002364'	000000				.WORD 0
+   638	002366'	000000				.WORD 0
+   639	002370'	000000				.WORD 0
+   640	002372'	000000				.WORD 0
+   641	002374'	000000				.WORD 0
+   642	002376'	000000				.WORD 0
+   643	002400'	000000				.WORD 0
+   644	002402'	000000				.WORD 0
+   645	002404'	000000				.WORD 0
+   646	002406'	000000				.WORD 0
+   647	002410'	000000				.WORD 0
+   648	002412'	000000				.WORD 0
+   649	002414'	000000				.WORD 0
+   650	002416'	000000				.WORD 0
+   651	002420'	000000				.WORD 0
+   652	002422'	000000				.WORD 0
+   653	002424'	000000				.WORD 0
+   654	002426'	000000				.WORD 0
+   655	002430'	000000				.WORD 0
+NEW ether-net board ECHO server for testing.	MACN11   V4.26T   28-Oct-82 20:00:57   PAGE 23
+VUECHO.MAC;8	MINI - initialization routine.
+
+   656	002432'	000000				.WORD 0
+   657	002434'	000000				.WORD 0
+   658	002436'	000000				.WORD 0
+   659	002440'	000000				.WORD 0
+   660	002442'	000000				.WORD 0
+   661	002444'	000000				.WORD 0
+   662	002446'	000000				.WORD 0
+   663	002450'	000000				.WORD 0
+   664	002452'	000000				.WORD 0
+   665	002454'	000000				.WORD 0
+   666	002456'	000000				.WORD 0
+   667	002460'	000000				.WORD 0
+   668	002462'	000000				.WORD 0
+   669	002464'	000000				.WORD 0
+   670	002466'	000000				.WORD 0
+   671	002470'	000000				.WORD 0
+   672	002472'	000000				.WORD 0
+   673	002474'	000000				.WORD 0
+   674	002476'	000000				.WORD 0
+   675	002500'	000000				.WORD 0
+   676	002502'	000000				.WORD 0
+   677	002504'	000000				.WORD 0
+   678	002506'	000000				.WORD 0
+   679	002510'	000000				.WORD 0
+   680	002512'	000000				.WORD 0
+   681	002514'	000000				.WORD 0
+   682	002516'	000000				.WORD 0
+   683	002520'	000000				.WORD 0
+   684	002522'	000000				.WORD 0
+   685	002524'	000000				.WORD 0
+   686	002526'	000000				.WORD 0
+   687	002530'	000000				.WORD 0
+   688	002532'	000000				.WORD 0
+   689	002534'	000000				.WORD 0
+   690	002536'	000000				.WORD 0
+   691	002540'	000000				.WORD 0
+   692	002542'	000000				.WORD 0
+   693	002544'	000000				.WORD 0
+   694	002546'	000000				.WORD 0
+   695	002550'	000000				.WORD 0
+   696	002552'	000000				.WORD 0
+   697	002554'	000000				.WORD 0
+   698	002556'	000000				.WORD 0
+   699	002560'	000000				.WORD 0
+   700	002562'	000000				.WORD 0
+   701	002564'	000000				.WORD 0
+   702	002566'	000000				.WORD 0
+   703	002570'	000000				.WORD 0
+   704	002572'	000000				.WORD 0
+   705	002574'	000000				.WORD 0
+   706	002576'	000000				.WORD 0
+   707	002600'	000000				.WORD 0
+   708	002602'	000000				.WORD 0
+   709	002604'	000000				.WORD 0
+NEW ether-net board ECHO server for testing.	MACN11   V4.26T   28-Oct-82 20:00:57   PAGE 24
+VUECHO.MAC;8	MINI - initialization routine.
+
+   710	002606'	000000				.WORD 0
+   711	002610'	000000				.WORD 0
+   712	002612'	000000				.WORD 0
+   713	002614'	000000				.WORD 0
+   714	002616'	000000				.WORD 0
+   715	002620'	000000				.WORD 0
+   716	002622'	000000				.WORD 0
+   717	002624'	000000				.WORD 0
+   718	002626'	000000				.WORD 0
+   719	002630'	000000				.WORD 0
+   720	002632'	000000				.WORD 0
+   721	002634'	000000				.WORD 0
+   722	002636'	000000				.WORD 0
+   723	002640'	000000				.WORD 0
+   724	002642'	000000				.WORD 0
+   725	002644'	000000				.WORD 0
+   726	002646'	000000				.WORD 0
+   727	002650'	000000				.WORD 0
+   728	002652'	000000				.WORD 0
+   729	002654'	000000				.WORD 0
+   730	002656'	000000				.WORD 0
+   731	002660'	000000				.WORD 0
+   732	002662'	000000				.WORD 0
+   733	002664'	000000				.WORD 0
+   734	002666'	000000				.WORD 0
+   735	002670'	000000				.WORD 0
+   736	002672'	000000				.WORD 0
+   737	002674'	000000				.WORD 0
+   738	002676'	000000				.WORD 0
+   739	002700'	000000				.WORD 0
+   740	002702'	000000				.WORD 0
+   741	002704'	000000				.WORD 0
+   742	002706'	000000				.WORD 0
+   743	002710'	000000				.WORD 0
+   744	002712'	000000				.WORD 0
+   745	002714'	000000				.WORD 0
+   746	002716'	000000				.WORD 0
+   747	002720'	000000				.WORD 0
+   748	002722'	000000				.WORD 0
+   749		000116'				.end	vdecho
+NEW ether-net board ECHO server for testing.	MACN11   V4.26T   28-Oct-82 20:00:57   PAGE 25
+VUECHO.MAC;8	Symbol table
+
+ADERR    000016R 	BADADD   000032R 	BAUD   = 001200  	BERR     000022R 
+CHRCNT   002002R 	CHROUT   002004R 	CLOCK  = 000001  	CONSOL = 177570  
+DELAY    000040R 	DEXIT    001316R 	DHOST    002117R 	DKIND    001174R 
+DONE     000042R 	DPORT    002132R 	DRTS     001324R 	DSOCK0   002134R 
+DSOCK1   002136R 	DTYPE    000010R 	ECHOME = 000001  	ENCAP    002116R 
+ESC    = 000033  	ETCETC   000266R 	E0IBL  = 160012  	E0ICS  = 160014  
+E0ICV  = 000404  	E0IWC  = 160010  	E0OBL  = 160002  	E0OCS  = 160004  
+E0OCV  = 000400  	E0ODE  = 160006  	E0OEV  = 000410  	E0OWC  = 160000  
+E0RHA  = 160016  	GATE   = 000001  	GATHST = 000111  	GOOD     000026R 
+H      = 000110  	HEDLEN = 000026  	IDS      002126R 	IMDONE   000670R 
+IMECHO = 000002  	INCAR  = 004000  	INCRC  = 020000  	INDON  = 000200  
+INENA  = 000100  	INERR  = 100000  	INFOR  = 010000  	INGO   = 000001  
+ININT1   000442R 	INLBK  = 000040  	INNXM  = 040000  	INPERR   000012R 
+INPR   = 000002  	INRCR  = 000020  	INRWE  = 000004  	INRWV  = 000010  
+INWOV  = 002000  	J      = 000112  	LHOST    000036R 	LINOUT   002072R 
+LOCNET = 000055  	MININI   001506RG	NBYTES   000006R 	NISN     001300R 
+NYET     001442R 	OERR     000324R 	OIN      000414R 	OURHI    000044R 
+OUTBGN = 020000  	OUTCOL = 001000  	OUTDON = 000200  	OUTENA = 000100  
+OUTERB = 100000  	OUTFOR = 010000  	OUTGO  = 000001  	OUTIOR = 000004  
+OUTMER = 000010  	OUTNXM = 040000  	OUTRET = 004000  	OUTTRR = 000020  
+OUTWC  = 000002  	OUTWOK = 002000  	OWAIT    000202R 	PAKIN    002116RG
+PC     =%000007  	PCBRD  = 000001  	PDATA    002146R 	PREVER   000034R 
+PRI5   = 000240  	PROCES   000144R 	PSW    = 177776  	PTYPE    002124R 
+PUPLEN   002122R 	PUPTYP   002120R 	RESETI   000306R 	RETI     000714R 
+R0     =%000000  	R1     =%000001  	R2     =%000002  	R3     =%000003  
+R4     =%000004  	R5     =%000005  	R6     =%000006  	R7     =%000007  
+SENDEC   000724R 	SETDAT   001202R 	SETTIM   000240R 	SETUP    001326RG
+SHOST    002116R 	SP     =%000006  	SPORT    002140R 	SSOCK0   002142R 
+SSOCK1   002144R 	TIMEOU   001420R 	TIMHI    001466R 	TIMINT   001472R 
+TIMLOW   001470R 	TIM1     001414R 	TIM2     001416R 	TOHOST   000004R 
+TRAP10   001460R 	TRAP4    001452R 	TSIZE  = 000430  	TTYICS = 177560  
+TTYIDA = 177562  	TTYOCS = 177564  	TTYODA = 177566  	TWAIT    000160R 
+VDECHO   000116RG	YET      001446R 	.MACN. = 000004  	.VRSN. = 000010  
+1$       000304R 	1$       000522R 	1$       001010R 	1$       001242R 
+1$       001304R 	1$       001370R 	1$       001656R 	1$       002004R 
+1$       002100R 	2$       000546R 	2$       001254R 	2$       001406R 
+2$       002044R 	2$       002112R 	3$       000626R 	3$       001270R 
+3$       002070R 	12$      000360R 	13$      000402R 	.      = 002724R 
+
+
+NEW ether-net board ECHO server for testing.	MACN11   V4.26T   28-Oct-82 20:00:57   PAGE 26
+VUECHO.MAC;8
+
+
+
+ Errors detected: 0
+
+ *vuecho,vuecho/crf_vuecho
+ Run-time:  8 seconds
+
+
+ADERR	   101#	   263	   264	   449	   450
+BADADD	   104#	   267
+BAUD	     7#
+BERR	   102#	   281	   282	   452	   453
+CHRCNT	   516#	   522	   523	   528	   530	   537
+CHROUT	   170	   207	   247	   268	   284	   292	   518#	   542
+CLOCK	     6#
+CONSOL	   134#
+DELAY	   108#	   341
+DEXIT	   374	   382#
+DHOST	   260	   267	   301	   552#
+DKIND	   347#	   368
+DONE	   109#	   164	   183	   222	   233	   256	   270	   295
+DPORT	   314	   315	   557#
+DRTS	   351	   386#
+DSOCK0	   316	   558#
+DSOCK1	   317	   559#
+DTYPE	    95#	   357	   359	   362	   364	   366
+E0IBL	    17#	   393
+E0ICS	    18#	   191	   220	   239	   249	   251	   254	   395	   475	   481	   490	   491
+E0ICV	    10#	   495	   496
+E0IWC	    16#	   392
+E0OBL	    13#	   340
+E0OCS	    14#	   192	   202	   219	   229	   231	   255	   344	   467	   468
+E0OCV	     9#	    10	    11	   469	   470
+E0ODE	    15#	   343
+E0OEV	    11#	   471	   472
+E0OWC	    12#	    13	    14	    15	    16	    17	    18	    19	   338
+E0RHA	    19#	   480	   488	   489
+ECHOME	   275#	   304
+ENCAP	   550#
+ESC	   110#	   119
+ETCETC	   148	   181#
+GATE	   125#	   126
+GATHST	   127#
+GOOD	   103#	   289	   290	   455	   456
+H	   111#	   119
+HEDLEN	   298#	   305
+IDS	   309	   311	   458	   459	   556#
+IMDONE	   278	   287#
+IMECHO	   276#	   277
+INCAR	    42#
+INCRC	    45#
+INDON	    31#
+INENA	    30#	   395
+INERR	    47#
+INFOR	    44#
+INGO	    24#	   395
+ININT1	   238#	   495
+INLBK	    29#
+INNXM	    46#	   249
+INPERR	   100#	   244	   245	   446	   447
+INPR	    25#
+INRCR	    28#	   191	   220	   254	   475
+INRWE	    26#	   481	   490
+INRWV	    27#	   490
+INWOV	    41#	   251
+J	   112#	   119
+LHOST	   107#	   260	   302	   320	   492
+LINOUT	   143	   536#
+LOCNET	   124#	   314	   319
+MININI	   140	   442	   444#
+NBYTES	    94#	   306	   398	   400	   402	   404
+NISN	   360	   375#
+NYET	   415	   418#
+OERR	   197#	   230	   232	   471
+OIN	   227#	   469
+OURHI	   119#	   142
+OUTBGN	    79#
+OUTCOL	    75#	   204
+OUTDON	    59#
+OUTENA	    58#	   344
+OUTERB	    82#
+OUTFOR	    78#
+OUTGO	    52#	   344
+OUTIOR	    54#	   192	   219	   255	   467
+OUTMER	    55#	   192	   219	   255	   467
+OUTNXM	    80#
+OUTRET	    77#
+OUTTRR	    56#	   192	   219	   255	   467
+OUTWC	    53#
+OUTWOK	    76#
+OWAIT	   163#	   167
+PAKIN	   340	   393	   548	   550#
+PC	   140	   143	   148	   152	   154	   157	   162	   166	   170	   179	   188	   193	   207	   247
+	   268	   284	   292	   332	   345	   387	   406	   407	   420	   423	   508	   534	   542	   546
+PCBRD	     8#	    35	    40	    62	    74	   113	   118	   211	   214
+PDATA	   356	   563#
+PREVER	   106#	   168	   199	   242	   265	   279	   307	   313
+PRI5	   443#	   470	   472	   496
+PROCES	   146#	   165	   172
+PSW	   135#	   139
+PTYPE	   277	   304	   555#
+PUPLEN	   305	   306	   325	   330	   554#
+PUPTYP	   303	   553#
+R0	   142	   151	   161	   177	   201	   202	   204	   215	   223	   325	   326	   327	   328	   335
+	   336	   337	   338	   341	   342	   343	   350	   353	   372	   380	   385	   477	   483	   488
+	   489	   492	   540
+R1	   328	   329	   330	   331	   354	   366	   367	   368	   369	   371	   376	   378	   384	   478
+	   480	   482
+R2	   355	   356	   371	   378	   379	   383
+RESETI	   190#
+RETI	   286	   294#
+SENDEC	   299#	   406
+SETDAT	   332	   348#
+SETTIM	   152	   162	   174#
+SETUP	   157	   389	   391#
+SHOST	   302	   551#
+SP	   138	   169	   171	   201	   206	   208	   223	   246	   248	   266	   269	   283	   285	   291
+	   293	   353	   354	   355	   383	   384	   385	   521	   525	   531	   538	   540	   545
+SPORT	   319	   320	   560#
+SSOCK0	   321	   561#
+SSOCK1	   322	   562#
+TIM1	   176	   178	   409#	   416
+TIM2	   175	   177	   410#	   413
+TIMEOU	   154	   166	   411#
+TIMHI	   176	   416	   434#	   438
+TIMINT	   436#	   461
+TIMLOW	   175	   413	   435#	   437
+TOHOST	    93#	   301	   315
+TRAP10	   429#	   431	   501
+TRAP4	   425#	   427	   499
+TSIZE	   390#	   392
+TTYICS	   505	   512#	   513	   514	   515
+TTYIDA	   513#
+TTYOCS	   506	   514#	   519
+TTYODA	   515#	   521
+TWAIT	   153#	   155
+VDECHO	    92	   131	   136#	   749
+YET	   414	   417	   421#
+
+DCLR	    87#	   445	   448	   451	   454	   457
+DINC	    83#	   243	   262	   280	   288
+     

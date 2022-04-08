@@ -1,0 +1,382 @@
+	.nlist	bex
+	.title	NEW ether-net board ECHO server for testing.
+	.sbttl	definitions
+	.sbttl	vector addresses and registers.
+clock=1						; For timer.
+baud=1200					; =1200 slows tty output
+E0OCV = 400					; Output complete vector
+E0ICV = E0OCV+4					; Input  complete vector
+E0OEV = E0OCV+10				; Output ERROR vector
+E0OWC = 160000					; output word count
+E0OBL = E0OWC+2					; output buffer location
+E0OCS = E0OWC+4					; output control and status
+E0ODE = E0OWC+6					; output delay.
+E0IWC = E0OWC+10				; input word count
+E0IBL = E0OWC+12				; input buffer location
+E0ICS = E0OWC+14				; input control and status
+E0RHA = E0OWC+16				; RAM HOST stuff.
+
+	.sbttl	input cs bits
+; INPUT control status register  (16xx14)
+; Some bit definitions:	      bit
+inGO  = 1		;	0		  Input GO bit
+inPR  = 2		;	1		  Promiscuous bit
+inRWE = 4		;	2		  Ram WRITE enable
+inRWV = 10		;	3		  Ram WRITE value (0, 1)
+inRCR = 20		;	4		  Receiver reset.
+inLBK = 40		;	5		  Loop back
+inENA = 100		;	6		  enable
+inDON = 200		;	7		  input DONE
+			;	8-9		  N/A	
+inCAR = 2000		;      10		  carrier on = 1
+
+	; ERROR BITS FOLLOW 
+inWOV = 4000		;      11	    [=0 ] word count overflow
+inFOR = 10000		;      12		  FIFO over-run
+inCRC = 20000		;      13		  CRC error
+inNXM = 40000		;      14		  NXM (if NXMok = 1)
+inERR = 100000		;      15		  ERROR bit(See 11 - 14)
+
+	.sbttl	output CS bits.
+; OUTPUT control status register  (16xx04)
+; Some bit definitions:	      bit
+outGO  = 1		;	0		  output GO - active/idle
+outWC  = 2		;	1		  Set if word count = 0
+outIOR = 4		;	2		  I/O reset.
+outMER = 10		;	3		  Memory error reset
+outTRR = 20		;	4		  transmiter reset
+           		;	5		  N/A
+outENA = 100		;	6		  enable
+outDON = 200		;	7		  output DONE
+	
+	;  ERROR BITS FOLLOW
+outNXM = 400		;	8		  NXM: SSYN NOT received.
+			;			  BIT11 ALSO SET.
+			;       9		  N/A
+outCAR = 2000		;      10		  compliment of BIT1
+outBGN = 4000		;      11		  Bus grant not received.
+			;			  BIT11 and NOT BIT8.
+outFOR = 10000		;      12		  output word count overflow.
+outRET = 20000		;      13		  Retry. Couldn't output
+			;			  because carrier detected.
+outCOL = 40000		;      14		  jammed or Collision detect.
+outERB = 100000		;      15		  ERROR bit (See 8 - 14)
+	jmp	vdecho
+lHost:	0			; 	our local host from board.
+delay:	10			; 	output delay.
+done:	0
+esc=33
+H=110
+J=112
+OURhi:	.ASCIZ	<esc><H><esc><J>/          11 ECHO SERVER IS WAITING/<15><12>
+	.even
+; 	In line stuff since program will usually be run with flakey boards.
+locNet=55
+gate=1
+.IF NE <gate>
+gatHst=111
+.ENDC
+	.sbttl	The greater of 2 evils!
+	.globl	vdecho
+;
+;	bit 0 SET on console causes a halt at end of pass.
+console=177570
+psw=177776
+vdecho:
+	HALT				; to insure load.
+	mov	#1000,SP		; set up the stack
+	clr	@#psw			; we run at 0.
+	jsr	pc,MINini		; initialize interface, etc...
+
+	mov	#ourHI,r0
+	jsr	pc,linOUT		; herald to 10
+
+;	Processing loop below
+Process:
+;	Do some top of the loop stuff...
+	jsr	pc,etcEtc
+
+;	Now start another i/o pass.
+	jsr	pc,setup		; for next try.
+
+
+;	Here we WAIT until input AND output are DONE.
+Owait:	
+	cmp	#3,done
+	beq	process			; NOT done on branch.
+	 br	Owait
+etcEtc:
+;	Not much now
+	clr	done
+	bit	#1,@#177570		; Shall we halt?
+	beq	1$			; NOTset.
+	 halt				;  HALT on 1
+1$:
+	rts	pc
+RESETi:
+	mov	#inRCR,@#E0ICS			; reset receiver.
+	mov	#outIOR+outMER+outTRR,@#E0OCS   ; reset transmitter
+	rts	pc
+	RTI
+	.sbttl	little interrupt routines.
+	.sbttl	output-mini Error
+oERR:
+	NOP
+;	WARNING: DO NOT reset the receiver OR transmitter except for NXM.
+	mov	r0,-(SP)
+	mov	@#E0OCS,r0
+;	bit	#outRET,r0			; retry
+	bit	#outCOL,r0			; collision
+	beq	12$
+	 movb	#"C ,-(Sp)			; type C for observer
+	 jsr	pc,chrOut			; send it...
+	 tst	(Sp)+
+12$:
+;	IF nxm then also clear receiver.
+	bic	#173377,r0			; see if 4400 | 4000 | 400
+	tst	r0
+	beq	13$				; Any kind of NXM?
+	 ; CLEAR the world.
+	 mov	#outIOR+outMER+outTRR,@#E0OCS   ; I/O error, Mem err, and 
+         mov	#inRCR,@#E0ICS			; reset receiver>
+13$:
+	mov	#3,done				; We are DONE.
+	mov	(SP)+,r0
+	RTI
+
+	.sbttl	output-mini OK
+oIN:
+	NOP
+	tst	@#E0OCS
+	blt	oERR
+	tstb	@#E0OCS
+	bge	oERR			; Interrupt with NO done set
+	bis	#1,done			; output done
+	RTI
+
+	.sbttl	input-mini OK
+inINT1:
+	tst	@#E0ICS			; input error?
+	bge	2$			; No...
+	 NOP
+	 movb	#"I ,-(Sp)
+	 jsr	pc,chrOut
+	 tst	(Sp)+
+	 bit	#inNXM,@#E0ICS		;  a NXM?
+	 beq	1$
+	  mov	#inRCR,@#E0ICS		;  receiver reset bit
+	  mov	#outIOR+outMER+outTRR,@#E0OCS  ; I/O error, Mem err, and 
+1$:					       ; transmitter reset.
+	 mov	#3,done			; ALL done
+	 RTI
+2$:
+;	See if the dHOST is correct...(debugging too...)
+	cmpb	dHost,lHost		; is this US?
+	beq	3$
+	 movb	#"A ,-(Sp)		; Address error ???
+	 jsr	pc,chrOut
+	 tst	(Sp)+
+	 mov	#3,done			; Not an echo, so, wait again...
+	 RTI
+3$:
+;	See if an ECHO me packet...
+ECHOme=1
+IMecho=2
+	cmpb	pType,#ECHOme
+	beq	ECHOit
+	 movb	#"N ,-(Sp)		; NOT an echo ME ???
+	 jsr	pc,chrOut
+	 tst	(Sp)+
+	 mov	#3,done			; Not an echo, so, wait again...
+	 RTI
+ECHOit:
+	 movb	#IMecho,pType		; for sender
+	 mov	r0,-(Sp)
+	 mov	r1,-(Sp)
+	 mov	r2,-(Sp)
+
+;	Xchange source and dest ports:
+	 mov	dPort,r0		;	save dest.
+	 mov	dSock0,r1
+	 mov	dSock1,r2
+	 mov	sPort,dPort		;	dest<-source
+	 mov	sSock0,dSock0
+	 mov	sSock1,dSock1
+
+	 mov	r0,sPort		;	source<-old dest
+	 mov	r1,sSock0
+	 mov	r2,sSock1
+
+;	 Encapsulation:
+	 movb	dPort,dHost		; dest Host...
+	.IF NE <gate>
+	 cmpb	#locNet,dPort+1		; is this for the local net?
+	 beq	g$			; Yes if =
+	  tstb	dPort+1			; OR default net?
+	  beq	g$			; Yes if 0.
+	   movb	#gatHst,dHost		;  NOT for us, try gateway.
+g$:
+	.ENDC
+	 movb	lHost,sHost		; source host.
+
+;	 Insure non-zero source Host
+	 movb	lHost,sPort		; just in case...
+
+;	 find length, and store checksum...
+	 mov	PUPLEN,r0		; in bytes-maybe off by 1.
+	 dec	r0			; in case odd
+	 asr	r0			; in words(DIV 2)from 0.
+	 mov	r0,r1
+	 asl	r1			; byte offset(length in bytes less 2)
+	 add	#PUPLEN,r1
+	 mov	#-1,(r1)		; which we won't do...
+
+;	 Now for sending the bugger:
+	 add	#3,r0			; 2 for encap, 1 for length.
+	 neg	r0			; two's compliment
+	 bic	#174000,R0		; 11 bits only...
+	 mov	r0,@#E0OWC		; word count
+	 NOP
+	 mov	#PAKIN,@#E0OBL		; buffer location.
+	 mov	delay,r0		; set delay.
+	 neg	r0			; 2's compliment.
+	 mov	r0,@#E0ODE		; set delay - 16 bits
+	 mov	#outGO+outENA,@#E0OCS	; OUTPUT off and running.
+
+;	 type a char to say so...
+	 movb	#"! ,-(Sp)
+	 jsr	pc,chrOut
+	 tst	(Sp)+
+
+	 mov	(Sp)+,r2
+	 mov	(Sp)+,r1
+	 mov	(Sp)+,r0
+	 bis	#2,done			; INPUT done
+	 RTI
+	.globl	setup
+tsize=280.				; max PACKET + 1.
+setup:
+	mov	#-tsize,@#E0IWC		; for catching bug.
+	mov	#PAKin,@#E0IBL		; input buffer location
+	NOP
+	mov	#inGO+inENA,@#E0ICS     ; wait n seconds for an echo ME.
+	NOP
+	rts	pc
+TRAP4:
+	halt
+	br	TRAP4
+	4
+TRAP10:
+	halt
+	br	TRAP10
+	10
+timHI:	0
+timLOW:	0
+timINT:
+	add	#1,timLOW
+	adc	timHI
+	RTI
+	.sbttl	MINI - initialization routine.
+	.globl	MINini
+pri5=240			; Do these at pri. 5
+MINini:
+;	Initialize clock
+	mov	#timINT,@#100		; vector for clock
+	mov	#300,@#102		; pri 6.
+ 	MOV	#100,@#177546		; turn on interrupt
+
+;	Initialize interface, and vector
+;	First output
+	mov	#outIOR+outMER+outTRR,@#E0OCS	 ; resest the world!
+	clr	@#E0OCS			; clear it.
+	mov	#oIN,@#E0OCV		; output complete vector
+	mov	#pri5,@#E0OCV+2		; priority
+	mov	#oERR,@#E0OEV		; out error vector
+	mov	#pri5,@#E0OEV+2		; priority
+
+;	input...							
+	mov	#inRCR,@#E0ICS		; reset receiver
+;	Now clear the RAM for address selection
+	mov	#255.,r0
+	clr	r1
+1$:
+	mov	r1,@#E0RHA		; Ram host address.
+	mov	#inRWE,@#E0ICS		; write a 0. NOTE: dat3 is OFF.
+	inc	r1			; next address
+	dec	r0			; our count
+	bge	1$			; 256 times.
+
+;
+;	local HOST
+	mov	@#E0RHA,r0		; Ram host address 0.
+	mov	r0,@#E0RHA		; Ram host address 0.
+	mov	#inRWE+inRWV,@#E0ICS	; write a 1. NOTE: dat3 is ON.
+	clr	@#E0ICS			; and clear CS bits.
+	mov	r0,lHOST		; We are the source.
+
+;	Now intialize input vector.
+	mov	#inINT1,@#E0ICV		; vector location
+	mov	#pri5,@#E0ICV+2		; and priority.
+
+;	For trap to 4-10
+	mov	#TRAP4,@#4
+	mov	#340,@#6
+	mov	#TRAP10,@#10
+	mov	#340,@#12
+
+;	For tty
+	clr	@#ttyICS		; interrupts off.
+	clr	@#ttyOCS
+
+	rts	pc
+
+;	Here we just put one line to the TTY...simple stuff.
+ttyICS=177560
+ttyIDA=ttyICS+2
+ttyOCS=ttyICS+4
+ttyODA=ttyICS+6
+chrCnt:	0
+;	2(Sp)	points to char.
+chrOUT:
+1$:	tstB	@#ttyOCS	;	ready?
+	bge	1$		;	NO.
+	  movB	2(Sp),@#ttyODA	;	char out
+	  inc	chrCnt
+	  cmp 	#80.,chrCnt
+	  bne	2$
+	   movB	#15,2(Sp)
+	   clr	chrCnt
+	   br	1$
+2$:
+	rts	pc
+linOUT:
+	clr	chrCnt
+	tst	-(Sp)		;	need a stack slot...
+1$:	
+	movB	(r0)+,(Sp)
+	beq	2$		; 	done.
+	 jsr	pc,chrOUT	;	send this char
+	 br	1$
+2$:
+	tst	(Sp)+		;	stack is back.
+	rts	pc
+	.globl	PAKin
+; INPUT/output Data buffer area:
+ENCAP:PAKIN:
+sHOST:	.byte 0
+dHOST:	.byte 0
+PUPTYP:	.WORD 0
+PUPLEN:	.WORD 0	
+PTYPE:	.WORD 0
+IDs:	.WORD 0,0
+dPORT:	.WORD 0
+dSOCK0:	.WORD 0
+dSOCK1:	.WORD 0
+sPORT:	.WORD 0
+sSOCK0:	.WORD 0
+sSOCK1:	.WORD 0
+pData:	.REPT 266+1
+	.WORD 0
+	.ENDR
+	.end	vdecho
+

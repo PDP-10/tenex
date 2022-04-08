@@ -1,0 +1,173 @@
+# include "version.h"
+/****************************************************************************
+	p_Dequeue (queuePTR)    
+	p_Enqueue (queuePTR, queueElement)
+	p_UNqueue (queuePTR, queueElement)
+
+	Patches:
+	   1. Added counter, l0_nFreeBufs  to keep track of free bufs.
+			WJY  July 4, 1981 11:08pm.
+
+****************************************************************************/
+extern int l0_nFreeBufs;
+extern l0_Q *l0_FreeQ;
+int p_UNqueue (q, e) l0_Q *q; int *e;	
+	{int *p;
+	int *prev;
+# ifdef PDP11
+	int oldPSW;
+	oldPSW = l_6pri ();
+# endif
+	/* search q for element e, and delete it */
+	p = q->qHead;			/* first member */
+	prev = q;
+	while (p)			/* we have a q */
+	    {if (p)
+	        if (p == e)		/* delete this guy */
+	            {*prev = *p;	/* keep chain intact */
+		    if (!*p)		/* zapped the tail */
+			{if (q->qHead == 0) prev = 0; /* tail was head */
+		        q->qTail = prev;
+			}
+		    break;
+		    }
+	        else
+		    {prev = p; p = *p; continue;}
+	    }
+# ifdef PDP11
+	l_Opri (oldPSW);		/* restore old priority */
+# endif	
+	}
+int p_Dequeue (qPTR) l0_Q *qPTR;
+	{/* find first queue element and return its address or 0 */
+	int *p;
+# ifdef PDP11
+	int oldPSW;
+	oldPSW = l_6pri ();
+# endif
+	p = qPTR->qHead;		/* points to head of queue */
+	if (p) 				/* is there a list? */
+	    {qPTR->qHead = *p;		/* next link */
+	    if (!*p) qPTR->qTail = 0;	/* this was last guy, so zap tail */
+	    if (qPTR == l0_FreeQ) --l0_nFreeBufs; /* count the freeQ */
+	    }
+# ifdef PDP11
+	l_Opri (oldPSW);		/* restore old priority */
+# endif	
+	return(p);
+	}
+
+int p_Enqueue (qPTR, eAddr) l0_Q *qPTR; int *eAddr;
+	{/* put element pointed to by eAddr into a q */
+	int *p;
+# ifdef PDP11
+	int oldPSW;
+	oldPSW = l_6pri ();
+# endif
+	if (qPTR == l0_FreeQ) ++l0_nFreeBufs;  /* count em for freedom */
+	p = qPTR->qTail;		/* last element pointer */
+	if (!p) 			/* q empty */
+	    {qPTR->qHead = eAddr; qPTR->qTail = eAddr;
+	    *eAddr = 0; 		/* zap link */
+	    }
+	else				/* not empty */
+	    {*p = eAddr;		/* update link */
+	    qPTR->qTail = eAddr;	/* Tail points to new element */
+	    *eAddr = 0;			/* terminal link */
+	    }	
+
+# ifdef PDP11
+	l_Opri (oldPSW);		/* restore old priority */
+# endif	
+	}
+/****************************************************************************
+
+	Stuff for handling output packet Tags.
+
+****************************************************************************/
+int q_pullTag (Q, addr)    l0_Q *Q; int *addr;
+	{/* scan Q for tag with addr, and UNqueue that Q element */
+	 /* if NO taq for this packet, return (0) else (1) */
+	l1_Otag *t;
+	t = Q->qHead;			/* top of queue */
+	while (t)
+	    {if (t->addr == addr) 	/* then this is the one! */
+	        {p_UNqueue (Q, t); 
+	        l1_relMEM (t);		/* give back the tag space */
+		return(1);		/* has a tag */
+		}
+	    t = t->link;
+	    }
+	return (0);			/* NO such packet on THIS socket */
+	}
+
+int q_SetTagStat (PAK, status) l0_smlPak *PAK; int status;
+	{l1_Otag *t; l1_sock *s;
+	 /* INTERRUPT server also calls this guy - PROTECT!! */
+# ifdef PDP11
+	int OLDpsw;
+	OLDpsw = l_6pri ();
+# endif
+	if (!(s = PAK->socPTR)) return;	/* WEIRD!! NO socket */
+	t = s->OutQhead;		/* tag Q */
+	while (t)
+	    if (t->addr == PAK) 
+	      {
+		t->status = status; 
+	        break;
+	      }
+	    else 
+		t = t->link;
+# ifdef PDP11
+	l_Opri (OLDpsw);
+# endif
+	}
+
+int q_ClearTAG (Socket) l1_sock *socket;
+	{l1_Otag *t;
+	/* wait till all PENDING packets are out */
+	if (t = Socket->outQhead)
+	    while (t)
+	        {int NextOne, status;
+		NextOne = t->link; status = t->status;
+		if (!(status & outputPENDING))	  /* then we might dispose */
+		    if (status & KeepPUP || !(status & outputCOMPLETE))
+			/* kept or NEVER EVEN SENT */
+			/* NOTE: NOT kept AND COMPLETE goes bye bye via */
+			/*       discard queue.  */
+		        {l1_relMEM (t->addr);	  /* bye bye packet */
+		        p_UNqueue (&socket->outQhead, t); /* pull tag */
+			l1_relMEM (t);		  /* bye bye tag */
+		        }
+		t = NextOne;
+		}
+	if (socket->outQhead) return(0);	/* still some left */
+	return(1);				/* clear	   */
+	}
+extern int *l1_SQ;
+q_SocAlive (s) int *s;
+    	{int *p;
+	p = *l1_SQ;
+	while (p)
+	    if (p == s) return(1);		/* found the socket */
+	    else 
+		p = *p;				/* next guy */
+	return(0);				/* NOT there */
+    	}
+
+int q_TaggedPAK (PAK) l0_smlPAK *PAK;
+	{/* see if PAK belongs to its socket - may have been disposed */
+	l1_Otag *t; l1_sock *S;
+	S = PAK->socPTR;		/* get associated socket */
+	if (!S) return(0);		/* Weird - NO socket assigned */
+	t = S->outQhead;		/* tag list */
+	while (t)
+	    if (PAK == t->addr) return(1); /* this packet belongs! */
+	    else 
+	        t = t->link;
+	return(0);			/* a loner - tough luck! */
+	}
+
+
+
+

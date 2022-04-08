@@ -1,0 +1,4797 @@
+;<PUP>CHAT.MAC;9     5-May-81 11:41:52    Edit by Schoen
+; Move PUPON check to CONNX.  Allow chat to start but not make connections
+;<PUP>CHAT.MAC;8	4/9/81			Edit by SWEER
+; [SMX #4] Check PUPON GETAB before starting
+;<PUP>CHAT.MAC;6  	12/25/80		Edit by RINDFLEISCH
+; [SMX #3] Format help output on page and enable help printout abort.
+; [SMX #3] Added Host.names and Address.for.host commands
+; [SMX #2] Fetch host names from <SYSTEM>PUP-NETWORK.DIRECTORY.
+; [SMX #2] Quote GTJFN strings for TOPS20
+;<PUP>CHAT.MAC;6  	12/25/80		Edit by RINDFLEISCH
+; [SMX #1] Made TENEX/TOPS20 conditional parallel to new TELNET.MAC
+;<PUP>CHAT.MAC;5  1-Dec-80  01:02:31  Edit by SCHOEN
+; Make NO CLEAR.OUTPUT.CHARACTER possible
+; Fix initial commands feature: don't overwrite initial open
+;   angle bracket, and don't send 37 for CR in remote, xparnt mode
+;<PUP>CHAT.MAC;4  8-Sept-80 10:40:05  Edit by SCHOEN
+; Tops20: Simulate Tenex hold character
+;<PUP>CHAT.MAC;3  11-Jul-80 10:12:10, Edit by SCHOEN
+; tenex/tops20: No longer set local terminal type to 0 when in remote 
+; mode (why do it?).  Kept lowercase from being sent when not in 
+; transparent mode
+;<PUP>CHAT.MAC;2 11-Jun-80 Edit by Schoen
+;<PUP>CHAT.MAC;1	9-Jun-80 Edit by SCHOEN
+; Made runnable on Tops20 (though not complete -- command parser)
+; Changed editing defaults to Sumex or Tops20
+;<PUP>CHAT.MAC;11     3-JUL-79 10:31:10    EDIT BY TAFT
+; Reset P when restarted at RECV0
+;<PUP>CHAT.MAC;10    24-APR-78 12:14:50    EDIT BY TAFT
+; Add names of all IFSs to host name table.
+; Fix crash caused by log.file.for.current.connection when there
+; is no connection.
+;<PUP>CHAT.MAC;9    17-JUL-77 12:56:59    EDIT BY TAFT
+; Add IFS command
+;<PUP>CHAT.MAC;8    13-APR-77 12:54:36    EDIT BY TAFT
+; Add initial Chat.Commands feature
+; Correct implementation of timing mark
+;<PUP>CHAT.MAC;7    21-MAR-77 16:50:45    EDIT BY TAFT
+; Add simple host name collector
+;<TAFT>CHAT.MAC;4    21-MAR-77 02:05:53    EDIT BY TAFT
+; Find help file on <Doc>Chat.help
+;<TAFT>CHAT.MAC;3    21-MAR-77 01:03:37    EDIT BY TAFT
+; Conversion from TELNET to CHAT:
+; Rip out all the BCPL call stuff
+; Rip out all option negotiation and RCTE code
+; Remove Arpanet-related stuff (netstat, socket.map, status.of ...)
+; Rewrite DOICP to make Pup connections
+; Remove state change stuff
+; Insert commands "Maxc1" and "Maxc2" until we can figure out
+; a good way of collecting host names.
+;<DODDS>TELNET.MAC;135     4-FEB-75 14:55:16    EDIT BY DODDS
+
+	TITLE CHAT -- TENEX PUP USER TELNET
+	SUBTTL	E. A. Taft, based on TELNET by R.S.Tomlinson
+
+IFNDEF FT10X,<SEARCH SYSDEF>
+
+DEFINE  TENEX,<IFN FT10X>
+DEFINE  TOPS20,<IFN FT20>
+tenex,< SEARCH STENEX >
+tops20,<SEARCH MONSYM>
+
+
+ENTVEC:	JRST START		; entry vector: start adr
+	JRST START		; restart adr, changed later
+
+VERNUM:	ASCIZ \1.04 12/25/80\
+	BLOCK 3
+
+OPDEF	ERROR[1B8]
+
+
+; Accumulators
+
+A=1
+B=2
+C=3
+D=4
+X=5
+Y=6
+Z=7
+PTR=10
+TAB=11
+NOA=12
+CNX=13
+NCNX=14
+P=17
+F=0
+
+; Flags (rh of f)
+
+REMOTF==1		; Operating in remote mode
+COMMDF==4		; In command mode
+NSTIWF==2		; Don't do stiw's
+ICPMOD==10		; ICP in progress
+TMPF==400000		; Temporary flags
+TMPF2==200000
+TMPF3==100000
+TMPF4==40000
+TMPF5==20000
+TMPF6==10000
+LSTWF==4000		; [SMX #2] Saw last word in input string(s)
+NFMTF==2000		; [SMX #3] Ignore fmt entries in SYMLUK tables
+
+; Character defs
+LF== 12			; [SMX #1] 
+CR== 15			; [SMX #1] 
+EOL==37			; [SMX #1] 
+
+; Parameters
+NPDL==2000		; Size of push list
+NHSTN==100		; [SMX #2] Declare host space
+NCONN==7		; Number of connections to remember
+;;; IESC=="Z"-100	; Initial escape character
+;;; ICBF=="O"-100	; Initial clear output buffer character
+IESC=="Y"-100		; Like Sumex Telnet
+ICBF=="N"-100
+;;; IHLD==37		; Initial Tenex hold character
+
+ESCCHN==0		; Use channel 0 for escape
+ABNCHN==2		; Channel 2 for abnormal connection termination
+CBFCHN==4
+;;; HLDCHN==1		; Use channel 1 for simulate hold
+
+SAVBFS==4000		; Size of string saving buffer
+
+; Parameters for printing various tables
+LNLEN=^D72		; [SMX #3] Max line length
+TRNCF=400000		; [SMX #3] Truncate long fields
+
+; "?" on command options
+HLPTAB=^D34		; [SMX #3] Tab spacing for help printout
+HLPMRG=0		; [SMX #3] Left margin offset for help printout
+HLPPAD=2		; [SMX #3] Min spaces between help fields
+HLPCTL=0		; [SMX #3] Control flags
+
+; "?" on host names
+HSTTAB=^D16		; [SMX #3] Tab spacing for host printout
+HSTMRG=0		; [SMX #3] Left margin offset for host printout
+HSTPAD=2		; [SMX #3] Min spaces between host fields
+HSTCTL=TRNCF		; [SMX #3] Control flags
+
+; "?" on describe options
+DSCTAB=^D34		; [SMX #3] Tab spacing for "describe" options
+DSCMRG=0		; [SMX #3] Left margin offset for "describe" opts
+DSCPAD=2		; [SMX #3] Min spaces between "describe" fields
+DSCCTL=0		; [SMX #3] Control flags
+
+; Query on host addresses
+HADTAB=^D24		; [SMX #3] Tab spacing for host printout
+HADMRG=0		; [SMX #3] Left margin offset for host printout
+HADPAD=2		; [SMX #3] Min spaces between host fields
+HADCTL=TRNCF		; [SMX #3] Control flags
+
+TT%PGM==1B34		; [SMX #1] TOPS-20 page mode bit
+
+
+; Definitions for GTNTD routines - read in PUP network directory
+
+NTDPG==600		; [SMX #2] Page to start mapping network directory
+NTDADR==NTDPG*1000
+
+; Indexes into network directory file (16-bit words)
+NNMBLK==0		; [SMX #2] # of name blocks
+ANMTBL==1		; [SMX #2] Address of name lookup table
+
+; Indexes into entry block
+.ENAD==1		; [SMX #2] Byte index to first address block ptr
+
+; Indexes into name block
+.NMEN==1		; [SMX #2] Byte index to owning entry for name block
+.NMST==2		; [SMX #2] Byte index to name string for name block
+
+; Indexes into address block
+.ADNX==0		; [SMX #2] Byte index to next address block for entry
+.ADNH==2		; [SMX #2] Byte index to net/host part of adr
+.ADSK==3		; [SMX #2] Byte index to first 16 bits of socket adr
+
+; FDB entry symbols
+FDBBYV==11		; [SMX #2] FDB word for # pgs in file
+
+; Storage defs for name information
+NROUT==140		; [SMX #2] Number of routing table entries
+NNTWK==4		; [SMX #2] Number of networks
+NHSTN==377		; [SMX #2] Number of hosts per network
+NWRDH==6		; [SMX #2] Number of words of storage per name
+			; [SMX #2] entry (string, xct, net,,host, socket
+MXNTW==NNTWK
+MXHST==NNTWK*NHSTN
+MXSKT==NHSTN
+MXOTH==NHSTN
+MXDAT==<MXNTW+MXHST+MXSKT+MXOTH>*NWRDH
+
+
+LOC 200000		; fork data area
+
+SPDL:	BLOCK 100
+APDL:	BLOCK 50
+FKRET1:	BLOCK 1
+FKRET2:	BLOCK 1
+FKRET3:	BLOCK 1
+FSVCNX:	BLOCK 1			; fork's cnx for use by INSRCV
+IRSST:	BLOCK 1			; ditto temp for Send status
+IACSAV:	BLOCK 20		; ditto AC save area
+SAVBUF:	BLOCK SAVBFS
+
+;;; LOC 300000		; Interfork data area
+;;; ARRAY 	HOLDF [NCONN+1]
+
+LOC 100000		; Where to store variables
+
+INTEGER	CONTAB
+ARRAY	PDL[NPDL]
+ARRAY	COMBUF,LINBUF,HLPBUF[200]
+ARRAY	BIGBUF[4000]
+INTEGER	LODFLG,WATFLG,TCASE,TRMLWC,BPTR,LPTR,SVP
+INTEGER	TTCOC0,TTCOC1,TTMOD0,TTMODR,TTMODC,JOBTIW,HDX,NFANCY
+INTEGER	ESCAPE,ESCCOD,CBFCHR,CBFCOD,LSTBDI,CONCSF,ABNLCK,ABNCNX
+INTEGER	LCASCF,UCASCF,LCASC,LCASL,UCASC,UCASL,UNSFT
+INTEGER	SYNC,QUOT,QUOTF,SPECWK
+;;; INTEGER HLDCOD,HLDCHR
+ARRAY	FAC,LGDRST[20]
+INTEGER	IJFN,SCRJFN,SCRCNT,SCRTIM,REALTT,CMCALX,CRNLSW,CMDJFN
+INTEGER	DIVJFN,DIVSWT,RLACJ,SPCFRK,ACTVSW,ACTVTM
+INTEGER	SKTMSK,FSKT,FHST,FHSTN,RETPC1,RETPC2,RETPC3
+ARRAY	SNDFRK,RCVFRK,DMTIME,LSKT,ELCLF,LFCRF,LNBFF[NCONN+1]
+ARRAY	XPARNT,RCVBSW,CBFCNT,ALTJFN,ALTJCT,SNDATM,RCVATM[NCONN+1]
+ARRAY	RAISEF,LOWERF,ECHCOC,CONTB,SAVINP,SAVINC,SAVONP,SAVSWT[NCONN+1]
+ARRAY	RHLDCT,RSHLCT,RBUFCT,RBFECT,RBFSCT[NCONN+1]
+ARRAY	RHLDBF,RHLDPT,RECHPT,RSNDPT,LGFJFN,LGFCNT,LGFTIM[NCONN+1]
+ARRAY	SNDJFN,RECJFN[NCONN+1]	; Send & Receive jfns
+ARRAY	SYNCNT[NCONN+1]	; Sync count (interrupts - data marks)
+ARRAY	CONNAM[3+3*NCONN]
+INTEGER	SWOFLG,CLROBF,TERM,JUNK
+INTEGER	ERSCH,ERSLN,IFT20,CRFLG				; [SMX #1] 
+
+; Data storage for loading PUP network directory infomation
+INTEGER	NETFRE,HSTFRE,SKTFRE,OTHFRE,DATFRE,NTDJFN,NTDSIZ,HSTFCT
+ARRAY	PUPROU,NETIDX[NROUT]	; [SMX #2] PUPROU table
+ARRAY	%NETTB[MXNTW]		; [SMX #2] Array of network ptrs
+ARRAY	%HSTTB[MXHST]		; [SMX #2] Array of host ptrs (by network)
+ARRAY	%SKTTB[MXSKT]		; [SMX #2] Array of socket ptrs
+ARRAY	%OTHTB[MXOTH]		; [SMX #2] Array of other entry ptrs
+ARRAY	%DATTB[MXDAT]		; [SMX #2] Array for data elements
+
+; Space for sorting host names
+;;; ARRAY	SRTTAB[2*NHSTN]		; [SMX #2] Sorting array for names
+;;; INTEGER	SRTNXT,SRTFLG		; [SMX #2] Ptr to next free entry
+
+; Variables to control formatting of "?" help printout
+INTEGER CURPOS,NPADS,XLNPTR				; [SMX #3]
+INTEGER FLDLEN,FLDTAB,FLDPAD,LINLEN,LFTMRG,FLDCTL	; [SMX #3]
+ARRAY	XLNBUF[^D20],XNNBUF[^D20],TMPLAB[^D20]		; [SMX #3] 
+
+RELOC
+
+; Program starts here
+
+START:	MOVEI A,100
+	SIBE
+	JRST RSTART
+	HRROI A,[ASCIZ /
+Chat -- Pup User Telnet /]
+	PSOUT
+	HRROI A,VERNUM
+	PSOUT
+	HRROI A,[ASCIZ/
+Escape character is /]
+	PSOUT
+	MOVEI A,IESC
+	PBOUT
+	HRROI A,[ASCIZ/; clear output buffer character is /]
+	PSOUT
+	MOVEI A,ICBF
+	PBOUT
+	MOVEI A,"."
+	PBOUT
+RSTART:	RESET			; Reset the world
+	MOVE P,[XWD -NPDL,PDL-1]
+	SETZB F,VARS
+	MOVE A,[XWD VARS,VARS+1]
+	BLT A,EVARS-1		; Zero all variables, set BCPL params
+	MOVE A,[PUSHJ P,UUO]
+	MOVEM A,41
+	MOVE A,[PUSHJ P,CONMAX]	; [SMX #3] Init host connect function
+	MOVEM A,HSTFCT		; [SMX #3] 
+	MOVEI A,400000
+	RPCAP			; Find out what we can do
+	AND B,[1B0!1B2]
+	IOR C,B
+	EPCAP			; Enable control-c stealing
+	TLNN C,(1B0)		; [SMX #1] If ^C cannot be stolen,
+	 TRO F,NSTIWF		; [SMX #1] set flg to prevent STIW
+	MOVE A,[112,,11]	; [SMX #1] Determine TENEX/TOPS-20
+	CALLI A,41		; [SMX #1] from system
+	 MOVEI A,30000		; [SMX #1] Assume TENEX if can't say
+	CAIN A,40000		; [SMX #1] TOPS-20?
+	 JRST  [SETOM IFT20	; [SMX #1] Yes
+		MOVEI A,177	; [SMX #1] Erase char = del
+		MOVEI B,"U"-100	; [SMX #1] Erase line = ^U
+		JRST START1 ]	; [SMX #1] 
+	SETZM IFT20		; [SMX #1] 
+	MOVEI A,177		; [SMX #1] Erase char = del
+	MOVEI B,"X"-100		; [SMX #1] Erase line = ^X
+START1:	MOVEM A,ERSCH		; [SMX #1] Set "erase char"
+	MOVEM B,ERSLN		; [SMX #1] and "erase line"
+	GJINF			; [SMX #1] Save name str of log dir
+	MOVE B,A		; [SMX #1] 
+	HRROI A,LGDRST		; [SMX #1] 
+	DIRST			; [SMX #1] 
+	 JFCL			; [SMX #1] Can't fail!
+;;;	SETZM SRTFLG		; [SMX #2] 
+	PUSHJ P,GTNTD		; [SMX #2] Read network dir and set tbls
+	SETOM ABNLCK		; Unlock abnormal interrupt handler.
+	SETOM UCASC
+	SETOM UCASL
+	SETOM LCASC
+	SETOM LCASL
+	SETOM UNSFT
+	SETOM QUOT
+	SETOM SYNC
+	MOVSI B,-NCONN
+
+ICNVL:	MOVE A,[BYTE (1)0,0,0,0,0,0,0,1,0,1,1,0,0,1]
+	MOVEM A,ECHCOC(B)	; Initial control character local echo
+	SETOM LFCRF(B)
+	SETOM ELCLF(B)
+	AOBJN B,ICNVL
+	MOVEI A,CONTB
+	MOVEM A,CONTAB		; Contab points at contb
+	MOVEI A,IESC		; Setup initial escape character
+	MOVEM A,ESCAPE
+	PUSHJ P,CVINTC		; Convert character to interrup channel
+	 HALT .			; Can't fail
+	MOVEM A,ESCCOD
+	MOVEI A,ICBF
+	MOVEM A,CBFCHR
+	PUSHJ P,CVINTC
+	 HALT .
+	MOVEM A,CBFCOD
+REPEAT 0,<
+	SKIPE IFT20		; [SMX #1] TOPS-20?
+	 JRST  [MOVEI A,IHLD	; [SMX #1] Yes, set "hold" char int
+		MOVEM A,HLDCHR	; [SMX #1] 
+		PUSHJ P,CVINTC	; [SMX #1] 
+		 HALT .		; [SMX #1] 
+		MOVEM A,HLDCOD	; [SMX #1] 
+		MOVE A,[XWD 1,HLDINT]  ; [SMX #1] Chn tab entry
+		MOVEM A,HLD20	; [SMX #1] 
+		JRST .+1 ]	; [SMX #1] 
+>
+	SETZM FSVCNX
+	MOVEI A,400000
+	CIS
+	MOVE B,[XWD LEVTAB,CHNTAB]
+	SIR
+	EIR
+	MOVEI A,100
+	RFMOD			; Find out what kind of line we have
+	MOVEM B,TTMOD0		; Remember same
+	TRNE B,1B32		; Hdx terminal?
+	 SETOM HDX		; Yes, set hdx flag
+	TLNE B,(1B3)
+	 SETOM TRMLWC		; Remember term has lower case
+	ANDCMI B,77B23!3B25!17B29!1B30!1B31
+	PUSH P,B
+	IORI B,17B23!0B25!1B29
+	MOVEM B,TTMODC		; In command mode: break-all, echo-none
+	POP P,B
+	IORI B,17B23!1B29
+	TRZ B,TT%PGM		; tops20 - turn off page bit
+	MOVEM B,TTMODR		; No change for remote mode
+	RFCOC			; Get standard control output control
+	MOVEM B,TTCOC0
+	MOVEM C,TTCOC1
+	HRROI A,HLPBUF		; Build name <login-dir>Chat.Commands
+	MOVEI B,"<"
+	BOUT
+	HRROI B,LGDRST		; [SMX #1]
+	SETZ C,			; [SMX #1] 
+	SOUT			; [SMX #1] 
+	HRROI B,[ASCIZ/>CHAT.COMMANDS/]
+	SOUT
+	MOVSI A,(1B2+1B17)	; Old file, short form
+	HRROI B,HLPBUF
+	GTJFN
+	 JRST INIT1		; Not there
+	MOVEM A,CMDJFN		; Ok, save jfn
+	MOVE B,[7B5+1B19]	; Open for reading
+	OPENF
+	 PUSHJ P,[SETZ A,	; Can't, just release jfn and ignore
+		EXCH A,CMDJFN
+		JRST CLRJFN]
+INIT1:	MOVE A,[JRST PCLP]	; set up restart adr
+	MOVEM A,ENTVEC+1
+PCLP:	MOVEI A,ESCCHN		; Psi channel
+	HRL A,ESCCOD		; Escape terminal code
+	ATI
+	MOVEI A,CBFCHN
+	HRL A,CBFCOD
+	ATI			; Assign
+REPEAT 0,<
+	SKIPE IFT20		; [SMX #1] TOPS-20?
+	 JRST  [MOVEI A,HLDCHN	; [SMX #1] Yes, set up "hold" channel
+		HRL A,HLDCOD	; [SMX #1] 
+		ATI		; [SMX #1] 
+		JRST .+1 ]	; [SMX #1] 
+>
+	MOVE B,[1B<ESCCHN>!1B<ABNCHN>!1B<CBFCHN>!1B9!1B11!17B18]
+REPEAT 0,<
+	SKIPE IFT20		; [SMX #1] TOPS-20?
+	 MOVE B,[1B<ESCCHN>!1B<HLDCHN>!1B<ABNCHN>!1B<CBFCHN>!1B9!1B11!17B18]
+>
+	MOVEI A,400000
+	AIC			; Activate interrupt channel
+	SETZM CRFLG		; [SMX #1] Clear cr handling flag
+
+; Main command loop
+
+COMLP:	TRO F,COMMDF
+	TRZ F,TMPF3!ICPMOD
+	MOVEI A,101
+	DOBE
+	MOVE P,[XWD -NPDL,PDL-1]
+	MOVE NCNX,CNX
+	SETO B,
+	MOVEI A,-5
+	TRNN F,NSTIWF
+	STIW			; Restore terminal interrupt word
+	MOVEI A,100
+	MOVE B,TTMODC
+	SKIPE NFANCY
+	 JRST [	TRZ B,77B23
+		TRO B,2B25!16B23
+		JRST .+1]
+	SFMOD			; Set tty mode for command input
+	STPAR			; set for page mode
+	MOVE B,[BYTE (2)0,0,1,1,1,1,1,2,0,2,2,1,2,2,1,1,1,1]
+	MOVE C,[BYTE (2)0,1,1,1,1,1,0,1,1,0,1,1,1,2]
+	SFCOC
+	HRROI A,[ASCIZ /
+#/]
+	PUSHJ P,.PSOUT		; Prompt character
+	MOVE PTR,[POINT 7,COMBUF-1,34]
+	MOVEM PTR,LPTR		; Pointer to beginning of line
+	MOVEI A,"#"
+	IDPB A,PTR		; Deposit initial space to line up
+	MOVE TAB,COMTAB		; Setup to use comtab
+	PUSHJ P,SYMVAL		; Call symbol evaluator
+	SKIPE SNDJFN(CNX)	; Was connection created or
+	TRNN F,REMOTF		; Remote mode?
+	 JRST COMLP		; No. stay in command mode
+	TRZ F,COMMDF
+	MOVEM CNX,FSVCNX	; save CNX for later restoration
+	HRROI A,[ASCIZ /#
+/]
+	PUSHJ P,.PSOUT
+	MOVEI A,-5
+	MOVN C,ESCCOD
+	MOVSI B,400000
+	ROT B,(C)		; Get bit for escape code
+	PUSH P,B
+	MOVN C,CBFCOD
+	MOVSI B,400000
+	ROT B,0(C)
+	IORM B,0(P)
+	POP P,B
+	IORI B,1B30		; Include carrier off
+	TRNN F,NSTIWF
+	STIW			; And set tiw to that
+
+REST0:	MOVEI A,100
+	MOVE B,TTMODR
+	SKIPE XPARNT(CNX)
+	 TRZ B,3B29
+	SFMOD			; Set tty mode for remote
+	STPAR			; Turn it off
+	MOVE B,[BYTE (2)0,0,0,0,0,0,0,2,2,2,2,2,2,2,0,0,0,0]
+	MOVE C,[BYTE (2)0,0,0,0,0,0,0,0,0,0,0,0,0,2]
+	SFCOC			; echo all formatter + bell in remote
+	MOVEI A,101
+	GTTYP
+	SETZ C,
+	CAIL B,MINSCP		; is terminal a scope?
+	 EXCH C,B
+	MOVEM C,REALTT		; save terminal type or 0 if not scope
+	MOVE A,RCVFRK(CNX)
+	FFORK			; Freeze it
+	MOVEI A,400000
+	DIR			; Interrupts off to avoid confusion
+	SETZM SAVSWT(CNX)	; Resume output
+	MOVE A,RCVFRK(CNX)
+	RFSTS			; Get pc of receive fork
+	MOVE A,RCVFRK(CNX)
+	HRRZS B
+	CAIG B,RECV0		; If fork will get back to RECVO
+	 JRST REST2		;  let it proceed
+	CAIG B,RECVB
+	 JRST REST1
+	CAIL B,RCVBX
+	CAILE B,RCVB1+1
+	SKIPE RCVBSW(CNX)
+	 JRST REST1
+	JRST REST2
+REST1:	MOVEI B,RECV0		; Else restart it at RECV0
+	SFORK
+REST2:	MOVE A,SNDFRK(CNX)	; if io wait and input file assigned,
+	RFSTS
+	MOVE A,SNDFRK(CNX)
+	HRRZS B
+	CAIN B,PBINX+1
+	SKIPN ALTJFN(CNX)
+	JRST REST3
+	MOVEI B,.PBIN	; restart .PBIN to prevent input hang
+	SFORK
+
+
+REST3:	MOVEI A,400000
+	EIR
+	MOVE A,RCVFRK(CNX)
+	RFORK			; And resume
+	MOVE A,SNDFRK(CNX)
+	RFORK			; Resume send fork
+	SKIPE ACTVSW		; if not auto-switching, wait
+	 JRST REST3A
+	WFORK			; Should wait forever
+	HRROI A,[ASCIZ /
+Funny fork termination. Restarted./]
+	PUSHJ P,.PSOUT
+	JRST RSTART
+REST3A:	TIME
+	MOVEM A,RCVATM(CNX)	; advance new fork's active time to now
+REST4:	MOVEI A,^D15000
+	DISMS			; here for auto-switching. wait 1 min..
+	TIME
+	SUB A,ACTVTM
+	MOVE B,A
+	CAML A,RCVATM(CNX)	; send and recv forks inactive for
+	CAMGE B,SNDATM(CNX)	; more than time constant?
+	 JRST REST4		; no, go back to sleep
+	MOVSI X,-NCONN
+REST5:	MOVE A,SNDJFN(X)	; yes, scan for an active connection
+	JUMPE A,REST6
+	SKIPLE SAVINC(X)
+	 JRST REST7
+REST6:	AOBJN X,REST5
+	JRST REST4		; if none found keep current one & loop
+REST7:	SETOM SAVSWT(CNX)
+	MOVEI A,400000
+	DIR
+	MOVEI A,100		; active cnx found: turn off current cnx
+	CFIBF
+	MOVE A,SNDFRK(CNX)
+	FFORK
+	PUSHJ P,TBEL
+	HRROI A,[ASCIZ /
+Switching to connection /]
+	PUSHJ P,.PSOUT
+	HRRZ A,X
+	IMULI A,3
+	HRROI A,CONNAM(A)
+	PUSHJ P,.PSOUT
+	HRROI A,[ASCIZ /.
+/]
+	PUSHJ P,.PSOUT
+	HRRZ CNX,X
+	TRO F,REMOTF
+	MOVEM CNX,FSVCNX	; and turn on active one
+	JRST REST0
+
+
+; Abnormal interrupts come here
+
+BADINT:	MOVE CNX,FSVCNX
+	MOVEI A,101
+	DOBE
+	TIME
+	SUBI A,^D15000
+	CAMGE A,LSTBDI		; Within 5 seconds of last bad int?
+	 JRST BADBAD		; Very bad
+	HRROI A,[ASCIZ /
+Abnormal interrupt from location /]
+	PUSHJ P,.PSOUT
+	HRRZ B,RETPC1
+	MOVEI C,10
+	MOVEI A,101
+	PUSHJ P,.NOUT
+	 JFCL
+	HRROI A,[ASCIZ /.
+/]
+	PUSHJ P,.PSOUT
+	TIME
+	MOVEM A,LSTBDI
+	JRST ESCINZ
+
+BADBAD:	HALTF
+	JRST BADINT
+
+; If remote host initiates disconnect, rec'v fork inits int'rpt to here
+
+ABNINT:	MOVE CNX,FSVCNX
+	MOVE X,ABNCNX		; Get the correct cnx
+	PUSHJ P,DISC1
+	JRST ESCINZ
+
+; Clear outbuf int comes here
+
+CBFINT:	MOVE CNX,FSVCNX
+	SKIPE A,SNDJFN(CNX)
+	AOSE QUOTF
+	 JRST CBFINZ
+	PUSH P,B
+	MOVEI B,SENDO
+	JRST SPCSND
+
+REPEAT 0,<
+; Simulate tenex hold interrupt comes here
+HLDINT:	PUSH P,B
+	PUSH P,CNX
+	MOVE CNX,FSVCNX
+	SKIPE HOLDF(CNX)
+	 JRST HLDTOG
+	SETOM HOLDF(CNX)
+	SETOM SAVSWT(CNX)
+	MOVEI B,37
+	PUSHJ P,SNDCH
+	POP P,CNX
+	POP P,B
+	DEBRK
+
+HLDTOG:	SETZM HOLDF(CNX)
+	SETZM SAVSWT
+	MOVEI B,37
+	PUSHJ P,SNDCH
+	POP P,CNX
+	POP P,B
+	DEBRK
+>		; End REPEAT 0,
+
+CBFINZ:	SETOM CLROBF
+	PUSH P,A
+	MOVEI A,101
+	CFOBF
+	POP P,A
+	DEBRK
+	DEBRK
+
+; Escape interrupt comes to here
+
+ESCINT:	AOSE QUOTF		; if quote prefix typed and
+	 JRST ESCINV
+	MOVE CNX,FSVCNX
+	SKIPN A,SNDJFN(CNX)	; If connection exists,
+	 JRST ESCINV
+	PUSH P,B
+	MOVEI B,SENDE
+SPCSND:	PUSH P,A		; Then sent escape character
+	MOVE A,SNDFRK(CNX)
+	FFORK
+	SFORK
+	RFORK
+	POP P,A
+	POP P,B
+	DEBRK
+
+ESCINV:	MOVEI A,100
+	CFIBF			; do this early for performance
+	SETZM CRFLG		; [SMX #1] No cr struck
+	MOVEI A,101
+	TRNE F,COMMDF		; command mode?
+	 CFOBF			; yes, flush output
+	JRST ESCINY
+ESCINZ:	MOVEI A,100
+	CFIBF
+	SETZM CRFLG		; [SMX #1] No cr struck
+ESCINY:	SKIPE RLACJ		; Is there likely to be a jfn in ac 1?
+	TDNE A,[XWD -1,700000]
+	SKIPA			; Apparently not
+	 PUSHJ P,CLRJFN		; Apparently yes
+	SETZM RLACJ
+	SKIPE A,SNDFRK(CNX)	; If there is a send fork
+	 FFORK			; Freeze it
+	SKIPN A,RECJFN(CNX)	; Connected?
+	 JRST ESCINW		; No, skip this
+	SETOM SAVSWT(CNX)	; Switch to saving input
+	SKIPE A,RCVFRK(CNX)
+	RFORK			; Leave running
+
+ESCINW:	SKIPE A,SPCFRK		; If there is a special fork
+	 KFORK			; Kill it
+	SETZM SPCFRK
+	SKIPE A,IJFN
+	 PUSHJ P,CLRJFN
+	SETZM IJFN		; Release temporary jfn's
+	TRNE F,ICPMOD
+	 PUSHJ P,RELCON		; release connections if ICP was in prog
+	SKIPE B,REALTT		; scope terminal type saved?
+	 JRST [ MOVEI A,101
+		STTYP		; yes, restore type for command mode
+		MOVEI A,100
+		SIBE		; any type-ahead since cfibf?
+		 JRST .+1	; yes, restored ok
+		MOVEI B,40
+		STI		; no, simulate char in to break
+		PBIN		;  scroll hold, if any
+		JRST .+1 ]
+ESCI1:	SKIPE A,CMDJFN		; Is there an initial command file?
+	 PUSHJ P,CLRJFN		; Yes, close it
+	SETZM CMDJFN
+	MOVE A,[XWD 10000,COMLP]
+	MOVEM A,RETPC1
+	DEBRK			; Debrk back to comlp
+
+LEVTAB:	RETPC1
+	RETPC2
+	RETPC3
+
+CHNTAB:	REPEAT ESCCHN,<XWD 1,BADINT>
+	XWD 1,ESCINT
+HLD20:	XWD 1,BADINT		; [SMX #1] Changed if on TOPS-20
+	XWD 1,ABNINT
+	XWD 1,BADINT
+	XWD 2,CBFINT
+	REPEAT <^D36-5-ESCCHN>,<XWD 1,BADINT>
+
+FKLVT:	FKRET1
+	FKRET2
+	FKRET3
+
+FKCHT:	0
+	XWD 3,RCVINS
+	0
+	REPEAT ^D7,<0>
+	0
+	XWD 1,IOERR
+	REPEAT ^D36-^D12,<0>
+	DEBRK
+
+; Get a character
+
+GCH:	PUSHJ P,.PBINC		; [SMX #1] 
+	CAME A,ERSLN		; [SMX #1] Erase line char?
+CPOPJ:	 POPJ P,
+	HRROI A,[ASCIZ /XXX/]
+	PUSHJ P,.PSOUT
+	JRST COMLP
+
+; Echo character in a
+
+ECHOIT:	SKIPE HDX
+	 PUSHJ P,PBOUT0
+	SKIPE HDX
+	POPJ P,
+	SKIPE NFANCY
+	TRNN F,COMMDF
+	PUSHJ P,.PBOUT
+	POPJ P,
+
+; Primary output with case indicate
+
+.PEOUT:	PUSHJ P,PBOUT0
+	CAIL A,100		; Does character have case?
+	SKIPE TRMLWC		; Or does terminal have lower case?
+	 JRST EOUTX1		; Caseless
+	SKIPGE LCASL
+	SKIPL LCASC
+	SKIPA
+	 JRST EOUTX1		; Don't indicate if shift chars absent
+	SKIPGE UCASL
+	SKIPL UCASC
+	SKIPA
+	 JRST EOUTX1
+	CAIE A,177
+	CAIN A,137
+	 JRST EOUTX1
+	PUSH P,B
+	MOVE B,A
+	ANDI B,40		; Extract case
+	ANDCMI A,40		; Force upper
+	CAMN B,TCASE		; Same as current case?
+	 JRST EOUTX0		; No need to indicate
+	PUSH P,A
+	JUMPE B,IUPC		; Upper case
+	SKIPG A,LCASL		; Do we have a lower case lock?
+	 JRST LCS1		; No, try for lowercase char
+	PBOUT			; Yes, print it
+	MOVEM B,TCASE		; And remember new case
+	JRST EOUTX
+
+
+LCS1:	SKIPG A,LCASC		; Have we a lower case char prefix?
+	 JRST EOUTX		; No, can't indicate
+	PBOUT			; Yes, print it
+	JRST EOUTX		; But don't change case
+
+IUPC:	SKIPG A,UCASL		; Do we have a upper case lock
+	 JRST UCS1
+	PBOUT
+	MOVEM B,TCASE
+	JRST EOUTX
+
+UCS1:	SKIPG A,UCASC
+	 JRST EOUTX
+	PBOUT
+EOUTX:	POP P,A
+EOUTX0:	POP P,B
+EOUTX1:	CAME A,UCASC
+	CAMN A,UCASL
+	 JRST ESPCL
+	CAME A,LCASC
+	CAMN A,LCASL
+	 JRST ESPCL
+	CAMN A,QUOT
+	 JRST ESPCL
+	PBOUT
+	POPJ P,
+
+ESPCL:	PUSH P,A
+	SKIPLE A,QUOT
+	PBOUT
+	POP P,A
+	PBOUT
+	POPJ P,
+
+
+; Character input for commands.  Handles different EOL conventions
+.PBINC:	PUSHJ P,.PBIN		; [SMX #1] Get a char
+	CAIE A,CR		; [SMX #1] Regular cr?
+	 POPJ P,		; [SMX #1] No
+	SETOM CRFLG		; [SMX #1] Yes
+	MOVEI A,EOL		; [SMX #1] Convert it to EOL
+	POPJ P,			; [SMX #1] 
+
+; Primary input
+.PBIN:	PUSH P,B
+PBIN1:	MOVEI A,100
+	TRNE F,COMMDF
+	 JRST PBIN0
+	SKIPN ALTJFN(CNX)
+	 JRST PBIN2
+	MOVE A,ALTJFN(CNX)  	; if alt. file exists & in remote mode,
+	SOSGE ALTJCT(CNX)   	; take input from file, else tty
+	 JRST [ SETZ NOA,
+		PUSHJ P,SETALT	; if ct shows eof, close & release
+		JRST PBIN1 ]
+	BIN
+	MOVE A,B
+	POP P,B
+	POPJ P,
+PBIN2:
+PBIN0:	SKIPE A,CMDJFN		; Taking input from initial command file?
+	 JRST PBIN4		; Yes
+	MOVEI A,101
+	RFMOD			; will echo be generated?
+	TRNE B,3B33!3B25
+	 JRST [	MOVEI B,PBOUT0
+		EXCH B,0(P)
+		JRST .+2]
+PBIN3:	POP P,B
+PBINX:	PBIN
+	SKIPN CRFLG		; [SMX #1] Expecting LF?
+	 POPJ P,		; [SMX #1] No
+	SETZM CRFLG		; [SMX #1] Yes, reset flag
+	CAIE A,LF		; [SMX #1] Is it?
+	 POPJ P,		; [SMX #1] No, return
+	JRST PBINX		; [SMX #1] Yes, ignore it
+
+; Get input from initial command file
+PBIN4:	BIN
+	JUMPE B,[GTSTS		; End of file?
+		TLNN B,(1B8)
+		 JRST PBIN4	; No, flush null
+		PUSHJ P,CLRJFN	; Yes, close file
+		SETZM CMDJFN
+		JRST PBIN1]	; Get input by other means
+	SKIPN CRFLG		; [SMX #1] Expecting LF?
+	 JRST PBIN5		; [SMX #1] No
+	SETZM CRFLG		; [SMX #1] Yes, reset flag
+	CAIE B,LF		; [SMX #1] Is it?
+	 JRST PBIN5		; [SMX #1] No
+	JRST PBIN4		; [SMX #1] Yes, ignore it
+
+PBIN5:	MOVE A,B
+	POP P,B
+	TRNE F,COMMDF		; In command mode?
+	 PUSHJ P,PBOUT0		; Yes, echo the char
+	POPJ P,
+
+; Primary output
+
+.PBOUT:	PBOUT
+PBOUT0:	SKIPN SCRJFN
+	 POPJ P,
+	PUSH P,B
+	MOVE B,A
+	MOVE A,SCRJFN
+	BOUT
+	PUSHJ P,SCRUPD
+	MOVE A,B
+	POP P,B
+	POPJ P,
+
+.PLOUT:	PUSHJ P,.PBOUT
+	CAIA
+PLOUT0:	PUSHJ P,PBOUT0
+PLOUT1:	SKIPN LGFJFN(CNX)
+	 POPJ P,
+PLOUT2:	PUSH P,A
+	MOVE B,A
+	MOVE A,LGFJFN(CNX)
+	BOUT
+	PUSHJ P,LGFUPD
+	MOVE A,B
+	POP P,B
+	POPJ P,
+
+; Clear up outstanding cr received...
+CLRCRF:	SKIPN CRFLG		; [SMX #1] cr pending?
+	 POPJ P,		; [SMX #1] No
+	PUSH P,A		; [SMX #1] Yes, eat a char (lf)
+	PBIN			; [SMX #1] 
+	POP P,A			; [SMX #1] 
+	SETZM CRFLG		; [SMX #1] Clear the flag
+	POPJ P,			; [SMX #1] 
+
+
+.GTJFN:	MOVE B,[XWD 100,101]
+GTJFN0:	PUSH P,A		; [SMX #1] Save ac's
+	PUSH P,[0]		; [SMX #1] Storage for TTY mode word
+	PUSH P,B		; [SMX #1] 
+	TLNN A,1		; [SMX #1] Short call?
+	 MOVE B,1(A)		; [SMX #1] No, b _ i/o jfns
+	CAMN B,[XWD 100,101]	; [SMX #1] Primary i/o?
+	 PUSHJ P,CLRCRF		; [SMX #1] Yes, clear up any crlf
+	MOVEI A,100		; [SMX #1] Get current TTY mode word
+	RFMOD			; [SMX #1] 
+	MOVEM B,-1(P)		; [SMX #1] Save it
+	TRO B,2B25		; [SMX #1] Be sure echoing is on
+	SFMOD			; [SMX #1] 
+	POP P,B			; [SMX #1] Restore GTJFN ac's
+	MOVE A,-1(P)		; [SMX #1] 
+	SETOM RLACJ
+	GTJFN
+	 JRST [	SETZM RLACJ
+		JRST GTJFN9 ]	; [SMX #1] Error, restore TTY mode
+	MOVEM A,IJFN
+	SETZM RLACJ
+	PUSH P,C
+	SETZ C,
+	MOVE B,A
+	SKIPE A,SCRJFN
+	 JFNS
+	POP P,C
+	PUSHJ P,SCRUPD
+	MOVE A,IJFN		; [SMX #1] Recover jfn
+	AOS -2(P)		; [SMX #1] Set success return
+GTJFN9:	MOVEM A,-1(P)		; [SMX #1] Save jfn or error code
+	MOVEI A,100		; [SMX #1] Reset TTY mode
+	POP P,B			; [SMX #1] 
+	SFMOD			; [SMX #1] 
+	POP P,A			; [SMX #1] a _ return value
+	POPJ P,			; [SMX #1] 
+
+.NOUT:	NOUT
+	 POPJ P,
+	SKIPE A,SCRJFN
+	NOUT
+	 JFCL
+	PUSHJ P,SCRUPD
+	MOVEI A,101
+	AOS (P)
+	POPJ P,
+
+.SOUT:	SKIPN A,SCRJFN
+	 JRST .SOUT0
+	PUSH P,B
+	PUSH P,C
+	SOUT
+	PUSHJ P,SCRUPD
+	POP P,C
+	POP P,B
+.SOUT0:	MOVEI A,101
+	SOUT
+	POPJ P,
+
+.CRLF:	HRROI A,[BYTE (7)CR,LF]	; [SMX #1] Do a real crlf
+.PSOUT:	SKIPE SCRJFN
+	PUSH P,A
+	PSOUT
+	SKIPN SCRJFN
+	 POPJ P,
+	EXCH B,0(P)
+	PUSH P,C
+	MOVE A,SCRJFN
+	SETZ C,
+	SOUT
+	PUSHJ P,SCRUPD
+	MOVE A,B
+	POP P,C
+	POP P,B
+	POPJ P,
+
+; Uuo handler
+
+UUO:	HRRO A,40
+	PUSHJ P,ERROUT
+	MOVEI A,400000
+	CIS
+	EIR
+	JRST COMLP
+
+ERROUT:	PUSH P,A
+	MOVEI A,101
+	DOBE
+	POP P,A
+	PUSHJ P,.PSOUT
+	MOVEI A,^D1000
+	DISMS
+	MOVEI A,100
+	CFIBF
+	SETZM CRFLG		; [SMX #1] Clear crlf flag
+	POPJ P,
+
+; Convert interrupt character to code
+
+CVINTC:	CAIG A,33
+	 JRST SKPRET
+	CAIE A,177
+	CAIN A,40
+	 SKIPA
+	POPJ P,
+	CAIN A,40
+	MOVEI A,^D29
+	CAIN A,177
+	MOVEI A,^D28
+	JRST SKPRET
+
+
+; type bell
+
+TBEL:	PUSH P,A
+	MOVEI A,7
+	PBOUT
+	POP P,A
+	POPJ P,
+
+
+; Map fork one to one with this fork through page 177
+; Call:	A	; Fork handle
+;	PUSHJ P,MAPFRK
+; Returns
+;	+1	; Always. transparent
+
+MAPFRK:	PUSH P,C
+	PUSH P,D
+	PUSH P,B
+	MOVSI D,-177
+	MOVSI B,(A)
+	MOVSI A,400000
+	MOVSI C,160000
+MAPFKL:	HRR A,D
+	HRR B,D
+	PMAP
+	AOBJN D,MAPFKL
+	HLRZ A,B
+	POP P,B
+	POP P,D
+	POP P,C
+	PUSHJ P,MAPDDT		; MAP DDT TO LOWER FORK
+	POPJ P,
+
+; Routine to map DDT to lower fork if loaded in upper
+; Entry:   a = destination fork handle
+MAPDDT:	PUSH P,C
+	PUSH P,D
+	PUSH P,B
+TENEX,<			; If TENEX system
+	MOVE D,[-<1000-750>,,750]  ; [SMX #1] AOBJN ptr for mapping
+>
+TOPS20,<		; If TOPS-20 system
+	MOVE D,[-<1000-770>,,770] ; [SMX #1] Yes, starts elsewhere
+>
+	MOVSI B,(A)
+	MOVSI A,400000
+	MOVSI C,160000
+MAPDDL:	HRR A,D
+	HRR B,D
+	PMAP
+	AOBJN D,MAPDDL		; [SMX #1] Do all pages
+	HLRZ A,B		; [SMX #1] a _ dest fork handle again
+	POP P,B
+	POP P,D
+	POP P,C
+	POPJ P,
+
+
+INIFRK:	MOVEM NCNX,CNX+FAC
+	PUSH P,C		; [SMX #1] 
+	RPCAP			; [SMX #1] Get fork capabilities
+	TLO B,(1B9)		; [SMX #1] Set cap to manip superior
+	TLO C,(1B9)		; [SMX #1] so inferior can interrupt
+	EPCAP			; [SMX #1] 
+	POP P,C			; [SMX #1] 
+	MOVEI B,FAC
+	SFACS
+	MOVE B,[XWD FKLVT,FKCHT]
+	CIS
+	SIR
+	EIR
+	MOVSI B,(1B1!1B2!1B11)
+	AIC
+	POPJ P,
+
+; Close and release jfn
+
+CLRJFN:	PUSH P,A
+	CLOSF
+	 JFCL
+	POP P,A
+	RLJFN
+	 JFCL
+	POPJ P,
+
+; Formating specifications for various command types.  Each table
+; has the form:
+;		  column width,,line length
+;		  left marg pad,,post column pad
+;		  printing control flags
+
+; Command option format table
+CFMT:	HLPTAB,,<LNLEN/HLPTAB>*HLPTAB	; [SMX #3]
+	HLPMRG,,HLPPAD			; [SMX #3]
+	HLPCTL,,0			; [SMX #3]
+
+; Host format table
+HFMT:	HSTTAB,,<LNLEN/HSTTAB>*HSTTAB	; [SMX #3]
+	HSTMRG,,HSTPAD			; [SMX #3]
+	HSTCTL,,0			; [SMX #3]
+
+; Describe option format table
+DFMT:	DSCTAB,,<LNLEN/DSCTAB>*DSCTAB	; [SMX #3]
+	DSCMRG,,DSCPAD			; [SMX #3]
+	DSCCTL,,0			; [SMX #3]
+
+; Macro for generating commands
+
+DEFINE	CC(STR,VAL)<
+	POINT 7,[ASCIZ \STR\
+		VAL]
+>
+
+; Top level commands			; [SMX #2] Inverted order
+TOPC:	CFMT				; [SMX #3] 
+	CC(<address.for.host>,<PUSHJ P,ADFHST>)		; [SMX #3] 
+	CC(<clear.output.character=>,<PUSHJ P,SETCBF>)
+	CC(<connection.to>,<PUSHJ P,.CONN>)
+	CC(<control>,<PUSHJ P,SNDCTL>)
+	CC(<current.modes.are>,<PUSHJ P,PRCMD>)
+	CC(<ddt>,<JRST 770000>)
+	CC(<describe>,<PUSHJ P,.DSCRB>)
+	CC(<disconnect>,<PUSHJ P,.DISC>)
+	CC(<echo.mode.is>,<PUSHJ P,.ECHO>)
+	CC(<escape.character=>,<PUSHJ P,SETESC>)
+	CC(<exec>,<PUSHJ P,.EXEC>)
+	CC(<help>,<PUSHJ P,.HELP>)
+	CC(<host.names>,<PUSHJ P,HSTNMP>)		; [SMX #3] 
+	CC(<list.connections>,<PUSHJ P,LSTCON>)
+	CC(<local.mode>,<TRZ F,REMOTF>)
+	CC(<logout>,<PUSHJ P,.LGOUT>)
+	CC(<name.current.connection.to.be>,<PUSHJ P,.STNAM>)
+	CC(<quit>,<PUSHJ P,.QUIT>)
+	CC(<remote.mode>,<PUSHJ P,SETREM>)
+	CC(<reset>,<PUSHJ P,.RESET>)
+	CC(<retrieve.connection.under.name>,<PUSHJ P,RETCON>)
+	CC(<run>,<PUSHJ P,.RUN>)
+TOPS20,<
+;;;	CC(<simulate.tenex.hold.with.hold.key=>,<PUSHJ P,SETSCH>)
+>
+	CC(<terminal.type.is>,<PUSHJ P,SETTRM>)
+	CC(<wait.for.any.active.connection>,<PUSHJ P,WATRET>)
+	CC(<where.am.I>,<PUSHJ P,.WHERE>)
+	CC(<!synch!>,<PUSHJ P,SNDSNC>)
+	XWD -1,NULTAB
+	CC(<no>,<JRST [SETCA NOA,
+			MOVE TAB,YNTB
+			JRST SYMVAN]>)
+	XWD -1,YNTB
+	CC(<code>,<JRST [	MOVE TAB,CODTB
+				JRST SYMVAL]>)
+	XWD -1,NULTAB
+	XWD -1,CODTB
+	CC(<;*%x>,<JRST DOCOMT>)
+	HFMT				; [SMX #3] 
+	XWD -1,HOSTAB
+COMTAB:	XWD TOPC-.,TOPC
+
+					; [SMX #2] Inverted order
+YNT:	CFMT				; [SMX #3]
+	CC(<auto.switch.to.active.connection>,<PUSHJ P,ACTVST>)
+	CC(<case.shift.prefix.for>,<PUSHJ P,SETSHF>)
+	CC(<character.mode>,<SETCAM NOA,LNBFF(CNX)>)
+	CC(<concise>,<MOVEM NOA,CONCSF>)
+	CC(<divert.output.stream.to.file>,<PUSHJ P,SETDIV>)
+	CC(<fancy.command.interpret>,<SETCAM NOA,NFANCY>)
+	CC(<line.buffer>,<MOVEM NOA,LNBFF(CNX)>)
+	CC(<log.file.for.current.connection>,<PUSHJ P,SETLGF>)
+	CC(<lower>,<MOVEM NOA,LOWERF(CNX)>)
+	CC(<quote.prefix:>,<PUSHJ P,SETQOT>)
+	CC(<raise>,<MOVEM NOA,RAISEF(CNX)>)
+	CC(<signal.waiting.output>,<MOVEM NOA,SWOFLG>)
+	CC(<synch.character:>,<PUSHJ P,SETSNC>)
+	CC(<take.input.stream.from.file>,<PUSHJ P,SETALT>)
+	CC(<transparent.mode>,<MOVEM NOA,XPARNT(CNX)>)
+	CC(<typescript.to.file>,<PUSHJ P,SETSCR>)
+	CC(<unshift.prefix:>,<PUSHJ P,SETUNS>)
+	CC(<verbose>,<SETCAM NOA,CONCSF>)
+YNTB:	XWD YNT-.,YNT
+
+; Null table
+NTP:	CC(<>,<JFCL>)
+NULTAB:	XWD NTP-.,NTP
+
+; Table of character code specifiers	; [SMX #2] Inverted order
+CDTB:	CFMT				; [SMX #3] 
+	CC(<%o*%o>,<PUSHJ P,SNDOCT>)
+	CC(<o%o*%o>,<PUSHJ P,SNDOCD>)
+	CC(<h%h*%h>,<PUSHJ P,SNDHCD>)
+	CC(<d%d*%d>,<PUSHJ P,SNDDCD>)
+CODTB:	XWD CDTB-.,CDTB
+
+; Command table for terminal modes	; [SMX #2] Inverted order
+TRMT:	CFMT				; [SMX #3] 
+	CC(<no>,<JRST [	SETCA NOA,
+			JRST SYMVAN]>)
+	CC(<fullduplex>,<SETCAM NOA,HDX>)
+	CC(<halfduplex>,<MOVEM NOA,HDX>)
+	CC(<lowercase>,<PUSHJ P,SETLWR>)
+TRMTAB:	XWD TRMT-.,TRMT
+
+; Command table for echo modes		; [SMX #2] Inverted order
+ETP:	CFMT
+	CC(<no>,<JRST [SETCA NOA,
+			JRST SYMVAN]>)
+	CC(<control.character.echo.for>,<PUSHJ P,SETCOC>)
+	CC(<linefeed.for.carriage.return>,<MOVEM NOA,LFCRF(CNX)>)
+	CC(<local>,<JRST [	MOVEM NOA,ELCLF(CNX)
+				JRST CHGECH]>)
+	CC(<remote>,<JRST [	SETCAM NOA,ELCLF(CNX)
+				JRST CHGECH]>)
+ECTAB:	XWD ETP-.,ETP
+
+; Command table for socket lookup	; [SMX #2] Inverted order
+STP:	CFMT				; [SMX #3] 
+	XWD -1,NULTAB
+	XWD -1,SETTAB
+	CC(<name.for.connection.is>,<PUSHJ P,.STNAM>)
+SKTTAB:	XWD STP-.,STP
+
+					; [SMX #2] Inverted order
+STB:	CFMT				; [SMX #3] 
+	CC(<no>,<JRST [	SETCA NOA,
+			MOVE TAB,SETTAB
+			JRST SYMVAN]>)
+	CC(<wait>,<MOVEM NOA,WATFLG>)
+SETTAB:	XWD STB-.,STB
+
+; [SMX #2] Host table generated on startup from PUP-NETWORK.DIRECTORY
+HOSTAB:	0
+
+; "Any character" table - used to collect arbitrary strings
+; (like host names)			; [SMX #2] Inverted order
+ANYT:	CFMT				; [SMX #3] 
+	CC(<%x*%x>,<JFCL>)
+ANYTAB:	XWD ANYT-.,ANYT
+
+; Octal number table			; [SMX #2] Inverted order
+OCT:	CFMT				; [SMX #3] 
+	CC(<%o*%o>,<PUSHJ P,CVOCT>)
+OCTB:	XWD OCT-.,OCT
+
+; Decimal number table			; [SMX #2] Inverted order
+DCM:	CFMT				; [SMX #3] 
+	CC(<%d*%d>,<PUSHJ P,CVDEC>)
+DCMTB:	XWD DCM-.,DCM
+
+; Letter table				; [SMX #2] Inverted order
+LTR:	CFMT				; [SMX #3] 
+	CC(<%a>,<ILDB A,BPTR>)
+LTRTB:	XWD LTR-.,LTR
+
+; Connection name table			; [SMX #2] Inverted order
+NAMT:	CFMT				; [SMX #3] 
+	CC(<%n*%n>,<SETO A,>)
+NAMTB:	XWD -3,[HFMT			; [SMX #3] 
+		XWD -1,CONTAB
+		XWD NAMT-NAMTB,NAMT]
+
+; Case shift command table		; [SMX #2] Inverted order
+SFTAB:	CFMT				; [SMX #3] 
+	CC(<char.lower.case>,<MOVEI A,LCASC>)
+	CC(<char.upper.case>,<MOVEI A,UCASC>)
+	CC(<lock.lower.case>,<MOVEI A,LCASL>)
+	CC(<lock.upper.case>,<MOVEI A,UCASL>)
+SFTB:	XWD SFTAB-.,SFTAB
+
+
+; table of identifiers for describe command   ; [SMX #2] 
+DSCRT:	DFMT				; [SMX #3] 
+	CC(<auto.switch.to.active.connection>,<JFCL>)
+	CC(<case.shift.prefix.for>,<JFCL>)
+	CC(<character.mode>,<JFCL>)
+	CC(<chat>,<JFCL>)
+	CC(<clear.output.character=>,<JFCL>)
+	CC(<code>,<JFCL>)
+	CC(<command-interpreter>,<JFCL>)
+	CC(<command/remote-mode>,<JFCL>)
+	CC(<comments>,<JFCL>)
+	CC(<concise>,<JFCL>)
+	CC(<connection.to>,<JFCL>)
+	CC(<current.modes.are>,<JFCL>)
+	CC(<ddt>,<JFCL>)
+	CC(<describe>,<JFCL>)
+	CC(<disconnect>,<JFCL>)
+	CC(<disconnecting>,<JFCL>)
+	CC(<diverting-output>,<JFCL>)
+	CC(<divert.output.stream.to.file>,<JFCL>)
+	CC(<echo-control>,<JFCL>)
+	CC(<echo.mode.is>,<JFCL>)
+	CC(<escaping>,<JFCL>)
+	CC(<escape.character=>,<JFCL>)
+	CC(<exec>,<JFCL>)
+	CC(<fancy.command.interpret>,<JFCL>)
+	CC(<help>,<JFCL>)
+	CC(<initial-command-file>,<JFCL>)
+	CC(<input-from-a-file>,<JFCL>)
+	CC(<leaving-chat>,<JFCL>)
+	CC(<line-buffering>,<JFCL>)
+	CC(<line.buffer>,<JFCL>)
+	CC(<list.connections>,<JFCL>)
+	CC(<local.mode>,<JFCL>)
+	CC(<log-file>,<JFCL>)
+	CC(<log.file.for.current.connection>,<JFCL>)
+	CC(<logout>,<JFCL>)
+	CC(<lower>,<JFCL>)
+	CC(<making-a-connection>,<JFCL>)
+	CC(<multiple-connections>,<JFCL>)
+	CC(<no>,<JFCL>)
+	CC(<quit>,<JFCL>)
+	CC(<quote.prefix>,<JFCL>)
+	CC(<raise>,<JFCL>)
+	CC(<remote.mode>,<JFCL>)
+	CC(<reset>,<JFCL>)
+	CC(<retrieve.connection.under.name>,<JFCL>)
+	CC(<run>,<JFCL>)
+	CC(<signal.waiting.output>,<JFCL>)
+	CC(<special-characters>,<JFCL>)
+	CC(<status-commands>,<JFCL>)
+	CC(<synch.character>,<JFCL>)
+	CC(<take.input.stream.from.file>,<JFCL>)
+	CC(<terminal.type.is>,<JFCL>)
+	CC(<transparent.mode>,<JFCL>)
+	CC(<typescript-file>,<JFCL>)
+	CC(<typescript.to.file>,<JFCL>)
+	CC(<unshift.prefix>,<JFCL>)
+	CC(<verbose>,<JFCL>)
+	CC(<!synch!>,<JFCL>)
+	CC(<wait.for.any.active.connection>,<JFCL>)
+	CC(<where.am.i>,<JFCL>)
+DSCRTB:	XWD DSCRT-.,DSCRT
+
+
+; Symbol evaluator
+; This is temporary until Sumex-AIM gets PA2040 added, and tops20 gets
+; COMND JSYS front-end
+
+SYMVAL:	SETO NOA,
+SYMVAN:	MOVEM PTR,BPTR		; Save beginning of symbol
+SYMLUP:	PUSHJ P,GCH		; Get a character
+	CAME A,ERSCH		; [SMX #1] Erase char character?
+	CAIN A,"H"-100		; Or control-h
+	 JRST .DELCH		; Delete character
+	CAIN A,"R"-100
+	 JRST RETYPE		; Control-r, retype line
+	CAIN A,"W"-100		; Control-w
+	 JRST DELWRD		; Delete word
+	CAIN A,"?"		; Question mark
+	 JRST PRQUES		; Print options
+	CAIE A,33		; Altmode or
+	CAIN A,EOL		; Eol
+	 JRST SYMEND		; Lookup
+	CAIE A,","		; Comma
+	CAIN A," "		; Or space same thing
+	 JRST SYMEND
+	IDPB A,PTR		; Else deposit into string
+	PUSHJ P,TRMST
+	SKIPE NFANCY
+	 JRST SYMLPE
+	SETZ X,			; Clear x
+	MOVEM P,SVP		; Save p
+	MOVE Y,TAB		; Init y
+	TRO F,NFMTF		; [SMX #3] Ignore fmt entries
+	PUSHJ P,SYMLUK		; Lookup the current symbol
+	MOVE P,SVP		; Restore p
+	JUMPE X,[DPB X,PTR	; Smash null onto last character
+		MOVE A,PTR
+		BKJFN		; Back up pointer
+		 0
+		MOVEM A,PTR
+		JRST DING]	; And echo bell
+SYMLPE:	LDB A,PTR		; Symbol still ok, get char
+	PUSHJ P,ECHOIT
+	JRST SYMLUP		; And loop
+
+.DELCH:	CAMN PTR,BPTR		; Delete character, any to delete?
+	 JRST DING		; No, echo bell
+TENEX,<			; If TENEX system
+	MOVEI A,100		; [SMX #1] Try display delete
+	DELCH			; [SMX #1] 
+	 JRST DING		; [SMX #1] Non-terminal???
+	 JRST DING		; [SMX #1] Already at start of line
+	 JRST .DLCH1		; [SMX #1] Char deleted
+>
+	MOVEI A,"\"		; [SMX #1] Do old-fashioned delete
+	PUSHJ P,.PBOUT
+	LDB A,PTR
+	PUSHJ P,.PBOUT
+.DLCH1:	MOVE A,PTR		; [SMX #1] Back up ptr
+	BKJFN
+	 0
+	MOVEM A,PTR
+	JRST SYMLUP
+
+TRMST:	PUSH P,A
+	PUSH P,PTR
+	SETZ A,
+	IDPB A,PTR
+	POP P,PTR
+	POP P,A
+	POPJ P,
+
+DING:	MOVEI A,7
+	PUSHJ P,.PBOUT
+	JRST SYMLUP
+
+DELWRD:	CAMN PTR,BPTR		; Delete word
+	 JRST DING		; Nothing
+TENEX,<			; If TENEX system
+DELWD0:	MOVEI A,100		; [SMX #1] Try display delete
+	DELCH			; [SMX #1] 
+	 JRST DELWD2		; [SMX #1] Non-terminal???
+	 JRST DELWD2		; [SMX #1] Already at origin???
+	 JRST DELWD1		; [SMX #1] Display, 1 char done
+	 JRST DELWD2		; [SMX #1] Non-display, do old-fash kind
+DELWD1:	MOVE A,PTR		; [SMX #1] Backup the ptr
+	BKJFN			; [SMX #1] 
+	 JRST DELWD2		; [SMX #1] Not much else to do???
+	MOVEM A,PTR		; [SMX #1] Install new ptr value
+	CAME PTR,BPTR		; [SMX #1] More to do?
+	 JRST DELWD0		; [SMX #1] Yes, do another char
+	JRST SYMLUP		; [SMX #1] All done
+>
+
+; Here for word delete without display handler
+DELWD2:	MOVEI A,"#"
+	PUSHJ P,.PBOUT
+	PUSHJ P,.PBOUT
+DELW0:	MOVE PTR,BPTR
+	JRST SYMLUP
+
+RETYPE:	MOVE A,PTR
+	MOVEI B,0
+	IDPB B,A
+	PUSHJ P,.CRLF		; [SMX #1]
+	MOVE A,LPTR
+	PUSHJ P,.PSOUT
+	JRST SYMLUP
+
+; End of symbol, try lookup
+
+SYMEND:	MOVEM A,TERM		; Save terminator
+	PUSHJ P,TRMST
+	SETZ X,
+	MOVE Y,TAB
+	TRO F,NFMTF		; [SMX #3] Ignore fmt entries
+	PUSHJ P,SYMLUK
+	JUMPE X,[HRROI A,[ASCIZ / ? /]
+		PUSHJ P,ERROUT
+		MOVE A,TERM
+		CAIE A,EOL	; [SMX #1] 
+		 JRST DELW0
+		JRST COMLP]
+	CAIE X,1		; Exactly one symbol
+	 JRST SYMAMB		; No. ambiguous
+	POP P,C			; Leave pointer to head in c
+	POP P,B			; Get pointer to tail of command
+SYMCLP:	ILDB A,B		; Copy to terminal
+	JUMPE A,SYMECL
+	MOVE D,TERM
+	SKIPE HDX
+	 JRST NCOMP
+	SKIPN NFANCY
+	SKIPE CONCSF
+NCOMP:	CAIN D,33
+	 PUSHJ P,.PBOUT
+	IDPB A,PTR
+	JRST SYMCLP
+
+SYMECL:	MOVEI A,40
+	MOVE D,TERM
+	CAIN D,33
+	 JRST [	PUSHJ P,.PBOUT
+		JRST .+4]
+	CAIE D,EOL		; [SMX #1] 
+	 MOVE A,D
+	PUSHJ P,ECHOIT
+	IDPB A,PTR
+	PUSHJ P,TRMST
+	TRZ F,TMPF3!TMPF4!TMPF5
+	XCT 1(B)		; Execute "value"
+	POPJ P,			; And return
+	XCT 2(B)		; If first value skips, execute 2nd
+	POPJ P,
+
+SYMAMB:	JUMPE X,DING		; Nothing left, go ding
+	POP P,C			; Leave pointer to head in c
+	POP P,B			; Get pointer to tail
+	ILDB A,B		; Get first ch of tail
+	JUMPN A,[SOJA X,SYMAMB]	; If not null, then loop
+SYMAML:	SOJLE X,SYMECL		; Else unique
+	SUB P,[XWD 2,2]		; Flush the junk
+	JRST SYMAML
+
+
+PRQUES:	PUSHJ P,ECHOIT
+	PUSHJ P,TRMST
+	SETZM CLROBF		; [SMX #3] Turn on printout
+	SETZM CURPOS		; [SMX #3] Clear current line position
+	SETZM NPADS		; [SMX #3] Clear padding count
+	SETZ X,
+	MOVE Y,TAB
+	TRZ F,TMPF5!NFMTF!TMPF3	; [SMX #3] Process table fmt entries
+	TRO F,TMPF6
+;;;	PUSHJ P,SRTHST		; [SMX #2] Sort hosts if not done yet
+	PUSHJ P,SYMLUK		; Get all the possibilities
+	CAIL X,^D10		; [SMX #3] Lots to print?
+	 PUSHJ P,.PXMPT		; [SMX #3] Yes, type abort prompt
+	PUSHJ P,.CRLF		; [SMX #3] 
+	PUSHJ P,.CRLF		; [SMX #3] 
+PRQUEL:	JUMPE X,PRQRT0		; [SMX #3] All done, retype line
+	SKIPE CLROBF		; [SMX #3] Abort?
+	 JRST PRQRTP		; [SMX #3] Yes, quit this typeout
+	PUSHJ P,.PXINI		; [SMX #3] Init field buffer
+	TRZ F,TMPF!TMPF2!TMPF4
+	MOVE A,0(P)		; [SMX #3] a _ table entry
+	PUSHJ P,.SPCNT		; [SMX #3] Check for special entry
+	 JRST  [PUSHJ P,.STFMT	; [SMX #3] +1 - Fmt spec, set the params
+		JRST PRQUEF ]	; [SMX #3] And move on
+	 JRST  [PUSHJ P,.CPLAB	; [SMX #3] +2 - Heading spec, print it
+		TRO F,TMPF3	; [SMX #3] Say there's a label waiting
+		JRST PRQUEF ]	; [SMX #3] And move on
+	 JRST PRQUEF		; [SMX #3] +3 - aobjn ptr???
+PRQUEN:	TRZE F,TMPF3		; [SMX #3] Is there a label waiting?
+	 PUSHJ P,.PSLAB		; [SMX #3] Yes, print it
+	ILDB A,0(P)		; [SMX #3] +4 - string entry
+	JUMPE A,PRQUEE
+PRQUEB:	CAIN A,"*"
+	 JRST [	TRNE F,TMPF3	; reassurance if in "not" mode
+		TRNE F,TMPF5!TMPF6
+		CAIA
+		 JRST [	PUSH P,A
+			HRROI A,[ASCIZ /[but otherwise] /]
+			PUSHJ P,.LSOUT	; [SMX #3] 
+			TRO F,TMPF5
+			POP P,A
+			JRST PRQUEB]
+		HRROI A,[ASCIZ /<any number of /]
+		PUSHJ P,.LSOUT	; [SMX #3] 
+		TRO F,TMPF!TMPF4
+		JRST PRQUEN]
+	CAIN A,"%"
+	 JRST [ TRNE F,TMPF3
+		TRNE F,TMPF5!TMPF6
+		CAIA
+		 JRST [	PUSH P,A
+			HRROI A,[ASCIZ /[but otherwise] /]
+			PUSHJ P,.LSOUT	; [SMX #3] 
+			TRO F,TMPF5
+			POP P,A
+			JRST PRQUEB]
+		ILDB A,0(P)
+		MOVE C,0(P)		; look ahead to detect possible
+		PUSHJ P,[ ILDB B,C	;  "any number of same"
+			CAIE B,"*"
+			 POPJ P,
+			ILDB B,C	; consisting of *%<char in A>..
+			CAIE B,"%"
+			 POPJ P,
+			ILDB B,C
+			CAMN B,A
+			 AOS 0(P)	; skip if we have one
+			POPJ P, ]
+
+
+		CAIA		; do we have one?
+		 JRST [ HRROI A,[ASCIZ /<string of /]
+			PUSHJ P,.LSOUT	; [SMX #3] yes, eliminate redundant
+			IBP 0(P)	;  description of char class
+			TRO F,TMPF!TMPF4
+			JRST PRQUEN ]
+		SETZ B,
+		CAIN A,"D"+40
+		 HRROI B,[ASCIZ /decimal digit/]
+		CAIN A,"O"+40
+		 HRROI B,[ASCIZ /octal digit/]
+		CAIN A,"H"+40
+		 HRROI B,[ASCIZ /hexadecimal digit/]
+		CAIN A,"A"+40
+		 HRROI B,[ASCIZ /alphabetic character/]
+		CAIN A,"N"+40
+		 HRROI B,[ASCIZ /alphameric character/]
+		CAIN A,"S"+40
+		 HRROI B,[ASCIZ /separator/]
+		CAIN A,"P"+40
+		 HRROI B,[ASCIZ /punctuation mark/]
+		CAIN A,"X"+40
+		 HRROI B,[ASCIZ /any character/]
+		MOVEI A,"<"
+		TRNN F,TMPF
+		 PUSHJ P,.LBOUT		; [SMX #3] 
+		MOVE A,B
+		PUSHJ P,.LSOUT		; [SMX #3] 
+		TRO F,TMPF2!TMPF4
+		JRST PRQUEQ ]
+	TRNN F,TMPF4
+	TRNN F,TMPF3
+	CAIA
+	 JRST [	PUSH P,A
+		HRROI A,[ASCIZ /[not] /]
+		PUSHJ P,.LSOUT		; [SMX #3] 
+		TRO F,TMPF4
+		TRZ F,TMPF6
+		POP P,A
+		JRST .+1]
+	PUSHJ P,.LBOUT		; [SMX #3] 
+PRQUEQ:	TRNN F,TMPF!TMPF2
+	 JRST PRQUEN
+	HRROI A,[ASCIZ /'s>/]
+	TRZE F,TMPF2
+	 HRROI A,[ASCIZ /s>/]
+	TRZN F,TMPF
+	 HRROI A,[ASCIZ />/]
+	PUSHJ P,.LSOUT		; [SMX #3] 
+	JRST PRQUEN
+
+; Here we have created a string for the next field.  Fit it into the
+; right output position...
+PRQUEE:	PUSHJ P,.PXLN		; [SMX #3] Print the new field
+PRQUEF:	SUB P,[XWD 2,2]		; [SMX #3] Flush pointer to end
+	SOJA X,PRQUEL		; And loop
+
+; Here we stop printout and go back to command input
+PRQRTP:	IMUL X,[2,,2]		; [SMX #3] Reset the stack
+	SUB P,X			; [SMX #3] 
+PRQRT0:	PUSHJ P,.CRLF		; [SMX #3] New line
+	JRST RETYPE		; [SMX #3] Retype what's there now
+	
+; Conditional CRLF
+.CCRLF:	SKIPE CURPOS		; [SMX #3] Already at end of line?
+.DCRLF:	 PUSHJ P,.CRLF		; [SMX #3] No, do it
+	SETZM CURPOS		; [SMX #3] Show at line start
+	SETZM NPADS		; [SMX #3] No pads needed
+	POPJ P,			; [SMX #3] 
+
+; Init field buffer and ptr
+.PXINI:	SETZM FLDLEN		; [SMX #3] Clear current field length
+	SETZM XLNBUF		; [SMX #3] Init field buffer
+	PUSH P,[POINT 7,XLNBUF]	; [SMX #3] And ptr
+	POP P,XLNPTR		; [SMX #3] 
+	POPJ P,			; [SMX #3] 
+
+; Routine to init output format parameters
+; Entry:   a = adr of fmt param table:
+;		  column width,,line length
+;		  left marg pad,,post column pad
+;		  printing control flags
+; Call:    PUSHJ P,.STFMT
+; Return:  +1 always
+.STFMT:	PUSH P,B		; [SMX #3] Save acs
+	PUSH P,C		; [SMX #3] 
+	SETZ C,			; [SMX #3] Flag as if no fmt change
+	HLRZ B,0(A)		; [SMX #3] Set column width (incl post pad)
+	CAME B,FLDTAB		; [SMX #3] Same as previous?
+	 SETO C,		; [SMX #3] No
+	MOVEM B,FLDTAB		; [SMX #3] 
+	HRRZ B,0(A)		; [SMX #3] Set line length (not incl left offset)
+	CAME B,LINLEN		; [SMX #3] Same as previous?
+	 SETO C,		; [SMX #3] No
+	MOVEM B,LINLEN		; [SMX #3] 
+	HLRZ B,1(A)		; [SMX #3] Set left margin offset
+	CAME B,LFTMRG		; [SMX #3] Same as previous?
+	 SETO C,		; [SMX #3] No
+	MOVEM B,LFTMRG		; [SMX #3] 
+	HRRZ B,1(A)		; [SMX #3] Set post column pad
+	CAME B,FLDPAD		; [SMX #3] Same as previous?
+	 SETO C,		; [SMX #3] No
+	MOVEM B,FLDPAD		; [SMX #3] 
+	MOVE B,2(A)		; [SMX #3] Set printing ctl flags
+	CAME B,FLDCTL		; [SMX #3] Same as previous?
+	 SETO C,		; [SMX #3] No
+	MOVEM B,FLDCTL		; [SMX #3] 
+	SKIPE C			; [SMX #3] If fmt has changed
+	 PUSHJ P,.CCRLF		; [SMX #3] Do a fresh line if needed
+	POP P,C			; [SMX #3] Restore acs
+	POP P,B			; [SMX #3] 
+	POPJ P,			; [SMX #3] 
+
+; Here to prompt about how to shut up output
+; Entry:   x = # items to print
+.PXMPT:	HRROI A,[ASCIZ /
+Type ^/]			; [SMX #3] 
+	PUSHJ P,.PSOUT		; [SMX #3] 
+	MOVE A,CBFCHR		; [SMX #3] Print the "clear" char
+	TRO A,100		; [SMX #3] 
+	PUSHJ P,.PBOUT		; [SMX #3] 
+	HRROI A,[ASCIZ / to abort printout.../]	; [SMX #3] Finish prompt
+	PUSHJ P,.PSOUT		; [SMX #3] 
+	POPJ P,			; [SMX #3] 
+
+; Here to copy a table label to a temp string pending 
+; discovery of a command entry fitting of the ? string
+; Entry: a = address of label string
+.CPLAB:	PUSH P,A		; [SMX #3] Save A, B, C
+	PUSH P,B
+	PUSH P,C
+	HRRO B,A		; [SMX #3] Source ptr to B
+	HRROI A,TMPLAB
+	SETZ C,
+	SOUT			; [SMX #3] copy the string
+	POP P,C			
+	POP P,B
+	POP P,A
+	POPJ P,			; [SMX #3] return
+
+; Here to print a table label
+; Entry:   none
+.PSLAB:	PUSH P,A		; [SMX #3] Save AC
+	PUSHJ P,.CCRLF		; [SMX #3] Space down
+	PUSHJ P,.DCRLF		; [SMX #3] 
+	HRROI A,TMPLAB		; [SMX #3] Form TENEX dest ptr
+	PUSHJ P,.PSOUT		; [SMX #3] Print it
+	PUSHJ P,.CRLF		; [SMX #3] Space some more
+	PUSHJ P,.CRLF		; [SMX #3]
+	POP P,A			; [SMX #3] Recover A
+	POPJ P,			; [SMX #3] 
+
+; Routine to test for special table entry
+; Entry:   a = table entry
+; Call:    PUSHJ P,.SPCNT
+; Return:  +1, format specification
+;	   +2, heading string
+;	   +3, aobjn entry
+;	   +4, string entry
+.SPCNT:	PUSH P,B		; [SMX #3] Save an ac
+	HLRZ B,A		; [SMX #3] b _ lh code
+	CAIN B,0		; [SMX #3] Format?
+	 JRST .SPCN0		; [SMX #3] Yes
+	AOS -1(P)		; [SMX #3] No, bump return
+	CAIN B,1		; [SMX #3] Heading?
+	 JRST .SPCN0		; [SMX #3] Yes
+	AOS -1(P)		; [SMX #3] No, bump return
+	TRNN B,007000		; [SMX #3] String ptr
+	 AOS -1(P)		; [SMX #3] Yes, bump return
+.SPCN0:	POP P,B			; [SMX #3] Restore ac
+	POPJ P,			; [SMX #3] 
+
+; Print the contents of the field buffer
+.PXLN:	SKIPG A,FLDLEN		; [SMX #3] Any chars?
+	 JRST  [PUSHJ P,.CCRLF	; [SMX #3] Fresh line if not already
+		JRST .PXLN0 ]	; [SMX #3] Now print it
+	MOVE B,CURPOS		; [SMX #3] Point to next tab mark
+	ADD B,FLDTAB		; [SMX #3] 
+	SUBI B,1		; [SMX #3] 
+	SKIPE CURPOS		; [SMX #3] Allow for spaces after field
+	 ADD B,FLDPAD		; [SMX #3] 
+	IDIV B,FLDTAB		; [SMX #3] 
+	IMUL B,FLDTAB		; [SMX #3] b _ next tab mark
+	ADD A,B			; [SMX #3] a _ end pos of new field
+	SUB B,CURPOS		; [SMX #3] b _ # pad blanks
+	MOVEM B,NPADS		; [SMX #3] Save it
+	CAMLE A,LINLEN		; [SMX #3] Past end of line?
+.PXLN0:	 PUSHJ P,.DCRLF		; [SMX #3] Yes, start a new line
+	SKIPG FLDLEN		; [SMX #3] Anything there?
+	 POPJ P,		; [SMX #3] No
+	SKIPE CURPOS		; [SMX #3] New line?
+	 JRST .PXLN1		; [SMX #3] No
+	MOVE B,LFTMRG		; [SMX #3] Space over if specified
+	 PUSHJ P,.PXPAD		; [SMX #3] 
+.PXLN1:	SKIPG B,NPADS		; [SMX #3] Padding needed?
+	 JRST .PXLN2		; [SMX #3] No
+	ADDM B,CURPOS		; [SMX #3] Yes, account for them
+	PUSHJ P,.PXPAD		; [SMX #3] And print them
+	SETZM NPADS		; [SMX #3] Show pads done
+.PXLN2:	MOVE A,FLDLEN		; [SMX #3] Bump current position
+	ADDM A,CURPOS		; [SMX #3] Bump current position
+	HRROI A,XLNBUF		; [SMX #3] Output the buffer
+	SKIPN CLROBF		; [SMX #3] Abort?
+	 PUSHJ P,.PSOUT		; [SMX #3] No
+	POPJ P,			; [SMX #3] 
+
+; Here to add blank pads to the output
+; Entry:   b = # of pads
+.PXPAD:	SKIPN CLROBF		; [SMX #3] Abort printing?
+	SKIPG B			; [SMX #3] Or no padding?
+	 POPJ P,		; [SMX #3] Yes, return
+.PXPA0:	MOVEI A," "		; [SMX #3] Write them out
+	PUSHJ P,.PBOUT		; [SMX #3] 
+	SOJG B,.PXPA0		; [SMX #3] Do them all
+	POPJ P,			; [SMX #3] 
+
+; Local SOUT routine.  Copies string to XLNBUF, counting chars
+.LSOUT:	TLC A,-1		; [SMX #3] Convert to proper byte ptr
+	TLCN A,-1		; [SMX #3] 
+	 HRLI A,(<POINT 7,0>)	; [SMX #3] 
+	PUSH P,A		; [SMX #3] Save the string ptr
+.LSOU0:	ILDB A,0(P)		; [SMX #3] Get a char
+	JUMPE A,[SUB P,[1,,1]	; [SMX #3] Clear stack
+		 JRST .LTRM ]	; [SMX #3] And terminate string
+	PUSHJ P,.LBOUT		; [SMX #3] Output it
+	JRST .LSOU0		; [SMX #3] 
+
+; Terminate local string to make it ASCIZ
+.LTRM:	PUSH P,XLNPTR		; [SMX #3] Save current value
+	MOVEI A,0		; [SMX #3] Tack on null
+	IDPB A,XLNPTR		; [SMX #3] 
+	POP P,XLNPTR		; [SMX #3] Restore prev value
+	POPJ P,			; [SMX #3] 
+
+; Local BOUT routine.  Copies a character to XLNBUF, counting chars.
+.LBOUT:	SKIPL FLDCTL		; [SMX #3] Truncate field?
+	 JRST .LBOU0		; [SMX #3] No
+	PUSH P,A		; [SMX #3] Save output char
+	MOVE A,FLDLEN		; [SMX #3] a _ current field length
+	SUB A,FLDTAB		; [SMX #3] Enough spaces left?
+	ADD A,FLDPAD		; [SMX #3] 
+	JUMPGE A,[SUB P,[1,,1]	; [SMX #3] No
+		  POPJ P, ]	; [SMX #3] 
+	POP P,A			; [SMX #3] Yes, restore char
+.LBOU0:	IDPB A,XLNPTR		; [SMX #3] Copy it to the field buffer
+	AOS FLDLEN		; [SMX #3] Count it
+	JRST .LTRM		; [SMX #3] And terminate string
+
+; Local NOUT routine.  Writes a number to XLNBUF, counting chars.
+; Entry:   b = number
+;	   c = format code
+.LNOUT:	HRROI A,XNNBUF		; [SMX #3] Write number to special buffer
+	NOUT			; [SMX #3]
+	 POPJ P,		; [SMX #3] Well, we tried
+	HRROI A,XNNBUF		; [SMX #3] Now put it in the output
+	AOS 0(P)		; [SMX #3] Bump return adr
+	JRST .LSOUT		; [SMX #3] 
+
+; [SMX #2] Routine to load in PUP-NETWORK.DIRECTORY
+GTNTD:	PUSHJ P,INITBS		; Go initialize the tables
+	PUSHJ P,RDNTD		; Read net dir into net/host/skt tbls
+	PUSHJ P,UMPNTD		; Unmap the file pages
+	POPJ P,
+
+; [SMX #2] Routine to initialize things for scanning PUP network
+; [SMX #2] directory
+; Entry:   n/a
+; Call:    PUSHJ P,INITBS
+; Return:  +1, x = file adr of next name block
+;	       y = file adr of next adr block
+;	       z = aobjn ptr into name lookup table
+INITBS:	PUSHJ P,MAPNTD		; Map the network directory
+	 JRST  [JSP X,NTDERR	; Oops
+		ASCIZ /Error mapping network directory/ ]
+	PUSHJ P,GTPROU		; Get the PUPROU table
+	 JRST  [JSP X,NTDERR	; Oops
+		ASCIZ /Error reading PUPROU table/ ]
+	MOVEI A,NNMBLK		; Fetch number of name blocks
+	PUSHJ P,GT16B
+	MOVN Z,A		; z _ -# of name blocks,,0
+	HRLZS Z
+	MOVEI A,ANMTBL		; a _ adr of the name table
+	PUSHJ P,GT16B
+	HRR Z,A			; z _ aobjn ptr into file name lkup tbl
+	SETZB X,Y		; Show we're just starting
+	PUSHJ P,STPENT		; Set up the first entry
+	MOVEI A,%NETTB-1	; Ptr to network table
+	PUSH A,[HFMT]		; Init with format table
+	MOVEM A,NETFRE
+	MOVEI A,%SKTTB-1	; Ptr to socket table
+	PUSH A,[1,,[ASCIZ /Socket names/]]
+	MOVEM A,SKTFRE
+	MOVEI A,%OTHTB-1	; Ptr to other table
+	PUSH A,[1,,[ASCIZ /Other names/]]
+	MOVEM A,OTHFRE
+	MOVEI A,%DATTB		; Ptr to free data space
+	MOVEM A,DATFRE
+	POPJ P,
+
+
+; [SMX #2] Routine to read the network directory and categorize names
+; Entry:   PUP network directory mapped
+;	   x = file ptr to next name block
+;	   y = file ptr to next adr block for this name
+;	   z = aobjn ptr into name lookup table
+; Call:    PUSHJ P,RDNTD
+; Return:  +1, network directory loaded into our data structure
+RDNTD:	PUSHJ P,GNENT		; Get the next name/adr entry
+	 JRST RDNTDF		; No more, go finish up
+	JUMPE B,[MOVEI D,SKTFRE	; Take care of socket specs
+		 JRST RDNTD1 ]
+	JUMPN C,[MOVEI D,OTHFRE	; Take care of "other" specs
+		 JRST RDNTD1 ]
+	HRRZ C,B		; c _ host #
+	HLRZS B			; b _ net #
+	SKIPG PUPROU-1(B)	; Network accessible?
+	 JRST  [HRRM A,DATFRE	; No, recover space from entry
+		JRST RDNTD ]	; And fetch next entry
+	SKIPE D,NETIDX-1(B)	; Already seen this net?
+	 JRST RDNTD0		; Yes
+	PUSH P,B		; No, save the net #
+	HLRZ B,NETFRE		; b _ adr for hosts on this net
+	IMULI B,NHSTN
+	ADDI B,%HSTTB-1
+	PUSH B,[1,,[0]]		; Init null net name entry
+	MOVE D,NETFRE		; d _ network ptr word
+	PUSH D,B		; Enter ptr word for hosts
+	MOVEM D,NETFRE		; Save net ptr word for next net
+	POP P,B			; b _ net #
+	HRRZS D			; Check for overflow
+	CAIL D,%NETTB+MXNTW
+	 JRST  [JSP X,NTDERR
+		ASCIZ /Network table overflow/ ]
+	MOVEM D,NETIDX-1(B)	; Save the ptr word to add on hosts
+RDNTD0:	JUMPN C,RDNTD1		; If host spec, go add it on
+	SUBI D,%NETTB		; Network name, d _ adr of host tbl
+	IMULI D,NHSTN
+	ADDI D,%HSTTB
+	HRRM A,0(D)		; Store the network name ptr
+	JRST RDNTD		; And do the next entry
+
+; Here we have a new host, socket, or other name
+RDNTD1:	MOVE B,0(D)		; b _ ptr word for hosts on this net
+	PUSH B,A		; Add this host name
+	HLRZ C,B		; Check for overflow
+	CAIL C,NHSTN
+	 JRST  [JSP X,NTDERR
+		ASCIZ /Table overflow/ ]
+	MOVEM B,0(D)		; OK, save the new ptr word
+	JRST RDNTD		; And do the next entry
+
+; Here we have scanned all the entries.  Now tidy up the ptrs
+RDNTDF:	HLRZ A,SKTFRE		; Setup socket specs
+	MOVEI B,1		; Number in empty list (name str there)
+	PUSHJ P,CKNPTR			
+	 HRRI A,%SKTTB
+;;;	MOVEM A,SKTTAB
+	HLRZ A,OTHFRE		; Setup "other" specs
+	PUSHJ P,CKNPTR
+	 HRRI A,%OTHTB
+;;;	MOVEM A,OTHTAB
+	HLRZ A,NETFRE		; Setup network specs
+	PUSHJ P,CKNPTR
+	 HRRI A,%NETTB
+	MOVEM A,HOSTAB
+	ADD A,[1,,1]		; Jump over fmt entry
+	JUMPG A,CPOPJ		; Quit if no networks
+	MOVE Z,A		; z _ aobjn ptr through host tables
+RDNTF3:	HLRZ A,0(Z)		; a _ # hosts on this net
+	MOVEI B,1		; Number in empty list (net name there)
+	PUSHJ P,CKNPTR
+	 JRST  [MOVEI B,-%NETTB(Z)  ; b _ start of host entries
+		IMULI B,NHSTN
+		ADDI B,%HSTTB
+		HRRI A,0(B)	; Form aobjn ptr
+		JRST .+1 ]
+	MOVEM A,0(Z)		; Install real ptr
+	AOBJN Z,RDNTF3		; Do them all
+	POPJ P,			; All done
+
+
+; [SMX #2] Routine to check for a significant number of entries in a
+; [SMX #2] list.
+; Return an appropriate aobjn ptr.
+; Entry:   a = # items on list
+;	   b = count for empty list
+; Call:    PUSHJ P,CKNPTR
+; Return:  +1, non-trivial list, a = -# entries,,0
+;	   +2, trivial list, a = 0
+CKNPTR:	CAIG A,0(B)		; Trivial list?
+	 JRST  [SETZ A,		; Yes
+		JRST SKPRET ]	; Return +2
+	MOVNS A			; No, set up aobjn ptr
+	HRLZS A
+	POPJ P,
+
+; [SMX #2] Routine to map the PUP-NETWORK.DIRECTORY.
+; Entry:   n/a
+; Call:    PUSHJ P,MAPNTD
+; Return:  +1, error (code in a)
+;	   +2, success (jfn in a and NTDJFN)
+MAPNTD:	SKIPE NTDJFN		; Already there?
+	 JRST SKPRET		; Yes
+	PUSH P,B		; Save working ac's
+	PUSH P,C
+	PUSH P,D
+	MOVSI A,100001		; Old file, short form
+	HRROI B,[ASCIZ /<SYSTEM>PUP-NETWORK.DIRECTORY/]
+	GTJFN
+	 JRST MAPRTN		; No go
+	MOVEM A,NTDJFN		; Save the jfn
+	MOVEI B,1B19!1B25	; Open it read, thawed
+	OPENF
+	 JRST  [PUSH P,A	; Save the error code
+		MOVE A,NTDJFN	; Release the jfn
+		RLJFN
+		 JFCL
+		POP P,A		; Recover the error
+		JRST MAPRTN ]
+	MOVE B,[1,,FDBBYV]	; Fetch the file size
+	MOVEI C,D		; Into d
+	GTFDB
+	HRRZS D			; Keep # pages only
+	MOVEM D,NTDSIZ		; Save the size
+	HRLZS A			; a _ net dir jfn,,page #
+	MOVE B,[400000,,NTDPG]	; Place to map pgs in core
+	MOVSI C,100000		; Read only
+MAPNT0:	PMAP			; Get a page
+	ADDI A,1		; Bump pg ptrs
+	ADDI B,1
+	SOJG D,MAPNT0		; Do them all
+	AOS -3(P)		; Show successful
+	MOVE A,NTDJFN		; a _ net dir jfn
+MAPRTN:	POP P,D			; Recover ac's
+	POP P,C
+	POP P,B
+	POPJ P,
+
+
+; [SMX #2] Routine to unmap network directory
+; Entry:   Network directory mapped to NTDPG
+; Call:    PUSHJ P,UMPNTD
+; Return:  +1, file unmapped and closed
+UMPNTD:	SKIPG NTDJFN		; Any file there?
+	 POPJ P,		; No
+	PUSH P,A		; Save working ac's
+	PUSH P,B
+	PUSH P,C
+	SETO A,			; Set to unmap things
+	MOVE B,[400000,,NTDPG]	; From our core
+	MOVE C,NTDSIZ		; c _ number of pages
+UMPNT0:	PMAP			; Unmap one
+	ADDI B,1		; Bump page ptr
+	SOJG C,UMPNT0		; Do them all
+	MOVE A,NTDJFN		; Release the jfn
+	CLOSF
+	 JFCL			; Shouldn't happen
+	SETZM NTDJFN
+	POP P,C			; Recover ac's
+	POP P,B
+	POP P,A
+	POPJ P,
+
+
+; [SMX #2] Routine to load the PUPROU table
+; Entry:   n/a
+; Call:    PUSHJ P,GTPROU
+; Return:  +1, error, string about error in a
+;	   +2, success -- PUPROU loaded into table PUPROU
+GTPROU:	MOVE A,[SIXBIT /PUPROU/]  ; Get the PUPROU table
+	SYSGT
+	 JUMPE B,[HRROI A,[ASCIZ /PUPROU table not found/]
+		  POPJ P, ]
+	HRROI A,0(B)		; a _ -1,,table #
+	HLRZ C,B		; Check table size
+	CAIGE C,-NROUT
+	 JRST  [HRROI A,[ASCIZ /PUPROU table too big/]
+		POPJ P, ]
+	HRRI B,PUPROU		; OK, fetch the data
+	PUSHJ P,.GTBLT
+	 JRST  [HRROI A,[ASCIZ /Error fetching PUPROU data/]
+		POPJ P,]
+	JRST SKPRET		; Done
+
+
+; [SMX #2] Routine to do GTBLT JSYS, faking it on TOPS-20
+; Entry:   a = start index,,table #
+;	   b = -# entries,,buffer adr
+; Call:    PUSHJ P,.GTBLT
+; Return:  +1, error
+;	   +2, success
+.GTBLT:	
+TENEX,<			; If TENEX system
+	GTBLT
+	 POPJ P,		; No go
+	JRST SKPRET
+>
+TOPS20,<		; If TOPS-20 system
+; Fake GTBLT JSYS
+	TLC A,-1		; Whole table?
+	TLCN A,-1
+	 HRRZS A		; Yes, start at 0
+.GTBL1:	MOVE C,A		; Save this entry arg
+	GETAB			; Get an entry
+	 POPJ P,		; No go
+	MOVEM A,0(B)		; Save it
+	MOVSI A,1		; Bump to next entry
+	ADD A,C
+	AOBJN B,.GTBL1		; Do them all
+	JRST SKPRET
+>
+
+; [SMX #2] Routine to fetch an arbitrary 16-bit byte in the network
+; [SMX #2] directory file.  16-bit bytes are packed two per 36-bit
+; [SMX #2] PDP-10 word.
+; Entry:   a = adr of 16-bit byte sought
+;	   Network directory file mapped starting at NTDADR
+; Call:    PUSHJ P,GT16B
+; Return:  +1, byte in a
+GT16B:	PUSH P,B		; Save an ac
+	LSHC A,-1		; a _ PDP-10 wd index, b(1b0) _ byte index
+	JUMPL B,[MOVE B,[POINT 16,NTDADR(A),31]  ; Get odd byte
+		 JRST .+2 ]
+	MOVE B,[POINT 16,NTDADR(A),15]  	 ; Get even byte
+	LDB A,B			; a _ desired byte
+	POP P,B			; Restore ac
+	POPJ P,
+
+
+; [SMX #2] Routine to convert a BCPL string to ASCIZ.
+; Entry:   a = TENEX dest ptr for string
+;          b = adr of first 16-bit word of BCPL string
+; Call:    PUSHJ P,GTSTR
+; Return:  +1, updated ptr in a
+GTSTR:	TLC A,-1		; Convert to real str ptr
+	TLCN A,-1
+	 HRLI A,(<POINT 7,0>)
+	PUSH P,C		; Save working ac's
+	PUSH P,D
+	LSHC B,-1		; b _ PDP-10 wd idx, c(1b0) _ byte idx
+	ADDI B,NTDADR		; b _ 8-bit byte ptr to string length
+	JUMPL B,[HRLI B,(<POINT 8,0,23>)
+		 JRST .+2 ]
+	HRLI B,(<POINT 8,0,7>)
+	LDB C,B			; c _ length of string
+GTSTR0:	SOJL C,GTSTR1		; If length exhausted, quit
+	ILDB D,B		; No, d _ next char
+	IDPB D,A		; Store it
+	JRST GTSTR0		; Do them all
+
+; Here we have end of string
+GTSTR1:	PUSH P,A		; Save ptr to end of string
+	MOVEI C,0		; Make sure things are ASCIZ
+	IDPB C,A
+	TLNE A,760000		; 0's to end of word
+	 JRST .-2
+	POP P,A			; a _ ending str ptr
+	POP P,D			; Restore working ac's
+	POP P,C
+	POPJ P,
+
+; [SMX #2] Routine to fetch the next network directory entry into data
+; [SMX #2] space
+; Entry:   x = file adr to name block
+;	   y = file adr to adr block for this name
+;	   z = aobjn ptr into name lookup table
+; Call:    PUSHJ P,GNENT
+; Return:  +1, no more entries
+;	   +2, a = adr of data block for entry
+;	       b = net #,,host #
+;	       c = socket #
+;	       x, y, and z updated to point to next entry
+GNENT:	JUMPG Z,CPOPJ		; Quit if no more entries
+	HRRO A,DATFRE		; a _ ptr to store string
+	PUSH P,A		; Save it for return
+	MOVEI B,.NMST(X)	; b _ adr of name string in name blk
+	PUSHJ P,GTSTR		; Fetch the name string
+	IBP A			; a _ ptr to adr part of entry
+	MOVEI A,2(A)
+	MOVE B,[XCT HSTFCT]	; Put host fct in first data word
+	MOVEM B,-1(A)
+	SETZM 0(A)		; Clear net #,,host #
+	MOVEM A,DATFRE		; Update free space ptr
+	MOVEI A,.ADNH(Y)	; a _ net/host part of adr
+	PUSHJ P,GT16B
+	DPB A,[POINT 8,@DATFRE,35]  ; Save the host part
+	LSH A,-^D8		; And the net part
+	DPB A,[POINT 8,@DATFRE,17]
+	AOS A,DATFRE		; Bump entry ptr
+	SETZM 0(A)		; Clear it for the socket #
+	MOVEI A,.ADSK(Y)	; Get 1st part of socket
+	PUSHJ P,GT16B
+	DPB A,[POINT 16,@DATFRE,19]  ; Save it
+	MOVEI A,.ADSK+1(Y)	; Get 2nd part of socket
+	PUSHJ P,GT16B
+	DPB A,[POINT 16,@DATFRE,35]  ; Save it
+	AOS C,DATFRE		; Bump entry ptr
+	CAIL C,%DATTB+MXDAT	; Overflow?
+	 JRST  [JSP X,NTDERR
+		ASCIZ /Data space overflow/ ]
+	SETZM 0(C)		; Clear it
+	PUSH P,-2(C)		; Save the net #,,host #
+	PUSH P,-1(C)		; And the socket #
+	PUSHJ P,STPENT		; Step to the next entry
+	POP P,C			; c _ socket #
+	POP P,B			; b _ net #,,host #
+	POP P,A			; a _ ptr to data block
+	HRLI A,(<POINT 7,0>)
+	JRST SKPRET		; Success return
+
+
+; [SMX #2] Routine to step x, y, z ptrs to next entry in network
+; [SMX #2] directory
+; Entry:   x, y, and z set to current entry (x,y = 0 for first)
+; Call:    PUSHJ P,STPENT
+; Return:  +1, x = file adr of next name block
+;	       y = file adr of next adr block
+;	       z = aobjn ptr into name lookup table
+STPENT:	JUMPG Z,CPOPJ		; Don't do anything if exhausted file
+	JUMPE X,STPEN0		; First time, set up current name
+	MOVEI A,.ADNX(Y)	; a _ ptr to next adr block this name
+	JRST STPEN1		; Set it up
+
+; Here to set a new entry from the name lookup table entry
+STPEN0:	MOVEI A,0(Z)		; x _ adr of next name block
+	PUSHJ P,GT16B
+	HRRZ X,A
+	MOVEI A,.NMEN(A)	; a _ adr of owning entry block for name
+	PUSHJ P,GT16B
+	MOVEI A,.ENAD(A)	; a _ adr of address block for name
+STPEN1:	PUSHJ P,GT16B
+	JUMPE A,STPEN2		; If not valid, try for another name
+	HRRZ Y,A		; OK, y _ ptr to next adr block (name)
+	POPJ P,
+
+; Here to step to the next entry in the name lookup table
+STPEN2:	AOBJN Z,STPEN0		; No, try for next name table entry
+	SETZB X,Y		; All done, clear ptrs
+	POPJ P,
+
+
+; [SMX #2] Here for error in processing Network Directory
+; Entry:   X = str ptr to error cause
+; Call:    JSP X,NTDERR
+;	   ASCIZ /str/
+NTDERR:	PUSHJ P,.CRLF		; New line
+	HRROI A,0(X)
+	PSOUT			; Print the msg
+	HRROI A,[ASCIZ / -- call system programmer!/]
+	PSOUT
+	PUSHJ P,.CRLF
+	PUSHJ P,.CRLF
+	HALTF
+
+
+REPEAT 0,<
+; Routine to conditionally sort host names alphabetically
+; Entry:   Host tables read in
+; Call:    PUSHJ P,SRTHST
+; Return:  +1, names sorted
+SRTHST:	SKIPE SRTFLG		; [SMX #2] Already sorted?
+	 POPJ P,		; [SMX #2] Yes
+	PUSH P,X		; [SMX #2] Save ac's
+	PUSH P,Y		; [SMX #2] 
+;;;	MOVE X,SHSTAB		; [SMX #2] Alphabetize server names
+	PUSHJ P,ALFSRT		; [SMX #2] 
+;;;	MOVE X,NHSTAB		; [SMX #2] Alphabetize non-svr names
+	PUSHJ P,ALFSRT		; [SMX #2] 
+	SETOM SRTFLG		; [SMX #2] Show names are sorted
+	POP P,Y			; [SMX #2] Restore ac's
+	POP P,X			; [SMX #2] 
+	POPJ P,			; [SMX #2] 
+	
+; Routine to alphabetize an array of host names.  Uses a tree sort
+; method and a temporary array, SRTTAB.
+; Entry:   x = aobjn ptr to list of host names
+; Call:    PUSHJ P,ALFSRT
+; Return:  +1, hosts sorted in original list
+ALFSRT:	PUSH P,X		; [SMX #2] Save ptr to list
+	PUSHJ P,MAKTRE		; [SMX #2] Arrange names in tree
+	POP P,X			; [SMX #2] Recover ptr to list
+	PUSHJ P,SRTREE		; [SMX #2] Sort the tree
+	POPJ P,			; [SMX #2] 
+
+; Routine to order names in a tree structure.  Each entry has the form:
+;	lh ptr,,rh ptr
+;	node name/data
+; where the lh ptr selects alphabetically earlier names.  Tree is
+; created in the array SRTTAB.
+; Entry:   x = aobjn ptr to unsorted list
+; Call:    PUSHJ P,MAKTRE
+; Return:  +1, tree set up in SRTTAB
+MAKTRE:	TLNN X,-1		; [SMX #2] Anything on list?
+	 POPJ P,		; [SMX #2] No
+	SETZM SRTTAB		; [SMX #2] Yes, set first entry
+	MOVE A,0(X)		; [SMX #2] 
+	MOVEM A,SRTTAB+1	; [SMX #2] 
+	AOBJP X,CPOPJ		; [SMX #2] Quit if that's all
+	MOVEI A,SRTTAB+2	; [SMX #2] No, init free space ptr
+	MOVEM A,SRTNXT		; [SMX #2] 
+	PUSH P,[0]		; [SMX #2] Place for last node adr
+MAKTR0:	MOVEI Y,SRTTAB		; [SMX #2] Start node for next entry
+MAKTR1:	MOVE A,0(X)		; [SMX #2] a _ ptr to new node name
+	JUMPE Y,MAKTR2		; [SMX #2] Quit if last ptr
+	MOVEM Y,0(P)		; [SMX #2] More, save this one
+	MOVE B,1(Y)		; [SMX #2] b _ ptr to name of this node
+	PUSHJ P,STRCMP		; [SMX #2] Compare 
+	 JRST  [HLRZ Y,0(Y)	; [SMX #2] New .LE. Old, put it to left
+		HRROS 0(P)	; [SMX #2] Flag lefthand ptr
+		JRST MAKTR1 ]	; [SMX #2] See if more on tree
+	HRRZ Y,0(Y)		; [SMX #2] New .GT. Old, put it to right
+	JRST MAKTR1		; [SMX #2] See if more on tree
+
+; Here we are at the end of the current tree.  Enter the new name.
+; Entry:  a = ptr to new name
+MAKTR2:	MOVE Y,0(P)		; [SMX #2] y _ adr of previous node
+	MOVE B,SRTNXT		; [SMX #2] b _ adr of next free entry
+	SETZM 0(B)		; [SMX #2] Init the new entry
+	MOVEM A,1(B)		; [SMX #2] Install the new name
+	MOVEI A,2(B)		; [SMX #2] Update the free ptr
+	MOVEM A,SRTNXT		; [SMX #2] 
+	TLNE Y,-1		; [SMX #2] LH link?
+	 HRLZS B		; [SMX #2] Yes, put link adr in lh
+	IORM B,0(Y)		; [SMX #2] Install it
+	AOBJN X,MAKTR0		; [SMX #2] Do all the names on the list
+	SUB P,[1,,1]		; [SMX #2] Clear stack
+	POPJ P,			; [SMX #2] Done
+
+
+; Routine to traverse a sorted tree and linearly order the names.
+; Entry:   x = aobjn ptr to linear list
+;	   SRTTAB = sorted tree
+; Call:    PUSHJ P,SRTREE
+; Return:  +1, linear list in array given in x
+SRTREE:	TLNN X,-1		; [SMX #2] Anything on list?
+	 POPJ P,		; [SMX #2] No
+	MOVEI Y,SRTTAB		; [SMX #2] y _ sorted tree adr
+SRTRE0:	JUMPE Y,CPOPJ		; [SMX #2] If end of tree, quit
+	PUSH P,Y		; [SMX #2] No, save adr of this node
+	HLRZ Y,0(Y)		; [SMX #2] Point to lh branch
+	PUSHJ P,SRTRE0		; [SMX #2] Check it out
+	POP P,Y			; [SMX #2] None on left, use this one
+	MOVE A,1(Y)		; [SMX #2] a _ name ptr
+	MOVEM A,0(X)		; [SMX #2] Add it to the linear list
+	AOBJN X,.+1		; [SMX #2] Count it
+	HRRZ Y,0(Y)		; [SMX #2] Try to its right
+	PUSHJ P,SRTRE0		; [SMX #2] 
+	POPJ P,			; [SMX #2] Nothing there
+
+
+; Routine to compare two strings.  Adapted from TENEX monitor routine
+; Entry:   a = ptr to string A
+;	   b = ptr to string B
+; Call:    PUSHJ P,STRCMP
+; Return:  +1, A .LE. B
+;	   +2, A .GT. B
+STRCMP:	TRZ F,LSTWF		; [SMX #2] Reset end of string flag
+STRCM0:	JCRY0 .+1		; [SMX #2] Clear carry 0
+	MOVE C,(A)		; [SMX #2] c _ word of string A
+	MOVE D,(B)		; [SMX #2] d _ word of string B
+	ANDCMI C,1		; [SMX #2] Get rid of bit 35
+	ANDCMI D,1
+	TRNE C,376		; [SMX #2] End of A?
+	TRNN D,376		; [SMX #2] or B?
+	 TRO F,LSTWF		; [SMX #2] Yes,
+	SUB D,C			; [SMX #2] Compare the words
+	JUMPE D,STRCM1		; [SMX #2] Equal, step to next word
+	JCRY0 .+2		; [SMX #2] A < b
+	AOS 0(P)		; [SMX #2] A > b
+	POPJ P,			; [SMX #2] 
+
+; Strings are equal to here...
+STRCM1:	TRNE F,LSTWF		; [SMX #2] Also end of strings?
+	 POPJ P,		; [SMX #2] Yes, return +1 (.LE.)
+	AOJ A,			; [SMX #2] No, step to next word
+	AOJA B,STRCM0		; [SMX #2] 
+	JRST STRCM0		; [SMX #2] And check them out
+>		; End REPEAT 0,
+
+; Lookup symbol
+; Operates recursively and accumulates a list of things on the stack
+
+SYMLUK:	PUSH P,SVP		; Save old bottom
+	MOVEM P,SVP		; Svp points to chain of svp
+	PUSH P,Y		; [SMX #3] Save y
+	MOVE A,Y		; [SMX #3] Check for special entry
+	PUSHJ P,.SPCNT		; [SMX #3] 
+	 JRST SYMFMT		; [SMX #3] +1, fmt spec
+	 JRST SYMFMT		; [SMX #3] +2, heading
+	 JRST  [SUB P,[1,,1]	; [SMX #3] +3, aobjn ptr, clear y
+		JRST SYMLK1 ]	; [SMX #3] and process it
+	MOVE D,BPTR		; [SMX #3] +4, string, Get ptr to symbol
+SYMLKL:	ILDB A,D		; Get character from input
+	ILDB B,Y		; And from table entry
+	PUSHJ P,SYMCMP		; Compare the characters
+	 JRST SYMNEQ		; Not equal
+	JUMPN A,SYMLKL		; Continue until null
+SYMEQL:	MOVE A,Y
+	BKJFN			; Back up pointer to tail
+	 JRST [ CAIE A,600150	; dont bomb out if empty list--
+		0		; (non-neg. AOBJN ptr)
+		JRST SYMNEX ]
+	MOVEM A,Y
+SYMEQ0:	EXCH Y,-2(P)		; [SMX #3] Pointer to tail to stack, get ret
+	POP P,A			; Pointer to head
+	POP P,SVP		; Restore svp
+	PUSH P,A		; Pointer to head back to stack
+	AOJA X,0(Y)		; Return and count items
+
+; Here to process a format specifier
+SYMFMT:	TRNE F,NFMTF		; [SMX #3] Accepting them?
+	 JRST SYMNEX		; [SMX #3] No, look at the next one
+	JRST SYMEQ0		; [SMX #3] Yes, add it as is
+
+SYMNEQ:	JUMPE A,SYMEQL		; If input ends first, then substring
+SYMNEX:	SUB P,[XWD 1,1]		; Else flush saved y
+	POP P,SVP		; Restore svp
+	POPJ P,			; And return
+
+SYMLK1:	PUSH P,Z		; Save z
+	MOVEI Z,-1(Y)		; [SMX #2] Set z to scan backwards
+	HLRES Y			; [SMX #2] y _ count,,count
+	MOVMS Y			; [SMX #2] 
+	HRLS Y			; [SMX #2] 
+	ADD Z,Y			; [SMX #2] z _ count,,top adr
+SYMLK3:	MOVE Y,0(Z)		; Loop to here for each item
+	PUSHJ P,SYMLUK		; Do this item
+	SUB Z,[1,,1]		; [SMX #2] Decrement z
+	TLNE Z,-1		; [SMX #2] Anything left to do?
+	 JRST SYMLK3		; [SMX #2] Yes
+	MOVE A,P		; Get p
+	SUB A,[XWD 1,1]
+	CAMN A,SVP		; Any items saved on stack?
+	 JRST SYMLK4		; No, shuffle not needed
+	MOVE A,SVP		; Get base of stack
+	MOVE Z,1(A)		; Restore z
+	POP A,SVP		; Restore svp
+	MOVE Y,0(A)		; Get return
+	MOVEI B,0(A)		; Where to blt to
+	HRLI B,3(A)		; And where from
+	BLT B,-3(P)		; Copy stack down
+	SUB P,[XWD 3,3]
+	JRST 0(Y)		; Return
+
+SYMLK4:	POP P,Z
+	POP P,SVP
+	POPJ P,
+
+SYMCMP:	CAIN B,"*"		; Asterisk
+	 JRST SYMMNY		; Means any number of
+	CAIN B,"%"		; Percent
+	 JRST SYMCLS		; Means character class
+	CAIN B,"#"		; Pound sign
+	 JRST SYMNCL		; Means not character class
+SYMCM2:	PUSH P,B
+	PUSH P,A
+	XOR A,B
+	TRZ B,40		; Ignore case of b
+	CAIL B,"A"		; Then if b has
+	CAILE B,"Z"		;  a letter
+	SKIPA
+	 TRZ A,40		; Then ignore case of difference
+	SKIPN A
+	AOS -2(P)
+	POP P,A
+	POP P,B
+	POPJ P,
+
+SYMMNY:	PUSH P,Y		; Save where we are in table entry
+	ILDB B,Y		; Get what we are doing many of
+	PUSHJ P,SYMCMP		; Check match
+	 JRST SYMMNN		; Not equal
+	ILDB B,Y		; See if next is also equal
+	PUSHJ P,SYMCMP
+	 JRST [	EXCH A,0(P)	; Not equal, get back y, save a
+		BKJFN
+		 0
+		MOVEM A,Y
+		POP P,A
+		JRST SKPRET]
+	SUB P,[XWD 1,1]		; Matches next thing, use it instead
+SKPRET:	AOS(P)
+	POPJ P,
+
+SYMMNN:	SUB P,[XWD 1,1]		; Go to next thiing
+	ILDB B,Y
+	JRST SYMCMP
+
+SYMCLS:ILDB B,Y		; Get class indicator
+	CAIN B,"%"		; %% means %
+	 JRST SYMCM2
+	CAIN B,"d"		; d means decimal digit
+	 JRST SYMDEC
+	CAIN B,"o"		; o means octal digit
+	 JRST SYMOCT
+	CAIN B,"h"
+	 JRST SYMHEX
+	CAIN B,"a"		; a means alphabetic
+	 JRST SYMALP
+	CAIN B,"n"		; n means alphameric
+	 JRST SYMALM
+	CAIN B,"s"		; s means separator
+	 JRST SYMSEP
+	CAIN B,"p"		; p for punctuation
+	 JRST SYMPNC
+	CAIN B,"x"
+	 JRST SYMANY
+	POPJ P,			; Else fail
+
+SYMNCL:	PUSHJ P,SYMCLS
+	 AOS (P)
+	POPJ P,
+
+SYMANY:	AOS (P)
+	POPJ P,
+
+SYMDEC:	CAIG A,"9"
+	CAIGE A,"0"
+	 POPJ P,
+	JRST SKPRET
+
+SYMOCT:	CAIG A,"7"
+	CAIGE A,"0"
+	 POPJ P,
+	JRST SKPRET
+
+SYMHEX:	CAIG A,"9"
+	CAIGE A,"0"
+	 JRST SYMHE1
+	JRST SKPRET
+
+SYMHE1:	TRZ A,40
+	CAIG A,"F"
+	CAIGE A,"A"
+	 POPJ P,
+	JRST SKPRET
+
+SYMALM:	PUSHJ P,SYMDEC
+	 JRST SYMALP
+	JRST SKPRET
+
+SYMALP:	TRZ A,40
+	CAIG A,"Z"
+	CAIGE A,"A"
+	 POPJ P,
+	JRST SKPRET
+
+SYMSEP:SYMPNC:POPJ P,
+
+; Host-name command
+
+CONMAX:	MOVEM C,FHST		; Save pointer to host name
+	SETZM FSKT
+	JRST CONNX		; Enter "Connect"
+
+
+; Connect.to
+
+.CONN:	MOVE TAB,ANYTAB		; Collect arbitrary string
+	PUSHJ P,SYMVAL
+	MOVE A,BPTR		; Save pointer to it
+	MOVEM A,FHST
+	MOVE B,[1B0+2B17+C]	; See if legal name expression
+	PUPNM
+	 JRST [	HRROI A,[ASCIZ / ? /]
+		PUSHJ P,ERROUT
+		MOVE A,TERM
+		CAIE A,EOL	; [SMX #1] 
+		 JRST .CONN
+		JRST COMLP]
+	TLNE C,-1		; Net and host specified?
+	TRNN C,-1
+	 JRST [	HRROI A,[ASCIZ / Insufficient address expression./]
+		PUSHJ P,ERROUT
+		JRST COMLP]
+	MOVEM D,FSKT
+CONNX:
+	move	a,[sixbit/pupon/];[SMX #4] See if Ethernet alive
+	sysgt			; [SMX #4]
+	jumpe	a,[hrroi a,[asciz/
+Ethernet is Down, try again later!/]
+		psout
+		haltf
+		jrst	rstart]	;[SMX #4]
+; [SMX #4] Here if no table or PUPON neq 0
+	MOVSI X,-NCONN
+CONNX2:	SKIPE A,SNDJFN(X)	; Find an empty connection
+	 AOBJN X,CONNX2
+	JUMPGE X,[ERROR [ASCIZ /too many connections./]]
+	HRRZS NCNX,X
+	MOVE A,NCNX
+	IMULI A,3
+	ADDI A,CONNAM
+	HRLI A,440700
+	MOVEI B,1(X)
+	MOVEI C,010
+	NOUT
+	 JFCL
+	IBP A
+	HRLI X,(<MOVEI A,0>)
+	MOVEM X,1(A)
+	PUSHJ P,DEFSKT
+
+CONN2:	HRROI A,[ASCIZ /is /]
+	PUSHJ P,.PSOUT
+	TRO F,ICPMOD		; set "ICP in progress"
+	PUSHJ P,ASNSKT
+	PUSHJ P,DOICP		; Do icp
+	 JRST [	SKIPN WATFLG	; Failed. wait?
+		 JRST [ TRZ F,ICPMOD  ; No
+			POPJ P, ]
+		HRROI A,[ASCIZ /  First attempt failed,
+trying again ... /]
+		SKIPG WATFLG
+		PUSHJ P,.PSOUT
+		SKIPLE WATFLG
+		 PUSHJ P,TBEL
+		MOVMS WATFLG
+		MOVEI A,^D10000
+		DISMS
+		JRST .-2]
+	MOVEI A,7
+	MOVEI B,20
+	SKIPLE WATFLG
+	PUSHJ P,.PBOUT
+	SOJG B,.-2
+	MOVEI A,400000
+	DIR
+	HRROI A,[ASCIZ /complete/]
+	PUSHJ P,.PSOUT
+	TRZ F,ICPMOD
+	SKIPE A,SNDFRK(NCNX)
+	 JRST CONN3
+	MOVSI A,(1B1)
+	CFORK
+	 JRST [	JSP X,CONFL0
+		ASCIZ /can't create send fork./]
+	MOVEM A,SNDFRK(NCNX)
+	PUSHJ P,MAPFRK
+
+CONN3:	PUSHJ P,INIFRK
+	SKIPE A,RCVFRK(NCNX)
+	 JRST CONN4
+	MOVSI A,(1B1)
+	CFORK
+	 JRST [	JSP X,CONFL1
+		ASCIZ /can't create receive fork./]
+	MOVEM A,RCVFRK(NCNX)
+	PUSHJ P,MAPFRK
+CONN4:	
+REPEAT 0,<
+	PUSH P,A
+	HRLZ A,SNDFRK(NCNX)	; make send and receive share a page
+	HRRI A,300
+	HRLZ B,RCVFRK(NCNX)
+	HRRI B,300
+	MOVSI C,140000		; access is read/write
+	PMAP
+	POP P,A
+>
+	PUSHJ P,INIFRK
+	MOVE CNX,NCNX
+	HLRE A,CONTAB
+	MOVNS A
+	ADD A,CONTAB
+	HRRZ B,CNX
+	IMULI B,3
+	ADDI B,CONNAM
+	HRLI B,440700
+	MOVEM B,(A)
+	MOVSI B,-1
+	ADDM B,CONTAB
+	MOVN A,LSKT(CNX)
+	ASH A,-1
+	MOVSI B,(1B0)
+	ROT B,(A)
+	IORM B,SKTMSK
+	SETZM SAVSWT(CNX)
+	MOVEI B,SEND
+	MOVE A,SNDFRK(CNX)
+	FFORK
+	SFORK
+	MOVE A,RCVFRK(CNX)
+	MOVEI B,RECV
+	FFORK
+	SFORK
+	TRO F,REMOTF
+	MOVEM CNX,FSVCNX	; change save loc to reflect new CNX
+	MOVEI A,"."
+	PUSHJ P,.PBOUT
+	MOVEI A,400000
+	EIR
+	POPJ P,
+
+CONFL1:CONFL0:	HRROI A,[ASCIZ /,
+ but /]
+	PUSHJ P,.PSOUT
+	PUSHJ P,RELCON
+	HRROI A,0(X)		; [SMX #1] a _ error string ptr
+CONFLX:	PUSHJ P,.PSOUT
+	POPJ P,
+
+; Assign local socket for connection
+
+ASNSKT:	SETCM A,SKTMSK
+	PUSH P,B
+	JFFO A,ASNSK1
+	MOVEI B,177
+ASNSK1:	MOVE A,B
+	POP P,B
+	LSH A,1
+	POPJ P,
+
+; Get foreign socket number or return default socket
+
+DEFSKT:	SETZM WATFLG
+	SETOM LODFLG
+DEFSK0:	MOVE A,TERM
+	CAIN A,EOL		; [SMX #1] 
+	 POPJ P,
+	MOVE TAB,SKTTAB
+	PUSHJ P,SYMVAL		; Look for qualifiers
+	JRST DEFSK0
+
+
+; Perform icp
+
+DOICP:	MOVEM A,LSKT(NCNX)	; Remember local socket
+	HRROI A,HLPBUF		; Build complete name here
+	HRROI B,[ASCIZ /PUP:/]
+	SETZ C,
+	SOUT
+	MOVE B,LSKT(NCNX)
+	MOVEI C,10
+	NOUT
+	 0
+	HRROI B,[ASCIZ /!J./]
+	SETZ C,
+	SOUT
+	SKIPA C,FHST		; [SMX #2] Foreign host name
+DOICP0:	 IDPB B,A		; [SMX #2] And the char
+	ILDB B,C		; [SMX #2] Copy string and quote if need
+	JUMPN B,[CAIN B," "	; [SMX #2] Space?
+		  JRST .+1	; [SMX #2] Yes, quit
+		PUSHJ P,CKQOT	; [SMX #2] Add quote if needed
+		JRST DOICP0 ]	; [SMX #2] and copy to the string
+	PUSH P,A		; [SMX #2] Don, terminate string
+	SETZ C,			; [SMX #2] 
+	IDPB C,A		; [SMX #2] 
+	POP P,A			; [SMX #2] 
+	HRROI B,[ASCIZ /+Telnet/]
+	SKIPG FSKT		; Foreign socket specified?
+	 SOUT			; No, default
+	MOVSI A,(1B2+1B17)	; Short form, name from string
+	HRROI B,HLPBUF
+	GTJFN			; Get a JFN for the port
+	 JRST OPNCO7
+	MOVEM A,SNDJFN(NCNX)	; Ok, save output JFN
+	MOVE B,[8B5+8B17+1B20]	; Bytesize 8, 30-second timeout
+	OPENF			; Initiate rendezvous
+	 JRST OPNCO4		; Failed
+
+; Now make name string and open same port for input
+	MOVE C,[2,,C]		; Get foreign port address
+	GDSTS
+	PUSH P,D		; Save it
+	PUSH P,C
+	CVSKT			; Get local port address
+	 0
+	PUSH P,C
+	HRROI A,HLPBUF		; Where to build name
+	HRROI B,[ASCIZ /PUP:/]
+	SETZ C,
+	SOUT
+	POP P,B
+	MOVEI C,10
+	NOUT
+	 0
+	HRROI B,[ASCIZ /!A./]
+	SETZ C,
+	SOUT
+	HLRZ B,0(P)		; Recover net
+	MOVEI C,10
+	NOUT
+	 0
+	PUSHJ P,QTPND		; Add a quoted #
+	POP P,B			; Host
+	HRRZS B
+	NOUT
+	 0
+	PUSHJ P,QTPND		; Add a quoted #
+	POP P,B			; Socket
+	NOUT
+	 0
+	MOVSI A,(1B2+1B17)	; Short form, name from string
+	HRROI B,HLPBUF
+	GTJFN			; Get a JFN for the port
+	 JRST OPNCO6		; Failed (unlikely)
+	MOVEM A,RECJFN(NCNX)	; Ok, save input JFN
+	MOVE B,[8B5+1B19]	; Bytesize 8, open for input
+	OPENF
+	 JRST OPNCO5		; Failed (unlikely)
+	JRST SKPRET		; Return +2
+
+; Failure from first OPENF
+OPNCO4:	HRLM A,0(P)		; Save error code
+	MOVE A,SNDJFN(NCNX)	; Recover JFN
+	RLJFN			; Release it
+	 0
+	HLRZ A,0(P)		; Recover error code
+	JRST OPNCO7
+
+; Failure from second OPENF
+OPNCO5:	HRLM A,0(P)		; Save error code
+	HRRZ A,RECJFN(NCNX)	; Release the input JFN
+	RLJFN
+	 0
+	HLRZ A,0(P)		; Recover error code
+
+; Failure from second GTJFN
+OPNCO6:	HRLM A,0(P)
+	HRRZ A,SNDJFN(NCNX)	; Get output JFN
+	MOVEI B,25		; Abort function
+	SETZ C,			; No code assigned
+	HRROI D,[ASCIZ /Connection attempt aborted/]  ; Abort text
+	MTOPR			; Abort the connection
+	CLOSF			; Close the port
+	 0			; Can't fail after abort done
+	HLRZ A,0(P)
+OPNCO7:	SETZM RECJFN(NCNX)
+	SETZM SNDJFN(NCNX)
+	SKIPLE WATFLG
+	 POPJ P,		; No message on repeat failures
+	HRROI B,[ASCIZ /of unknown problem./]
+	CAIN A,OPNX20		; Check for special cases
+	 HRROI B,[ASCIZ /connection attempt timed out./]
+	CAIN A,OPNX21
+	 HRROI B,[ASCIZ /connection attempt rejected by remote host./]
+	HRROI A,[ASCIZ /incomplete,
+because /]
+	PSOUT
+	MOVE A,B
+	PSOUT
+	POPJ P,			; Take fail return
+
+
+; Routine to output a quoted #
+; Entry:   a = output designator
+; Return:  +1
+QTPND:	MOVEI B,"V"&37		; Output quote
+	BOUT
+	MOVEI B,"#"		; And the #
+	BOUT
+	POPJ P,
+
+RELCON:	MOVEI A,400000
+	DIR
+	MOVE X,NCNX
+	PUSHJ P,DSCNCT
+	MOVEI A,400000
+	EIR
+	POPJ P,
+
+DSCNCT:	MOVE A,SNDJFN(X)	; Disconnect current conx
+	CLOSF
+	 JRST [	MOVE A,SNDJFN(X)
+		CLOSF
+		 CAI
+		JRST .+1]
+	MOVE A,RECJFN(X)
+	CLOSF
+	 CAI
+	MOVE A,SNDJFN(X)
+	RLJFN
+	 CAI
+	MOVE A,RECJFN(X)
+	RLJFN
+	 CAI
+	SETZM SNDJFN(X)
+	SETZM RECJFN(X)
+	POPJ P,
+
+
+; Routine to quote an output char if needed
+; Entry:   a = output designator
+;	   b = char to be checked
+; Call:    PUSHJ P,CKQOT
+; Return:  +1, ^V added to output if needed
+CKQOT:	PUSH P,B		; [SMX #2] Save acs
+	PUSH P,C		; [SMX #2] 
+	PUSH P,D		; [SMX #2] 
+	IDIVI B,^D36		; [SMX #2] b _ wd indx, c _ bit indx
+	MOVSI D,(1B0)		; [SMX #2] d _ bit mask
+	MOVNS C			; [SMX #2] 
+	LSH D,0(C)		; [SMX #2] 
+	TDNN D,QTMSK(B)		; [SMX #2] Quote this one?
+	 JRST CKQOT0		; [SMX #2] No
+	MOVEI B,"V"&37		; [SMX #2] Yes, tack on ^V
+	BOUT			; [SMX #2] 
+CKQOT0:	POP P,D			; [SMX #2] Restore acs
+	POP P,C			; [SMX #2] 
+	POP P,B			; [SMX #2] 
+	POPJ P,
+
+; Macro for setting up bit mask array for quoted chars
+DEFINE CHRBIT(BIT)<
+   IRP BIT <
+	QMSK=QMSK_1
+	IFN BIT,<QMSK=QMSK+1>
+	QCNT=QCNT+1
+	IFE <QCNT-^D36>,<
+	   QMSK
+	   QMSK=0
+	   QCNT=0
+	>	; End IFE
+   >		; End IRP
+>		; End DEFINE
+
+; Now define bit array for quoting chars
+QMSK=0
+QCNT=0
+QTMSK:	CHRBIT <0,1,1,1,1,1,1,1>	; [SMX #2] 0 - 7
+	CHRBIT <1,1,1,1,1,1,1,1>	; [SMX #2] 10 - 17
+	CHRBIT <1,1,1,1,1,1,1,1>	; [SMX #2] 20 - 27
+	CHRBIT <1,1,1,1,1,1,1,1>	; [SMX #2] 30 - 37
+	CHRBIT <1,1,1,1,0,1,1,1>	; [SMX #2] 40 - '
+	CHRBIT <1,1,1,1,1,0,1,1>	; [SMX #2] ( - /
+	CHRBIT <0,0,0,0,0,0,0,0>	; [SMX #2] 0 - 7
+	CHRBIT <0,0,1,1,1,1,1,1>	; [SMX #2] 8 - ?
+	CHRBIT <1,0,0,0,0,0,0,0>	; [SMX #2] @ - G
+	CHRBIT <0,0,0,0,0,0,0,0>	; [SMX #2] H - O
+	CHRBIT <0,0,0,0,0,0,0,0>	; [SMX #2] P - W
+	CHRBIT <0,0,0,0,0,0,0,1>	; [SMX #2] X - _
+	CHRBIT <1,1,1,1,1,1,1,1>	; [SMX #2] ` - g
+	CHRBIT <1,1,1,1,1,1,1,1>	; [SMX #2] h - o
+	CHRBIT <1,1,1,1,1,1,1,1>	; [SMX #2] p - w
+	CHRBIT <1,1,1,1,1,1,1,1>	; [SMX #2] x - del
+
+IFN QCNT,<
+	QMSK=QMSK_<^D36-QCNT>
+	QMSK
+	>	; End IFN
+
+; Disconnect
+
+.DISC:	MOVE A,TERM
+	MOVE X,CNX
+	CAIN A,EOL		; [SMX #1] 
+	 JRST DISC1
+	SKIPL TAB,CONTAB
+	 POPJ P,
+	PUSHJ P,SYMVAL
+	MOVE X,A
+DISC1:	MOVEI A,400000
+	DIR
+	CAMN X,CNX
+	 TRZ F,REMOTF
+	MOVE A,ABNCNX		; Might be abncnx
+	SETOM ABNCNX		; Clear it
+	CAMN X,A		; And if it was
+	 SETOM ABNLCK		; Unlock abnlck
+	MOVEI A,0
+	EXCH A,ALTJFN(X)	; flush file input if any
+	SKIPLE A
+	 PUSHJ P,CLRJFN
+	SKIPN A,RECJFN(X)
+	 POPJ P,		; No connection
+	MOVE A,RCVFRK(X)
+	FFORK
+	SETZ NOA,
+	EXCH X,CNX
+	PUSHJ P,SETLGF
+	EXCH X,CNX
+	PUSHJ P,DSCNCT		; break connection
+	MOVN A,LSKT(X)
+	ASH A,-1
+	MOVSI B,(1B0)
+	ROT B,(A)
+	ANDCAM B,SKTMSK
+	IMULI X,3		; Compute pointer to this name
+	ADDI X,CONNAM
+	HRLI X,440700
+	MOVE Y,CONTAB
+	CAME X,0(Y)		; Search for entry in contb
+	 AOBJN Y,.-1
+	MOVE A,1(Y)		; Move entries above here, down to
+	MOVEM A,0(Y)		;  fill in the gap
+	AOBJN Y,.-2
+	MOVSI X,1
+	ADDM X,CONTAB		; One less entry in contb
+	MOVEI A,400000
+	EIR
+	POPJ P,
+
+
+; Set name for connection
+
+.STNAM:	MOVE TAB,NAMTB
+	TRO F,TMPF3
+	PUSHJ P,SYMVAL
+	JUMPGE A,NAMINU
+	HRRZ A,NCNX
+	IMULI A,3
+	ADDI A,CONNAM
+	HRLI A,440700
+	MOVE B,BPTR
+	MOVEI C,^D8
+	LDB D,PTR		; Get terminator
+	SOUT			; Copy through it
+	SETZ B,
+	DPB B,A			; Replace terminator with null
+	MOVE B,NCNX
+	HRLI B,(<MOVEI A,>)
+	MOVEM B,1(A)
+	POPJ P,
+
+NAMINU:	ERROR [ASCIZ /name already in use/]
+
+; Set auto switching to active connection feature
+
+ACTVST:	JUMPE NOA,[ SETZM ACTVSW
+		    POPJ P, ]
+	HRROI A,[ASCIZ /after /]
+	PUSH P,A		; [SMX #1] Save ptr
+	PUSHJ P,.PSOUT
+	MOVE A,PTR		; [SMX #1] Add it to the retype buffer
+	POP P,B			; [SMX #1] 
+	MOVEI C,0		; [SMX #1] 
+	SOUT			; [SMX #1] 
+	MOVEM A,PTR		; [SMX #1] 
+	MOVEI B,2
+	MOVE A,TERM
+	CAIN A,EOL		; [SMX #1] 
+	 JRST [ MOVEI A,101	; if crlf, use default value
+		MOVEI C,12
+		PUSHJ P,.NOUT
+		 JFCL
+		MOVEI A,40
+		PUSHJ P,.PBOUT
+		MOVE A,B
+		JRST ACTVS2 ]
+ACTVS1:	MOVE TAB,DCMTB
+	PUSHJ P,SYMVAL		; else get time limit in min.
+	SKIPG A			; only positive times...
+	 JRST [ HRROI A,[ASCIZ / ? /]
+		PUSHJ P,.PSOUT
+		JRST ACTVS1 ]
+ACTVS2:	IMULI A,^D60000
+	MOVEM A,ACTVTM
+	SETOM ACTVSW
+	MOVE B,A
+	HRROI A,[ASCIZ /minutes./]
+	CAIN B,^D60000
+	 HRROI A,[ASCIZ /minute./]
+	PUSHJ P,.PSOUT
+	POPJ P,
+
+
+; Wait for a connection wanting to print
+
+WATRET:	MOVSI X,-NCONN
+WATREL:	SKIPN A,SNDJFN(X)
+	 JRST WATREX
+	SKIPG SAVINC(X)
+	 JRST WATREX
+	HRROI A,[ASCIZ /
+connection /]
+	PUSHJ P,.PSOUT
+	HRRZ A,X
+	IMULI A,3
+	HRROI A,CONNAM(A)
+	PUSHJ P,.PSOUT
+	HRROI A,[ASCIZ / ready. /]
+	PUSHJ P,.PSOUT
+	HRRZ A,X
+	JRST RETCO1
+
+WATREX:	AOBJN X,WATREL
+	MOVEI A,^D10000
+	DISMS
+	JRST WATRET
+
+; Retrieve connection
+
+RETCON:	SKIPL TAB,CONTAB
+	 JRST [	HRROI A,[ASCIZ /
+No connections.
+/]
+		PUSHJ P,.PSOUT
+		POPJ P,]
+	PUSHJ P,SYMVAL
+RETCO1:	MOVEM A,CNX
+	TRO F,REMOTF
+	POPJ P,
+
+; List connections
+
+LSTCON:	TRZ F,TMPF
+	MOVE X,CONTAB
+	JUMPGE X,LSTCOX
+LSTCOL:	HRROI A,[ASCIZ /
+-Name-  -From-  --To--
+
+/]
+	TRON F,TMPF
+	PUSHJ P,.PSOUT
+	SETZ C,
+	MOVE A,(X)
+	PUSHJ P,.PSOUT
+	MOVE B,1(A)
+	MOVEI A,11
+	PUSHJ P,.PBOUT
+	HRRZ B,SNDJFN(B)
+	MOVEI A,101
+	MOVE C,[BYTE (3)0,0,1,1,0,0,0(5)0,0,2]
+	JFNS
+	SKIPE A,SCRJFN
+	 JFNS
+	PUSHJ P,SCRUPD
+	PUSHJ P,.CRLF		; [SMX #1] 
+LSTCOX:	AOBJN X,LSTCOL
+	HRROI A,[ASCIZ /
+No saved connections./]
+	TRZN F,TMPF
+	PUSHJ P,.PSOUT
+	POPJ P,
+
+; Exec
+
+.EXEC:	
+	HRROI B,[ASCIZ /<SYSTEM>EXEC.SAV/]
+	SKIPE IFT20		; [SMX #1] 
+	 HRROI B,[ASCIZ/SYSTEM:EXEC.EXE/]
+	MOVSI C,(1B0)		; cause interrupts to go off
+	MOVSI A,100001
+	JRST SBGET
+
+; Run
+
+.RUN:	MOVSI A,100003
+	MOVE B,[XWD 100,101]
+	SETZ C,
+
+SBGET:	PUSH P,B
+	PUSHJ P,GTJFN0
+	 JRST [	POP P,A
+		TLNN A,-1
+		PUSHJ P,.PSOUT
+		ERROR [ASCIZ / not available./]]
+	SUB P,[XWD 1,1]
+	MOVEI A,400000
+	DIR
+	MOVSI A,(1B1!1B3)
+	MOVEI B,FAC
+	CFORK
+	 JRST [	HRROI A,[ASCIZ /No forks available./]
+		JRST GETF]
+	MOVEM A,SPCFRK
+	HRLZ A,SPCFRK
+	HRR A,IJFN
+	GET
+	SETZM IJFN
+	MOVEI A,400000
+	EIR
+	JUMPGE C,SBGET4
+	DIR
+	MOVE A,ESCCOD
+	DTI
+	MOVE A,CBFCOD
+	DTI
+
+SBGET4:	PUSH P,C
+	MOVEI A,100
+	MOVE B,TTCOC0
+	MOVE C,TTCOC1
+	SFCOC
+	MOVE B,TTMOD0
+	SFMOD
+	STPAR			; [SMX #1] All parts
+	PUSHJ P,CLRCRF		; [SMX #1] And take or pending crlf
+	HRRZ B,0(P)
+	MOVE A,SPCFRK
+	SFRKV
+	WFORK
+	MOVEI A,400000
+	DIR
+	MOVE A,SPCFRK
+	KFORK
+	SETZM SPCFRK
+	POP P,C
+	JUMPGE C,SBGET5
+	MOVEI A,ESCCHN
+	HRL A,ESCCOD
+	ATI
+	MOVEI A,CBFCHN
+	HRL A,CBFCOD
+	ATI
+SBGET5:	MOVEI A,400000
+	EIR
+	POPJ P,
+
+GETF:	PUSH P,A
+	MOVEI A,400000
+	EIR
+	SKIPE A,IJFN
+	 PUSHJ P,CLRJFN
+	SETZM IJFN
+	POP P,A
+	PUSHJ P,.PSOUT
+	POPJ P,
+
+; Set escape character
+
+REPEAT 0,<
+SETSCH:	PUSHJ P,SETICH
+	 HLDCHR
+	 HLDCOD
+	 HLDCHN
+	POPJ P,
+>
+
+SETESC:	PUSHJ P,SETICH
+	 ESCAPE
+	 ESCCOD
+	 ESCCHN
+	POPJ P,
+
+SETCBF:	PUSHJ P,SETICH
+	 CBFCHR
+	 CBFCOD
+	 CBFCHN
+	POPJ P,
+
+SETICH:	MOVE X,0(P)
+	ADDI X,3
+	EXCH X,0(P)
+SETIC1:	PUSHJ P,.PBINC		; [SMX #1] 
+	CAIN A,EOL		; EOL?
+	 JRST [ SETZ A,		; Yes, trying to clear the char
+		MOVEI B,ESCAPE	; Esc char?
+		CAME B,0(X)
+		 JRST SETIC2	; No, do it
+		HRROI A,[ASCIZ / ?Can't disable Escape.char/]
+		PUSHJ P,.PSOUT
+		POPJ P, ]
+	CAIN A,"?"
+	 JRST PRESC
+	PUSH P,A
+	PUSHJ P,CVINTC
+	 JRST SETED
+SETIC2:	PUSH P,A
+	MOVEI A,400000
+	DIR
+	POP P,A
+	MOVE B,0(P)
+	MOVEM B,@0(X)
+	EXCH A,@1(X)
+	DTI
+	SKIPN @1(X)		; Cleared char?
+	 JRST [ HRROI A,[ASCIZ / (disabled)/]  ; Yes
+		PUSHJ P,.PSOUT
+		JRST SETIC3 ]
+	HRLZ A,@1(X)
+	HRRI A,@2(X)
+	ATI
+	MOVE A,0(P)
+	CAIL A,40
+	 JRST SETE1
+	MOVEI A,"^"
+	PUSHJ P,ECHOIT
+	MOVEI A,100
+	ADDM A,0(P)
+SETE1:	POP P,A
+	PUSHJ P,ECHOIT
+SETIC3:	MOVEI A,400000
+	EIR
+	POPJ P,
+
+
+SETED:	POP P,A
+	MOVEI A,7
+	PUSHJ P,.PBOUT
+	JRST SETIC1
+
+PRESC:	PUSHJ P,ECHOIT		; echo the "?"
+	HRROI A,[ASCIZ /
+control-@ through control-z
+altmode
+rubout
+space
+/]
+	PUSHJ P,.PSOUT
+	MOVE A,LPTR
+	PUSHJ P,.PSOUT
+	JRST SETIC1
+
+; Set terminal modes
+
+SETTRM:	MOVE TAB,TRMTAB
+	JRST SYMVAL
+
+
+; Set synch character
+
+SETSNC:	SETOM SYNC
+	JUMPGE NOA,SETIWK
+	PUSHJ P,.PBINC		; [SMX #1] 
+	PUSHJ P,ECHOIT
+	MOVEM A,SYNC
+	JRST SETIWK
+
+
+; Set single charcter quote prefix
+
+SETQOT:	SETOM QUOT
+	JUMPGE NOA,SETIWK
+	PUSHJ P,.PBINC		; [SMX #1] 
+	PUSHJ P,ECHOIT
+	MOVEM A,QUOT
+	JRST SETIWK
+
+; Set unshift prefix
+
+SETUNS:	SETOM UNSFT
+	JUMPGE NOA,SETIWK
+	PUSHJ P,.PBINC		; [SMX #1] 
+	PUSHJ P,ECHOIT
+	MOVEM A,UNSFT
+	JRST SETIWK
+
+; Set case shift prefixes
+
+SETSHF:	PUSH P,NOA		; Save noa
+	MOVE TAB,SFTB
+	PUSHJ P,SYMVAL
+	POP P,NOA
+	SETOM (A)		; Turn off prefix
+	JUMPGE NOA,SETIWK	; Done if "no"
+	PUSH P,A
+	PUSHJ P,.PBINC		; [SMX #1] 
+	PUSHJ P,ECHOIT
+	MOVEM A,@(P)
+	SUB P,[XWD 1,1]
+SETIWK:	PUSH P,C		; create new special char.
+	PUSH P,B		;  wakeup mask
+	SETZ A,
+	MOVSI C,-NSPECH
+	ADD C,[XWD 2,2]		; omitting escape & clrobf
+SETIW1:	HLRZ B,CSTAB(C)
+	SKIPGE B,(B)		; lookup each spec. char.
+	 JRST SETIW2
+	HLRZ B,RCTGTB(B)	; OR in wakeup memshp if it exists
+	IOR A,B
+SETIW2:	AOBJN C,SETIW1
+	MOVEM A,SPECWK		; store in specwk
+	POP P,B
+	POP P,C
+	POPJ P,
+
+; Echo.mode.is
+
+.ECHO:	MOVE TAB,ECTAB
+	JRST SYMVAL
+
+CHGECH:	HRROI A,[ASCIZ /A half-duplex terminal (which I believe you have) will not work well
+with remote echoing./]
+	SKIPE HDX
+	SKIPE ELCLF(CNX)
+	CAIA
+	 PUSHJ P,.PSOUT
+	POPJ P,			;  DONT ECHO
+
+; Terminal has lower case
+
+SETLWR:	MOVEM NOA,TRMLWC
+	MOVSI B,(1B3)
+	JUMPGE NOA,SETLW1
+	IORM B,TTMODR
+	IORB B,TTMODC
+	JRST SETLW2
+
+SETLW1:	ANDCAM B,TTMODR
+	ANDCAB B,TTMODC
+SETLW2:	MOVEI A,101
+	STPAR
+	POPJ P,
+
+SNDSNC:	SKIPN A,SNDJFN(CNX)	; Send "sync"
+	 POPJ P,		; Connection not ok
+	MOVEI B,22		; First send interrupt
+	SETZB C,D
+	MTOPR
+	MOVEI B,3		; Then send mark type DM
+	MOVEI C,1
+	MTOPR
+	POPJ P,
+
+; Set control character echoing
+
+SETCOC:	PUSHJ P,GCH
+	CAIN A,"?"
+	 JRST SETCOQ
+	PUSHJ P,ECHOIT
+SETCO2:	CAIN A,EOL		; [SMX #1] 
+	MOVEI A,15
+	MOVEM A,TERM
+	PUSHJ P,.PBINC
+	PUSHJ P,ECHOIT
+	EXCH A,TERM
+	ANDI A,37
+	MOVSI B,400000
+	MOVNS A
+	ROT B,(A)
+	SKIPN NOA
+	ANDCAM B,ECHCOC(CNX)
+	SKIPE NOA
+	IORM B,ECHCOC(CNX)
+	MOVE A,TERM
+	CAIE A,EOL		; [SMX #1] 
+	 JRST [	CAIE A,40
+		CAIN A,","
+		 JRST SETCOC
+		JRST SETCO2]
+	POPJ P,
+
+SETCOQ:	HRROI A,[ASCIZ /
+control characters or letter equivalents
+/]
+	PUSHJ P,.PSOUT
+	MOVE A,LPTR
+	PUSHJ P,.PSOUT
+	JRST SETCOC
+
+SETCOE:	MOVEI A,7
+	PUSHJ P,.PBOUT
+	JRST SETCOC
+
+; Print current modes
+
+PRCMD:	MOVSI X,-NPMDTB
+PRCMD1:	PUSHJ P,.CRLF		; [SMX #1] 
+	MOVSI C,CNX
+	HLR C,PCMDTB(X)
+	HRROI A,[ASCIZ /no /]
+	SKIPN @C
+	PUSHJ P,.PSOUT
+	HRRO A,PCMDTB(X)
+	PUSHJ P,.PSOUT
+	AOBJN X,PRCMD1
+	HRROI A,[ASCIZ /
+Special characters:
+/]
+	PUSHJ P,.PSOUT
+	MOVSI X,-NSPECH
+PCSLP:	HLRZ B,CSTAB(X)
+	SKIPG (B)
+	 JRST PCSLPN
+	HRRO A,CSTAB(X)
+	PUSHJ P,.PSOUT
+	MOVEI A,11
+	PUSHJ P,.PBOUT
+	MOVE A,(B)
+	PUSHJ P,.PBOUT
+PCSLPE:	PUSHJ P,.CRLF		; [SMX #1] 
+PCSLPN:	AOBJN X,PCSLP
+	SKIPE D,ECHCOC(CNX)
+	SKIPN ELCLF(CNX)
+	 POPJ P,		; Done if not local echo or no coc
+	HRROI A,[ASCIZ /
+Local echo for control /]
+	PUSHJ P,.PSOUT
+PRCM2:	JFFO D,.+1
+	MOVSI B,400000
+	MOVN C,D+1
+	ROT B,(C)
+	ANDCAM B,D
+	JUMPN D,PRCM1
+	HRROI A,[ASCIZ /and /]
+	CAME B,ECHCOC(CNX)
+	PUSHJ P,.PSOUT
+PRCM1:	MOVEI A,100(D+1)
+	PUSHJ P,.PBOUT
+	JUMPE D,CPOPJ
+	HRROI A,[ASCIZ /, /]
+	PUSHJ P,.PSOUT
+	JRST PRCM2
+
+PCMDTB:	XWD RAISEF,[ASCIZ /Raise/]
+	XWD LOWERF,[ASCIZ /Lower/]
+	XWD ELCLF,[ASCIZ /Local echo/]
+	XWD LFCRF,[ASCIZ /Echo linefeed for carriage return/]
+	XWD LNBFF,[ASCIZ /Line buffer/]
+NPMDTB==.-PCMDTB
+
+CSTAB:	XWD ESCAPE,[ASCIZ /Escape: /]
+	XWD CBFCHR,[ASCIZ /Clrobf: /]
+	XWD QUOT,[ASCIZ /Quote:  /]
+	XWD UNSFT,[ASCIZ /Unshift:/]
+	XWD LCASC,[ASCIZ /Char.lower:/]
+	XWD LCASL,[ASCIZ /Lock.lower:/]
+	XWD UCASC,[ASCIZ /Char.upper:/]
+	XWD UCASL,[ASCIZ /Lock.upper:/]
+	XWD SYNC,[ASCIZ /Synch:  /]
+
+NSPECH==.-CSTAB
+
+
+
+
+; Help
+
+.HELP:	HRROI A,[ASCIZ /
+The describe command is the efficient way to get specific questions
+answered; type "describe describe" to see how.  You may also wish/]  ; [SMX #1] 
+	PUSHJ P,.PSOUT
+	HRROI A,[ASCIZ /
+to list the file <DOC>CHAT.HELP on the LPT: for future reference.
+Or you may continue here with "help" to get the help file typed out
+in pieces.  Continue?  /]
+	PUSHJ P,.PSOUT
+	PUSHJ P,OPNHLP		; open help file
+	 POPJ P,		;   can't
+	JRST TYPAL
+
+
+TYPLP:	MOVEI X,^D20
+TYPLP1:	MOVE A,IJFN
+	MOVE B,[POINT 7,COMBUF]
+	MOVEI C,200*5-3
+	MOVEI D,12
+	SIN
+	GTSTS
+	TLNE B,1000
+	 JRST ETYPL
+	MOVEI A,101
+	MOVE B,[POINT 7,COMBUF]
+	MOVEI C,200*5-3
+	MOVEI D,12
+	PUSHJ P,.SOUT
+	SOJG X,TYPLP1
+	CAIGE C,200*5-3-2
+	 JRST TYPLP1
+	HRROI A,[ASCIZ /
+More help? /]
+	PUSHJ P,.PSOUT
+TYPAL:	PUSHJ P,.PBINC		; [SMX #1] 
+	CAIE A,"Y"
+	CAIN A,"Y"+40
+	 JRST TYPMO
+	CAIE A,"N"
+	CAIN A,"N"+40
+	 JRST TYPNO
+	MOVEI A,7
+	PUSHJ P,.PBOUT
+	JRST TYPAL
+
+TYPMO:	HRROI A,[ASCIZ /Yes
+/]
+	PUSHJ P,.PSOUT
+	JRST TYPLP
+
+TYPNO:	HRROI A,[ASCIZ /No
+/]
+	PUSHJ P,.PSOUT
+	JRST ETYPX
+
+ETYPL:	SUBI C,200*5-3
+	SOUT
+ETYPX:	MOVE A,IJFN
+	PUSHJ P,CLRJFN
+	SETZM IJFN
+	POPJ P,
+
+
+; describe
+.DSCRB:	MOVE TAB,DSCRTB
+	PUSHJ P,SYMVAL		; get identifier, str ptr in bptr
+	PUSHJ P,OPNHLP		; now open help file
+	 POPJ P,
+	SETZB B,X		; overlay null to separator in input
+	DPB B,PTR
+DSCRB1:	PUSHJ P,RDHLRB		; read help file up to next rubout
+	PUSHJ P,RDHLP		; read following string
+	MOVE D,BPTR
+	MOVE Y,[POINT 7,HLPBUF]	; now compare string from file
+	MOVE A,HLPBUF		; to "[no] ", scan off if present,
+	CAMN A,[ASCII /[no] /]
+	 ADDI Y,1		; then compare input identifier string
+DSCRB2:	ILDB A,D		; to present string from file
+	ILDB B,Y
+	PUSHJ P,SYMCMP
+	 JRST [ JUMPE A,DSCRB3	; unequal: substring match if input
+		JRST DSCRB1 ]	; ends first; else get next record
+	JUMPN A,DSCRB2		; exact match if null, else keep cmprng
+DSCRB3:	PUSHJ P,.CRLF		; [SMX #1] file rec matches input identifier
+	PUSHJ P,.CRLF		; type initial <cr>
+DSCRB4:	MOVEI A,101
+	MOVE B,[POINT 7,HLPBUF]
+	MOVEI C,200*5-3
+	MOVEI D,177		; type out text
+	PUSHJ P,.SOUT
+	LDB A,B
+	CAIN A,177		; did output end on a rubout marker?
+	 JRST ETYPX		;  yes, done, close file & exit
+	PUSHJ P,RDHLP		; no, read another buffer load
+	JRST DSCRB4
+
+RDHLRB:	JUMPE X,RDHLRR		; read file up to rubout marker
+RDHLRC:	LDB A,X			; if str ptr in b, check if already
+	CAIN A,177		;  at a rubout
+	 POPJ P,		;   yes, exit
+RDHLRR:	PUSHJ P,RDHLP		; no rubout, read another record
+	JRST RDHLRC
+
+RDHLP:	MOVE A,IJFN		; read help file into buffer
+	GTSTS
+	TLNE B,1000		; failure if file already at eof
+	 ERROR [ASCIZ /help item not found./]
+	MOVE B,[POINT 7,HLPBUF]	; (should never happen)
+	MOVEI C,200*5-3
+	MOVEI D,177		; read full buffer or up to rubout
+	SIN
+	MOVE X,B		; save updated pointer
+	GTSTS
+	TLNN B,1000
+	 POPJ P,
+	MOVEI A,177
+	IDPB A,X		; if eof, smash rubout into buf
+	POPJ P,
+
+
+OPNHLP:	MOVEI A,400000		; get and open help file
+	DIR
+	HRROI B,[ASCIZ /<DOC>CHAT.HELP/]
+	SKIPE IFT20		; [SMX #1] 
+	 HRROI B,[ASCIZ/DOC:CHAT.HELP/]
+	MOVSI A,100001
+	GTJFN
+	 JRST [	MOVEI A,400000
+		EIR
+		HRROI A,[ASCIZ /Help file not found./]
+		PUSHJ P,.PSOUT
+		POPJ P,]
+	MOVEM A,IJFN
+	MOVEI A,400000
+	EIR
+	MOVE A,IJFN
+	MOVE B,[XWD 70000,200000]
+	OPENF
+	 JRST [	MOVE A,IJFN
+		PUSHJ P,CLRJFN
+		SETZM IJFN
+		HRROI A,[ASCIZ /Help file can't be opened./]
+		PUSHJ P,.PSOUT
+		POPJ P,]
+	JRST SKPRET		; 2nd return if success
+
+
+; Typescript to a file
+
+SETSCR:	PUSHJ P,UGTAD
+	MOVEM B,SCRTIM		; Time of last typescript entry
+	SETZM SCRCNT		; Characters output since last openf
+	MOVEI A,400000
+	DIR
+	SETZ A,
+	EXCH A,SCRJFN
+	SKIPLE A
+	 PUSHJ P,CLRJFN
+	MOVEI A,400000
+	EIR
+	SKIPL NOA		; file flushed, done if "no"
+	 POPJ P,
+	PUSHJ P,.PBINC		; [SMX #1] wait for input
+	CAIE A,33
+	CAIN A,EOL		; [SMX #1] get default typscr file if CR or ESC
+	 JRST [ MOVEI A,400000
+		DIR
+		MOVEI A,[ 1B0
+			XWD 377777,377777
+			0
+			POINT 7,LGDRST
+			REPEAT 5,<0> ]
+		HRROI B,[ASCIZ /CHAT.TYPESCRIPT;T;P770000/]
+		GTJFN
+		 JRST [	MOVEI A,400000
+			EIR
+			POPJ P,]
+		PUSH P,A
+		MOVE B,[XWD 70000,20000]
+		OPENF
+		 JRST [	POP P,A
+			RLJFN
+			 JFCL
+			MOVEI A,400000
+			EIR
+			POPJ P,]
+
+
+		HRROI B,[ASCIZ /
+CHAT typescript file started at /]
+		SETZ C,
+		SOUT
+		SETO B,
+		MOVE C,[1B1+1B7+1B12+1B17]
+		ODTIM
+		MOVEI B,15
+		BOUT
+		MOVEI B,12
+		BOUT
+		POP P,SCRJFN
+		MOVEI A,400000
+		EIR
+		POPJ P,]
+	SKIPN HDX
+	 PBOUT			; echo first char typed...
+	MOVEI A,100		; if non-terminator typed, back up
+	BKJFN			;  and get user-named file
+	 0
+	MOVEI A,[XWD 460000,0
+		XWD 100,101
+		0		; [SMX #1] 
+		-1,,LGDRST	; [SMX #1] 
+		REPEAT 2,<0>	; [SMX #1] 
+		XWD 500000,770000
+		REPEAT 2,<0>]
+	SETZ B,
+	PUSHJ P,GTJFN0		; get any file name, but with self-only
+	 ERROR [ASCIZ /File not available./]
+	MOVE B,[XWD 70000,100000]
+	OPENF
+	 JRST [	MOVE A,IJFN
+		PUSHJ P,CLRJFN
+		SETZM IJFN
+		ERROR [ASCIZ /Cannot open file./]]
+	MOVEI A,400000
+	DIR
+	MOVEI B,0
+	EXCH B,IJFN
+	MOVEM B,SCRJFN
+	EIR
+	POPJ P,
+
+; Get uniform time in secs
+
+UGTAD:	GTAD
+	HRRZS B,A
+	HLRZS A
+	IMULI A,^D24*^D60*^D60
+	ADDB A,B
+	POPJ P,
+
+
+; Update script file
+
+SCRUPD:	SKIPN SCRJFN
+	 POPJ P,
+	PUSH P,A
+	PUSH P,B
+	SKIPGE SCRTIM
+	 JRST SCRUP0		; Forced update
+	PUSHJ P,UGTAD
+	SUB B,SCRTIM		; Ho long since last update?
+	CAIG B,^D30
+	 JRST SCRUPX		; Never less than 30 secs
+	CAIL B,^D300
+	 JRST SCRUP0		; Always every 5 min
+	MOVE A,SCRJFN
+	RFPTR
+	 SETZ B,
+	SUB B,SCRCNT
+	CAIG B,^D1000
+	 JRST SCRUPX		; Then not fewer thant 1000 chars
+SCRUP0:	PUSHJ P,UGTAD
+	MOVEM B,SCRTIM
+	MOVE A,SCRJFN
+	RFPTR
+	 SETZ B,
+	MOVEM B,SCRCNT
+	HRLI A,400000
+	CLOSF
+	 JFCL
+	HRRZS A
+	MOVE B,[XWD 70000,20000]
+	OPENF
+	 0
+SCRUPX:	POP P,B
+	POP P,A
+	POPJ P,
+
+
+; Connection's output to a file as it arrives
+
+SETLGF:	PUSHJ P,UGTAD
+	MOVEM B,LGFTIM(CNX)	; Time of last logging entry
+	SETZM LGFCNT(CNX)	; Characters output since last openf
+	MOVEI A,400000
+	DIR
+	SETZ A,
+	EXCH A,LGFJFN(CNX)
+	SKIPLE A
+	 PUSHJ P,CLRJFN
+	MOVEI A,400000
+	EIR
+	SKIPL NOA		; file flushed, done if "no"
+	 POPJ P,
+	MOVEI A,[XWD 460000,0
+		XWD 100,101
+		REPEAT 4,<0>
+		XWD 500000,770000
+		REPEAT 2,<0>]
+	SETZ B,
+	PUSHJ P,GTJFN0		; get any file name, but with self-only
+	 ERROR [ASCIZ /File not available./]
+	MOVE B,[XWD 70000,100000]
+	OPENF
+	 JRST [	MOVE A,IJFN
+		PUSHJ P,CLRJFN
+		SETZM IJFN
+		ERROR [ASCIZ /Cannot open file./]]
+	MOVEI A,400000
+	DIR
+	MOVEI B,0
+	EXCH B,IJFN
+	MOVEM B,LGFJFN(CNX)
+	MOVE A,LGFJFN(CNX)
+	HRROI B,[ASCIZ /
+CHAT logging file started at /]
+	SETZ C,
+	SOUT
+	SETO B,
+	MOVE C,[1B1+1B7+1B12+1B17]
+	ODTIM
+	SKIPN SNDJFN(CNX)	; Is there a connection?
+	 JRST LGNJFN		; No, don't try to print its name
+	HRROI B,[ASCIZ /
+   on connection /]
+	SETZ C,
+	SOUT
+	MOVE B,CNX
+	IMULI B,3
+	ADDI B,CONNAM
+	HRROS B
+	SOUT
+	HRROI B,[ASCIZ / from /]
+	SOUT
+	HRRZ B,SNDJFN(CNX)
+	MOVE D,B
+
+
+	MOVSI C,(<BYTE (3)0,0,1>)
+	JFNS
+	HRROI B,[ASCIZ / to /]
+	SETZ C,
+	SOUT
+	MOVE B,D
+	MOVSI C,(<BYTE(3)0,0,0,1>)
+	JFNS
+LGNJFN:	MOVEI B,15
+	BOUT
+	MOVEI B,12
+	BOUT
+	MOVEI A,400000
+	EIR
+	POPJ P,
+
+; Update logging file
+
+LGFUPD:	SKIPN LGFJFN(CNX)
+	 POPJ P,
+	PUSH P,A
+	PUSH P,B
+	SKIPGE LGFTIM(CNX)
+	 JRST LGFUP0		; Forced update
+	PUSHJ P,UGTAD
+	SUB B,LGFTIM(CNX)	; How long since last update?
+	CAIG B,^D60
+	 JRST LGFUPX		; Never less than 60 secs
+	CAIL B,^D300
+	 JRST LGFUP0		; Always every 5 min
+	MOVE A,LGFJFN(CNX)
+	RFPTR
+	 SETZ B,
+	SUB B,LGFCNT(CNX)
+	CAIG B,^D10
+	 JRST LGFUPX		; Then not fewer thant 10 chars
+LGFUP0:	PUSHJ P,UGTAD
+	MOVEM B,LGFTIM(CNX)
+	MOVE A,LGFJFN(CNX)
+	RFPTR
+	 SETZ B,
+	MOVEM B,LGFCNT(CNX)
+	HRLI A,400000
+	CLOSF
+	 JFCL
+	HRRZS A
+	MOVE B,[XWD 70000,20000]
+	OPENF
+	 0
+LGFUPX:	POP P,B
+	POP P,A
+	POPJ P,
+
+
+; Divert output  to a file
+
+SETDIV:	MOVEI A,400000
+	DIR
+	MOVEI A,0
+	EXCH A,DIVJFN
+	SKIPLE A
+	 PUSHJ P,CLRJFN
+	MOVEI A,400000
+	EIR
+	JUMPGE NOA,CPOPJ
+	MOVSI A,460003
+	PUSHJ P,.GTJFN
+	 ERROR [ASCIZ /File not found./]
+	MOVE B,[XWD 70000,100000]
+	OPENF
+	 JRST [	MOVE A,IJFN
+		PUSHJ P,CLRJFN
+		SETZM IJFN
+		ERROR [ASCIZ /Cannot open./]]
+	MOVEI A,400000
+	DIR
+	MOVEI B,0
+	EXCH B,IJFN
+	MOVEM B,DIVJFN
+	EIR
+	POPJ P,
+
+
+; Take input from a file (remote mode)
+
+SETALT:	MOVEI A,400000
+	DIR
+	MOVEI A,0
+	EXCH A,ALTJFN(CNX)
+	SKIPLE A
+	 PUSHJ P,CLRJFN
+	MOVEI A,400000
+	EIR
+	JUMPGE NOA,CPOPJ
+	MOVSI A,160003
+	PUSHJ P,.GTJFN
+	 ERROR [ASCIZ /File not found./]
+	MOVE B,[XWD 1,11]
+	MOVEI C,C
+	GTFDB
+	LDB B,[POINT 6,C,11]
+	CAIE B,7
+	 ERROR [ASCIZ /Not an ASCII file./]
+	SIZEF
+	 ERROR [ASCIZ /File not found./]
+	MOVEM B,ALTJCT(CNX)
+	MOVE B,[XWD 70000,200000]
+	OPENF
+	 JRST [ MOVE A,IJFN
+		PUSHJ P,CLRJFN
+		SETZM IJFN
+		ERROR [ASCIZ /Cannot open./]]
+	MOVEI A,400000
+	DIR
+	MOVEI B,0
+	EXCH B,IJFN
+	MOVEM B,ALTJFN(CNX)
+	EIR
+	POPJ P,
+
+; Print where we are
+
+.WHERE:	PUSHJ P,.CRLF		; [SMX #1] 
+	SKIPN A,SNDJFN(CNX)
+	 JRST NOCC
+	HRROI A,[ASCIZ /Connection /]
+	PUSHJ P,.PSOUT
+	MOVE A,CNX
+	IMULI A,3
+	ADDI A,CONNAM
+	HRROS A
+	PUSHJ P,.PSOUT
+	HRROI A,[ASCIZ / from /]
+	PUSHJ P,.PSOUT
+	HRRZ B,SNDJFN(CNX)
+	MOVEI A,101
+	MOVSI C,(<BYTE (3)0,0,1>)
+	JFNS
+	SKIPE A,SCRJFN
+	JFNS
+	HRROI A,[ASCIZ / to /]
+	PUSHJ P,.PSOUT
+	HRRZ B,SNDJFN(CNX)
+	MOVEI A,101
+	MOVSI 3,(<BYTE (3)0,0,0,1>)
+	JFNS
+	SKIPE A,SCRJFN
+	JFNS
+	PUSHJ P,.CRLF		; [SMX #1] 
+NOCC:	MOVE A,[SIXBIT /SYSVER/]
+	SYSGT
+	MOVE D,P
+	HRRZ C,B
+	HLLZS B
+
+.WHRL:	MOVE A,C
+	HRL A,B
+	GETAB
+	 JFCL
+	PUSH P,A
+	AOBJN B,.WHRL
+	PUSH P,[0]
+	HRROI A,1(D)
+	PUSHJ P,.PSOUT
+	MOVE P,D
+	HRROI A,[ASCIZ /
+Job /]
+	PUSHJ P,.PSOUT
+	GJINF
+	PUSH P,1
+	MOVEI A,101
+	MOVE B,C
+	MOVEI C,12
+	PUSHJ P,.NOUT
+	 JFCL
+	HRROI A,[ASCIZ /, terminal /]
+	PUSHJ P,.PSOUT
+	MOVE B,D
+	MOVEI C,10
+	MOVEI A,101
+	PUSHJ P,.NOUT
+	 JFCL
+	HRROI A,[ASCIZ /, user /]
+	PUSHJ P,.PSOUT
+	POP P,B
+	MOVEI A,101
+	DIRST
+	 JFCL
+	SKIPLE A,SCRJFN
+	 DIRST
+	 JFCL
+	HRROI A,[ASCIZ /
+CHAT version /]
+	PUSHJ P,.PSOUT
+	HRROI A,VERNUM
+	PUSHJ P,.PSOUT
+	POPJ P,
+
+
+; Confirm command
+; Return:  +1, No go
+;	   +2, OK
+.CNFRM:	HRROI A,[ASCIZ / [Confirm] /]	; [SMX #1] Prompt
+	PUSHJ P,.PSOUT			; [SMX #1] 
+	PUSHJ P,.PBINC		; [SMX #1] Get a response
+	CAIE A,EOL    		; [SMX #1] Positive?
+	 JRST  [HRROI A,[ASCIZ /XXX/]	; [SMX #1] No
+		PUSHJ P,.PSOUT		; [SMX #1] 
+		POPJ P, ]		; [SMX #1] 
+	PUSHJ P,.CRLF 		; [SMX #1] Yes, new line
+	JRST SKPRET   		; [SMX #1] 
+	
+; Reset
+
+.RESET:	PUSHJ P,.CNFRM		; [SMX #1] Confirm it
+	 POPJ P,      		; [SMX #1] No
+	JRST RSTART   		; [SMX #1] Go do it
+
+; Logout
+
+.LGOUT:	PUSHJ P,.CNFRM		; [SMX #1] Confirm it
+	 POPJ P,      		; [SMX #1] No go
+	MOVNI 1,1
+	LGOUT
+	HALTF
+
+; Quit, exit back to exec
+
+.QUIT:	SETOM SCRTIM
+	PUSHJ P,SCRUPD		; Update script before leaving
+	MOVSI CNX,-NCONN
+QUITA:	SETOM LGFTIM(CNX)
+	PUSHJ P,LGFUPD
+	AOBJN CNX,QUITA
+	PUSHJ P,CLRCRF		; [SMX #1] Finish any crlf
+	MOVEI A,400000
+	DIR
+	MOVEI A,101		; [SMX #1] Restore orig TTY conditions
+	MOVE B,TTMOD0		; [SMX #1] 
+	SFMOD			; [SMX #1] 
+	STPAR			; [SMX #1] 
+	MOVE B,TTCOC0		; [SMX #1] 
+	MOVE C,TTCOC1		; [SMX #1] 
+	SFCOC			; [SMX #1] 
+	HALTF
+	MOVEI A,-4
+	FFORK
+	MOVE CNX,FSVCNX
+	MOVEI A,400000
+	EIR
+	POPJ P,
+
+
+; Send code and control
+
+SNDDCD:	IBP BPTR		; Send decimal # as code
+	PUSHJ P,CVDEC
+	JRST SNDC
+
+SNDOCD:	IBP BPTR		; Send octal # as code
+SNDOCT:	PUSHJ P,CVOCT
+	JRST SNDC
+
+SNDHCD:	IBP BPTR		; Send hex # as code
+	SETZ A,
+SNDHCL:	ILDB B,BPTR
+	JUMPE B,SNDC
+	CAIL B,"A"
+	ADDI B,11
+	ANDI B,17
+	ASH A,4
+	ADD A,B
+	JRST SNDHCL
+
+SNDCTL:	MOVE TAB,LTRTB		; Send control char.
+	PUSHJ P,SYMVAL
+	ANDI A,37
+	JRST SNDC
+
+SNDCD1:	PUSHJ P,CVOCT
+SNDC:	MOVE B,A
+	SKIPN SNDJFN(CNX)
+	 POPJ P,
+	PUSHJ P,SNDCH		; Send and push out byte
+	PUSHJ P,TRNSMT
+	POPJ P,
+
+; Set remote mode
+
+SETREM:	SKIPE A,SNDJFN(CNX)
+	TRO F,REMOTF
+	POPJ P,
+
+
+DOCOMT:	PUSHJ P,GCH
+	PUSHJ P,ECHOIT
+	CAIE A,EOL		; [SMX #1] 
+	 JRST DOCOMT
+	POPJ P,
+
+CVOCT:	SKIPA C,[10]
+CVDEC:	MOVEI C,^D10
+	MOVE A,BPTR
+	NIN
+	 SETZ B,
+	MOVE A,B
+	POPJ P,
+
+; [SMX #3] host.names
+HSTNMP:	
+;;;	PUSHJ P,SRTHST		; [SMX #2] Sort host names if not done
+	PUSHJ P,.HAFMT		; [SMX #3] Init format information
+	PUSHJ P,.PXMPT		; [SMX #3] Type abort prompt
+	MOVE Z,HOSTAB		; [SMX #3] x _ ptr to host name tables
+HSTNM0:	MOVE A,0(Z)		; [SMX #3] a _ entry type
+	PUSHJ P,.SPCNT		; [SMX #3] Categorize type
+	 JRST HSTNM1		; [SMX #3] +1 - Fmt, ignore it
+	 JRST  [PUSHJ P,HSTNET	; [SMX #3] +2 - Network, print it
+		JRST HSTNM1 ]	; [SMX #3] 
+	 JRST  [PUSH P,Z	; [SMX #3] +3 - aobjn ptr, save this one
+		MOVE Z,0(Z)	; [SMX #3] z _ next layer to search
+		PUSHJ P,HSTNM0	; [SMX #3] Process it
+		PUSHJ P,.CCRLF	; [SMX #3] Finish line if needed
+		POP P,Z		; [SMX #3] Now carry on with prev one
+		JRST HSTNM1 ]	; [SMX #3] 
+	PUSHJ P,HSTPLN		; [SMX #3] +4 - string, print it
+HSTNM1:	SKIPN CLROBF		; [SMX #3] Quit?
+	 AOBJN Z,HSTNM0		; [SMX #3] Do all entries
+	POPJ P,
+
+; Print a host address and name
+HSTPLN:	PUSHJ P,.PXINI		; [SMX #3] Init field buffer
+	PUSH P,A
+	MOVE B,A
+	SETZ C,
+	SOUT
+	MOVE B,2(B)		; [SMX #3] b _ net #,,host #
+	PUSH P,B		; [SMX #3] Save it
+	HLRZS B			; [SMX #3] Print octal net #
+	MOVEI C,10		; [SMX #3] 
+	PUSHJ P,.LNOUT		; [SMX #3] 
+	 JFCL			; [SMX #3] 
+	MOVEI A,"#"		; [SMX #3] Punctuate
+	PUSHJ P,.LBOUT		; [SMX #3] 
+	POP P,B			; [SMX #3] Print octal host #
+	HRRZS B			; [SMX #3] 
+	PUSHJ P,.LNOUT		; [SMX #3] 
+	 JFCL			; [SMX #3] 
+	HRROI A,[ASCIZ /#  /]	; [SMX #3] Punctuate
+	PUSHJ P,.LSOUT		; [SMX #3] 
+	POP P,A			; [SMX #3] Now print host name
+	PUSHJ P,.LSOUT		; [SMX #3] 
+	PUSHJ P,.PXLN		; [SMX #3] And output the field
+	POPJ P,
+	
+; [SMX #3] Print network and its number
+HSTNET:	PUSH P,A		; [SMX #3] Save the string
+	PUSHJ P,.DCRLF		; [SMX #3] Space down
+	PUSHJ P,.DCRLF		; [SMX #3] 
+	POP P,A			; [SMX #3] Recover string
+	HRROS A			; [SMX #3] Form TENEX dest ptr
+	PUSHJ P,.PSOUT		; [SMX #3] Print it
+	HLRZ B,2(A)		; [SMX #3] b _ net #
+	HRROI A,[ASCIZ / (/]	; [SMX #3] Punctuate
+	PUSHJ P,.PSOUT		; [SMX #3] 
+	MOVEI A,101		; [SMX #3] Now the net #
+	MOVEI C,10		; [SMX #3] Octal
+	PUSHJ P,.NOUT		; [SMX #3] 
+	 JFCL			; [SMX #3] 
+	HRROI A,[ASCIZ /##)/]	; [SMX #3] More punctuation
+	PUSHJ P,.PSOUT		; [SMX #3] 
+	PUSHJ P,.CRLF		; [SMX #3] Space some more
+	PUSHJ P,.CRLF		; [SMX #3]
+	POPJ P,			; [SMX #3] 
+
+; [SMX #3] Address for host
+ADFHST:	TRO F,NFMTF		; [SMX #3] Ignore special entries
+	MOVE TAB,HOSTAB		; [SMX #3] Fetch the host name
+	PUSH P,HSTFCT		; [SMX #3] No-op host connect fct
+	MOVE A,[JFCL]		; [SMX #3] 
+	MOVEM A,HSTFCT		; [SMX #3] 
+	PUSHJ P,SYMVAL
+	POP P,HSTFCT		; [SMX #3] Restore host connect fct
+	PUSHJ P,.HAFMT		; [SMX #3] Init format information
+	MOVSI A,TRNCF		; [SMX #3] No truncation here
+	ANDCAM A,FLDCTL		; [SMX #3] 
+	HRROI A,[ASCIZ /
+   /]
+	PUSHJ P,.PSOUT
+	MOVE A,C		; [SMX #3] a _ host name string ptr
+	PUSHJ P,HSTPLN		; [SMX #3] Print it
+	PUSHJ P,.CRLF		; [SMX #3] 
+	POPJ P,
+
+; Here to init host output format stuff
+.HAFMT:	SETZM CLROBF		; [SMX #3] Turn on printout
+	SETZM CURPOS		; [SMX #3] Clear current line position
+	SETZM NPADS		; [SMX #3] Clear padding count
+	PUSH P,A		; [SMX #3] Save ac
+	MOVEI A,HADTAB		; [SMX #3] Set format parameters
+	MOVEM A,FLDTAB		; [SMX #3] 
+	MOVEI A,LNLEN		; [SMX #3]
+	MOVEM A,LINLEN		; [SMX #3] 
+	MOVEI A,HADMRG		; [SMX #3]
+	MOVEM A,LFTMRG		; [SMX #3] 
+	MOVEI A,HADPAD		; [SMX #3] 
+	MOVEM A,FLDPAD		; [SMX #3] 
+	MOVSI A,HADCTL		; [SMX #3] Set ctl flags
+	MOVEM A,FLDCTL		; [SMX #3] 
+	POP P,A			; [SMX #3] Restore ac
+	POPJ P,			; [SMX #3] 
+
+SEND:	CIS
+	MOVEM CNX,FSVCNX	; save CNX for later restoration
+	MOVE P,[XWD -100,SPDL-1]
+	MOVE PTR,[POINT 7,LINBUF-1,34]
+
+; Send terminal parameters first
+	MOVEI A,101
+	SKIPN B,REALTT		; Really a scope?
+	 GTTYP			; No, get actual type
+	MOVEI A,4		; Send terminal type
+	PUSHJ P,SNTPAR
+	MOVEI A,101
+	RFMOD
+	LDB C,[POINT 7,B,10]	; Save length
+	PUSH P,C
+	LDB B,[POINT 7,B,17]	; Get width
+	MOVEI A,2		; Send line width
+	PUSHJ P,SNTPAR
+	POP P,B
+	MOVEI A,3		; Send line length
+	PUSHJ P,SNTPAR
+
+SEND0:	PUSHJ P,.PBIN
+REPEAT 0,<
+	SKIPE HOLDF(CNX)
+	 SETZM SAVSWT(CNX)
+>
+	SKIPE ACTVSW		; account time
+	 PUSHJ P,SNDTIM
+	SKIPE XPARNT(CNX)	; Completely transparent?
+	 JRST [	MOVE B,A	; Yes
+		PUSHJ P,SNDCH
+		PUSHJ P,TRNSMT
+		JRST SEND0]
+	ANDI A,177		; 7-bits only when not xparent (sumex)
+	AOSN QUOTF
+	 JRST SEND02		; Not special (may be shifted though)
+	CAMN A,QUOT		; Quote character
+	 JRST [	SETOM QUOTF	; Yes, remember
+		JRST SEND0]
+	CAMN A,SYNC		; Synch substitute
+	 JRST [	PUSHJ P,SNDSNC	; Yes, send sync seq
+		JRST SEND0]
+	CAMN A,UNSFT		; Now for the shifts...unshift?
+	 JRST [	SETZM RAISEF(CNX)
+		SETZM LOWERF(CNX)
+		SETZM UCASCF
+		SETZM LCASCF	; clear all shift flags
+		JRST SEND0]
+	CAME A,LCASC
+	CAMN A,UCASC
+	 JRST SETCAS
+	CAME A,LCASL
+	CAMN A,UCASL
+	 JRST SETCAS
+SEND02:	CAIG A,136		; Regular character...needs shift?
+	CAIGE A,100
+	 JRST SEND1		; Not upper case
+	AOSE UCASCF		; Upper case.  if no upper case shift
+	 PUSHJ P,SFTDWN		; Then see if down shift wanted
+	JRST SEND3
+
+
+SEND1:	CAIG A,176
+	CAIGE A,140
+	 JRST SEND3		; Not lower case either
+	AOSE LCASCF		; Lower case.  if no down shift
+	 PUSHJ P,SFTUP		; Then shift up if wanted
+	JRST SEND3
+
+SETCAS:	SETZM LCASCF		; Clear character shifts
+	SETZM UCASCF
+	CAMN A,LCASC		; If lower case char prefix
+	 JRST [	SETOM LCASCF	; Remember
+		JRST SEND0]
+	CAMN A,UCASC		; If upper case char prefix
+	 JRST [	SETOM UCASCF	; Remember
+		JRST SEND0]
+	SETZM LOWERF(CNX)	; Clear shift locks
+	SETZM RAISEF(CNX)
+	CAMN A,LCASL
+	 JRST [	SETOM LOWERF(CNX)
+		JRST SEND0]
+	CAMN A,UCASL
+	 JRST [	SETOM RAISEF(CNX)
+		JRST SEND0]
+
+SEND3:	SKIPN LNBFF(CNX)	; If not line buffering
+	 PUSHJ P,SNDBUF		; Send any stuff already buffered
+	CAIN A,EOL		; [SMX #1] 
+	 MOVEI A,CR		; [SMX #1] 
+REPEAT 0,<
+	 JRST [	HRRI A,15
+		PUSHJ P,SNDDO
+		SETCM A,LFCRF(CNX)	; Get complement of switch
+		HRRI A,12	; Line feed
+		JRST .+1]
+>
+	PUSHJ P,SNDDO
+	HRRZS A
+	CAIE A,12
+	CAIN A,33
+	 PUSHJ P,SNDBUF
+	JRST SEND0
+
+SFTDWN:	AOSE LCASCF
+	SKIPE LOWERF(CNX)
+	 TRO A,140
+	POPJ P,
+
+SFTUP:	AOSE UCASCF
+	SKIPE RAISEF(CNX)
+	 TRZ A,40
+	POPJ P,
+
+SENDO:	SKIPA A,CBFCHR
+SENDE:	MOVE A,ESCAPE
+	JRST SEND3
+
+SNDBUF:	CAMN PTR,[POINT 7,LINBUF-1,34]
+	 POPJ P,
+	PUSHJ P,TRMST
+	MOVE PTR,[POINT 7,LINBUF-1,34]
+	MOVE C,PTR
+SNDBF1:	ILDB B,C		; YES, it's true, replace a SOUT with
+	SKIPN B			; a tight loop including SNDCH!
+	 JRST [ PUSHJ P,TRNSMT	; This make me soffer so...
+		POPJ P, ]
+	PUSHJ P,SNDCH
+	JRST SNDBF1
+
+SNDDO:	SKIPE LNBFF(CNX)
+	 JRST SNDLBF
+	MOVE B,A
+	PUSHJ P,SNDCH		; Unbuffered: send char & push it out
+	PUSHJ P,TRNSMT
+	MOVE A,B
+	JRST SNDECH
+
+
+; Send character in B on send connection CNX
+SNDCH:	HRRZ A,SNDJFN(CNX)
+	BOUT
+	POPJ P,
+
+; Force transmission of buffered characters
+TRNSMT:	HRRZ A,SNDJFN(CNX)
+	MOVEI B,21
+	MTOPR
+	POPJ P,
+
+; Send terminal parameter
+; A/ mark type, B/ parameter value
+
+SNTPAR:	PUSH P,B
+	MOVE C,A
+	MOVE A,SNDJFN(CNX)
+	MOVEI B,3
+	MTOPR
+	POP P,B
+	BOUT
+	MOVEI B,21
+	MTOPR
+	POPJ P,
+
+SNDECH:	JUMPL A,CPOPJ		; Never echo ch with -1 lh
+	SKIPN HDX		; If hdx terminal
+	SKIPN ELCLF(CNX)		; If not local echo
+	 POPJ P,		; Then done
+SNDEC1:	MOVE B,ECHCOC(CNX)
+	ROT B,(A)		; Prepare to test coc
+	CAIGE A,40		; If not control
+	 JUMPGE B,CPOPJ
+	PUSHJ P,PLOUT1
+	PUSHJ P,.PEOUT		; Echo
+	POPJ P,
+
+SNDLBF:	CAME A,ERSCH		; [SMX #1] Erase char character?
+	CAIN A,"H"-100
+SNDLBD:	 JRST [	CAMN PTR,[POINT 7,LINBUF-1,34]
+		 JRST [	MOVEI A,7
+			PUSHJ P,.PBOUT
+			POPJ P,]
+		MOVEI A,"\"
+		PUSHJ P,.PBOUT
+		LDB A,PTR
+		PUSHJ P,.PBOUT
+		MOVE A,PTR
+		BKJFN
+		 0
+		MOVEM A,PTR
+		POPJ P,]
+	CAME A,ERSLN		; [SMX #1] Erase line character?
+	CAIN A,"X"-100
+	 JRST [	MOVEI A,"#"
+		PUSHJ P,.PBOUT
+		PUSHJ P,.PBOUT
+		PUSHJ P,.CRLF	; [SMX #1] 
+		MOVE PTR,[POINT 7,LINBUF-1,34]
+		POPJ P,]
+	CAIN A,"R"-100
+	 JRST [	PUSHJ P,.CRLF	; [SMX #1] 
+		PUSHJ P,TRMST
+		MOVE A,[POINT 7,LINBUF-1,34]
+		PUSHJ P,.PSOUT
+		POPJ P,]
+	IDPB A,PTR
+	SKIPE ELCLF(CNX)
+	 PUSHJ P,SNDECH
+	POPJ P,
+
+; input character class membership table
+;  TENEX wakeup class in lh (10,4,2,1=>F,C,P,A)
+;  RCTE break class in rh *** not used by CHAT ***
+
+RCTGTB:	REPEAT 10,<XWD 4,20>	; ^@-^G (C,5)
+	REPEAT 6,<XWD 10,10>	; ^H-^M (F,4)
+	REPEAT 22,<XWD 4,20>	; ^N-^_ (C,5)
+	XWD 2,400		; SPACE (P,9)
+	XWD 2,40		; !	(P,6)
+	REPEAT 6,<XWD 2,200>	; "#$%&' (P,8)
+	REPEAT 2,<XWD 2,100>	; ()	(P,7)
+	REPEAT 2,<XWD 2,200>	; *+	(P,8)
+	XWD 2,40		; ,	(P,6)
+	XWD 2,200		; -	(P,8)
+	XWD 2,40		; .	(P,6)
+	XWD 2,200		; /	(P,8)
+	REPEAT 12,<XWD 1,4>	; 0-9	(A,3)
+	REPEAT 2,<XWD 2,40>	; :;	(P,6)
+	XWD 2,100		; <	(P,7)
+	XWD 2,200		; =	(P,8)
+	XWD 2,100		; >	(P,7)
+	XWD 2,40		; ?	(P,6)
+	XWD 2,200		; @	(P,8)
+	REPEAT 32,<XWD 1,1>	; A-Z	(A,1)
+	XWD 2,100		; [	(P,7)
+	XWD 2,200		; \	(P,8)
+	XWD 2,100		; ]	(P,7)
+	REPEAT 3,<XWD 2,200>	; ^_`	(P,8)
+	REPEAT 32,<XWD 1,2>	; a-z	(A,2)
+	XWD 2,100		; {	(P,7)
+	XWD 2,200		; |	(P,8)
+	XWD 2,100		; }	(P,7)
+	XWD 2,200		; ~	(P,8)
+	XWD 4,20		; DEL	(C,5)
+
+; routines to store time of last net i/o
+
+SNDTIM:	PUSH P,A
+	PUSH P,B		; send fork time accounting
+	TIME
+	MOVEM A,SNDATM(CNX)
+	POP P,B
+	POP P,A
+	POPJ P,
+
+RCVTIM:	PUSH P,A
+	PUSH P,B		; receive fork time accounting
+	TIME
+	MOVEM A,RCVATM(CNX)
+	POP P,B
+	POP P,A
+	POPJ P,
+
+
+RECV:	CIS
+	MOVEM CNX,FSVCNX
+	HRRZ A,RECJFN(CNX)
+	MOVEI B,24
+	MOVSI C,017777
+	MTOPR			; Ins interrupts on channel 1
+	SETZM SYNCNT(CNX)	; clean INS count
+	SETZM CBFCNT(CNX)
+RECVY:	SETZM SAVINC(CNX)	; Loop to here to reset buffer
+	MOVE A,[POINT 7,SAVBUF]
+	MOVEM A,SAVINP(CNX)
+	MOVEM A,SAVONP(CNX)
+RECV0:	MOVE CNX,FSVCNX		; restore CNX in case fork restarted
+	MOVE P,[XWD -100,SPDL-1]
+	SKIPE SAVSWT(CNX)	; Saving output up?
+	 JRST RECVR		; Yes, check if full and do it
+	SKIPE SAVINC(CNX)	; No, any saved characters?
+	 JRST RECVU		; Yes, unsave them
+	JRST RECVB0		; No, get next input
+
+RECVR:	MOVEI A,SAVBFS*5-5
+	CAMG A,SAVINC(CNX)
+RECVH:	 HALTF
+RECVB0:	SETOM RCVBSW(CNX)	; Sw stays set until BIN for rstrtng
+RECVB:	PUSHJ P,RCVCH
+	SKIPE LGFJFN(CNX)
+	 PUSHJ P,PLOUT2
+	MOVE B,A
+	SKIPE ACTVSW
+	 PUSHJ P,RCVTIM		; account time
+	SKIPE CBFCNT(CNX)
+	 JRST RECVFT		; Flushing output or DM timing
+RECVBA:	SKIPE SAVSWT(CNX)	; Saving up the output?
+	 JRST RECVS		; Yes, go put it in buffer
+RECV1:	AOSN CRNLSW		; was last char a <cr>?
+	 JUMPE B,RECV0		;  yes, if this char is a null, flush it
+	CAIN B,15		; is this char a <cr>?
+	 SETOM CRNLSW		;  yes, set switch to screen <cr><nul>
+RECV2:	SKIPE CLROBF
+	 JRST RECVFL
+	SKIPLE A,DIVJFN
+	 JRST RECVX
+	MOVE A,B
+	PUSHJ P,.PEOUT
+	JRST RECV0
+
+RECVS:	PUSHJ P,RECVSV
+	JRST RECV0
+
+
+RECVU:	SKIPE CLROBF		; Clear output buffer?
+	 JRST [	MOVE A,SAVINP(CNX)
+		MOVEM A,SAVONP(CNX)
+		SETZM SAVINC(CNX)
+		LDB B,SAVONP(CNX)
+		JRST RECVFL]
+	MOVNI A,SAVBFS		; No
+	ADD A,SAVONP(CNX)	; Wrapped pointer if needed
+	CAMN A,[POINT 7,SAVBUF-1,34]
+	 MOVEM A,SAVONP(CNX)	; Wrap pointer
+	ILDB B,SAVONP(CNX)	; Get byte
+	SOS SAVINC(CNX)		; Account
+	JRST RECV1		; Go put it out
+
+RECVSV:	MOVNI A,SAVBFS		; Prepare wrapped pointer
+	ADD A,SAVINP(CNX)
+	CAMN A,[POINT 7,SAVBUF-1,34]
+	 MOVEM A,SAVINP(CNX)	; And use it if needed
+	IDPB B,SAVINP(CNX)	; Store character
+	AOS A,SAVINC(CNX)	; Account
+	SKIPE SWOFLG		; Swo and
+	CAIE A,1		; First character?
+	 POPJ P,		; No
+	MOVEI A,101
+	DOBE
+	HRROI A,[ASCIZ /
+Output waiting from connection /]
+	PUSHJ P,.PSOUT
+	MOVE A,CNX
+	IMULI A,3
+	HRROI A,CONNAM(A)
+	PUSHJ P,.PSOUT
+	PUSHJ P,.CRLF		; [SMX #1] 
+	POPJ P,
+
+RECVX:	BOUT
+	SKIPE DIVSWT
+	 JRST RECVN
+	SKIPLE A,SCRJFN
+	 BOUT
+	MOVE A,B
+	PUSHJ P,.PEOUT
+RECVN:	CAIE B,12
+	 JRST RECV0
+	MOVEI A,101
+	SOBE
+	 JRST [	HRROI A,[ASCIZ /...
+/]
+		SKIPN DIVSWT
+		 PUSHJ P,.PSOUT
+		SETOM DIVSWT
+		JRST RECV0]
+	SETZM DIVSWT
+	JRST RECV0
+
+RECVFL:	MOVEM B,D
+	HRRZ A,RECJFN(CNX)
+	SKIPN SAVINC(CNX)
+	SIBE
+	 JRST RECV0
+	MOVEI C,2
+RECVF1:	MOVEI A,^D500
+	DISMS
+	HRRZ A,RECJFN(CNX)
+	SIBE
+	 JRST RECV0
+	SOJG C,RECVF1
+	SETZM CLROBF
+	PUSHJ P,.CRLF		; [SMX #1] 
+	MOVE B,D
+	JRST RECV2
+
+; Receive character, return it in A.
+; Handles Marks and Ends internally
+
+RCVCH:	MOVE A,RECJFN(CNX)
+	PUSHJ P,RCVBIN
+	JUMPE B,RCVCH2		; Maybe EOF
+RCVCH1:	MOVE A,B
+	POPJ P,
+
+RCVCH2:	SETZ C,
+	GDSTS			; Check state of connection
+	TLNE B,(1B5)
+	 JRST RCVEOF		; End encountered
+	TLZN B,(1B4)
+	 JRST [	SETZ B,		; Just a null data byte
+		JRST RCVCH1]
+	SDSTS			; A Mark, clear it
+	MOVEI B,23		; Read mark type
+	MTOPR
+	CAIN C,1		; Data mark?
+	 JRST [	SOS SYNCNT(CNX)	; Decrement sync count
+		PUSHJ P,ZCFOBF	; Consider whether to flush
+		JRST RCVCH]
+	CAIN C,5		; Timing mark?
+	 JRST [	MOVEI A,101	; Yes, wait for tty buffer to empty
+		DOBE
+		MOVE A,SNDJFN(CNX)  ; Send timing mark reply
+		MOVEI B,3
+		MOVEI C,6
+		MTOPR
+		JRST RCVCH]
+; We should never receive a timing mark reply since we never
+; send a timing mark.  The other mark types should not be
+; received by a Telnet user.
+	JRST RCVCH		; Just ignore
+
+IOERR:	HRROI A,[ASCIZ /
+IO error for connection /]
+	MOVE CNX,FSVCNX		; restore cnx to be sure
+	JRST GENABN
+
+RCVEOF:	MOVE CNX,FSVCNX
+	SKIPN SAVSWT(CNX)
+	SKIPE SAVINC(CNX)
+	 JRST RECVH		; Delay eof response until buffer gone
+	HRROI A,[ASCIZ /Remote disconnect of /]
+GENABN:	PUSH P,A
+	AOSE ABNLCK		; Wait for abnormal interpt handler
+	 JRST [	MOVEI A,^D1000
+		DISMS
+		JRST .-1]
+	MOVEI A,400000		; [SMX #1] Disable interrupts
+	DIR			; [SMX #1] 
+	POP P,A
+	PUSHJ P,.PSOUT
+	MOVE A,CNX
+	IMULI A,3
+	HRROI A,CONNAM(A)
+	PUSHJ P,.PSOUT
+	MOVEM CNX,ABNCNX
+	MOVEI A,-1
+	MOVSI B,(1B<ABNCHN>)
+	IIC			; Initiate abnormal interpt in superior
+	MOVEI A,^D100000
+	DISMS			; And hang
+	JRST .-2
+
+RECVFT:	SKIPG CBFCNT(CNX)	; go to flush output if neg.
+	JRST RECV0
+	PUSH P,B
+	TIME			; If pos., there is an excess of DM's,
+	POP P,B
+	SUB A,DMTIME(CNX)	;  check elapsed time since last DM
+	JUMPL A,RECVBA		;  go on if less than limit
+	MOVEI A,400000
+	DIR			;  else disable interrups to avoid 
+	SETZM SYNCNT(CNX)	;  confusion, then clear INS counts
+	SETZM CBFCNT(CNX)
+	MOVEI A,400000
+	EIR
+	JRST RECVBA
+
+
+ZCFOBF:	AOS CBFCNT(CNX)		; if ct -> 0, output flushing stops
+	SKIPL SYNCNT(CNX)	; if INS ct pos, more DM's to come,
+	 POPJ P,		;  clearing continues
+	MOVEI A,101		; if INS ct neg, DM came first, 
+	SKIPN SAVSWT(CNX)	;  initiate clearing of buf
+	CFOBF
+	SETZM SAVINC(CNX)
+	MOVE A,[POINT 7,SAVBUF]
+	MOVEM A,SAVINP(CNX)
+	MOVEM A,SAVONP(CNX)
+	TIME			; start timing interval from receipt of
+	ADDI A,^D5000		;  last excess DM: if no balancing INS
+	MOVEM A,DMTIME(CNX)	;  in 5 sec., counts will be cleared
+	POPJ P,			;  (lost INS, presumably)
+
+
+RCVBIN:				; Called from RCVCH rtn:
+				; BIN done here so restart routine can
+				; tell if BIN has been completed yet
+RCVBX:	SETZM RCVBSW(CNX)	; --switch set from entry to RCVCH
+RCVB1:	BIN			; until this point-- this to prevent a
+				; restarted conx from hanging on BIN,
+	POPJ P,			; and other undesirable effects
+
+
+RCVINS:	MOVEM 17,IACSAV+17	; INS interrupts come here
+	MOVEI 17,IACSAV
+	BLT 17,IACSAV+16
+	MOVE CNX,FSVCNX
+	AOS A,SYNCNT(CNX)
+	SOS CBFCNT(CNX)		; If ct -> 0, flushing stops
+	SKIPG A			;  if ct neg, more INS's to come
+	 JRST RCVINX
+	MOVEI A,101		; if ct pos, INS arrived first,
+	SKIPN SAVSWT(CNX)	;  start clearing output
+	CFOBF
+	SETZM SAVINC(CNX)
+	MOVE A,[POINT 7,SAVBUF]
+	MOVEM A,SAVINP(CNX)
+	MOVEM A,SAVONP(CNX)
+	HRRZ A,FKRET2
+	CAIE A,RECVH
+	CAIN A,RECVH+1
+	 JRST [	MOVEI A,RECV0
+		HRRM A,FKRET2
+		JRST RCVINX]
+RCVINX:	HRLZI 17,IACSAV
+	BLT 17,17
+	DEBRK
+
+
+LOC
+VARS:	BLOCK 1
+NCONN1==NCONN+1
+	VAR
+HSFSTR:	BLOCK 20
+FMODSW:	BLOCK 7
+SPARE:	BLOCK 3
+NMODSW==.-FMODSW
+EVARS:
+RELOC
+
+END START

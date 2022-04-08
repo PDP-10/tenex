@@ -1,0 +1,809 @@
+TITLE SEE
+SUBTTL Edward R. Fiala and Larry Masinter
+SEARCH STENEX
+
+; Copyright Xerox Corporation 1981
+; @CCL
+; .LOAD SEE
+
+A=1
+B=2
+C=3
+D=4
+E=5
+F=6
+G=7
+AA=10
+BB=11
+CC=12
+DD=13
+EE=14
+FF=15
+GG=16
+P=17
+
+FDBCTL==1	; Xwd control bits,loc. of file name block
+FDBEXT==2	; Xwd loc. of extension block, pointer to other extensions
+FDBADR==3	; File address and class field
+FDBPRT==4	; File protection bits
+FDBCRE==5	; Creation date and time of version 1
+FDBUSE==6	; Xwd last write directory #, use count
+FDBVER==7	; Xwd version #, pointer to other version or tss job #
+		; for temporary files
+FDBACT==10	; Account information for charging + loc. of string block
+FDBBYV==11	; Xwd # versions to retain (B0-5) byte size (B6-11),
+		; # pages in file
+FDBSIZ==12	; Byte count which would address EOF
+FDBCRV==13	; Creation date and time of this version
+FDBWRT==14	; Date and time of last write
+FDBREF==15	; Date and time of last access
+FDBCNT==16	; Xwd count of writes, count of references
+FDBBCK==16	; Words for backup system
+FDBUSW==24	; User settable word (Flags,,pos. of 1st text char.)
+
+; Flags in 0
+NOTIND==400000
+DOCSCN==200000
+
+DEFINE FERR(FOOTXT)
+<	MOVEI B,[ASCIZ /FOOTXT/]
+	JUMPA ABFILE>
+
+	LOC 1000
+
+
+
+START:	RESET
+	MOVE P,[-4000,,PDL-1]
+	SETZM TXTJFN
+	MOVEI A,101	; set up default values for OUTJFN
+	MOVEM A,OUTJFN
+	SETOM VERSEL#	; and version number
+
+	MOVSI A,100003
+	MOVE B,[100,,101]
+	GTJFN
+	  JUMPA HUH
+	MOVEM A,TXTJFN
+	HRRZI A,100
+	BKJFN
+	  PUSHJ P, JERROR
+CON:	PBIN
+	CAIN A,177
+	 JUMPA   [ HRROI 1,[ASCIZ / XXX/]
+		  PSOUT
+		  JUMPA DONE ]
+	CAIN A,","
+	JUMPA SUBCOM	; "," termination enters subcommand mode
+	CAIN A,37	; confirmed
+	JUMPA CHECK
+	CAIE A,"X"-100	; control-X
+	JUMPA CON
+
+	SKIPA A,[-1,,[ASCIZ/ ___ /]]
+HUH1:	HRROI A,[ASCIZ/ ? /]
+	PSOUT
+	DOBE
+	MOVEI A,100
+	CFIBF
+	JUMPA START
+
+HUH:	MOVEI A,100
+	BKJFN
+	  PUSHJ P,JERROR
+	PBIN
+	CAIE A,177
+	JUMPA HUH1
+	HRROI A,[ASCIZ / XXX/]
+	PSOUT
+	HALTF
+
+SUBCOM:	PBIN
+	CAIE 1,37		; Confirmed?
+	 JUMPA HUH		; No, abort
+SUBCLP:	HRROI 1,[ASCIZ /@@/]
+	PSOUT
+	PBIN
+	CAIE 1,"o"
+	CAIN 1,"O"
+	JUMPA GOFILE		; Get file name for output
+	CAIE 1,"v"
+	CAIN 1,"V"
+	JUMPA GVNUM		; Version number selection
+	CAIN 1,"?"
+	JUMPA [	HRROI 1,[ASCIZ /
+O (OUTPUT TO)
+V (STRING VERSION)
+/]
+		PSOUT
+		JUMPA SUBCLP]
+	CAIN 1,37
+	JUMPA CHECK		; EOL = done
+	CAIN 1,177		; Rubout?
+	JUMPA DELSUB
+	HRROI 1,[ASCIZ /  ? (O or V)
+/]
+	JUMPA WAIT
+
+DELSUB:	HRROI 1,[ASCIZ / XXX
+/]
+	JUMPA WAIT
+
+BADTRM:	HRROI 1,[ASCIZ /  ?
+/]
+WAIT:	PSOUT
+	DOBE
+	MOVEI 1,100
+	CFIBF
+	JUMPA SUBCLP
+
+GOFILE:	HRROI 1,[ASCIZ /utput (to file) /]
+	PSOUT
+	MOVSI A,400003
+	MOVE B,[100,,101]
+	GTJFN
+	 JUMPA BADTRM
+	HRRZM 1,OUTJFN
+	MOVEI 1,100
+	BKJFN
+	  PUSHJ P,JERROR
+	PBIN
+	CAIE 1,33
+	CAIN 1,175
+	PBIN			; Additional confirm after escape
+	CAIN 1,37		; EOL?
+	JUMPA SUBCLP
+	MOVE 1,OUTJFN
+	RLJFN
+	  PUSHJ P,JERROR
+	MOVEI 1,101
+	MOVEM 1,OUTJFN
+	JUMPA BADTRM
+
+GVNUM:	HRROI 1,[ASCIZ /ersions = /]
+	PSOUT
+	SETOM VERSEL#
+	MOVEI A,100
+	MOVEI C,12
+	NIN
+	 SETZ C,
+	BKJFN
+	 PUSHJ P, JERROR
+	PBIN
+	CAIN 1,"?"
+	 JUMPA QVNUM
+	JUMPE C,BADTRM
+	CAIE 1,37		; Confirmed?
+	 JUMPA BADTRM
+	ANDI 2,77777
+	MOVEM B,VERSEL#
+	JUMPA SUBCLP
+
+QVNUM:  HRROI 1,[ASCIZ/
+(version number of strings in EARS files to include in output)
+/]
+	PSOUT
+	JUMPA SUBCLP
+
+
+; not ears file, type it:
+TYPE0:	MOVE C,BYTSIZ
+TYPE:	CAIN C,10
+	 JUMPA TYPE8
+	CAIN C,20
+	 JUMPA TYPE8
+	CAIN C,40
+	 JUMPA TYPE8
+
+TYPE7:	MOVE A,TXTJFN
+	MOVEI B,0
+	SFPTR
+	  PUSHJ P, JERROR
+	MOVEI B,7
+	SFBSZ
+	MOVEI E,4777
+	MOVE A,OUTJFN
+	CAIE A,101		; if output to terminal,
+	MOVEI E,47777		; buffer fewer characters
+
+SINLP:	HRROI B,SINBUF
+	MOVE A,TXTJFN
+	MOVNI C,(E)
+	SIN
+	MOVE A,OUTJFN
+	HRROI B,SINBUF
+	MOVE D,C
+	MOVN C,C
+	SUBI C,(E)
+	SOUT
+	JUMPE D,SINLP
+	JUMPA DONE
+
+TYPE8:	MOVE A,TXTJFN		; in typing 8 bit file, check
+				; for cr w/o lf
+	MOVEI B,0
+	SFPTR
+	  PUSHJ P, JERROR
+	MOVEI B,10
+	SFBSZ
+
+SIN8LP:	MOVE A,TXTJFN
+	GTSTS
+	TLNE B,1000		; Past EOF?
+	JUMPA DONE
+	BIN
+SIN8L1:	MOVE A,OUTJFN
+	BOUT
+	CAIE B,15
+	JUMPA SIN8LP
+	MOVEI B,12		; Supply LF if CR not followed by LF
+	BOUT
+	MOVE A,TXTJFN
+	GTSTS
+	TLNE B,1000
+	JUMPA DONE
+	BIN
+	CAIN B,12
+	JUMPA SIN8LP
+	JUMPA SIN8L1
+
+DONE:	RESET
+	HALTF
+
+CHECK:	HRRZ A,OUTJFN
+	CAIN A,101
+	 JUMPA OPNIN
+	MOVE B,[070000,,100000]
+	OPENF
+	 PUSHJ P, JERROR
+
+OPNIN:	HRRZ A,TXTJFN
+	MOVE B,[100000,,200000]
+	OPENF
+	  PUSHJ P, JERROR
+
+	HRLZI B,25
+	MOVEI C,THSFDB
+	GTFDB		; Put the whole FDB in block at THSFDB
+	LDB C,[POINT 6,THSFDB+FDBBYV,11] ; Byte size
+	MOVEM C,BYTSIZ
+	PUSHJ P,DGETP		; Set properties within text of doc.
+	  JUMPA TYPE
+	MOVEI B,20
+	SFBSZ			; Set byte size to 16
+	HRRZ E,THSFDB+FDBUSW	; Pos. of first text byte
+	LDB C,[POINT 6,THSFDB+FDBBYV,11] ; Byte size
+	MOVE D,THSFDB+FDBSIZ	; No. bytes in file
+	MOVE A,TXTJFN
+	CAIN C,44		; Created with byte size = 36?
+	JUMPA BS44		; Yes, could be anything
+	CAIN C,20		; Created with byte size = 16?
+	JUMPA BS16
+	CAIN C,10		; Or byte size = 8?
+	JUMPA BS8
+	CAIN C,40		; Or byte size = 32?
+	JUMPA BS32
+	JUMPA TYPE7
+BS32:
+BS44:	LSH D,1			; No. of 8-bit bytes
+BS16:	LSH D,1
+BS8:	LSH E,1
+	MOVEM E,RSTART#		; Starting 16-bit text byte pos.
+	LSH E,1
+	MOVEM E,ASTART#		; Starting byte pos. of 8-bit text
+	MOVE C,E
+	LSH C,-1		; Byte pos. of first 16-bit byte
+	RIN
+	MOVE C,D		; Total 8-bit bytes
+	SUB D,E
+	MOVEM D,REMCHR#		; Total text in 8-bit bytes
+	CAIN B,177B27+3		; 1st two 8-bit char = rubout-^C?
+	JUMPA TYPE0
+	TRNE D,777		; Must be mult of 256 16-bit words
+				; if it is an Ears formatted file
+	 JUMPA TYPE0
+	SUBI C,1000		; Get byte pos. of password string
+	LSH C,-1
+	RIN			; Read 16-bit password
+	CAIE B,^D31415		; Check for Ears password
+	 JUMPA TYPE0
+	LSH D,-11		; Get # 256-word 16-bit records
+	MOVEM D,NRECDS
+
+; Get DD
+	MOVE A,TXTJFN
+	BIN
+	CAME B,NRECDS
+	JUMPA [FERR(Document length and NRECDS mismatch)]
+	BIN
+	MOVEM B,NPGS
+	BIN			; Skip NCPYS
+	HRLZI C,-15
+	BIN
+	MOVEM B,FNTSET(C)
+	AOBJN C,.-2
+	MOVE A,TXTJFN
+	MOVE B,STLREC		; Read record # of last page's DL
+	ADD B,NDLREC		; + length of DL = record # of last TL
+	ADD B,NTLREC		; + length of TL = starting PD record
+	PUSH P,B
+	LSH B,10		; Starting PD byte
+	ADD B,RSTART		; Offset by leader
+	MOVEM B,PDORG#		; Save for error checks & FD stuff
+	SFPTR
+	  PUSHJ P,JERROR
+	POP P,B			; Recover pos. of 1st PD rec.
+	ADD B,NPDREC		; # PD records
+	ADD B,NFDREC		; # FD records (0 or 1)
+	MOVE C,NRECDS
+	SUBI C,1(B)		; # FM+FS recs=total-DD-earlier sum
+	JUMPGE C,RDPDR
+	FERR(Record counting error in doc. dir.)
+RDPDR:	MOVEM C,NFMFSR#
+	MOVN C,NPDREC		; No. records in PD
+	LSH C,10		; No. words in PD
+	MOVE B,[POINT 16,PD]
+	SIN			; Read PD into buffer
+	MOVE B,RSTART		; 16-bit text byte file start
+	SFPTR			; Set pointer to beginning of text
+	  PUSHJ P,JERROR
+	MOVN AA,NPGS
+	HRLZI AA,(AA)		; Setup AOBJN pointer
+	SETZM NRECDS		; Will recompute STLREC and NRECDS
+
+; PD entries are four 16-bit bytes each:  0 = starting record of DL,
+; 1 = no. of records in DL, 2 = no. records in TL, 3 = font set no.
+NEWPAG:	MOVE A,TXTJFN
+	MOVEI BB,(AA)
+	LSH BB,1		; Starting word in PD
+	MOVE B,NRECDS
+	DPB B,[POINT 16,PD(BB),15]	; Fix up first DL record in PD
+	LDB CC,[POINT 16,PD(BB),31]	; No. DL records
+	MOVEI B,[ASCIZ 'More than 30 DL records for page']
+	CAILE CC,36		; Too many?
+	JUMPA ABFILE
+	PUSHJ P,LENCHK		; Check for crossing into PD
+	MOVE B,[POINT 16,DL]
+	SIN			; Get this page's DL
+	LDB CC,[POINT 16,PD+1(BB),15]
+	MOVEI B,[ASCIZ 'More than 16 TL records for page']
+	CAILE CC,20
+	JUMPA ABFILE
+	PUSHJ P,LENCHK		; Check for crossing into PD
+	MOVE B,[POINT 16,TL]
+	SIN			; Get this page's TL
+	LSH CC,-1
+; TL entries are four 16-bit bytes each:  0 = distribution index,
+; 1 = byte no. of first char. in string, 2 = initial font * 128,
+; 3 = initial text line loc. * 8
+GETLLP:	MOVNI DD,(CC)
+	ASH DD,-1		; Number strings (max)
+	HRLZI DD,(DD)		; AOBJN over strings
+	MOVEM P,SAVEP#
+LPSHLP:	LDB A,[POINT 15,TL(DD),15]	; Dist. index
+	SKIPL VERSEL		; All versions?
+	CAMN A,VERSEL		; This version?
+	JUMPA PSHLIN		; Yes, push line params
+LPSHX:	ADDI DD,1
+	SKIPL TL-1(DD)		; Last line?
+	AOBJN DD,LPSHLP		; Or overflow?
+; Have on the stack consecutive pushes of X,,Y and DL byte ptr
+; for strings appearing in the output.  Now sort those strings
+	HRRZ DD,SAVEP
+	SUBI DD,(P)
+	ASH DD,-1		; Number of strings pushed
+	HRLZI DD,(DD)
+	HRR DD,SAVEP		; AOBJN pointer to strings
+	JUMPGE DD,DONPAG	; Any strings on page?
+	PUSH P,DD		; Save AOBJN ptr for output
+P2LP:	MOVE EE,DD
+P0LP:	MOVEI F,1(EE)		; Ptr to best line so far
+	HLRZ E,1(EE)		; Greatest Y so far
+	HRRZ D,1(EE)		; Least X at greatest Y
+P1LP:	ADDI EE,1
+	AOBJP EE,DOLINE
+	HLRZ C,1(EE)		; Y of line
+	CAIGE C,(E)
+	JUMPA P1LP
+	HRRZ B,1(EE)		; X of line
+	CAIG C,(E)		; Y > best Y?
+	CAIG B,(D)		; Y = best Y and X < best X
+	JUMPA P0LP		; Yes, new best
+	JUMPA P1LP		; No, loop.
+
+DOLINE:	MOVE E,0(F)
+	EXCH E,1(DD)
+	MOVEM E,0(F)
+	MOVE E,1(F)
+	EXCH E,2(DD)
+	MOVEM E,1(F)
+	ADDI DD,1
+	AOBJN DD,P2LP		; Loop if not sorted yet.
+
+; Have strings sorted on the stack.
+	POP P,DD		; Recover AOBJN to strings on stack
+	MOVE EE,DD
+	MOVEI A,377777
+	HRRZ B,1(EE)		; X of line
+	CAIL A,(B)
+	MOVEI A,(B)		; Compute min X for all lines
+	ADDI EE,1
+	AOBJN EE,.-4
+	MOVEM A,MINX#
+	MOVEI F,^D5500		; Y-pos
+	MOVE A,OUTJFN
+	MOVE G,MINX		; X-pos on output line
+EOUTLP:	HRRZ D,1(DD)		; X-pos in source
+	HLRZ E,1(DD)		; Y-pos
+	EXCH E,F
+	SUB E,F			; Displacement to next text line
+EOUT1:	CAIGE E,25		; Same line (approx.)?
+	JUMPA GOTOX		; Yes.
+	MOVEI B,15
+	BOUT
+	MOVEI B,12
+	BOUT
+	MOVE G,MINX		; Set output X-pos to MINX
+	SUBI E,^D77		; Guess at line separation
+	JUMPA EOUT1
+
+; Have now advanced for vertical placement--get to horizontal pos.
+GOTOX:	SUB D,G			; Displacement from current pos.
+GOTOX1:	ADDI G,^D40		; Compute X-pos
+	SUBI D,^D40
+	MOVEI B," "
+	BOUT
+	CAIGE D,^D20		; Guess at width of blank
+	JUMPA SPITST
+	JUMPA GOTOX1
+
+; Have gotten to initial X-pos.  Spit out string
+SPITST:	MOVE E,2(DD)		; Get byte ptr to first char
+	MOVEI D,0		; Cumulative error in VWB's
+	LDB B,E			; Get first char.
+TSTCHR:	CAIGE B,"Z"-100		; Flush control chars
+	JUMPA TNCHAR
+	CAIL B,200		; Regular char?
+	JUMPA TSTDIR		; No, directive
+	BOUT
+	ADDI G,^D40		; Bump X-pos
+TNCHAR:	ILDB B,E
+	JUMPA TSTCHR
+
+TSTDIR:	CAIGE B,240		; TLL?
+	JUMPA EOUTL1
+	CAIGE B,300		; VWB?
+	JUMPA VWBDIR
+	CAIGE B,340		; ATAB
+	JUMPA EOUTL1		; End of string
+	CAIGE B,360		; Font change?
+	JUMPA TNCHAR		; Yes, ignore.
+	CAIGE B,374		; VCS, VCW, or VSW?
+	JUMPA [	IBP E
+		JUMPA TNCHAR]	; Yes, ignore
+	CAIN B,374		; Overlay?
+	JUMPA TNCHAR		; Yes, ignore
+	CAIN B,375		; Tab?
+	JUMPA [	IDIVI G,^D320
+		ADDI G,1
+		IMULI G,^D320
+		MOVEI B,"I"-100
+		BOUT
+		JUMPA TNCHAR]
+EOUTL1:	ADDI DD,1		; End of (sub)string
+	AOBJN DD,EOUTLP
+OUTFRM:	MOVEI B,"L"-100
+	BOUT
+DONPAG:	MOVE P,SAVEP
+	AOBJN AA,NEWPAG
+	JUMPA DONE
+
+VWBDIR:	ANDI B,37
+	LSH B,10
+	ADDI D,(B)		; Cumulative VWB widths
+	ILDB B,E
+	ADDI D,(B)
+VWBD1:	MOVEI B," "
+	BOUT
+	ADDI G,^D40		; Accumulate output pos.
+	SUBI D,^D40
+	CAIL D,^D40
+	JUMPA VWBD1
+	JUMPA TNCHAR
+
+PSHLIN:	LDB A,[POINT 16,TL(DD),31]	; Byte number of 1st char
+	LSHC A,-2
+	LSH B,-42
+	ADD A,[	POINT 8,DL
+		POINT 8,DL,7
+		POINT 8,DL,15
+		POINT 8,DL,23](B)	; Byte ptr to DL
+	LDB B,[POINT 13,TL+1(DD),28]	; Line location
+	MOVEI C,0		; Initial X-pos
+LPOSC:	ILDB D,A		; Next source char or directive
+	CAIGE D,200		; Regular char?
+	JUMPA GOLINE		; Yes, get there and push
+	CAIGE D,240		; TLL directive?
+	JUMPA LPTLL
+	CAIGE D,300		; VWB?
+	JUMPA LPVWB
+	CAIGE D,340		; ATAB?
+	JUMPA LPATB
+	CAIGE D,360		; Font change
+	JUMPA LPOSC		; Yes, ignore
+	CAIGE D,374		; VCS, VCW, VSW?
+	JUMPA [	IBP A
+		JUMPA LPOSC]
+	CAIN D,374		; Overlay?
+	JUMPA LPOSC		; Ignore
+	CAIN D,376		; EOL?
+	JUMPA LPSHX		; Yes, next line
+	CAIN D,375		; TAB?
+	JUMPA [	IDIVI C,^D320
+		ADDI C,1
+		IMULI C,^D320
+		JUMPA LPOSC]
+LANDOC:	FERR(Cannot see document with landscape directive)
+
+LPATB:	MOVEI C,0		; No, ATAB
+LPVWB:	ANDI D,37
+	LSH D,10
+	ADDI C,(D)
+	ILDB D,A
+	ADDI C,(D)
+	JUMPA LPOSC
+
+LPTLL:	ILDB B,A
+	ANDI D,37
+	LSH D,10
+	ADDI B,(D)
+	JUMPA LPOSC
+
+GOLINE:	CAIN D," "
+	JUMPA [	ADDI C,^D40	; Assume blank width is 40.
+		JUMPA LPOSC]
+	CAIG D,"Z"-100		; Control char?
+	JUMPA LPOSC
+; Have got a real character.  Save position and pointer
+	PUSH P,C
+	HRLM B,0(P)		; Y,,X
+	PUSH P,A		; DL byte pointer
+; Pass over text, blanks, controls, and VWB's until EOL, ATAB, or TLL
+PASSTX:	ADDI C,^D40
+PASST1:	ILDB D,A
+	CAIGE D,200
+	JUMPA PASSTX
+	CAIGE D,240		; TLL?
+	JUMPA LPTLL		; Yes, end of text part
+	CAIGE D,300		; VWB?
+	JUMPA PASVWB
+	CAIGE D,340		; ATAB?
+	JUMPA LPATB
+	CAIGE D,360		; Font change?
+	JUMPA PASST1		; Yes, ignore
+	CAIGE D,374		; VCS, VCW, or VSW?
+	JUMPA [	IBP A
+		JUMPA PASST1]	; Yes, ignore
+	CAIN D,375		; Tab?
+	JUMPA [	IDIVI C,^D320
+		ADDI C,1
+		IMULI C,^D320
+		JUMPA PASST1]
+	CAIN D,377		; Landscape directive?
+	JUMPA LANDOC		; Yes, illegal.
+	JUMPA LPSHX
+
+PASVWB:	ANDI D,37
+	LSH D,10
+	ADDI C,(D)
+	ILDB D,A
+	ADDI C,(D)
+	JUMPA PASST1
+
+LENCHK:	LSH CC,10
+	RFPTR
+	  PUSHJ P,JERROR
+	ADD B,CC
+	MOVN C,CC
+	CAMG B,PDORG
+	POPJ P,
+	FERR(Bad record counting in page directory)
+
+; Subroutine to return the file size in bytes of the current size in B
+; JFN in A at call
+GETSIZ:	RFPTR			; Read current position
+	  PUSHJ P,JERROR
+	PUSH P,B
+	GTSTS
+	TLNN B,(1B4)		; Open for appending?
+	JUMPA GETSZ1		; Yes, at EOF and SFPTR illegal
+	HRROI B,-1
+	SFPTR			; Set position at EOF
+	  PUSHJ P,JERROR
+	RFPTR
+	  PUSHJ P,JERROR
+	EXCH B,0(P)
+	SFPTR
+	  PUSHJ P,JERROR
+GETSZ1:	POP P,B
+	POPJ P,
+
+
+; Abort file, message pointer in B
+ABFILE:	MOVEI A,"*"
+	PBOUT
+	HRROI 1,[ASCIZ/Error in document:
+/]
+	PSOUT
+	HRROI A,(B)
+	PSOUT
+	JUMPA DONE
+
+; Subroutine to check for a valid property list at the beginning of a file
+; and to process all the properties and set FDBUSW to the first new
+; word at the end of the property list (if any)
+DGETP:	MOVEI B,10
+	SFBSZ
+	PUSHJ P,GETSIZ		; Get size of file in 8-bit bytes
+	MOVE D,B
+	TLO 0,DOCSCN		; Set flag controlling errors
+	PUSHJ P,GETP
+	  JUMPA [MOVEI B,0
+		JUMPA DGETP1]
+	  POPJ P,
+	RFPTR
+	  PUSHJ P,JERROR
+	MOVEI B,4(B)		; Set to next word boundary, skipping <LF>
+	LSH B,-2
+DGETP1:	HRRZM B,THSFDB+FDBUSW
+	JUMPA GPSRET
+
+; Subroutine to process successive properties in the file with Jfn in
+; A until the byte count in D is exhausted.  Returns .+1 on any error
+; with error string pointer in B, .+2 on success.  Clobbers B, C, D, E, F
+; Properties are classified as follows:  CR terminated, control-D
+; terminated, CR terminated using control-V as a quote char., CR or blank
+; terminated.
+GETP:	SETZM PNAME
+	SETZM PNAME+1
+	MOVE C,[POINT 7,PNAME]
+GPFBIN:	SOJL D,GPSRET
+	BIN
+	CAILE B,"Z"		; Flush non-alphabetic chars.
+	CAIL B,"a"
+	CAIGE B,"A"
+	JUMPA GPFBIN
+	CAILE B,"z"
+	JUMPA GPFBIN
+	HRLZI E,-13		; Ten-char. limit on names
+GNMLP:	TRZ B,40		; Convert to upper case for recog.
+	AOBJP E,GETPER
+	IDPB B,C		; Build string
+GNMLP1:	SOJL D,GETPER
+	BIN
+	CAIE B,15		; End of name?
+	CAIN B,40		; End of name?
+	JUMPA GPENAM		; Yes, terminate string
+	CAIN B,":"		; Flush ":"
+	JUMPA GNMLP1
+	CAIL B,"A"		; Check for legitimate character
+	JUMPA GNMLP
+GETPER:	TLZE 0,DOCSCN		; Looking for "DOCUL" command
+	POPJ P,			; Yes, no properties
+GBDNAM:	MOVEI,[ASCIZ /Undefined property name in document's initial list/]
+	JUMPA GPERRR
+
+; Decode name
+GPENAM:	HRLZI C,-NPROPS
+	TLZN 0,DOCSCN		; Beginning document scan?
+	JUMPA PNCLP		; No, must find a property
+	MOVE B,PNAME		; Yes, must find "DOCUL" property
+	CAME B,[ASCII /DOCUL/]
+	POPJ P,
+	AOS (P)
+	JUMPA GETP
+
+PNCLP:	MOVE B,PNAME
+	HRRZ E,PNTAB(C)		; Point at name string
+	CAMN B,(E)		; Match on first five chars.?
+	JUMPA PNCOM2		; Yes
+	AOBJN C,.-3		; No, loop
+	JUMPA PROPSK
+
+PNCOM2:	HLRZ E,PNTAB(C)
+	JUMPA (E)		; Dispatch to routine
+
+GPSRET:	TLZN 0,DOCSCN
+	AOS (P)
+GPERRR:	POPJ P,
+
+; Property names are limited to 10 characters
+PNTAB:	GPSRET,,[ASCII /ENDLIST/]
+NPROPS==.-PNTAB
+
+
+; Pass over argument to <cr>
+PROPSK:	SOJL D,GPERRR
+	BIN
+	CAIE B,12
+	CAIN B,15
+	JUMPA GETP
+	CAIN B,"E"-100
+	JUMPA PRDSKP
+	CAIE B,"V"-100
+	JUMPA PROPSK
+	SOJL D,GPERRR
+	BIN
+	JUMPA PROPSK
+
+; Skip characters to the next control-D using control-V as quote char.
+PRDSKP:	SOJL D,GPERRR		; End of property list is an error
+	BIN
+	CAIN B,"V"-100
+	JUMPA [	SOJL D,GPERRR
+		BIN
+		JUMPA PRDSKP]
+	CAIE B,"D"-100
+	JUMPA PRDSKP
+	JUMPA GETP
+
+; Send message for which byte pointer is in B
+SNDREC:	MOVNI C,1000		; Byte count for SOUT
+	SOUT
+	MOVEM B,NEWBP#
+	POPJ P,
+
+; Fatal JSYS errors get here by PUSHJ P,JERROR 
+JERROR:	PUSH P,A
+	PUSH P,B
+	PUSH P,C
+	MOVEI A,101
+	MOVE B,[400000,,-1]
+	SETZ C,
+	ERSTR
+	 HALTF
+	 HALTF
+	JUMPA DONE
+
+	LIT
+	VAR
+
+TXTJFN: BLOCK 1
+OUTJFN:	BLOCK 1
+BYTSIZ:	BLOCK 1
+PDL:	BLOCK 4000	; Pushdown list
+SINBUF:			; from here on is not needed for simple text
+			; files
+NAMBUF: BLOCK 20	; For distribution list names and file names
+
+PASSWD:	^D31415		; General password
+NRECDS:	0		; Total # records in file
+NPGS:	0		; # pages in file
+NCPYS:	0		; # copies
+FNTSET:	0		; Font set on last page
+STLREC:	0		; Starting record of last page DL
+NDLREC:	0		; # records in last page of DL
+NTLREC:	0		; # records in last page of TL
+NPDREC:	0		; # records in PD
+NFDREC:	0		; # records in FD
+LMARG:	-1		; Left margin 500th's of an inch (-1 = default)
+BMARG:	-1		; Bottom margin 500th's (-1 = default)
+BPI:	-1		; Bits/inch (-1 = default)
+LPI:	-1		; Lines/inch (-1 = default)
+MAXSCN:	-1		; Max. # scan lines (-1 = default)
+OUTPD:	0		; Output destination and special password
+FLAGST:	0		; Count of flagged TL lines in document
+
+
+THSFDB:	BLOCK 25		; For input file's FDB
+PNAME:	BLOCK 3			; For property names
+FFF:
+PATCH:
+
+PD=100000		; Page directory (256 pages/doc max.)
+DL=PD+400*2		; Display list (15K chars/pg Ears limit)
+TL=DL+10000		; Text line array (512 lines/pg Ears limit)
+LAST=TL+1000*2
+
+	END START
+       
