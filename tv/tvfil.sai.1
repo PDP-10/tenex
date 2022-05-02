@@ -1,0 +1,430 @@
+
+	!*********   File and Text buffer management   *********
+	 ******************************************************;
+
+
+FORWARD STRING SUBROUTINE	#name;
+
+REQUIRE  "GETFIL.sai"  SOURCE!FILE;
+REQUIRE  "IO.sai"      SOURCE!FILE;
+
+	      
+STRING SUBROUTINE	#name;
+!			-----;
+BEGIN "#name"  STRING ext;
+   RETURN ( ( "#" & JFNS (inChan,'001000000000)
+	      & (IF nonEmpty (ext _ JFNS (inChan,'000100000000))
+	         THEN "-" & ext ELSE "")
+	    ) [1 FOR 39]
+          );
+END "#name"
+;
+
+
+SUBROUTINE	getOutFile;
+!		----------
+	"INFILE"  is already open.
+	"OUTFILE"  will be created in the connected directory.
+	;
+IF writeMode  THEN
+BEGIN "getOutFile"
+   outFile _ JFNS ( ( outChan _ openNew 
+ifc tops20.sw thenc
+			( JFNS (inChan,'110000000001) & #name & ".TV" )
+		     ), '111110000001
+elsec
+			( JFNS (inChan,'010000000001) & #name & ".TV" )
+		     ), '011110000001
+endc
+		   )
+   ;
+   outJfn _ CVJFN (outChan);
+END "getOutFile"
+;
+
+SUBROUTINE	rename#File;
+!		-----------
+	OWNFILE, NEWVERSION and KEEPALL determine whether the #file 
+	  is renamed to current or next higher version of input file.
+	;
+BEGIN "rename#File"
+! !   unmap (fork (linkMP));
+! !   unmap (fork (dirMP));
+
+! !   CLOSE (outChan);  ! Close to make new file exist;
+
+   IF finNV _ keepAll LOR newVersion  THEN
+   BEGIN
+    ! Create a file with the same name, new version;
+ifc tops20.sw thenc
+      fileName _ JFNS (inChan, '011100000001);
+elsec
+      fileName _ JFNS (inChan, '111100000001);
+endc;
+      CLOSEFILE (inChan);
+      inJfn _ CVJFN (inChan _ openNew (fileName));
+   END
+   ;
+   CLOSF (inChan);	  ! Both files must be closed for renaming;
+
+   START!CODE "rename"
+   	setzm	 !skip!;
+	hrrz	1, outJfn;
+	hrrz	2, inJfn;							
+
+	RNAMF;			! Old (in) file will vanish;
+
+	 hrrzm	1, !skip!;
+   END "rename"
+   ;
+   IF !skip!  THEN
+   BEGIN
+      errMes;
+      outstr ("
+CANNOT RENAME.  THE NAME OF YOUR EDITED FILE IS  " & (fileName _ outFile) & "
+")    ;
+   END
+ifc tops20.sw thenc
+   ELSE fileName _ JFNS (inChan, '111110000001)
+elsec
+   ELSE fileName _ JFNS (inChan, '011110000001)
+endc;
+   ;
+   RLJFN (inChan);  ! Release new file;
+   RLJFN (outChan); ! Already released by RNAMF, but this will
+			close SAIL bookkeeping;
+   newVersion _ keepAll _ FALSE;
+END "rename#File"
+;
+
+INTEGER SUBROUTINE	nLines (INTEGER i1, i2);
+!			------
+	Returns no. of locations between  TEXT[I1] and TEXT[I2].
+	;
+RETURN (IF (junk _ i2 - i1) GEQ 0 THEN junk ELSE junk + textSize);
+
+
+
+SUBROUTINE	textInit;
+!		--------
+	Initial set-up of text buffer.
+	;
+BEGIN "textInit"
+   junk _ location(text[textMin]) - 1;  memory [junk] _ 0;
+   arrBlt (memory [junk + 1], memory [junk], 2*textSize - 1);
+   top _ gap _ bot _ free _ textMin;
+END "textInit"
+;
+
+
+SUBROUTINE	nextt (REFERENCE INTEGER i);
+!		-----
+	Advance index  I  to next line of text.
+	;
+IF (inc(i)) > textMax  THEN i _ textMin;
+
+
+
+SUBROUTINE	lastt (REFERENCE INTEGER i);
+!		-----
+	Back up index  I  by one text line.
+	;
+IF (dec(i)) < textMin  THEN i _ textMax;
+
+
+  !*****   Line exchange between text file and text buffer   ******
+   ***************************************************************;
+
+
+DEFINE	upFile = "finContinue (FALSE, FALSE)";  ! No FIN1, not $$.F;
+!	------;
+
+
+SUBROUTINE	write;
+!		-----
+	First line of text buffer top is written onto output file
+	Caller must worry about "TOP" and "GAP" being unequal.
+	;
+BEGIN "write"
+ ! Write file;
+   IF writeMode  THEN pMapOUT (text[top]);
+
+ ! Update top line page and line numbers;
+   IF isPageMark (text[top])  
+   THEN  BEGIN inc (tPage); tLine _ 1 END
+   ELSE inc (tLine)
+   ;
+ ! Clear line, advance pointer;
+   text [top] _ NIL;  nextt (top);
+ ! Approaching end of file space?;
+   IF filling AND NOT saving  THEN finContinue (TRUE, FALSE);
+END  "write"
+;
+
+
+SUBROUTINE	textFull;
+!		--------
+	First try to free buffer space by reducing the gap.
+	If cannot, write in output file.
+	Called by READ which means that bottom text is empty.
+	;
+BEGIN "textFull"  INTEGER i, j;
+ ! Gap size to j;
+   j _ nLines (gap, bot);
+
+   IF j > maxY  THEN
+ ! Reduce gap size to MAXY;
+   BEGIN
+      i _ gap;  FOR j _ 1 upto maxY  DO nextt(i);
+      j _ bot;  bot _ i;
+
+    ! Move bottom text up into gap;
+      WHILE j NEQ free
+      DO  BEGIN text[i] _ text[j]; nextt(i); nextt(j) END
+      ;
+      free _ i;
+
+    ! Clear freed locations;	
+      WHILE i NEQ j  DO  BEGIN text[i] _ NIL; nextt(i) END;
+   END
+   ELSE write
+   ;
+ ! Gap was small in size, so we had to WRITE;
+END "textFull"
+;
+
+BOOLEAN SUBROUTINE	makesGap;
+!			--------
+	TRUE  iff  succeeds in making a gap of at least one line by
+	  shuffling and writing (but without FINCONTINUE).
+	IMPORTANT:  If fails, TOP = GAP = BOT = FREE + 1.
+	;
+IF gap NEQ bot  THEN RETURN (TRUE)
+ELSE
+BEGIN "makesGap"  INTEGER i, j;			
+   i _ free;
+
+ ! Claim upto MAXY locations of FREE;
+   FOR j _ maxY downto 1  DO
+   BEGIN  
+      nextt (i); 
+
+      IF i = top  THEN
+       IF top = gap  THEN  BEGIN lastt(i); DONE END
+       ELSE  BEGIN inc (saving); write; dec (saving) END
+      ;
+   END
+   ;
+
+   IF (j _ free) = (free _ i)  THEN RETURN (FALSE);  ! Fails;
+
+ ! Move bottom text to free(d) area;
+   WHILE j NEQ bot
+   DO  BEGIN lastt(i); lastt(j); text[i] _ text[j] END
+   ;
+   bot _ i;
+   WHILE i NEQ j  DO  BEGIN lastt(i); text[i] _ NIL END;
+
+   RETURN (TRUE);
+END "makesGap"
+;
+
+SUBROUTINE	read;
+!		----
+	Next line on input file is appended to bottom text.
+	If text line terminated by FF instead of LF, two lines are de-
+	  posited:  Properly terminated text line and a Page Mark line.
+	NOTE:  Read is called ONLY when bottom text has less than MAXY
+	  lines, which guarantees that space can be made available in 
+	  TEXT buffer.
+	;
+BEGIN "read"	STRING line;
+
+   SUBROUTINE	putLine;
+   !		-------;
+   BEGIN
+      text [free] _ line;  
+    ! If text buffer is full, make room;
+      nextt (free);  IF free = top  THEN textFull;
+   END	
+   ;
+			! +  +  +  + ;
+
+   IF empty (line _ pMapINPUT)  THEN RETURN;
+
+   IF breakChar NEQ LF  THEN
+     IF breakChar = FF  THEN 
+     BEGIN
+      ! Non-terminated line at end of text page?;
+	IF length (line) > 1 AND NOT EQU (line, CR&CR&FF) ! SOS pg mk;
+	THEN  BEGIN line _ most(line) & eolStr; putLine END
+	;
+	line _ FF;
+     END
+   ! Non-terminated line at EOF?;
+     ELSE IF eof  THEN line _ line & eolStr
+   ;
+   putLine;
+END "read"
+;
+
+!******   Line exchange between text buffer and window buffer   *******
+ *********************************************************************;
+
+
+STRING SUBROUTINE	getbot;
+!			------
+	Returns the first line of bottom text (or empty if EOF).
+	EOF AND BOT = FREE  means we have last window.
+	;
+BEGIN "getbot"	STRING line;
+   IF bot = free  THEN
+   BEGIN  
+      read; 
+      IF bot = free  THEN RETURN (NIL);
+   END
+   ;
+   line _ text[bot];  text[bot] _ NIL;  nextt (bot);
+
+   RETURN (line);
+END "getbot"
+;
+
+
+SUBROUTINE	putTop (STRING line);
+!		------
+	Append LINE to top text.
+	If gap gets full, shuffle text to make a new gap.
+	On failure to make gap, write the line.
+	Updates  GapPAGE  and  GapLINE.
+	;
+IF nonEmpty (line)  THEN
+BEGIN "putTop"
+   IF isPageMark (line)  THEN  BEGIN inc (gPage); gLine _ 1 END
+   ELSE inc (gLine)
+   ;
+
+ ! If MAKESGAP (below) fails, we should have  TOP = GAP = FREE + 1;
+
+   IF gap = bot ANDIF NOT makesGap
+   THEN  BEGIN text [top _ free] _ line; write END  ! Borrow FREE;
+   ELSE  BEGIN text [gap] _ line; nextt(gap) END
+   ;
+END "putTop"
+;
+
+
+STRING SUBROUTINE	getTop;
+!			------
+	Returns last line of top text, NIL if beginn. of file.
+	If top is empty, do a quicky finish.
+	;
+BEGIN "getTop"  INTEGER i;  STRING line;
+   IF top = gap  THEN
+    IF tPage = 1 AND tLine = 1  THEN RETURN (NIL)  ! BOF;
+    ELSE upFile
+   ;
+ ! Take last line of top text ;
+   lastt (gap);  line _ text[gap];  text[gap] _ NIL;	
+
+ ! Update gap page and line numbers;
+   IF isPageMark (line)  THEN
+   BEGIN
+      IF (dec(gPage)) = tPage
+      THEN gLine _ tLine + nLines (top, gap)
+      ELSE 
+      BEGIN  ! Must scan top text to determine Gap LINE number;
+	 i _ gap;  lastt (i);
+	 WHILE isText (text[i])  DO lastt (i);
+	 gLine _ nLines (i, gap);
+      END
+      ;
+   END
+   ELSE dec (gLine)
+   ;
+   RETURN (line);
+END "getTop"
+;
+
+
+SUBROUTINE	putBot (STRING line);
+!		------
+	Add LINE to top of bottom text.
+	If gap gets full, shuffle text to make a new gap.
+	;
+IF nonEmpty (line)  THEN
+BEGIN "putBot"
+   IF gap = bot AND NOT makesGap  THEN upFile;
+   lastt (bot);  text [bot] _ line;
+END "putBot"
+;
+
+! DEFINE	fin0 = "finSegment";
+!		----
+	Writes text buffer and rest of input segment in output file.
+	Window lines  W[1:MAXY]  untouched, for benefit of FINCONTINUE.
+	;
+
+
+SUBROUTINE	fin1;
+!		----
+	Writes text buffer and rest of input segment in output file.
+	Releases pages from read buffer, frees pages from hold. 
+	Called by FINCONTINIE in response to  $$.F,  and by FINISH 
+	  in response to $$F.
+	;
+BEGIN "fin1"
+   inc (saving);
+   fin0;	! FIN0 will TEXTINIT; 
+   freeHold;	! FREEHOLD will SALVAGE; 
+   changeUSW (rdJfn);  writesStrings (-1);
+   dec (saving);
+END "fin1"
+;
+
+
+FORWARD SUBROUTINE	clearWindow;
+
+SUBROUTINE	deleteFile;
+!		----------
+   Used for $$0F on new file - deletes it;
+BEGIN "deleteFile"
+   outstr("
+... D E L E T I N G  " & fileName);
+   closF(inChan);
+   delF(inChan);
+   rlJfn(inChan)
+END "deleteFile"
+;
+
+
+SUBROUTINE	finish (BOOLEAN abortSw);
+!		------------------------;
+BEGIN "finish"
+   inc (saving);
+   clearWindow;  fin1;  forceOut;  duxOn;
+
+   IF writeMode AND NOT (newFile AND abortSw)
+	THEN BEGIN if not abortSw then rectify; restore END;
+   unmapM ('400000, oBufMP, oDirMP);
+   IF writeMode AND newFile AND abortSw
+	THEN deleteFile
+   ELSE IF readOnly or abortSw 
+	THEN closeFile (inChan)  
+   ELSE rename#File;
+   dec (saving);
+END "finish" 
+;
+
+
+SUBROUTINE	restart;
+!		-------;
+BEGIN "restart"
+   inJfn _ CVJFN (inChan _ OPENFILE (fileName, 
+				IF readOnly THEN "OR" ELSE "ORW"));
+END "restart"
+;
+
+COMMENT  End of file TVFIL;
+
+

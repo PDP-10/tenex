@@ -1,0 +1,439 @@
+
+		!******   INITIALIZATION   ******
+		 *******************************;
+
+
+FORWARD SUBROUTINE	rename#File;
+FORWARD SUBROUTINE	restart;
+
+
+SUBROUTINE	copySOS (BOOLEAN retain);
+!		-------
+	Copy SOS file to new format and make DIR page.
+	RETAIN = FALSE  to delete line numbers, TRUE to convert them 
+	  to normal text.
+	Changes SOS page marks to FF.
+	Assumptions:
+	  (a) Lines do not cross file page boundaries,
+	  (b) line format ok:  [line#,@], TAB, line, CR, LF,
+	  (c) page marks ok:  [SP^5,@], [CR,CR,FF,0,0]  (real SOS)
+				     or [CR,FF,0,0,0]  (DEC EDIT).
+	Keeps old file as old version.
+	Global args:  EOFPAGE, EOFWC.
+	;
+BEGIN "copySOS" INTEGER pg, nV, gp;
+   start#File;  gp _ (-eofWC) LSH 18;  ! To get up to EOF;
+
+   FOR  pg _ eofPage downto 0  DO
+   BEGIN
+      outStr ("." & cvs(pg));
+      pMap (file(pg), fork(tBufMP), rd#);
+      pMap (#file(pg), fork(oBufMP), rd#+wr#);
+
+      START!CODE  LABEL loop, put, bot, sosWd, getFF, don;
+	DEFINE  wd# = "2", gp# = "3", pp# = "4",
+		nLF# = "5", nFF# = "6", pm1# = "7", pm2# = "'10",
+		pm2X# = "'11";
+
+	move	pm1#, ['201004020100];	! [SP,SP,SP,SP,SP] is the 1st
+					  word of SOS page mark without 
+					  the extra bit (bit 35);
+	move	pm2#, ['064321400000];	! [CR,CR,FF,0,0] is the 2nd
+					  word of SOS page mark;
+	move	pm2X#, ['064300000000];	! [CR,FF,0,0,0] - DEC version;
+	setzb	nlf#, nff#;
+	move	gp#, gp;	! Get pointer;
+	movei	pp#, oBuf-1;	! Put (push) pointer.  Its LH counts!;
+
+ loop:	skipn	wd#, tBuf(gp#);
+	 jrst	 bot;		! Ignor 0-words;
+	trze	wd#, 1;		! Line number?  Clear SOS bit;
+	 aoja	nlf#, sosWd;	! Yes.  Count lines;
+ put:	push	pp#, wd#;	! Put (push) the word;
+ bot:	aobjn	gp#, loop;	! Page finished?;
+	jrst	 don;
+
+ sosWd:	aobjp	gp#, don;	! To consume 2nd word;
+	camn	pm1#, wd#;	! SOS page mark a'coming?;
+	 jrst	 getFF;
+ ! Must be a line no.;
+	skipe	 retain;
+	 push	pp#, wd#;	! Retain line no.s;
+	move	wd#, tBuf(gp#);
+	skipn	 retain;
+	 tlz	wd#, '774000;	! Remove TAB of 2nd word;
+	jrst	 put;
+
+ getFF:	came	pm2#, tBuf(gp#);! 2nd word must be CR,CR,FF; 
+	camn	pm2X#, tBuf(gp#); ! or CR,FF if DEC file;
+	 skipa   ;
+	 jrst	 loop;		! Invalid, treat as regular word;
+	movei	wd#, FF LSH 1;
+	setz	nlf#, ;
+	aoja	nff#, put;
+	
+ ! Prepare dir entry in AC0;
+ don:	dpb	nff#, f.nFF;
+	dpb	nlf#, f.nLF;
+	hlrz	pp#, pp#;	! Word count to right half;
+	imuli	pp#, 5;		! Words to bytes;
+	dpb	pp#, f.nCh;
+
+	move	1, pg;
+	movem	 oDir(1);	! Enter in directory;
+      END
+      ;
+      gp _ (-'1000) LSH 18;	! To get full page;
+   END ! of FOR;
+   ;
+ ! Set file lenght, byte size in FDB, unmap T/OBUFMP, (O)DIRMP,
+   rename #file to FILENAME, new version;
+   nV _ newVersion;
+   newVersion _ TRUE;  fin#File (eofPage);  rename#File;
+   newVersion _ nV;
+
+ ! Start afresh;
+   restart;
+END "copySOS"
+;
+
+BOOLEAN SUBROUTINE	mapsLinks;
+!			---------
+	TRUE  iff  maps LINKPAGE of file to LINKMP of fork.
+	Used in initialization of page-finished file and 
+	  inconsistent file.
+	;
+IF NOT exists (linkPage)  THEN RETURN (FALSE)
+ELSE 
+BEGIN "mapsLinks"
+   pMap (file(linkPage), fork(linkMP), 
+	  rd# +	(IF readOnly THEN copy# ELSE wr#));
+   RETURN (TRUE);
+END "mapsLinks"
+;
+
+
+SUBROUTINE	makeLinks;
+!		---------
+	Initialize link page.
+
+	    i		LINKS [i]
+	  -----		---------
+	 0 ...e-1	1,,i+1
+	    e		1,, -1  for E-O-F
+	   e+1		  0
+	   e+2		  0
+	   e+3		0,, -1  for E-O-free list
+	e+4...t-1	0,,i-1
+	    t		  -1
+	t+1...776	pointers
+	   777		  1	segment no.
+
+	  where  e  is EOFPAGE,  t  is TEMPPAGE (=770)
+	;
+BEGIN "makeLinks" INTEGER i;
+   unMap (fork(linkMP));  setBuf (links, '777777);
+
+ ! Initialize text page chain;
+   IF (nText _ eofPage + 1) > 0
+   THEN BEGIN textP _ 0; links.(eofPage) _ '1777777 END
+   ;
+   FOR i _ eofPage - 1 downto 0  DO links.(i) _ i + '1000001;
+   segment _ 1;
+
+   IF writeMode  THEN
+   BEGIN
+    ! Initialize free page chain, leave room for page 0 and one extra page;
+      freeP _ tempPage - 1;  links.(eofPage + 3) _ '777777;
+      FOR i _ eofPage + 4 upto freeP  DO links.(i) _ i - 1;
+      nFree _ tempPage - eofPage - 3;
+
+      nHold _ nSafe _ 0;
+      pMap (fork(linkMP), file(linkPage), rd#+wr#);
+
+ IFC tops20.sw  THENC
+      pMap (file(linkPage), fork(linkMP), rd#+wr#);
+ ENDC
+
+   END
+   ;
+END "makeLinks"
+;
+
+SUBROUTINE	getDir;
+!		------
+	Pmap directory page if exists, o.w. create page directory.
+	If FDBUSW indicates new format (last 3 digits are '252), 
+	  get directory from top of EOFPAGE.  (252 NOT IMPLEMENTED YET)
+	;
+BEGIN "getDir" INTEGER pg;
+   IF readOnly  THEN unMap (fork(dirMP))
+   ELSE pMap (file(dirPage), fork(dirMP), rd#+wr#)
+   ;
+   IF exists (pg _ dirPage)  ! Crash file?;
+      ORIF
+      ( byteSize = 7  ! Finished text file?;
+	AND
+	( exists (pg _ oDirPage)  ! Old TV?;
+	  ORIF
+	  ((pg _ nDirPage) GEQ 0 ANDIF exists (pg)) ! New TV?;
+	)
+      )
+   THEN
+   BEGIN
+      pMap (file(pg), fork(tBufMP), rd#);
+
+    ! Did we succeed in getting a directory page?;
+      IF pg > '770 AND tBuf.('777) = -1
+      THEN arrBlt (dir.(0), tBuf.(0), '1000)
+      ELSE
+      BEGIN "setB" INTEGER d0;
+	 setBuf (dir, -1);
+
+	 IF pg < '770 
+	    AND tBuf.('777) = FF5 = tBuf.(-1+(d0 _ '776-pg))  THEN
+	 DO dir.(pg) _ tBuf.(d0+pg) ASH -1  UNTIL (dec(pg)) < 0
+	 ;
+      END "setB" 
+      ;
+      unMap (fork(tBufMP));
+   END
+   ELSE setBuf (dir, -1)
+   ;
+END "getDir"
+;
+
+BOOLEAN SUBROUTINE	okToEdit;
+!			--------
+	Initial checking and preparations.
+	Maps or makes DIRectory and LINKS.
+	Assumes FILELENGTH, BYTESIZE to be set, but sets FILELENGTH
+	  to number of 7-bit bytes if was 36-bit bytes.
+	Initializes FFFP, FUFP, CHRASHFILE, EOFPAGE, EOFBC, EOFWC,
+	  BADEOF, DIR and LINK pages.
+	TRUE  iff  succeeds in initializing file for editing.
+	;
+BEGIN "okToEdit"
+
+   START!CODE
+      ! First Free File Page, First Used Page thereafter;
+	move	1, rdJfn;
+
+	FFFFP;
+	hrrem	1, fffp;	! Save no. of first free page;
+
+	FFUFP;
+	 seto	1, ;		! -1 means: no used after the free one;
+	hrrem	1, fufp;	! Save first used;
+   END
+   ;		
+ ! We believe in 7-bit bytes;
+   IF byteSize = 36  THEN fileLength _ 5*fileLength;
+   eofPage _ (foo _ fileLength + '4777) DIV '5000 - 1;
+ ! EOFPAGE = -1 means file is empty;
+   eofWC _ ((eofBC _ foo MOD '5000 + 1) + 4) DIV 5;
+
+   badEOF _ sosFile _ FALSE;
+
+   IF NOT (crashFile _ 0 LEQ fufp LEQ linkPage)  THEN
+   BEGIN "finished"
+      IF readonly  THEN
+      BEGIN
+	 IF fffp GEQ tempPage  THEN
+	 BEGIN
+	    outStr ("
+File too long for TV-Edit.
+");
+	    RETURN (FALSE);
+	 END
+	 ;
+      END
+      ELSE
+      BEGIN "wrMode"
+	 IF fffp > tempPage - 20  THEN
+	 BEGIN
+	    outstr ("
+File is full.  Cannot TV-Edit.
+");
+	    RETURN (FALSE);
+	 END
+	 ;
+       ! SOS file? (if eofpage < 0, pMap blows up, but can't be SOS);
+	 IF eofpage geq 0 THEN
+	 BEGIN "SOS"
+	    pMap (file(0), fork(tBufMP), rd#);
+	  ! Does file start with SOS line no. or SOS page mark?;
+	    sosFile _ (tBuf.(0) LAND 1 AND tBuf.(1) LSH -29 = TAB)
+		      OR (tBuf.(0) = '201004020101
+			   AND tBuf.(1) = '064321400000);
+	    unMap (fork(tBufMP));
+
+	    IF sosFile  THEN
+	    BEGIN
+	       sosFate _ "D";
+
+	       IF rushed ORIF wantsSOS (sosFate)  THEN
+	       BEGIN  
+		  copySOS (sosFate = "R");  RETURN (okToEdit);
+	       END
+	       ELSE RETURN (FALSE)
+	       ;
+	    END
+	    ;
+	 END "SOS"
+	 ;
+      END "wrMode"
+      ;
+
+      getDir;  makeLinks;   ! MAKELINKS requires that EOFPAGE be set;
+
+    ! Set eof-pointer (file might have been appended to);
+      IF eofPage GEQ 0  THEN
+      START!CODE  DEFINE pg# = "2", de# = "3", nch# = "4";
+	LABEL loop, don;
+
+	move	pg#, eofPage;
+	move	de#, dir(pg#);	! Dir Entry;
+	move	0, de#;
+	ldb	nch#, f.nCh;
+	camn	nch#, eofBC;	! IF NCH NEQ EOFBC ..;
+	 jrst	 don;
+	seto	0, ;		! .. THEN ..;
+	move	1, eofBC;
+	dpb	1, f.nCh;
+	movem	0, dir(pg#);	! .. DIR [EOFPAGE] _ [-1,-1,EOFBC]; 
+	aojn	de#, don;	! Done if old Dir Entry was not -1;
+
+ ! Undefine last dir entry that was previously defined.  That's where 
+ ! the old EOF was.  The file has been appended to and the old entry
+ ! is no longer valid.
+ ;
+  loop:	sojl	pg#, don;
+	move	de#, dir(pg#);
+	aoje	de#, loop;	! IF DIR.(PG) NEQ -1 ..;
+	setom	 dir(pg#);	! .. THEN  undefine;
+   don:
+      END
+      ;
+
+      IF writeMode  THEN
+      BEGIN "warn"
+       ! Save 5 FDB words in DIR in case he wants to keep old file;
+	 oFdb11 _ fdb ['11];  oFdb12 _ fdb ['12];
+	 oFdb13 _ fdb ['13];  oFdb14 _ fdb ['14]; oFdb24 _ fdb ['24];
+
+       ! And original FFFP;
+	 oFffp _ fffp;
+
+       ! Do dirPage first because existence of linkPage is used to
+	    indicate a crash, and a crash requires a valid dirPage;
+	 secure(dirPage);
+	 secure(linkPage);
+
+       ! Use ephemeral bit as warning that file is being edited;
+	 START!CODE
+		move	1, rdJfn;
+		hrli	1, '1;		! 1,,jfn;
+IFC tops20.sw THENC
+		movsi	2, '20;		! bit 13;
+		movsi	3, '20;
+ELSEC
+		movsi	2, '1;		! bit 17 on tenex;
+		movsi	3, '1;
+ENDC;
+
+		CHFDB;			! Set ephemeral bit;
+
+	 END
+	 ;
+      END "warn"
+      ;
+   END "finished"
+   ELSE
+   BEGIN
+    ! Page-finished file?;
+      IF mapsLinks ANDIF linksOk  THEN getDir
+      ELSE
+      BEGIN
+	 outStr ("
+Inconsistent file.  Cannot TV-Edit!
+");
+	 RETURN (FALSE);
+      END
+      ;
+   END
+   ;
+   RETURN (TRUE);
+END "okToEdit"
+;
+
+FORWARD SUBROUTINE	dMarkPage;
+
+
+SUBROUTINE	startCrash;
+!		----------
+	Starting of edit after crash finish (CRASHFILE TRUE).
+	;
+BEGIN "startCrash" BOOLEAN finCrash;
+   INTEGER nff, nlf, goNff, goNlf, goP, goL, seg, maxSeg, pg;
+
+	SUBROUTINE	saveMax;
+	!		-------;
+	BEGIN goNff _ nff; goNlf _ nlf; maxSeg _ seg END;
+
+			! +  +  +  + ;
+
+   IF finCrash _ (writeMode AND nExtraFree LEQ 0)  THEN warning ("
+Will finish the edit of a full file.
+
+  CONTINUE,  if ok.
+
+");
+
+   nff _ nlf _ goNff _ goNlf _ maxSeg _ 0;  pg _ textP0;
+
+   WHILE (pg _ rightOf (pg)) GEQ 0  DO
+   BEGIN
+      IF (seg _ rdSeg.(pg))  THEN BEGIN saveMax; DONE END;
+      addDirEntry (nff, nlf, pg);
+      IF (seg _ wrSeg.(pg)) GEQ maxSeg  THEN saveMax;
+   END
+   ;
+   goP _ goNff + 1;  goL _ goNlf + 1;
+   segment _ (segment LAND '377) MAX 2;
+
+   IF finCrash  THEN
+   BEGIN "finFul"
+      dpb (goP, p.page);  dpb (goL, p.line);
+      filePlaces _ cvs(goP) & "." & cvs(goL);
+      segment _ 1;  ! To no-op FINSEGMENT;
+      finish(false);
+
+      outstr ("
+
+... FINISHED FULL FILE  " & fileName 
+		& (IF finNV THEN " [New version]
+" ELSE "
+"));
+
+      endOfEdit _ TRUE;
+   END "finFul"
+   ELSE
+   BEGIN
+      goToPlace (goP, goL, 1);
+
+      IF writeMode  THEN  
+      BEGIN
+	 dMarkPage;  dMarkPage;
+	 dpyMessage (".CRASHED.  OLDER.TEXT.IS.BELOW.THE.PAGE.MARKS");
+      END
+      ELSE dpyMessage (".CRASHED.  FILE.MIGHT.NEED.CLEAN-UP");
+      ;
+   END
+   ;
+END "startCrash"
+;
+
+COMMENT  End of file "IOINIT";
+
+

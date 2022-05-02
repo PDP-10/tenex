@@ -1,0 +1,613 @@
+
+
+COMMENT  "GETFIL" hosts procedures: "OPTION", "GETFILE", "OPENNEW", and
+	  ------       then some.
+	 ;
+
+
+INTEGER SUBROUTINE	option (STRING opts, help);
+!			------
+	General purpose (almost) dialog to get a valid option.
+	The option characters in "OPTS" are presented first.
+	"OPTS" are the valid responses (excluding "?").  Letters must
+	  be in upper case.
+	"?" evokes printing of the "HELP" and looping back.  Help
+	  should tell what this is all about.
+
+	EXAMPLE:  n _ option("NO","N for new, O for old")
+
+	Returns the valid option character.
+	;
+FOREVER  DO
+BEGIN "option" INTEGER reply, ch; STRING str; BOOLEAN helpful;
+   helpful _ nonEmpty (help);
+
+ ! Present the probe;
+   str _ opts & (IF helpful THEN "?" ELSE NIL);
+   outStr ("
+Type  " & lop(str));
+
+   WHILE (ch _ lop(str))  
+   DO outStr((IF empty(str) THEN " or " ELSE ", ") & ch)
+   ;
+   outStr("  *");
+
+ ! Wait for the answer;
+   DO reply _ INCHRW LAND '177  UNTIL reply AND reply NEQ '15;
+   outstr (EOLstr);  ! Acknowledge;
+
+ ! Check for valid answer;
+   str _ opts;
+
+   IF (reply _ upperCase (reply)) = "?"  THEN outStr (help)
+   ELSE WHILE (ch _ lop(str))
+   DO IF upperCase(ch) = reply  THEN RETURN (ch)
+   ;
+END "option" ! FOREVER; 
+;
+
+INTEGER SUBROUTINE	getCase (STRING options);
+!			-------
+	Gets empty answers, designated one-letter answers, and
+	  answer strings.
+	OPTIONS is a string of one-letter answers, in upper case.
+	Returns:
+	  0  for empty answer string
+	  i  for one-letter reply thet is the ith character of OPTIONS
+	  LENGTH(OPIONS)+1  for other non-empty answer strings.
+	Sets global variables:
+	  CHAR  to valid single letter option, if got.
+	  ANSWER  to answer string, if not one-letter anser.
+	  RUSHED  to  TRUE  if ESC terminates, o.w. not changed.
+	;
+BEGIN "getCase" INTEGER ch, gtCs;
+
+	SUBROUTINE  testOpts (STRING opts);
+	!	    --------;
+	BEGIN
+	   char _ upperCase (char);  gtCs _ 0;
+	   DO inc(gtCs)  UNTIL NOT (ch _ lop(opts)) OR ch = char;
+	END
+	;
+
+			! +  +  +  + ;
+
+	
+   char _ INCHRW LAND '177;  testOpts (options);
+
+   IF NOT ch  THEN  ! 1st input not one of option letters;
+   BEGIN
+      BKJFN ('100);  scan (answer _ INCHWL, br.sBl, char);
+
+      IF empty (answer)  THEN gtCs _ 0
+      ELSE IF length (answer) = 1  THEN testOpts (options)
+      ;
+   END
+   ;
+ ! Look at terminator;
+   BKJFN ('100);  IF INCHRW LAND '177 = ESC  THEN rushed _ TRUE;  
+   RETURN (gtCs);
+END "getCase"
+;
+
+FORWARD BOOLEAN SUBROUTINE	readsStrings  (INTEGER pg);
+FORWARD BOOLEAN SUBROUTINE	writesStrings (INTEGER pg);
+
+
+SUBROUTINE	relSPage;
+!		--------
+	Remove string page form fork, release string file JFN.
+	;
+BEGIN "relSPage"
+
+   START!CODE
+	seto	1,;
+	hrlzi	2, '400000;
+	hrri	2, sBufPage;
+	setz	3,;
+	PMAP;
+   END
+   ;
+   closeFile (strChan);
+END "relSPage"
+;
+
+
+SUBROUTINE	remSPage;
+!		--------
+	Remove (unmap) SPAGE from STRINGFILE.
+	;
+START!CODE
+	seto	1,;
+	hrlzi	2, '400000;
+	hrri	2, sBufPage;
+	setz	3,;
+	PMAP;			! First remove page from fork..;
+
+!	seto	1,;
+	hrlz	2, strJfn;
+	hrr	2, sPage;
+!	setz	3,;
+	PMAP;			! ..then from file;
+END
+;
+
+BOOLEAN SUBROUTINE	mapsSPage (INTEGER pg; BOOLEAN wr);
+!			---------
+	Map appropriate page of STRINGFILE to SBUFPAGE of fork.
+	PG = 0 makes it a no-op.
+	
+	A leq PG leq Z  to use PG, 
+        PG = .  to use last non-0 page (OLDPG),
+	  o.w. use page 0.
+	WR  means map to write, o.w. map to read.
+
+	Globals affected:  STRCHAN, STRJFN, STRPAGE.
+	Returns TRUE  iff  succesful.
+	;
+IF NOT pg  THEN RETURN (TRUE)
+ELSE
+BEGIN "mapsSPage" OWN INTEGER oldPg;
+   strJfn _ cvJfn (strChan _ GTJFN (stringFile, IF wr THEN '1000000
+						ELSE  '100001000000) );
+   IF !skip!  THEN RETURN (FALSE);
+
+   OPENF (strChan, IF wr THEN '300000 ELSE '200000);
+
+   IF !skip!  THEN
+   BEGIN  
+      outStr ("
+'" & stringFile & "' ...");  errMes;
+      closeFile (strChan);  RETURN (FALSE);
+   END
+   ;
+
+ ! Determine STRINGFILE page number, map file page to fork;
+
+   sPage _ IF "A" LEQ pg LEQ "Z" THEN (oldPg _ pg)
+	   ELSE IF pg = "." THEN oldPg ELSE 0;
+
+   START!CODE
+    ! Map string page to current fork;
+	hrlz	1, strJfn;	! From string file;
+	hrr	1, sPage;
+	hrlzi	2, '400000;	! To current fork;
+	hrri	2, sBufPage;
+	hrlzi	3, '100000;	! Prepare to read;
+	skipe	 wr;		! Is it WRite?;
+	 hrlzi	3, '040000;	!  Yes, write instead;
+	PMAP;
+
+    ! Does the page exist?;
+	setzm	 !skip!;
+	RPACS;			! AC1 is already loded;
+	tlnn	2, '010000;
+	 setom	 !skip!;	! No such page;
+   END
+   ;
+   IF !skip! AND NOT wr  THEN BEGIN relSPage; RETURN (FALSE) END;
+   RETURN (TRUE);
+END "mapsSPage"
+;
+
+BOOLEAN SUBROUTINE	getsMode (REFERENCE INTEGER md);
+!			--------;
+BEGIN "getsMode"
+   FOREVER DO
+   BEGIN
+      outStr ("
+(Mode:  L, U, or R) ");
+
+      IF md  THEN outStr (md & "// ");
+
+      CASE getCase ("LUR^?")  OF
+      BEGIN
+	 IF md  THEN RETURN (TRUE);
+	 DONE;	! L;
+	 DONE;	! U;
+	 DONE;	! R;
+	 RETURN (FALSE);
+
+	 outStr ("
+
+  A file can contain text in both lower and upper case, althoug some
+  terminals (e.g., TEC) display everything in upper case.  The L and
+  U modes of the file indicate which case is PRIMARILY used in enter-
+  ing new text in the file.
+
+  The options are:
+
+    L  to set file mode to Lower case, and to write.
+    U  to set file mode to UPPER case, and to write.
+    R  for Reading only--safe and fast way to view the file.
+
+   'CR' or 'ESC' to use standard option if available.
+
+    ^  to start over.
+")	 ;
+	 ;  ! Anything else: try again;
+      END ! of CASE;
+      ;
+   END ! of FOREVER;
+   ;
+ ! L, U, and R  fall through.  Acknowledge;
+   outStr (eolStr);  md _ char;  RETURN (TRUE);
+END "getsMode"
+;
+
+BOOLEAN SUBROUTINE	getsPlaces (REFERENCE STRING pl);
+!			----------
+	Starting Page.Line specification.
+	;
+FOREVER DO
+BEGIN "getsPlaces"
+   outStr ("
+(Page.Line) " & pl & "// ");
+
+   CASE getCase ("^?@")  OF
+   BEGIN
+      RETURN (TRUE);	! Empty answer, accept default;
+      RETURN (FALSE);	! ^--go back;
+      outStr ("
+
+  You can specify places to edit by giving the Page and the Line.  
+  ""@"" command takes through successive items of the Page.Line
+  list.  Use spaces or commas to separate list items, periods to 
+  separate the page and line numbers of an item.  Example:
+
+	7.11 15.5 10 12,22.7,30.5
+
+     The place list can also be accepted from a text file.  SEARCH
+  program creates appropriate 'xxx.PL' files.
+
+  Type Page.Line list, or type
+   'CR' or 'ESC' for the default (the place of last finish),
+    @  to get the place list from a .PL file,
+    ^  to start over.
+")    ;
+      BEGIN "@" INTEGER plChan; STRING plFile; 
+	 outStr (eolStr);  ! Ack;
+	 plChan _ OPENFILE (plFile _ #name&".PL", "ORE");
+
+	 IF NOT !skip!  THEN
+	 BEGIN
+	    SETINPUT (plChan, 1000, char, junk);
+	    pl _ INPUT (plChan, br.FF);
+	    closeFile (plChan);  RETURN (TRUE);
+	 END
+	 ELSE outStr ("  File '" & plFile & "' not found.
+");
+      END "@"
+      ;
+      BEGIN pl _ answer; RETURN (TRUE) END;  ! List;
+   END ! of CASE;
+   ;
+END "getsPlaces" ! of FOREVER; 
+;
+
+BOOLEAN SUBROUTINE	wantsSOS (REFERENCE INTEGER fate);
+!			--------
+	What to do with an SOS file?.
+	;
+BEGIN "wantsSOS"
+   FOREVER DO
+   BEGIN
+      outStr ("
+(SOS line numbers:  D or R) " & fate & "// ");
+
+      CASE getCase ("DR^?")  OF
+      BEGIN
+	 RETURN (TRUE);  ! Empty, accept default;
+	 DONE;
+	 DONE;
+	 RETURN (FALSE); ! ^;
+
+	 outStr ("
+
+ SOS file is first copied and converted to TV file (the SOS file
+ stays as old file).
+
+ Type
+   D - to Delete SOS line numbers while copying,
+   R - to Retain SOS line numbers, but convert them to normal text
+       (R  is useful for BASIC programmers),
+   ^ - to not to edit this file after all.
+")    	 ;
+	 ! Anything else:  Try again;
+      END ! of CASE;
+      ;
+   END ! of FOREVER;
+   ;
+   outStr (eolStr);  fate _ char;  RETURN (TRUE);
+END "wantsSOS"
+;
+
+FORWARD BOOLEAN SUBROUTINE	okToEdit;
+
+
+SUBROUTINE	getFile (STRING name, places; INTEGER mode);
+!		-------
+	Sets INCHAN, FILENAME, NEWFILE, OWNFILE, UCFILE, and READONLY, 
+	  and opens the file.
+	If NAME is non-empty, tries to get the named file.
+	If MODE is non-0, it must be valid:  L, U, W, or R.
+	Non-empty name + non-0 mode mean:  this is an RPGSW call and
+	  wants to go directly to edit.
+	Returns only after file is properly opened.
+	;
+BEGIN "getFile" BOOLEAN accepted;
+IFC tops20.sw THENC
+	IF empty (name) AND RSCAN 
+	  THEN
+	    BEGIN "parsecommand"
+	    STRING line,atom,breaks;
+	    line _ INTTY;
+	    SCAN(line,br.findatom,junk); ! skip command name;
+	    SCAN(line,br.scanatom,junk);
+	    DO
+	      BEGIN
+	      breaks _ SCAN (line,br.findatom,junk);
+	      atom _ SCAN (line,br.scanatom,junk);
+	      IF empty(atom) 
+		THEN
+	      ELSE IF first(atom) = "("
+		THEN
+	      ELSE IF last(breaks) = "/"
+		THEN mode _ first(atom)
+	      ELSE IF empty(name)
+		THEN name _ atom
+	      END
+	     UNTIL empty(line)
+	    END;
+ENDC; 
+   IF rushed _ accepted _ nonEmpty (name)  THEN
+   BEGIN
+      sameFile _ FALSE;
+      fileName _ name;  filePlaces _ places;  fileMode _ mode;
+   END
+   ELSE
+   BEGIN
+      IF NOT (sameFile _ nonEmpty (fileName))
+IFC tops20.sw THENC
+      THEN BEGIN INTEGER tempChan;  ! strip the version number;
+      fileName _ JFNS(tempChan _ GTJFN (oldInFile, '43000000), '111100000001);
+      RLJFN (tempChan)
+      END
+ELSEC
+      THEN fileName _ scan (oldInFile, br.dot, junk) &"." & scan (oldInFile, br.dot, junk)
+ENDC
+      ;
+      outStr ("
+( ?  for help,  ^  to start over)
+")    ;
+   END
+   ;
+
+   FOREVER DO
+   BEGIN
+      WHILE empty (name)  DO
+      BEGIN
+	 outStr ("
+(File name, *, or :) ");
+	 IF nonEmpty (fileName)  THEN outStr (fileName & "// ");
+
+ IFC tops20.sw  THENC
+	 DO char _ INCHRW  UNTIL char NEQ CR;
+ ELSEC
+	 char _ INCHRW;
+ ENDC
+
+	 IF char = "?"  THEN outStr ("
+
+  Type NAME of file you wish to edit (i.e., create, read, or modify),
+	confirm with 'CR' to review and/or change options, with 'ESC'
+	to use standard options.
+
+  'CR'	only, to edit same file with new options,
+
+  'ESC'	only, for same file and same options,
+
+    *	to read latest news (changes, excuses, etc.),
+
+    :	for TVGUID (TV-Edit users' manual).
+
+  In general, terminating a reply with 'ESC' means:  ""Ask no more,
+  use standard options.""
+")
+ IFC tops20.sw  THENC
+	 ELSE IF (accepted _ char = LF OR char = ESC)  
+ ELSEC
+	 ELSE IF (accepted _ char = tnxEOL OR char = ESC)  
+ ENDC
+	 THEN name _ fileName
+	 ELSE IF char = "*"
+	 THEN BEGIN getFile(newsFile,"1","R"); RETURN END
+	 ELSE IF char = ":"  
+	 THEN BEGIN getFile(guidFile,"2","R"); RETURN END
+	 ELSE BEGIN BKJFN('100); DONE END
+	 ;
+      END ! of WHILE;
+      ;
+
+    ! Get JFN:  Print message, confirm, block other forks;
+      inJfn _ CVJFN (inChan _ GTJFN (name, '062000000000));
+
+      IF !skip!  THEN errMes  ! File not ok to edit;
+      ELSE
+      BEGIN "gotJfn"
+       ! Allow disk files only; 
+	 IF DEVTYPE (inChan) NEQ 0  THEN outstr
+("...couldn't resist?  Well, disk files only.")
+	 ELSE
+	 BEGIN "dskFile" STRING dStr;
+	  ! Was ESC used to confirm?;
+	    BKJFN ('100);  IF INCHRW = ESC  THEN rushed _ TRUE;
+
+	    ownFile _ empty (dStr _ JFNS (inChan, '020000000000))
+		      ORIF equ (dStr, dirString);  ! Connect or login;
+
+	    GTFDB (inChan, fdb);
+
+	    IF fdb[1] LAND '010000000000  THEN outStr 
+("...long file.  Cannot TV-Edit!")
+	    ELSE IF (byteSize _ ldb(p.byteSize)) NEQ 7 
+		ANDIF byteSize NEQ 36 ANDIF fdb['11] LAND '007700777777
+	    THEN outStr
+("...improper text file.  Byte size = " & cvs(byteSize))
+	    ELSE
+	    BEGIN "opts"
+ifc tops20.sw thenc
+	       fileName _ JFNS (inChan, '111110000001);
+elsec
+	       fileName _ JFNS (inChan, '011110000001);
+endc;
+	       sameFile _ sameFile AND accepted;
+
+	     ! File ound o.k. so far.  Set default parameters;
+
+	       IF NOT fileMode OR NOT accepted
+	       THEN fileMode _ IF NOT ownFile THEN "R" 
+			   ELSE IF NOT lcd AND NOT fdb['24] THEN 0
+			   ELSE IF ldb(p.mode) THEN "U" ELSE "L"
+	       ;
+	       IF empty (filePlaces) OR NOT accepted
+	       THEN filePlaces _ IF (backPage _ fdb['24]) ! Flag;
+				 THEN cvs(backPage_ldb(p.page)) & "."
+					   & cvs(backLine _ ldb(p.line))
+				  ELSE "1"
+	       ;
+	     ! Get options for this editing session...places and mode 
+	     ! first;
+	       IF (rushed ORIF getsPlaces(filePlaces))
+		  ANDIF
+		  ((fileMode AND rushed) ORIF getsMode(fileMode))
+	       THEN
+	       BEGIN "opn"
+	           ! Make new file exist--so it survives a system crash;
+	           IF (newFile _ fdb[1] LAND '020000000000) AND 
+			fileMode NEQ "R"
+	            THEN BEGIN OPENF(inChan,'100000); CLOSF(inChan) END
+	           ;
+		  OPENF (inChan, IF (readOnly _ fileMode = "R") 
+				 THEN '440000200000 ELSE '440000300000)
+		  ;
+		  IF !skip! = '600123
+		    THEN BEGIN 
+		    OPENF (inChan, '440000200000);
+		    IF NOT !skip!
+		      THEN BEGIN
+		      fileMode _ "R";
+		      readOnly _ TRUE
+		      END
+		    END;
+		  IF !skip!  THEN errMes
+		  ELSE
+		  BEGIN "gotFile" INTEGER pg;
+		   ! Guarantee valid file mode L, U, or R;
+		     IF NOT readOnly  THEN
+		     BEGIN
+			IF fileMode NEQ "L" AND fileMode NEQ "U"
+			THEN fileMode _ IF fdb['24]
+				   THEN IF ldb(p.mode) THEN "U" ELSE "L"
+				   ELSE option ("LU", "
+  L  to write text mostly in Lower case
+  U  to write mostly in UPPER case
+")  			;
+			dpb (ucFile _ fileMode = "U", p.mode);
+		     END
+		     ;
+		     fileLength _ fdb['12];  ! For OKTOEDIT; 
+
+		     IF okToEdit  THEN
+		     BEGIN "go"
+			IF NOT sameFile  THEN backPage _ backLine _ 1;
+			RETURN;
+		     END "go"
+		     ;
+		  END "gotFile"
+		  ;
+	       END "opn"
+	       ;
+	    END "opts"
+	    ;
+	 END "dskFile"
+	 ;
+
+	 CLOSEFILE (inChan);
+
+      END "gotJfn"
+      ;
+      rushed _ FALSE;  name _ NIL;  
+      outStr ("
+
+
+   Starting over...
+");
+
+   END ! of FOREVER;
+   ;
+END "getFile"
+;
+
+INTEGER SUBROUTINE	openNew (STRING name);
+!			-------
+	Get a new file.  Let user delete and expunge if directory full.
+	Strings are copied to page 777.
+	;
+FOREVER DO
+BEGIN "openNew" INTEGER chan;
+   chan _ openFile (name, "WE");  ! "W" to get new version, "R" 
+				  !  is done below in start!code;
+   IF NOT !skip!  THEN
+   BEGIN
+    ! Finish creating the file so pages survive a system crash;
+      START!CODE  acDef;
+	push	p, chan;
+	pushj	p, cvJfn;	! JFN to AC 1;
+	tlo	1, '400000;	! To not to release;
+
+	CLOSF;
+	  0;			! Illegal instruction stop;
+
+	andi	1, -1;
+	move	2, ['440000300000];	! 36-bit bytes,,read & write;
+
+	OPENF;			! Reopen;
+	  0;			! Illegal instruction stop;
+
+	hrli	1, '24;		! To change word 24 in FDB;
+	hrroi	2, '777000;	! Don't touch TV 252 flag;
+	move	3, fdb['24];
+	CHFDB;			! Store user setable word;
+      END
+      ;
+      RETURN (chan);
+   END
+   ;
+   errMes;
+   outStr ("
+
+...IF DIRECTORY IS FULL,
+EXPUNGE AND CONTINUE...
+");
+   halt.f;
+
+END "openNew" ! of FOREVER;
+;
+
+SUBROUTINE	tell.1;		ERSTR (-1, 0);
+!		------;
+
+SUBROUTINE	tell.0;		BEGIN  duxOn; tell.1; duxOff  END;
+!		------;
+
+SUBROUTINE	tell1; 		tell.1;
+!		-----;
+
+SUBROUTINE	tell;		tell.0;
+!		----;
+
+
+COMMENT  End of file  GETFIL	;
+
+

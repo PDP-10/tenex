@@ -1,0 +1,495 @@
+
+	!*********   Procedures for everybody's use   *********
+	 *****************************************************;
+
+
+DEFINE
+	calli = "'047000000000",
+	isPageMark (str) = "(str = FF)";
+
+
+BOOLEAN SUBROUTINE	isText (STRING str);
+!			------;
+RETURN (nonEmpty (str) AND (str NEQ FF));
+
+
+
+INTEGER SUBROUTINE	lowerCase (INTEGER ch);
+!			---------
+	UPPERCASE(CH) comes from character table.
+	Note:  Upper case and lower case are NOT inverse fns.,
+	  since LOWERCASE leaves lower case punctuation
+	  and CR alone.
+	;
+RETURN (IF class(ch) = UCclass THEN ch + ("a" - "A") ELSE ch);
+
+
+INTEGER SUBROUTINE	TABlength (INTEGER x);
+!			---------
+	No. of spaces for a TAB at position  X.
+	;
+RETURN (8 - (x-1) MOD 8);
+
+
+
+INTEGER SUBROUTINE	nextTAB (INTEGER x);
+!			-------
+	TAB moves cursor to positions 9, 17, 25, ..., 8n+1, ...
+	;
+RETURN (x + TABlength(x));
+
+
+
+INTEGER SUBROUTINE	nextX (REFERENCE INTEGER x; INTEGER ch);
+!			-----
+	Updates  X  on basis of  CH.
+	1) CH a regular character or TAB:
+	  a) X _ X + (the length of  CH  at  X),
+	  b) NEXTx =  updated X  (i.e. TRUE).
+	2) CH an EOL-character:
+	  a) X not changed,
+	  b) NEXTx = 0 (i.e. FALSE).
+	;
+RETURN ( CASE  spacing (ch) 
+	  OF (0, inc(x), x _ nextTAB(x), inc(x)) );
+
+
+
+BOOLEAN SUBROUTINE	inVisible (INTEGER ch);
+!			---------
+	TRUE  iff  CHaracter is a SPace, TAB, or EOL-character.
+	;
+RETURN (ch = " " OR ch = TAB OR class(ch) = EOLclass);
+
+
+
+BOOLEAN SUBROUTINE	visible (INTEGER ch);
+!			-------
+	TRUE  iff  CHaracter is not a SPace, TAB, or EOL-character.
+	;
+RETURN (NOT (ch = " " OR ch = TAB OR class(ch) = EOLclass));
+
+
+	!*********   Display output routines   *********
+		   (most of them are in TVDPY)
+	 **********************************************;
+
+
+! Some display package variables and subroutines are renamed here;
+
+DEFINE
+	lcd = "lcDpy",
+	setCursor = "setCur", moveCursor = "setCur",
+	clearCursor = "clrCur",
+	dpy1 = "dpyChr", dpyN = "dpyNCh", dpy = "dpyStr",
+	forceOut = "dpyOut"; 
+
+
+SUBROUTINE	ring;  dpyChr (BEL);
+
+SUBROUTINE  doCM;
+BEGIN doCP; messageOn _ FALSE; noLine0 _ TRUE END;
+
+
+    !******   Display hardware dependent display routines   ******
+     ************************************************************;
+
+
+IFC  hazd.sw  THENC
+
+  SUBROUTINE	doCM;	
+  BEGIN doCP; FOR foo _ maxY1 downto 0 DO wxc[foo] _ 0 END;
+
+
+  SUBROUTINE	setCursor (INTEGER x, y);
+  !		---------;
+  BEGIN
+     dpy (h.LCA);
+     dpy1 (IF (cx _ x) > '37 THEN cx ELSE cx + '140);
+     dpy1 ((cy _ y) + '140);
+  END
+  ;
+
+
+  SUBROUTINE	moveCursor (INTEGER x, y);
+  !		----------
+	Move the cursor from its current position  (CX, CY) to
+	  pisition  (X,Y)  with minimum no. of output characters.
+	;
+  IF cx NEQ x OR cy NEQ y  THEN setCursor (x, y);
+
+
+
+  SUBROUTINE	spaceCursor (INTEGER x);
+  !		-----------
+	Write spaces from  CX  to  X.  X geq CX assumed.
+	;
+  dpyN (x - cx, " ");
+
+
+ENDC  ! ifc HAZD.SW;
+
+
+	    !*********   Text Line Display   *********
+	     ****************************************;
+
+
+BOOLEAN SUBROUTINE	starts (INTEGER x0, x1, y);
+!			------
+	For displaying and updating of lines.
+	X0  is  WX0 for this line (line  Y).
+	X1  is refresh origin.
+	Global  REFRESHX, DPWX0, and DPTX  are set for the
+	  benefit of  DISPLAYS  and  INDICATES.
+	TRUE  if X1 anywhere on the screen or left of it.
+	;
+IF (refreshX _ x0 MAX x1) LEQ x0+maxX+1  THEN
+BEGIN "starts"
+
+ IFC  hazd.sw  THENC
+
+    IF refreshX = x0  THEN
+    BEGIN
+        clearLine (y);  dpy1 (IF x0 THEN "*" ELSE ":");
+	inc (refreshX);
+    END
+    ELSE moveCursor (refreshX-x0, y)
+    ;
+
+ ELSEC
+
+  ! Clear line from  REFRESHX  on;
+    moveCursor (refreshX-x0, y);  doEEOL;
+
+  ! Maybe left margin of screen;
+    IF refreshX = x0  THEN
+    BEGIN
+       dpy1 (IF x0 THEN "*" ELSE ":");  inc (refreshX);
+    END			
+    ;
+
+ ENDC
+
+   dpWX0 _ x0;  dpTX _ 1;  RETURN (TRUE);
+END "starts"
+ELSE BEGIN refreshX _ zillion; RETURN (FALSE) END
+;
+
+BOOLEAN SUBROUTINE	displays (STRING str);
+!			--------
+	In principle,  STR  is displayed in position  DPtx.
+	DPwx0  is the invisible  DPtx  immediately left of the window
+	  (DPwx0 > 0  means the line is left-shifted to display
+	   current  TX  on the window).
+	The display is assumed to be ok upto position  REFRESHx,
+	  so that characters need actually to be sent only after  DPtx
+	  has reached  REFRESHx.
+	Caller must guarantee  DPwx0 < REFRESHx leq DPwx0+MAXx+1,
+	  and  line clear from  REFRESHx to right.
+	DPtx  gets updated.  
+	DISPLAYS  is FALSE if  DPTX  overflows the righr margin of
+	  the window  or  STR  contains any EOL-characters, TRUE o.w.
+	;
+BEGIN "displays" INTEGER ch;
+
+	SUBROUTINE	endLine (INTEGER endChr);
+	!		-------;
+	BEGIN
+
+	  IFC hazd.sw THENC
+		IF cx < wxc[cx]  THEN spaceCursor (wxc[cx]);
+		IF cx < maxX+1  THEN setCursor (maxX+1, cy);
+	  ELSEC
+		moveCursor (maxX+1, cy);
+	  ENDC
+
+		dpy1 (endChr);  refreshX _ zillion;
+	END
+	;
+
+			! +  +  +  + ;
+
+   DO
+    WHILE ch _ lop (str)  DO  ! Get first char of string, maybe EOL;
+    IF nextX (dpTX, ch)  THEN
+  ! Updated  DPtx  from here on;
+    BEGIN
+     ! Process spacing character...maybe over right margin;
+       IF dpTX > dpWX0 + maxX + 1
+       THEN BEGIN endLine("*"); RETURN (FALSE) END
+       ELSE
+     ! Print if in refresh area, delay action on SPace and TAB;
+       IF dpTX > refreshX AND ch NEQ " " AND ch NEQ TAB  THEN
+       BEGIN "dpyCh"
+
+ IFC  hazd.sw  THENC
+
+	   foo _ dptx - 1 - dpwx0;
+
+	   WHILE cx NEQ foo  DO
+	     IF cx < wxc[cy]  THEN spaceCursor (foo MIN wxc[cy])
+	     ELSE IF foo - cx LEQ 4  THEN spaceCursor (foo)
+	     ELSE setCursor (foo, cy)
+	   ;
+
+ ELSEC
+
+	   IF cx NEQ (foo _ dpTX - 1 - dpWX0)
+	   THEN moveCursor (foo, cy)
+	   ;
+
+ ENDC
+
+	   dpy1 (IF spacing(ch) = 1  THEN ch
+		   ELSE IF ch = ESC  THEN EET  ELSE BOX);
+
+	IFC hazd.sw THENC
+	   IF cx > wxc[cy]  THEN wxc[cy] _ cx;
+	ENDC
+
+       END "dpyCh"
+       ;
+    END
+    ELSE BEGIN endLine(":"); RETURN (FALSE) END
+   UNTIL empty (str)
+   ;
+ ! End of string without overflowing right margin;
+   RETURN (TRUE);
+END "displays"
+;
+
+SUBROUTINE	showStr (INTEGER wx, wy; STRING str);
+!		-------
+	STR  appears  at (wx,wy) on the screen.
+	;
+BEGIN "showStr" INTEGER x, y;
+ ! Save current cursor;
+   x _ cx;  y _ cy;  
+   setCursor (wx, wy);  dpy (str);  forceOut;
+ ! Restor cursor;
+   setCursor (x, y);
+END "showStr"
+;
+
+
+SUBROUTINE  dpyMode (INTEGER x; STRING str);	showStr (x, 0, str);
+!	    -------;
+
+
+
+SUBROUTINE	dpyMessage (STRING str);
+!		----------;
+BEGIN 
+   IF defining AND empty (str)
+   THEN dpyMessage (BB & ".DEFINING.." & EB)
+   ELSE
+ IFC hazd.sw THENC
+     showStr (mesOrg, 0, str&spaces[1 TO maxX1+2-mesOrg-length(str)])
+ ELSEC
+     showStr (mesOrg, 0, EEOL & str)
+ ENDC
+   ;
+   messageOn _ nonEmpty (str);  expired _ FALSE;
+END
+;
+
+
+SUBROUTINE	dpyI;
+!		----;
+dpyMode ( iOrg, IF (iBlinks _ insertMode) 
+		THEN (stBl & "I" & clBl) 
+		ELSE " " );
+
+
+SUBROUTINE	dpyCase;
+!		-------;
+IF writeMode  THEN
+BEGIN "dpyCase" INTEGER ch;
+   ch _ IF inUC THEN "U" ELSE "L";
+
+   dpyMode (caseOrg, IF (caseBlinks _ UCFile XOR inUC)
+			THEN (stBl & BOX & ch & clBl)
+			ELSE (EB & ch)
+	   );
+END "dpyCase" 
+;
+
+
+SUBROUTINE	goof (STRING str);
+!		----
+	Error message printer for debuging mainly.
+	;
+BEGIN INTEGER i;
+   FOR i _ 10 downto 1  DO ring;  dpyMessage (str);
+END
+;
+
+SUBROUTINE	updateOld (REFERENCE INTEGER old;
+				INTEGER new, x, y);
+!		---------
+	NEW number replaces OLD at position (X,Y),
+	OLD  gets updated.
+	Done only if the two differ.
+	;
+IF new NEQ old  THEN
+BEGIN "updateOld" STRING str;
+   setCursor (x, y);  dpy (str _ cvs (new));
+ ! Mask out remaining digits of old number with BOXes;
+   dpyN (length(cvs(old)) - length(str), BOX);
+   old _ new;		! This is why must have  REFERENCE OLD;
+END "updateOld"
+;	
+
+FORWARD SUBROUTINE	termInit;
+
+
+SUBROUTINE	binOn;
+!		-----;
+START!CODE "binOn" 
+	movei	1, -1;	
+	RFMOD;
+	trz	2, '000300;	! Binary mode;
+	SFMOD;
+END "binOn" 
+;
+
+
+SUBROUTINE	duxOff;
+!		------;
+BEGIN "duxOff"
+   binOn; 
+
+   START!CODE  
+	movei 1,'400000; 
+	EIR;		! Enable pseudo-interrupts; 
+   END
+   ;
+   dpyOn _ TRUE;  termInit;  IF dmd  THEN outStr ("");  ! ROLL off;
+			     if infd then outstr ("2Q");! [1] roll off;
+   			     if v200k then outstr("="); ! alt keypad;
+END "duxOff" 
+;
+
+
+SUBROUTINE	binOff;
+!		------;
+START!CODE "binOff" 
+	movei	1, -1;
+	RFMOD;			! Read current status;
+	trz	2, '000300;
+	tro	2, '000100;	! ASCII mode;
+	SFMOD;			! Set new status;
+END "binOff" 
+;
+
+
+SUBROUTINE	duxOn;
+!		-----;
+BEGIN "duxOn"
+   duxOff;  IF dmd  THEN outStr ("");  ! ROLL on; 
+	    if infd then outstr ("0Q");! [1] Roll on;
+	    if v200k then outstr (">");! normal keypad;
+   binOff;
+
+   START!CODE
+	movei 1,'400000;
+	DIR;		! Disable pseudo-interrupts;
+   END
+   ;
+END "duxOn"
+;
+
+SUBROUTINE	warning (STRING mes);
+!		-------;
+BEGIN "warning"  INTEGER fmod;
+ ! First set binary mode;	
+   SFMOD ( '777777, (fmod _ RFMOD('777777)) LAND '777477 );
+   dpyStr (BEL);
+   turnOn;  ! Flush dpy buffer, assure DPYON, undefine physical cursor;
+   clrCur;  ! Makes next output scroll and set TTY mode;
+   dpyStr (mes);  dpyOut;
+
+   halt.f;
+
+   SFMOD ('777777, fmod);  clrCur;
+END "warning"
+;
+
+
+SUBROUTINE	errMes;
+!		------;
+BEGIN INTEGER fmod;
+ ! First set ASCII mode;	
+   SFMOD ( '777777, (fmod _ RFMOD('777777)) LOR '000100 );
+   outStr ("
+ ");  ERSTR (!skip!, 0);  SFMOD ('777777, fmod);  clrCur;
+quick!code movei 1,'777777; '104000000100; comment cfibf; end;
+END
+;
+
+
+STRING SUBROUTINE	nameScan (REFERENCE INTEGER wd1; INTEGER nwds);
+!			--------
+	Retuern  MEMORY [WD1:WD1+NWDS-1]  as a (file name) string.
+	Quits at first NULL byte.
+	;
+BEGIN "nameScan" STRING name; INTEGER p.name;
+   name _ NIL;  p.name _ '440700000000 + location(wd1);  nwds _ nwds*5;
+
+   WHILE (dec(nwds)) GEQ 0 ANDIF (junk _ ildb (p.name)) 
+   DO name _ name & junk
+   ;
+   RETURN (name);
+END "nameScan"
+;
+
+
+SUBROUTINE	exit;
+!		----
+	CALL, no  continue possible
+	;
+START!CODE  HALTF; jrst	.-1  END;
+
+
+
+SUBROUTINE	exit1;	halt.f;  !  CALL, may continue; 
+!		-----;
+
+
+SUBROUTINE	patch;
+!		-----;
+START!CODE "patch"	
+  0;  1;  2;  3;  4;  5;  6;  7;  8;  9; 
+ 10; 11; 12; 13; 14; 15; 16; 17; 18; 19;
+ 20; 21; 22; 23; 24; 25; 26; 27; 28; 29; 
+ 29; 28; 27; 26; 25; 24; 23; 22; 21; 20; 
+ 19; 18; 17; 16; 15; 14; 13; 12; 11; 10;  
+  9;  8;  7;  6;  5;  4;  3;  2;  1;  0;   
+END "patch"
+;
+
+! Make the following available to all;
+
+
+DEFINE		leaveInsert = "insertMode _ FALSE";
+
+FORWARD SUBROUTINE	eolInput;
+
+FORWARD SUBROUTINE	closeLine;
+
+FORWARD SUBROUTINE	iglCommand;
+
+FORWARD SUBROUTINE	clearStack;
+
+FORWARD SUBROUTINE	abort;
+
+FORWARD SUBROUTINE	badAbort;
+
+FORWARD SUBROUTINE	halt;
+
+FORWARD SUBROUTINE	preScan;
+
+
+COMMENT  End of file  TVSUB;
+
+

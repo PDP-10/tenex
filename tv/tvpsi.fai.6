@@ -1,0 +1,143 @@
+ENTRY	psiInit
+TITLE	TVPSI -- ^L and ^O pseudo-interrupts for TV-Edit
+
+;hiseg
+
+a __ 1
+b __ 2
+c __ 3
+
+p __ 17
+
+
+EXTERNAL dpyOn		; flag to communicate with SAIL
+			;   cleared by  ^O  interrupt
+			;   set by ???
+			;   if non-zero, display output
+
+EXTERNAL haltPending	; set by  ^L  interupt
+			;   cleared by "HALT"
+
+INTEGER  retPC		; receives PC on interrupt
+INTEGER  retPC1		; return address for aborting terminal i/o JSYS
+			;  - by courtesy of Scott Daniels, 26-Sep-76
+INTEGER  save1		; save AC 1
+INTEGER  inChar		; input character to use
+
+; for debugging:
+
+INTEGER  clPC
+INTEGER  coPC
+
+psiInit:
+;------
+	setom	 dpyOn		; DPYON _ TRUE
+	setzm	 haltPending	; HALTPENDING _ FALSE
+
+; set level 2 interrupt
+	movei	a, 400000
+	RIR			; find out where interrupt table is at
+	hlrz	c, b		; get "LEVTAB" address
+
+	movei	a, retPC
+	movem	a, 1(c)		; set pc save address for pri. 2
+
+; ^O assignment
+	move	a, [xwd 17, 2]		; assign  ^O  to channel 2
+	ATI
+	move 	a, [xwd 2, co.int]	; prior. 2,, interrupt address 
+	movem	a, 2(b)			; "b" still has "rir" pointers
+
+; ^L assignment
+	move	a, [xwd 14, 3]		; assign  ^L  to channel 3
+	ATI
+	move	a, [xwd 2, cl.int]	; prior. 2,, int. rout. addr
+	movem	a, 3(b)
+
+; activate
+	movsi	b, (3b3)	; activate channels 2 and 3
+	movei	a, 400000	; for this fork
+	AIC
+
+	popj	p,		; all done
+
+
+cl.int:		    ; ^L  interrupt, short and sweet
+;-----
+	movem	1, save1
+	movei	1, 100
+	CFIBF			; clear tty input buffer
+
+	setom	 haltPending	; haltPending _ TRUE
+
+	movei	1, 14		; ^L
+	movem	1, inChar
+
+	move	1, retPC
+	movem	1, clPC		; for debugging
+	tlne	1, (1b5)	; are we in monitor code?
+	 jrst	 done		;  no, leave
+isItIn:	move	1, retPC
+	move	1, -1(1)	;  yes
+	camn	1, [PBIN]	; are we doing tty input?
+	 jrst	 flush1		;  yes
+	came	1, [BIN]
+	 jrst	 done		;  no
+	move	1, save1
+	caie	1, 100
+	 jrst	 done		;  no
+
+flush1:	move	1, inChar
+	movem	1, save1	; fake-input  ^L  or ^O
+	jrst	 flush
+
+
+co.int:		    ; here on ctrl-O interrupt
+;-----
+	skipn	 dpyOn		; display ON or OFF?
+	 jrst    [setom	dpyON	;  it is OFF, ON it!...
+		  DEBRK]	;   ...and leave
+
+ 	movem	1, save1	; free an AC
+	movei	1, 101		; tty output
+	CFOBF			; clear output buffer
+
+;... somehow should manage to clear our own output buffer as well ...
+
+	hrroi	1, [asciz / ^O/] ; ^G's to flush Load Cursor Address
+	PSOUT
+
+	setzm	 dpyOn		; flag rest of world
+	movei	1, 17		; ^O
+	movem	1, inChar
+
+	move	1, retPC	; break pc
+	movem	1, coPC		; save for debugging
+	tlne	1, (1b5)	; are we in monitor code?
+	 jrst	 done		;  no
+	move	1, -1(1)	; actual location if in jsys
+	camn	1, [PSOUT]	; PSOUT ?
+	 jrst	 flush
+	came	1, [SOUT]	; sail doing an outstr?
+ 	 jrst	 isItIn		; no, maybe doing input?
+	hrrz	1, save1	; check stored ac1
+	caie	1, 101		; only if teletype....
+	 jrst	 isItIn		; check if doing input
+
+flush:	movei	1, leave	; displaced return address
+	hll	1, retPC	; pick up flag bits from saved pc
+	exch	1, retPC	; new PC in RETPC, old PC in 1
+	movem	1, retPC1	; store return addr to user code
+done:	move	1, save1	; restore AC1
+	DEBRK
+
+
+leave:	jrst	 @ retPC1	; abort i/o, back to user code
+jfcl
+jfcl
+jfcl
+
+
+;lvar
+end
+

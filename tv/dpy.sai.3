@@ -1,0 +1,409 @@
+
+COMMENT External symbols (variables and procedures) of the display 
+	package <TV>DPY, in SAIL source!file format.
+
+
+		DESCRIPTION OF THE DISPLAY PACKAGE
+		----------- -- --- ------- -------
+
+     The purpose of the display package is to allow IMSSS TENEX users 
+to write display programs that are independent of the type of display.
+The package defines a set of display commands, modeled after the ones
+available on TECs and DATAMEDIAs, and interptrets them according to
+terminal type.  The devices known to the package are TEC 435 Data-
+Screen display terminal, DATAMEDIA Elite 2500 display terminal, IMLAC 
+PDS-1 display computer when loaded with the SET THEORY program, and the
+Model 38 TTY as a default.
+
+     A programmer has the following methods of controlling the display:
+
+     1.  Commands and text can be passed to the display via the proce-
+dures 
+
+     DPYCHR (char) -- to pass one command or text character,
+     DPYNCH (n, char) -- to pass  n  copies of same, and
+     DPYSTR (str) -- to pass a string,
+
+e.g., "DPYCHR('31)" to clear the screen.  The package translates the 
+commands into the commands of the actual display.  The procedure DPYCHR
+should be used whenever the user program generates displayable text 
+character by character, to avoid string conversion and concatenation 
+overhead.  When text and/or commands reside in the program already as 
+strings, DPYSTR is more efficient.  The following three sequences of 
+statements are equivalent provided that CHAR1 and CHAR2 are of type 
+INTEGER:
+
+     (a)  DPYCHR (char1),  DPYCHR (char1),  DPYCHR (char2)
+     (b)  DPYNCH (2, char1),  DPYCHR (char2)
+     (c)  DPYSTR (char1 & char1 & char2).
+
+(b) is slightly more efficient than either (a) or (c).  
+
+     COMMAND FORMAT.  Most commands are either one-character or two-
+character commands.  All one-character commands are control characters.
+Two-character commands start with an ESC and the second character is 
+in the range 101...146 octal (capital A throuth small f).  ESC followed
+by a character in the uppercase set is the same command as the corres-
+ponding control character, e.g.,  ECS A  and  CTRL-A  are equivalent.  
+ESC a  through  ESC f  have no one-character equivalents.
+
+     The command characters are documented in the file <TV>DPYCOM.SAI.
+
+     2.  Most display commands can be called directly, e.g., "SETCUR
+(7,11)" to set the cursor to column 7 line 11.  Direct calls eliminate 
+decoding overhead in the display package.  The direct call commands are 
+declared in this file and documented here and in <TV>DPYCOM.SAI.
+
+     3.  Some control over the display can be exercised by assigning 
+values to the external variables of the package, e.g., "LCDPY _ FALSE"
+to force uppercase conversion of output.  The external variables that
+may be written by the user are LCDPY, BPS, and DPYON.
+
+
+	    TTY, Display, Insert, Italic, and Blink modes
+	    ---  -------  ------  ------  --- ----- -----
+
+     Certain details of operating the display depend on the internal 
+mode of the package.  There are commands to explicitly set and clear 
+modes, but many others cause mode change as a side effect.  Notice, for
+instance, that TTY and insert modes are mutually exclusive.
+
+     TTY MODE.  The display simulates a teletype allowing ordinary text
+to pass through the display package.  Spaces and TABs are simulated by
+moving the cursor, but they do not overwrite old text.  Backspace, car-
+riage return, and line feed are obayed.  Form feed and vertical tab are
+indicated.  When the cursor moves to a new line either by means of a
+line feed or by overflowing the current line, the new line is cleared.
+An attempt to go beyond the bottom line causes the screen to scroll by 
+one line.  There is no way to move the cursor up in TTY mode.  Commands
+that set TTY mode are:  Set TTY mode, clear page, backspace (different 
+from 'left cursor' which clears TTY mode), line feed (different from 
+'down cursor' which clears TTY mode), vertical tab, and form feed.
+
+     DISPLAY MODE.  The display is in display mode whenever it is not 
+in TTY mode.  In display mode spaces and TABs are printing characters 
+that overwrite old text, or are inserted if in insert mode.  Last line 
+overflow moves cursor to the beginning of first line.  Typical display 
+mode commands are inserting, deleting, and moving the cursor.  They
+clear TTY mode, i.e., set display mode.
+
+     INSERT MODE.  Text is inserted in front of the current character.
+Current character and the rest of the line move right and characters at
+the last position of the line are lost.  Insert mode is cleared by all
+insert/delete and cursor movement commands, and by setting of TTY mode.
+
+     ITALIC MODE.  Text is displayed in "italics" provided that the 
+display has the means of indicating an alternate type face.  Current
+IMSSS displays do not, but by modifying the hardware on Datamedias 
+would make it possible to use the bright characters to stand for ita-
+lics.  The commands that affect italic mode are set/clear italic mode
+and clear page.
+
+     BLINK MODE.  Text is displayed in blink mode provided that the 
+display has blink mode.  The distinction between blink mode and blink-
+ing field needs clarification.  A BLINKING FIELD is a sequence of 
+display positions delimited by BEGIN and END BLINKING FIELD characters 
+that occupy a space on the screen.  TECs have the blinking field fea-
+ture.  When a new character overwrites an old one in a blinking field 
+it will blink.  The blinking thus depends on the position of a charac-
+ter on the screen.  DATAMEDIAs have blink mode.  The blinking of a 
+character depends on the mode at the time when the character is trans-
+mitted.  The display package caters to both by having commands to set/
+clear blink mode and to begin/end blinking field.  The begin/end blink-
+ing field commands appear as spaces on the screen and they set/clear 
+the blink mode.  Thus to write a field that blinks: give the begin 
+blinking field command, the text of the field, and the end blinking 
+field command.  To write inside a blinkin field at a later time: move 
+cursor to the field, send the set blink mode comman and the text, and 
+then clear blink mode for instance by moving the cursor elsewhere.
+
+
+		       Delayed cursor movement
+		       ------- ------ --------
+
+     Cursor movement commands are delayed until the time that the
+position of the cursor actually matters, e.g., when something is to be
+written on the screen.  At that time a "minimum" path from the old
+location to the new is computed and used.  The minimum is in terms of
+number of characters to be sent to the terminal.  Thus the user need 
+not try to optimise cursor movement in his program.  An important rea-
+son for attempting this optimization in the package is that the number 
+of characters required for moving the cursor varies from display to 
+display.
+
+     Since spaces and TABs are treated as cursor movement commands in 
+TTY mode, long blank fields inside and at the end of a line are pro-
+cessed efficiently.
+
+
+			  Output, buffering
+			  ------  ---------
+
+     The display package assembles its output to a 640-character output
+buffer and transmits the buffer when the Boolean DPYON is TRUE, and
+
+     1.  the buffer is full, or
+     2.  the user program calls the DPYOUT or TURNOF procedure.
+
+In the latter case delayed cursor movements (see section above) are 
+completed first.  Proper programming practice is to call DPYOUT or
+TURNOF every time before going to wait for input.  WARNING:  DPYOUT
+leaves the terminal in binary mode in which case keyboard input is
+not echoed by the system.  TURNOF sets normal (ASCII) mode.
+
+     The procedure TURNON flushes the current contents of the output
+buffer, sets DPYON to TRUE, and sets binary mode.  It is automatically
+called when the package is initialized.
+
+
+   Use of the display package in SAIL and assembly language programs
+   --- -- --- ------- ------- -- ---- --- -------- -------- --------
+
+     SAIL PROGRAMS.  You should
+
+		REQUIRE "<TV>DPYCOM.SAI" SOURCE!FILE
+
+to get the command definitons and gain an access to the package.  If 
+you wish to use only the functions of the package but not the predefin-
+ed command character names, you should
+
+		 REQUIRE "<TV>DPY.SAI" SOURCE!FILE.
+
+     ASSEMBLY LANGUAGE PROGRAMS.  You should copy the external defi-
+nitons from the file  <TV>DPY.ASS  to your FAIL or MACRO source file
+and load with  <TV>DPY.REL.   The conventions of calling the  DPY 
+procedures are those of SAIL, and the accumulators are not protected.
+The integrity of accumulators '12, '16, and '17 is maintained.
+
+     MEMORY REQUIREMENTS.  900 words of code in the high segment and 
+160 words of variables and output buffer in the low segment.
+
+     SPEED.  The attempt has been to make the code fast.
+
+
+
+	      Display package documentation and sources 
+	      ------- ------- ------------- --- -------
+
+<TV>DPYCOM	Summary of the display package commands.
+
+<TV>DPYCOM.SAI	Detailed description of the ASCII characters and the
+		associated display functions, in SAIL source!file 
+		format.  Requires <TV>DPY.SAI as a source!file.
+
+<TV>DPY.SAI	(this file)  Explains the general operation of the 
+		display package, TTY, insert, italic, and blink modes, 
+		and the external variables and procedures.  In SAIL 
+		source!file format.  Requires <TV>DPY.REL as a 
+		load!module.
+
+<TV>DPY.REL	Display package load module.
+
+<TV>DPY		The code, written in FAIL.
+
+
+			       Example
+			       -------
+
+     In the example, " !" stands for the semicolon (we are inside a
+SAIL comment).
+
+
+BEGIN "demo"
+   REQUIRE "<TV>DPYCOM.SAI" SOURCE!FILE !  COMMENT Get the package !
+
+   dpyIni !		    COMMENT Initialize, set binary mode !
+   doCP !		    COMMENT Clear page !
+   setCur (maxCX DIV 2, maxCY DIV 2) ! COMMENT Point to middle of page !
+   dpyNCh (5, left) !	    COMMENT Move left 5 places !
+   doBB !		    COMMENT Begin blinking field !
+   dpyStr ("Hello" & EB) !  COMMENT Print message, end blinking field !
+   setCur (0, cy + 1) !	    COMMENT Point to beginning of next line !
+
+	COMMENT All output is still in the display buffer.
+		Nothing has been transmitted to the display yet.
+		Delaying DPYOUT reduces overhead !
+
+   WHILE TRUE  DO	    COMMENT Infinite loop !
+   BEGIN "play"
+      dpyOut !  	    COMMENT Output contents of display buffer !
+      dpyChr (INCHRW) !     COMMENT Echo (and obay) user input.  Notice
+				    that he may type display commands !
+   END "play"
+   !
+END "demo"
+
+;
+
+
+    COMMENT  This page:  External variables of the display package;
+
+
+    COMMENT  The first four variables are for read-only;
+
+EXTERNAL INTEGER  maxCX, maxCY;	
+			    COMMENT  Maximum column  x  and line  y
+				for the display.  Set by DPYINI.  Not 
+				to be written by the user.
+				  0 leq X leq MAXX,  0 leq Y leq MAXY.
+				;
+
+EXTERNAL INTEGER  cx, cy;   COMMENT  Current cursor coordinates main-
+				tained by the display routines.  Not to
+				be written by the user.
+				;
+
+
+    COMMENT  The remaining variables may be written by the user;
+
+EXTERNAL BOOLEAN  dpyOn;    COMMENT  Flag to control the final stage of
+				outputing to the display.  Set to TRUE
+				by DPYINI.  Inhibits output when FALSE.
+				May be written by the user, to provide 
+				^O  control of the display, for ins-
+				tance.  Proper way to set it back to 
+				TRUE when waking up after  ^O  is to
+				call the procedure  TURNON  which
+				flushes display output buffer and sets
+				DPYON (also sets binary mode).
+				;
+
+EXTERNAL INTEGER  bps;	    COMMENT  Baud rate, bits per second, for
+				computing the number of fill characters
+				for slow display functions (insert line
+				on the Datamedia).  Currently set to
+				2400.  May be written by the user.
+				;
+
+EXTERNAL BOOLEAN  lcDpy;    COMMENT  Lower Case Display, set by DPYINI
+				on the basis of terminal type.  If 
+				FALSE, lowercase text (ASCII codes
+				140...176) is converted to upper case.
+				May be written by the user.
+				;
+
+
+    COMMENT  This page:  Initialization, passing of characters to the 
+	display package, housekeeping.
+	;
+
+EXTERNAL SIMPLE PROCEDURE  dpyIni;
+COMMENT			   ------
+	Initialize display package.
+	Set  MAXCX, MAXCY, and LCDPY  according to terminal type, clear
+ 	(undefine)  CX  and  CY,  flush display buffer, set the flag
+	DPYON  to TRUE, set display speed  BPS  to 2400, initialize 
+	internal housekeeping.
+	Clear italic, insert, blink, and TTY modes.
+	Set terminal to binary mode.
+	DPYINI should be called after initial dialog is finished and
+	before other procedures of the package are called.  If DPYINI 
+	is not explicitly called by the user, first call of DPYCHR, 
+	DPYNCH, or DPYSTR automatically goes through DPYINI.
+	;
+
+EXTERNAL SIMPLE PROCEDURE  turnOn;
+COMMENT			   ------
+	Initialize (flush) display buffer, set DPYON to TRUE, and
+	set binary mode.
+	;
+
+EXTERNAL SIMPLE PROCEDURE  turnOf;
+COMMENT			   ------
+	Finish output, set TTY (roll) mode, clear italic, insert, and
+	blink modes, set DPYON to FALSE, and undefine cursor.
+	Set terminal to ASCII mode.
+	;
+
+EXTERNAL SIMPLE PROCEDURE  clrCur;
+COMMENT			   ------
+	Undefine  CX  and  CY,  clear insert and blink modes.
+	If text is passed to the package when the cursor is undefined
+	(i.e., when  CX  or  CY  is illegal), the screen is scrolled by 
+	one line and the text goes to the beginning of the bottom line.
+	;
+
+
+EXTERNAL SIMPLE PROCEDURE  dpyChr (INTEGER char);
+COMMENT			   ------
+	Pass one CHARacter to the display package.
+	;
+
+EXTERNAL SIMPLE PROCEDURE  dpyNCh (INTEGER n, char);
+COMMENT			   ------
+	Pass  N  copies of CHARacter to the display package.
+	;
+
+EXTERNAL SIMPLE PROCEDURE  dpyStr (STRING str);
+COMMENT			   ------
+	Pass a STRing to the display package.
+	;
+
+
+EXTERNAL SIMPLE PROCEDURE  dpyOut;
+COMMENT			   ------
+	Force output of display buffer.
+	The transmission to the display is not automatically initiated
+	after each call of a display procedure that produces output.
+	This procedure allows the user to initiate the transfer.
+	See Section 'OUTPUT, BUFFERING' on page 3.
+	;
+
+
+    COMMENT  This page:  Direct calls of commands that are also 
+	callable by passing a command character or string to the 
+	display package.  See  <TV>DPYCOM.SAI  for details of how 
+	these commands work.  The direct calls are somewhat faster, 
+	since they need not go through the DPY command decoder. 
+	;
+
+EXTERNAL SIMPLE PROCEDURE  doRigh;
+EXTERNAL SIMPLE PROCEDURE  doDown;
+EXTERNAL SIMPLE PROCEDURE  doLeft;
+EXTERNAL SIMPLE PROCEDURE  doUp;
+
+EXTERNAL SIMPLE PROCEDURE  doHome;
+
+EXTERNAL SIMPLE PROCEDURE  setCur (INTEGER x, y);
+
+    COMMENT
+	Set cursor to column  X  row  Y.   The corresponding string 
+	form command is
+
+		DPYSTR (LCA & LNOT(x) & LNOT(y)),
+
+	and with  0 leq X,Y leq '176  the effect is identical.  See 
+	<TV>DPYCOM.SAI  for details.
+	;
+
+EXTERNAL SIMPLE PROCEDURE  setIta;
+EXTERNAL SIMPLE PROCEDURE  clrIta;
+EXTERNAL SIMPLE PROCEDURE  setIns;
+EXTERNAL SIMPLE PROCEDURE  clrIns;
+
+EXTERNAL SIMPLE PROCEDURE  doIC;
+EXTERNAL SIMPLE PROCEDURE  doIL;
+EXTERNAL SIMPLE PROCEDURE  doDC;
+EXTERNAL SIMPLE PROCEDURE  doDL;
+
+EXTERNAL SIMPLE PROCEDURE  doEEOL;
+EXTERNAL SIMPLE PROCEDURE  doEEOP;
+EXTERNAL SIMPLE PROCEDURE  doCL;
+EXTERNAL SIMPLE PROCEDURE  doCP;
+
+EXTERNAL SIMPLE PROCEDURE  doBB;
+EXTERNAL SIMPLE PROCEDURE  doEB;
+EXTERNAL SIMPLE PROCEDURE  setBli;
+EXTERNAL SIMPLE PROCEDURE  clrBli;
+
+EXTERNAL SIMPLE PROCEDURE  setTTY;
+EXTERNAL SIMPLE PROCEDURE  clrTTY;
+
+
+
+REQUIRE "<TV>DPY.REL" LOAD!MODULE;
+
+
+COMMENT  End of file  <TV>DPY.SAI;
+
+

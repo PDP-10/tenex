@@ -1,0 +1,348 @@
+
+		!******   READING   ******
+		 ************************;
+
+
+SUBROUTINE	finRdPage;
+!		---------;
+BEGIN
+END
+;
+
+
+
+BOOLEAN SUBROUTINE	atEOF;
+!			-----
+	Can set EOF flag.
+	;
+RETURN (eof ORIF (eof _ outOfRange (rdPage)));
+
+
+
+SUBROUTINE	rdPermit;
+!		--------
+	Make sure 'IBUFMP' is available for reading.
+	Called from 'RDMAP'.
+	;
+IF NOT atEOF  THEN
+BEGIN
+   IF iBufMP GEQ maxIBufMP  THEN salvage; 
+   inc (iBufMP);
+ ! SALVAGE does 'iBufMP _ minIBufMP - 1';
+END
+;
+
+SUBROUTINE	rdMap;
+!		-----
+	Map 'RDPAGE' of file to 'IBUFMP' of fork.
+	Checks 'IBUFMP' availability first (RDPERMIT).
+	Enters segment # to LINKS, sets input pointer and count.
+	;
+BEGIN "rdMap"
+   rdPermit;  IF EOF OR stopOnEop  THEN RETURN;
+   rd#Map (rdPage, iBufMP);
+
+ ! Flag LINKS [RDPAGE]  with segment no.;
+   START!CODE
+	move	1, rdPage;
+	move	 segment;
+	dpb	 p.rdSeg;	! Mark the page "deleted";
+   END
+   ;
+   loadN.xxIn;  ! Load N.FFIN, N.LFIN, N.CHIN;
+   p.input _ '440700000000 + iBuf;	! Set pointer FIRST;
+   n.input _ IF rightOf(rdPage) GEQ 0 THEN '5000
+	     ELSE (n.chIn MIN '5000);	! Set count 2nd.  NOTE: Full
+					  count unless EOF page, due
+					  to FIXEOP of FINWRPAGE;
+END "rdMap"
+;
+
+SUBROUTINE	turnRdPage;
+!		----------
+	Dismiss current read page, get next unless EOF.
+	Map read page to input buffer (cycling and collecting of
+	  input buffer is done from  RDMAP).
+	;
+BEGIN "turnRdPage"  INTEGER eofP;
+   finRdPage;  rdPage _ rightOf (eofP _ rdPage);
+   IF NOT atEOF  THEN rdMap  ELSE rdPage _ eofP;  ! Retains eofPage;
+END "turnRdPage" 
+;
+
+STRING SUBROUTINE	lineSegment (INTEGER cnt);
+!			-----------
+	Get next contiguous segment of text from input file.
+	Scans past initial 0-bytes.  Thereafter, terminates on
+	  0-byte, LF, FF, CNT characters, EOP, or EOF.
+	Zero or negative  CNT  causes a scan past initial NULL,
+	  but returns an empty string.
+	BREAKCHAR  will be set to LF, FF, or zero.
+	Turning of read pages done elsewhere.
+	Warning:  The code is rather tight.  It tries to be fast.
+	;
+QUICK!CODE "lineSegment"  
+	acDef;  DEFINE	ch# = "2", bc# = "3", bp# = "4";
+	LABEL  air, fair, txt, lfTerm, ffTerm, ffCont, nulTerm, 
+		cntTerm, term, mtRet;
+
+! Reserve string stack space for the result.
+! Init BREAKCHAR _ 0, LINESEGMENT _ empty string;
+	setzb	0, breakChar;
+	push	sp, 0;		! Place for count;
+	push	sp, 0;		! Place for pointer;
+
+! Scan past initial NULL bytes.  NOTE: Pointer updated before count;
+	move	bp#, p.input;	! Grab byte pointer..;
+	skipg	bc#, n.input;	! ..and count (to EOP);
+	 jrst	 mtRet;
+
+  air:	ildb	ch#, bp#;	! Take the byte..;
+	jumpn	ch#, fair;	! ..jump if past initial NULLs;
+	sojg	bc#, air;	! Adjust count.  More on this page?;
+
+! EOP or EOF;
+	movem	bc#, n.input;	! Update count of remaining input;
+	jrst	 mtRet;		! Will update input pointer, BREAKCHAR;
+
+! Prepare to scan for the line.  Note: pointer is one ahead of count;
+ fair:	DECBP (bp#);		! Back-up pointer to beginning of string;
+	movem	bp#, (sp);	! Store LINESEGMENT pointer;
+	movem	bc#, n.input;	! Store initial count for length calcul;
+
+! BC# _ CNT min BC#,  to allow termination by  CNT  or  EOP;
+	camle	bc#, cnt;	! Negative  CNT  is ok;
+	 move	bc#, cnt;	! Max count restriction dominates;
+	movem	bc#, -1(sp);	! Store for LINESEGMENT length calculation;
+
+	jumple	bc#, cntTerm;
+
+! Note:  Pointer updated before count;
+ txt:	ildb	ch#, bp#;		! Get a byte;
+	trne	ch#, LNOT (LF LOR FF);	! Skip if possibly terminator;
+	 sojg	bc#, txt;		! Adjust count, more text?;
+
+	jumple	bc#, cntTerm;	! Count terminates?;
+! Count is one behind;
+	jumpe	ch#, nulTerm;
+	cain	ch#, LF;	! EOL?;
+	 jrst	 lfTerm;
+	cain	ch#, FF;	! Page mark?;
+	 jrst	 ffTerm;	!  Yes;
+! Adjust count;
+	sojg	bc#, txt;	! More text?;
+	jrst	 cntTerm;
+
+
+ffTerm:	sos	 n.ffIn;	! DEC (N.FF remaining on input page);
+	jrst	 ffCont;
+
+lfTerm:	skipg	 n.ffIn;
+	 sos	 n.lfIn;	! DEC (N.LF past last FF);
+ffCont:	movem	ch#, breakChar;	! Break char _ LF or FF;
+	soja	bc#, term;	! Adjust count, go to finish;
+
+nulTerm:			! BC# one behind.  That and this SOS..;
+	sos	 n.input;	! ..remove null-byte from both input..;
+				! ..buffer and LINESEGMENT--tricky!;
+cntTerm:
+term:	sub	bc#, -1(sp);	! Compute  -LENGTH (LINESEGMENT);
+	movnm	bc#, -1(sp);	! Set length of answer;
+	addm	bc#, n.input;	! Subtract length from # bytes to EOP;
+mtRet:
+	movem	bp#, p.input;	! Save updated pointer;
+
+! Must do our own return since result already in stack;
+	sub	p, ['2000002];
+	jrst	@ 2(p);
+
+END "lineSegment"
+;
+
+STRING SUBROUTINE	pMapINPUT;
+!			---------
+	Line getter.
+	Replaces  INPUT(CHANNEL,TABLE).
+	Leaves well formed lines in mapped IBUF space as constant strings.
+	The idea is:  
+	  (1) No modification of input page (so read only will work).
+	  (2) As little stuff to SAIL string space as possible to
+		minimize SAIL garbage collection.
+
+	Assembles line segments into full lines.
+	Turns read pages as needed.
+	;
+BEGIN "pMapINPUT"  INTEGER len;  STRING line;
+   line _ lineSegment (maxLength);
+
+   WHILE NOT breakChar AND (len _ maxLength - length(line)) > 0  DO
+   BEGIN
+      IF EOP
+      THEN BEGIN turnRdPage; IF EOF OR stopOnEOP THEN DONE END
+      ;
+      line _ line & lineSegment(len);
+   END
+   ;
+   RETURN (line);		
+END "pMapINPUT"
+;
+
+
+SUBROUTINE	backFF;
+!		------
+	Backing up by one page mark.  Called by MAPPGLN when first
+	  break character of a file page is a FF.
+	;
+BEGIN "backFF"
+   ibp (p.input);  ibp (p.input);   ibp (p.input);  ibp (p.input);
+   dec (p.input);  inc (n.ffIn);  inc (n.input);
+END "backFF"
+;
+
+		!******   WRITING   ******
+		 ************************;
+
+
+SUBROUTINE	finWrPage;
+!		---------
+	Finish for a write page.
+	Enter FF, LF, and CHaracter counts in directory.
+	Unmap 'WRPAGE' from fork.
+	;
+BEGIN "finWrPage"
+   secure (wrPage);
+
+   START!CODE  DEFINE n# = "2", pg# = "3"; 
+! Compile dir entry for the output page;
+	skipge	n#, n.output;	! # free bytes remaining on page;
+	 setz	n#, ;
+	movn	n#, n#;
+	addi	n#, '5000;
+	dpb	n#, f.nCh;	! # text bytes on page, into AC0;
+
+	move	1, n.lfOut;
+	dpb	1, f.nLF;	! LF's in this page;
+	move	1, n.ffOut;
+	dpb	1, f.nFF;	! FF's in page;
+
+	move	pg#, wrPage;
+	movem	 dir(pg#);	! Enter in directory;
+   END
+   ;
+   unMap (fork (oBufMP));  ! Remove page from fork;
+END "finWrPage"
+;
+
+SUBROUTINE	wrPermit;
+!		--------
+	Checks 'FREEP' availability for writing.
+	If no space available, tries to RECTIFY to free up space.
+	;
+BEGIN "wrPermit"
+! Make sure the file page is available for output;
+   IF outOfRange (freeP) ORIF (wrSeg.(freeP) AND NOT rdSeg.(freeP))
+   THEN 
+ ! Bombs out;
+   BEGIN
+      warning ("
+
+File is full.
+You can finish the edit and restore the old file by doing:
+
+  RESET,  to ""unbusy"" the file, and then 
+  TV  the file one more time.
+
+");
+      endOfEdit _ TRUE;  badAbort;  ! Bail out;
+   END
+   ;
+ ! File getting full, i.e., would everything in memory fit in the 
+ !  remaining free pages?;
+   filling _ nExtraFree LEQ 0;
+END "wrPermit"
+;
+
+SUBROUTINE	wrMap;
+!		-----
+	Check availability of FREEP for writing.  Then move FREEP to
+	  the right of old WRPAGE and make it the new WRPAGE. 
+	Link and pmap (to 'OBUFMP' of fork) the new write page.
+	Enter SEGMENT no. in LINKS[WRPAGE] and initializs byte pointer
+	  and count.
+	;
+BEGIN "wrMap"  INTEGER wrP;
+   wrPermit;  ! Check free page availability, etc.;
+
+! Insert free page in text to the right of last write page;
+   dir.((wrP _ freeP)) _ -1;  unMap (file(wrP));  ! Remove old crap;
+   links.(freeP) _ links.(freeP) LAND '777777;    ! Clr segmnt #s;
+   moveP1 (freeP0, wrPage);  dec (nFree);	  ! Insert;
+
+! Init next write page;
+   dpb (segment, p.wrSeg.((wrPage _ wrP))); ! Segment no.;
+   p.output _ '440700000000 + oBuf;	  ! Pointer;
+   n.output _ '5000;			  ! Count;
+   n.ffOut _ n.lfOut _ 0;
+   pMap (file(wrPage), fork(oBufMP), rd#+wr#);
+END "wrMap"
+;
+
+SUBROUTINE	turnWrPage;
+!		----------
+	"Close" and detache current write page, start next one.
+	;
+BEGIN finWrPage; wrMap END;
+
+
+FORWARD SUBROUTINE	finContinue (BOOLEAN unhold, dotF);
+
+
+SUBROUTINE	pMapOUT (STRING str);
+!		-------
+	Replaces  OUT(CHAN,STR).
+	Puts string to output page, gets "next" page when current one
+	  fills up and there is more to put.
+	Throws away zero-bytes, accumulates N.LF, N.FF.
+	;
+START!CODE "pMapOUT"  acDef;
+	DEFINE  ch# = "2", bc# = "3", bp# = "4";
+	LABEL  start, loop, full, incLF, bot, xit;
+
+	jrst	 start;
+
+ full:	aos	 n.output;	! Make count honest;
+	hrrm	bc#, -1(sp);	! Save updated length;
+	DECBP (bp#);		! Back-up pointer to hang on to CH;
+	movem	bp#, (sp);	! Save pointer;
+	pushj	p, turnWrPage;	! Detach this, get next page;
+
+ start:	move	bp#, (sp);	! Get string pointer;
+	hrre	bc#, -1(sp);	! Get string length;
+	jumple	bc#, xit;	! String exhausted?;
+
+ loop:	ildb	ch#, bp#;	! Get next character;
+	jumpe	ch#, bot;	! Discard 0-bytes;
+	sosge	 n.output;	! Output page full?;
+	 jrst	 full;		!  Yes;
+! Finish transferring non-0 byte;
+	idpb	ch#, p.output;
+	trne	ch#, LNOT(LF LOR FF);
+	 sojg	bc#, loop;	! DEC (length), loop back if more;
+	jumple	bc#, xit;	! String finished?;
+! From here on, string length BC# not yet updated;
+	cain	ch#, LF;	! Examin for LF/FF;
+	 jrst	 incLF;
+	caie	ch#, FF;
+	 jrst	 bot;		! Not LF/FF, loop back;
+! LF/FF updating;
+	setzm	 n.lfOut;	! N.LF _ 0;
+	aosa	 n.ffOut;	! INC (N.FF), skip;
+ incLF:	 aos	 n.lfOut;	!  INC (N.LF);
+ bot:	sojg	bc#, loop;	! Dec (length), loop back if more;
+ xit:
+END "pMapOUT" 
+;
+
+COMMENT  End of file  IOIO;
+
+

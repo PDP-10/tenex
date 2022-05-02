@@ -1,0 +1,494 @@
+
+	   !*********   Word-oriented routines   *********
+	    *********************************************;
+
+! A "word" is a sequence of visible characters delimited by blanks or 
+!   beginning/end of line.
+! A "non-word" is a sequence of blanks delimited by visible
+!   characters or beginning/end of line.
+;
+
+SUBROUTINE	firstSible (BOOLEAN SUBROUTINE sible, moves);
+!		----------
+	Point to first in/vi/SIBLE character (first one reached by
+	  0 or more MOVES).
+	;
+WHILE NOT sible ANDIF moves  DO "not'n";
+
+
+SUBROUTINE	lastSible (BOOLEAN SUBROUTINE sible, moves, backs);
+!		---------
+	Point to the last in/viSIBLE character of a field (last in 
+	  the direction of MOVES).
+	BACKS is the reverse move.
+	If current byte is of opposite sex, there is no movement.
+	;
+IF sible  THEN
+WHILE moves  DO IF NOT sible  THEN BEGIN backs; DONE END
+;
+
+
+BOOLEAN SUBROUTINE	vis;  RETURN (visible (tChar));
+BOOLEAN SUBROUTINE	invis;  RETURN (NOT visible (tChar));
+
+
+! Point Right/Left to First/Last Visible/Invisible character.
+! The firstness/lastness is based on the direction of scan.
+! Current character is examined first, so it is possible that there
+!   is no cursor movement.
+;
+SUBROUTINE	rfv;  firstSible (vis, movesR);
+SUBROUTINE	rfi;  firstSible (invis, movesR);
+SUBROUTINE	rlv;  lastSible (vis, movesR, movesL); 
+SUBROUTINE	rli;  lastSible (invis, movesR, movesL); 
+
+SUBROUTINE	lfv;  firstSible (vis, movesL);
+SUBROUTINE	lfi;  firstSible (invis, movesL);
+SUBROUTINE	llv;  lastSible (vis, movesL, movesR); 
+SUBROUTINE	lli;  lastSible (invis, movesL, movesR); 
+
+
+SUBROUTINE	firstWord (SUBROUTINE fNonSible, fSible; INTEGER count);
+!		---------
+	Point to the first byte (first encontered in direction of scan)
+	  of  Nth  SIBLE field from the current cursor.
+	FSIBLE is first sible, e.g., RFV, and FNONSIBLE is first 
+	  non-sible, e.g., RFI.
+	;
+IF count  THEN
+BEGIN "firstWord" INTEGER x;
+   DO BEGIN x _ tx; fNonSible; fSible END
+   UNTIL (dec(count)) LEQ 0 OR x = tx
+   ;
+END "firstWord"
+;
+
+
+SUBROUTINE	lastWord (BOOLEAN SUBROUTINE sible, moves;
+			  SUBROUTINE fSible, lSible; INTEGER count);
+!		--------
+	Point to the last byte (last as viewed in direction of MOVES)
+	  of  Nth  SIBLE field from the current cursor.
+	NOTE:  Works wrong for invisible fields with TABs and long CRs.
+	  Corrected in L.WORDS.
+	;
+IF count ANDIF moves  THEN
+BEGIN "lastWord"
+   IF NOT sible  THEN fSible;  lSible;
+   WHILE (dec(count)) > 0 ANDIF moves  DO BEGIN fSible; lSible END;
+END "lastWord"
+;
+
+
+SUBROUTINE	XrWords (INTEGER count);
+firstWord (rfi, rfv, count);
+
+SUBROUTINE	r.Words (INTEGER count);
+firstWord (rfv, rfi, count);
+
+SUBROUTINE	XlWords (INTEGER count);
+lastWord (vis, movesL, lfv, llv, count);
+
+SUBROUTINE	l.Words (INTEGER count);
+IF count  THEN
+BEGIN INTEGER x;
+   x _ tx;  lli;  IF tx < x  THEN dec(count);
+   lastWord (invis, movesL, lfi, lli, count);
+END
+;
+
+SUBROUTINE	rEndWords (INTEGER count);
+lastWord (vis, movesR, rfv, rlv, count);
+
+SUBROUTINE	rEnd.Words (INTEGER count);
+lastWord (invis, movesR, rfi, rli, count);
+
+SUBROUTINE	lEndWords (INTEGER count);
+firstWord (lfi, lfv, count);
+
+SUBROUTINE	lEnd.Words (INTEGER count);
+firstWord (lfv, lfi, count);
+
+SUBROUTINE	lwAdjust;
+!		--------
+	Point to beginning of current word.
+	If between words, point to nearest word origin on the left.
+	;
+BEGIN lfv; llv END;
+
+
+SUBROUTINE	rwAdjust;
+!		--------
+	Point to he beginning of current word.
+	If between words, point to beginning of NEXT (visible) word.
+	End of line without a terminator will be a problem.  TCHAR = 0.
+	;
+IF vis  THEN llv  ELSE rfv;
+
+
+
+BOOLEAN SUBROUTINE	movesLW;
+!			-------
+	Point to the beginning of nearest word origin on the left.
+	FALSE  iff  already at beginning of line.
+	;
+IF movesL  THEN BEGIN lwAdjust; RETURN (TRUE) END  
+ELSE RETURN (FALSE)
+;
+
+
+BOOLEAN SUBROUTINE	movesRW;
+!			-------
+	Point to the beginning of nearest word origin on the right.
+	FALSE  iff  already at end of line.
+	;
+BEGIN "movesRW" INTEGER ch;
+   ch _ tChar;  IF NOT movesR  THEN RETURN (FALSE);
+   IF visible (ch)  THEN rfi;
+   rfv;  RETURN (TRUE);
+END "movesRW"
+;
+
+
+SUBROUTINE	rWords (INTEGER count);
+!		------
+	Scan to  COUNTth  visible word.
+	;
+WHILE (dec(count)) GEQ 0 ANDIF movesRW  DO "not'n";
+
+
+
+SUBROUTINE	lWords (INTEGER count);
+!		------
+	If points to middle of word,
+	  COUNT = 1 gets to beginning of the word.
+	;
+WHILE (dec(count)) GEQ 0 ANDIF movesLW  DO "not'n";
+
+
+BOOLEAN SUBROUTINE	mayWBury;
+!			--------;
+IF wCount < maxGX  THEN BEGIN wDelCount _ 0; RETURN (TRUE) END
+ELSE  
+BEGIN
+   dpyMessage (" $R'del' TO REMEMBER WORDS, "
+		& BB & "$$.R'del'" & EB & "TO FORGET");
+   RETURN (commandOK _ FALSE);
+END
+;
+
+
+SUBROUTINE	wBury (STRING word);
+!		-----
+	GX  points to first 'free' location.
+	;
+IF nonEmpty (word)  THEN
+BEGIN "wBury"
+   wGrave[gx] _ word;  inc(wCount);  inc(wDelCount);
+   IF (inc(gx)) > maxGX  THEN gx _ 1;
+END "wBury"
+;
+
+
+STRING SUBROUTINE	wDigUp;
+!			------;
+BEGIN "wDigUp" STRING word;
+   IF (dec(gx)) < 1  THEN gx _ maxGX;
+   word _ wGrave[gx];  wGrave[gx] _ NIL;  
+   IF NOT (dec(wDelCount))  THEN wDelSign _ 0;
+   IF NOT (wCount _ (wCount-1) MAX 0)  THEN holdW _ FALSE;
+   RETURN (word);
+END "wDigUp"
+;
+
+INTEGER SUBROUTINE	wordNo;
+!			------
+	Word number for current byte.
+	;
+BEGIN "wordNo" INTEGER x, n;
+   x _ tx;  n _ 1;  txToOne;
+   WHILE movesRW ANDIF tx LEQ x  DO inc(n);
+   tByTX (x);  RETURN (n);
+END "wordNo"
+;
+
+
+STRING SUBROUTINE	getWord;
+!			-------
+	Return (the rest of) this word, including trailing blanks.
+	  NIL for empty word terminated with EOL.	
+	If non-empty word has no terminator (SP or TAB), append a SP.
+	Point to beginning of next word.
+	;
+BEGIN "getWord" INTEGER ch;  STRING word;
+
+	BOOLEAN SUBROUTINE	takes;
+	!			-----;
+	BEGIN
+	   IF ch AND class(ch) NEQ eolClass  THEN word _ word & ch;
+	   RETURN (movesR);
+	END
+	;
+			! +  +  +  + ;
+
+   word _ NIL;
+   WHILE visible (ch _ tChar) ANDIF takes  DO "not'n";
+   WHILE NOT visible (ch _ tChar) ANDIF takes  DO "not'n";
+   IF nonEmpty(word) AND visible(last(word))  THEN word _ word & " ";
+   RETURN (word);
+END "getWord"
+;
+
+
+SUBROUTINE	chkEOL;
+!		------
+	To append a space at end of line if none there already.
+	This keeps a retrieved word from joining the last of a line.
+	;
+IF tByte > 1 AND class(tChar) = EOLclass  THEN
+BEGIN "chkEOL" INTEGER x; 
+   x _ tx;  movesL;
+
+   IF tx = x - 1 AND vis  THEN BEGIN movesR; addAndDpy (" ") END  
+   ELSE tByTX (x)
+   ;
+END "chkEOL"
+;
+
+SUBROUTINE	rw.Del (INTEGER count);
+!		------
+	Common part of  RWDELETE  and  RWDOTDELETE.
+	;
+BEGIN "rw.Del" STRING word;
+   wDelSign _ 1;
+
+   WHILE (dec(count)) GEQ 0 AND wCount < maxGX 
+	  ANDIF nonEmpty (word _ getWord)
+   DO wBury (word)
+   ;
+END "rw.Del"
+;
+
+
+SUBROUTINE	rwDelete (INTEGER count);
+!		--------
+	Delete this and  COUNT - 1  following words.
+	If between words, delete to beginning of next word counts as
+	  the first word.
+	$0D'del' from between words deletes to beginning of next.
+	;
+IF mayWBury  THEN
+BEGIN "rwDelete" INTEGER x, tb, n;
+   IF vis  THEN  IF count  THEN llv  ELSE RETURN
+   ELSE  IF NOT count  THEN inc(count)
+   ;
+   x _ tx;  tb _ tByte;  rw.Del (count);  n _ tByte - tb;  tByTX (x);
+   delBytes (n, FALSE);
+END "rwDelete"
+ELSE  iglCommand
+;
+
+
+SUBROUTINE	lw.Del (INTEGER count);
+!		------;
+BEGIN "lw.Del" INTEGER tb;
+   wDelSign _ -1;
+
+   WHILE (dec(count)) GEQ 0 AND wCount < maxGX ANDIF movesLW
+   DO BEGIN tb _ tByte; wBury(getWord); tByByte(tb) END
+   ;
+END "lw.Del"
+;
+
+
+SUBROUTINE	lwDelete (INTEGER count);
+!		--------;
+IF mayWBury  THEN
+BEGIN "lwDelete" INTEGER maxTB;
+   rwAdjust;  maxTB _ tByte;
+   lw.Del (count);  delBytes (maxTB - tByte, FALSE);
+END "lwDelete"
+ELSE iglCommand
+;
+
+SUBROUTINE	rwDotDelete (INTEGER count);
+!		-----------
+	Copy words into word 'oops' bufer.
+	See comment to  RWDELETE  for cursor in-between words.
+	;
+IF mayWBury  THEN  
+BEGIN  
+   IF vis THEN rwAdjust  ELSE  IF NOT count THEN inc(count);
+   holdW _ TRUE;  rw.Del(count);
+END
+ELSE  iglCommand
+;
+
+
+SUBROUTINE	lwDotDelete (INTEGER count);
+!		-----------;
+IF mayWBury  THEN BEGIN rwAdjust; holdW _ TRUE; lw.Del(count) END
+ELSE iglCommand
+;
+
+
+SUBROUTINE	rwRecover (REFERENCE INTEGER count);
+!		---------
+	Used as parametric procedure, hence  COUNT  must 
+	  be a REFERENCE parameter.
+	If between words, don't move cursor.
+	;
+BEGIN "rwRecover" STRING word, str;  INTEGER ch, x;
+   IF vis  THEN rwAdjust;
+   str _ NIL;
+
+   WHILE (dec(count)) GEQ 0 ANDIF nonEmpty (word _ wDigUp)
+   DO str _ word & str
+   ;		
+   chkEOL;  x _ tx;  addAndDpy (str);  tByTX (x);
+END "rwRecover"
+;
+
+
+SUBROUTINE	lwRecover (REFERENCE INTEGER count);
+!		---------;
+BEGIN "lwRecover" STRING word, str;
+   rwAdjust;  str _ NIL;
+
+   WHILE  (dec(count)) GEQ 0 ANDIF nonEmpty (word _ wDigUp)
+   DO str _ str & word
+   ;
+   chkEOL;  addAndDpy (str);
+END "lwRecover"
+;
+
+SUBROUTINE	rw.C (INTEGER count; SUBROUTINE r.C1);
+!		----;
+BEGIN "rw.C"
+   rwAdjust;
+
+   WHILE (dec(count)) GEQ 0  DO
+   BEGIN "w.C"
+      WHILE vis AND NOT atEOL  DO r.C1;
+      DO IF atEOL THEN DONE "w.C" ELSE r.C1  UNTIL vis;
+   END "w.C"
+   ;
+END "rw.C"
+;
+
+
+DEFINE
+	rwLC (count) = "rw.C (count, rLC1)",
+	rwUC (count) = "rw.C (count, rUC1)";
+
+
+
+SUBROUTINE	rwInsert (INTEGER count);
+!		--------;
+BEGIN IF vis THEN llv; rInsert(count) END;
+
+
+
+SUBROUTINE	lwInsert (INTEGER count);
+!		--------;
+BEGIN rwInsert(count); rwAdjust END;
+
+
+
+SUBROUTINE	rwCopy (INTEGER count);
+!		------;
+BEGIN "rwCopy" INTEGER tb;  STRING word, str;
+   rwAdjust;  str _ NIL;
+
+   WHILE (dec(count)) GEQ 0 ANDIF nonEmpty (word _ getWord)
+   DO str _ str & word
+   ;
+   IF nonEmpty (str)
+   THEN BEGIN chkEOL; tb _ tByte; addAndDpy(str); tByByte(tb-1) END
+   ;
+END "rwCopy"
+;
+
+
+SUBROUTINE	lwCopy (INTEGER count);
+!		------;
+BEGIN "lwCopy" STRING str;
+   lwAdjust;  movesRW;  str _ NIL;
+
+   WHILE (dec(count)) GEQ 0 ANDIF movesLW
+   DO BEGIN str _ getWord & str; movesLW END 
+   ;
+   IF nonEmpty (str)  THEN BEGIN addAndDpy(str); movesL END;
+END "lwCopy"
+;
+
+SUBROUTINE	rwMove (INTEGER count);
+!		------;
+IF invis  THEN iglCommand
+ELSE IF count  THEN
+BEGIN "rwMove" INTEGER x;  STRING word;
+   llv;  x _ tx;  
+   word _ getWord;  rWords (count);  chkEOL;  addAndDpy (word);
+   tByTX (x);  refreshX _ tx MIN refreshX;  rwDelete (1);
+END "rwMove"
+;
+
+
+SUBROUTINE	lwMove (INTEGER count);
+!		------;
+IF invis  THEN iglCommand
+ELSE  IF count  THEN
+BEGIN "lwMove" INTEGER tb;  STRING word;
+   llv;
+
+   IF tByte > 1 ANDIF nonEmpty (word _ getWord)  THEN
+   BEGIN
+      tb _ tByte;  movesLW;  rwDelete (1);
+      lWords (count);  addAndDpy (word);
+      tByByte (tb);  movesLW;
+   END	
+   ;
+END "lwMove"
+;
+
+SUBROUTINE	rwSearch (INTEGER count, sCh);
+!		--------
+	If search fails, clear string stack.
+	;
+WHILE (dec(count)) GEQ 0  DO
+ DO  IF NOT movesRW  THEN BEGIN clearStack; RETURN END  ! Fails;
+ UNTIL upperCase(tChar) = sCh
+;
+
+
+SUBROUTINE	lwSearch (INTEGER count, sCh);
+!		--------;
+WHILE (dec(count)) GEQ 0  DO
+ DO  IF NOT movesLW  THEN BEGIN clearStack; RETURN END  ! Fails;
+ UNTIL upperCase(tChar) = sCh
+;
+
+
+SUBROUTINE	rwZap (INTEGER count, sCh);
+!		-----;
+BEGIN "rwZap" INTEGER x, n, n1;
+   n _ wordNo;  x _ tx;  
+   rwSearch (count, sCh);  n1 _ wordNo;
+   tByTX (x);  rwDelete (n1 - n);
+END "rwZap"
+;
+
+
+SUBROUTINE	lwZap (INTEGER count, sCh);
+!		-----;
+BEGIN "lwZap" INTEGER tb, n, n1;
+   rwAdjust;
+   n _ wordNo;  tb _ tByte;
+   lwSearch (count, sCh);  n1 _ wordNo;
+   tByByte (tb);  lwDelete (n - n1);
+END "lwZap"
+;
+
+COMMENT  End of file  TVWRD;
+
+

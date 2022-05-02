@@ -1,0 +1,400 @@
+
+		!******   FIN and INIT   ******
+		 *****************************;
+
+
+SUBROUTINE	copyPage (INTEGER fromPg, toPg);
+!		--------
+	Copy (using PMAPs) file page  FROMPG  to  TOPG,  update 
+	  DIR  table entries.
+	NOTE:  LINKS not affected.
+	;
+IF fromPg NEQ toPg  THEN
+BEGIN "copyPage"
+   rd#Map (fromPg, tBufMP);			! Get FROMPG;
+   pMap (file(toPg), fork(oBufMP), rd#+wr#);	! Get TOPAGE;
+   arrBlt (oBuf.(0), tBuf.(0), '1000);		! Move data;
+   unMap (fork(tBufMP));  unMap (fork(oBufMP));	! Remove from fork;
+   dir.(toPg) _ dir.(fromPg);			! Update DIR;
+END "copyPage"
+;
+
+SUBROUTINE	clearTags;
+!	     	---------;
+START!CODE DEFINE pg# = "2", msk# = "3"; LABEL loop;
+
+	hrloi	msk#, '377777;	! MSK# _ 377777,,-1;
+	movei	pg#, tempPage;
+
+ loop:	andm	msk#, links(pg#);
+	sojge	pg#, loop;
+END
+;
+
+
+INTEGER SUBROUTINE	trace (INTEGER p1; REFERENCE INTEGER np);
+!		     	-----
+	Check the chain whose first page is P1.
+	Tag chain, quit if link word already tagged.
+	Set NP to the number of pages in chain.
+	Return -1 if chain ok, offending page no. o.w.
+	;
+START!CODE "trace" LABEL loop, don;
+	DEFINE wd# = "2", tag# = "3", n# = "4";
+
+	movsi	tag#, '400000;
+	setz	n#, ;
+	hrre	1, p1;
+
+  loop:	jumpl	1, don;		! End of chain?;
+	caig	1, tempPage;	! Valid page no.?;
+	 skipge	wd#, links(1);	! Untagged (no loops)?;
+	  jrst	 don;		! Invalid page no. or alrady tagged;
+	iorm	tag#, links(1);	! Tag this one;
+	hrre	1, wd#;		! Next page;
+	aoja	n#, loop;	! Count pages;
+
+  don:	movem	n#, np;		! Set reference count;
+END "trace" 
+;
+
+
+INTEGER SUBROUTINE	lostPage;
+!			--------
+	Return  -1 if all written-only pages are accounted for, 
+	  o.w., page no. of one not yet accounted for.
+	;
+START!CODE "lostPage" LABEL loop, bot; DEFINE wd# = "2";
+	movei	1, tempPage;
+
+  loop:	skipge	wd#, links(1);	! Get link word;
+	 jrst	 bot;		! Tagged, already accounted for;
+	tlne	wd#, m.wrSeg;	! Ok if not written;
+	 tlne	wd#, m.rdSeg;	! Written.  Skip out if lost (not read);
+  bot:	  sojge	1, loop;	! Counts down to, and returns, -1 if ok;
+
+END "lostPage"
+;
+
+
+INTEGER SUBROUTINE	lostTextPage;
+!			------------
+	Initialize link checking:
+	  (a) Clear tags,
+	  (b) check active text page chain,
+	  (c) init NTEXT.
+	(a) and (b) are all that is needed at finish time (to rectify).
+	Returns like LOSTPAGE.
+	;
+BEGIN "lostTextPage" INTEGER pg;
+   clearTags;
+   IF (pg _ trace (textP, nText)) = -1  THEN pg _ lostPage;
+   RETURN (pg);
+END "lostTextPage" 
+;
+
+BOOLEAN SUBROUTINE	linksOk;
+!			-------
+	Check link page consistency.
+	Method:  Trace link chain and tag words.
+	  Possible errors in active list:
+	   (a) Links form a loop, 
+	   (b) written-only pages not linked to the main chain,
+	   (c) 
+	  Possible errors in free list:
+	   (a) 
+	TRUE  iff  seems ok to continue.
+	;
+BEGIN "linksOk" INTEGER pg;
+
+   IF	   (pg _ lostTextPage) = -1		! Also inits NTEXT;
+     ANDIF (pg _ trace (safeP, nSafe)) = -1
+      AND  (pg _ trace (holdP, nHold)) = -1
+      AND  (pg _ trace (freeP, nFree)) = -1
+   THEN	
+   BEGIN 
+    ! Check page count;
+      IF nText + nSafe + nHold + nFree < tempPage - 2
+      THEN outStr ("
+SOME DISK BLOCKS UNACCOUNTED FOR.  RECOMMENDING  $$F  FOR FINISH.
+");
+      clearTags;  RETURN (TRUE);
+   END
+   ;
+   outStr ("
+FILE POINTERS INCONSISTENT, DISK BLOCK = " & cvs(pg) & ".
+");
+   RETURN (FALSE);
+END "linksOk"
+;
+
+		!******   FINISHING   ******
+		 **************************;
+
+FORWARD SUBROUTINE	getOutFile;
+
+
+SUBROUTINE	start#File;
+!		----------
+	Common beginning of RECTIFY and COPYSOS.
+	Get #FILE (a new file), init ODIR to -1's.
+	;
+BEGIN "start#File"
+   outStr ("
+");
+   getOutFile;
+   unMap (fork(oDirMP));  setBuf (oDir, -1);
+END "start#File" 
+;
+
+
+FORWARD SUBROUTINE	fin#File (INTEGER eofPg);
+
+
+SUBROUTINE	rectify;
+!		-------
+	Copy current pages from the old file to a new temporary file.
+	We must copy by character in order to avoid adding lots of
+	nulls when pages are not full
+	;
+BEGIN "rectify" INTEGER rdP, wrP, wrPnt, wrCnt, wrFf, wrLf, wrCh, rdPnt, rdCnt;
+
+  SUBROUTINE put#;
+  !          ----
+	Put out a full page into the temp file,
+	and get a new output page, initializing output variables
+	;
+  BEGIN "put#"
+    oDir.(wrP) _ (wrFf lsh 24) + (wrLf lsh 12) + '5000;
+    inc(wrP);
+    pMap (#file(wrP), fork(oBufMP), wr#);
+    wrCnt _ '5000; wrFf _ wrLf _ 0;
+    wrPnt _ point (7, oBuf.(0),-1);
+  END "put#";
+
+ ! Link consistency checking first;
+   IF (rdP _ lostTextPage) NEQ -1  THEN
+   BEGIN
+      newVersion _ keepAll _ TRUE;
+      outStr ("
+Disk block pointers inconsistent--new file pages missing.
+Offending block# = " & cvos(rdP) & " (oct).
+All temporary blocks of old file retained.
+")    ;
+   END
+   ;
+   start#File;  outStr (".FIN..");
+   rdP _ textP0;  wrP _ 0;  clearTags;
+   wrPnt _ point(7, oBuf.(0), -1);
+   wrCnt _ '5000; wrFf _ wrLf _ 0;
+   pMap (#file(wrP), fork(oBufMP), wr#);
+
+ ! Copy active text pages to new (output) file;
+   WHILE (rdP _ rightOf (rdP)) GEQ 0  DO
+   BEGIN INTEGER lnk;
+    ! Quit if pointers loop;
+      IF (lnk _ links.(rdP)) < 0  THEN DONE;
+      links.(rdP) _ lnk LOR '400000000000;	! Tag as transferred;
+
+      outStr (cvos(rdP) & ",");
+      rd#Map (rdP, tBufMP);
+      rdPnt _ point(7, tBuf.(0), -1);
+      rdCnt _ '5000;	! Can't use the directory count because of embedded nulls;
+      START!CODE				! Copy all chars on input page;
+        LABEL don, loop, loop1, null, force, notFf;
+loop:	ildb 1,rdPnt;	! get input char;
+	jumpe 1,null;	! skip nulls;
+	skipn wrCnt;	! make room if output page full;
+	jrst force;
+loop1:	cain 1,'12;	! count funny char's for directory;
+	aos wrLf;
+	caie 1,'14;
+	jrst notFf;
+	aos wrFf;
+	setzm wrLf;
+notFf:	idpb 1,wrPnt;	! put out char and count it;
+	sos wrCnt;
+null:	sosle rdCnt;	! now see if there is more input;
+	jrst loop;
+	jrst don;	! no, exit;
+force:	pushj '17,put#;	! here if output fills.;
+	ldb 1,rdpnt;	! routine call will garbage ac's;
+	jrst loop1;
+don:	END;
+	
+   END ! of WHILE;
+   ;
+   oDir.(wrP) _ (wrFf lsh 24) + (wrLf lsh 12) + ('5000 - wrCnt);
+   fin#File (wrP);
+END "rectify"
+;
+
+INTEGER SUBROUTINE	nDirPage;
+!			--------
+	Selection of dir page on bases of FILELENGTH:
+	  On short files (< 20 pages) directory goes to top of EOFP
+	  if it fits there.  If directory does not fit on EOFP and 
+	  file is > 2 pages, or if file is at least 20 pages,
+	  directory becomes page 777.
+	Returns -1 if file does not deserve a directory page.
+	;
+BEGIN "nDirPage" INTEGER wds, pgs, pgs1;
+   RETURN ( IF (pgs _ ((wds _ (fileLength + 4) DIV 5) + '777) DIV '1000)
+	       GEQ 20  ! File at least 20 pgs;
+	       ORIF
+	       ( pgs < (pgs1 _ (wds + pgs + (2 + '777)) DIV '1000)
+	         ANDIF pgs > 2  ! Dir not fit, file at least 3 pgs;
+	       )
+	    THEN oDirPage
+	    ELSE IF pgs = pgs1 THEN (pgs - 1) ELSE -1
+	  );
+END "nDirPage"
+;
+
+
+SUBROUTINE	fin#File (INTEGER eofP);
+!		--------
+	Common ending of RECTIFY and COPYSOS.
+	Enters file length and byte size in FDB.
+	Sets globals FILELENGTH, BYTESIZE to those of #FILE.
+	Store TV directory on NDIRPAGE.  If it = EOFP, entries are
+	  left-shifted one bit, to assure even entries (odd entries
+	  can turn into phony SOS line numbers if the file is
+	  appended to!).  
+	Unmaps a bunch of fork pages.
+	;
+BEGIN "fin#File" BOOLEAN low; INTEGER pg;
+   fileLength _ eofP*'5000 + (ldb (f.nCh + oDir + eofP) MIN '5000);
+   byteSize _ 7;
+   low _ FALSE;
+
+   IF (pg _ nDirPage) > 0  THEN  ! ">" to not save dir for 1 pg file;
+   BEGIN "savDir"
+
+      pg _ '777;  ! ! ! Until SOS (and others) honor EOF-pointer;
+
+      pMap (#file(pg), fork(oBufMP), rd#+wr#);
+
+      IF NOT (low _ pg < '770)
+      THEN arrBlt (oBuf.(0), oDir.(0), '1000)
+      ELSE 
+      BEGIN "eofDir" INTEGER d0, wd, wd1;
+	 oBuf.(-1+(d0 _ '776-pg)) _ oBuf.('777) _ FF5;
+
+	 DO oBuf.(d0+pg) _ IF (wd _ oDir.(pg)) XOR (wd1 _ wd LSH 1) < 0
+			THEN wd1 LOR '777777760000 ELSE wd1
+	 UNTIL (dec(pg)) < 0
+	 ;
+      END "eofDir"
+      ;
+   END "savDir"
+   ;
+   unMap (fork(tBufMP));  unMap (fork(oBufMP));
+
+ ! Update FDB:  EOF pointer, byte size, and TV flag;
+   START!CODE LABEL don;
+	move	1, wrJfn;
+	hrli	1, '12;		! Byte count is 12th word of FDB;
+	seto	2, ;		! Mask -1;
+	move	3, fileLength;	! No. of bytes in the file;
+	CHFDB;		   ! Set file byte count;
+
+	hrli	1, '11;		! Byte size is in 11th word;
+	movsi	2, '7700;	! Mask for byte size;
+	movsi	3, '0700;	! Byte size = 7;
+	CHFDB;		   ! Set byte size;
+
+	skipn	 low;
+	 jrst	 don;
+	hrli	1, '24;		! USW;
+	movei	2, '777;
+	movei	3, '252;
+! !	CHFDB;		   ! Set TV flag 252;
+	cai;	! !;
+    don:
+   END
+   ;
+   changeUSW (wrJfn); 
+
+ IFC tops20.sw  THENC
+   START!CODE
+	hrlz	1, outJfn;	! jfn,,0;
+	movei	2, '1000;	! Secure all pages;
+	UFPGS;			! Update pages;
+	 HALTF;
+   END
+   ;
+ ENDC
+
+   outStr (" !
+");
+! !   unmap (fork (linkMP));
+! !   unmap (fork (dirMP));
+
+   CLOSE (outChan);  ! Close to make new file exist (??);
+
+END "fin#File" 
+;
+
+SUBROUTINE	restore;
+!		-------
+	Restore the old file, FDB and all, unless have reason not to.
+	;
+IF newVersion AND NOT keepAll  THEN
+BEGIN "restore" INTEGER p1;
+   outStr (" Restoring " & fileName);
+
+   p1 _ oFffp;
+
+ ! Restore FDB.  EOF pointer, byte size, and user word were kept in DIR;
+   START!CODE
+	move	1, rdJfn;	! Clear ephemeral bit;
+IFC tops20.sw THENC
+	movsi	2, '20;		! Bit 13;
+ELSEC
+	movsi	2,'1;		! Except it's bit 17 on Tenex;
+ENDC
+	movei	3, 0;		! Value 0;
+	hrli	1, '1;		! In word 1;
+	CHFDB;
+
+	move	1, rdJfn;
+	movsi	2, '7700;	! Byte size mask;
+	move	3, oFdb11;	! From DIR page;
+	hrli	1, '11;		! Byte size is 11th word of FDB;
+	CHFDB;		   ! Set byte size;
+
+	seto	2, ;		! Mask -1;
+	move	3, oFdb12;	! From DIR page;
+	hrli	1, '12;		! File length in bytes;
+	CHFDB;		   ! Set EOF pointer;
+
+IFC tops20.sw OR sumex.sw THENC
+	seto	2, ;		! Mask -1;
+	move	3, oFdb13;	! From DIR page;
+	hrli	1, '13;
+	CHFDB;		   ! Set creation date;
+ENDC
+
+IFC tops20.sw THENC
+	seto	2, ;		! Mask -1;
+	move	3, oFdb14;	! From DIR page;
+	hrli	1, '14;
+	CHFDB;		   ! Set write date;
+ENDC
+
+	move	3, oFdb24;	! From DIR page;
+	hrli	1, '24;		! User setable word;
+	CHFDB;		   ! Set user word;
+   END
+   ;
+   unMapM ('400000, oBufMP, oDirMP);  ! To allow unmaping from file;
+   unMapM (rdJfn, p1, dirPage);  ! Remove file pages OFUFP...776;
+   outStr ("
+");
+END "restore"
+;
+
+COMMENT  End of file  IOFIN;
+
+

@@ -1,0 +1,455 @@
+
+BEGIN  "TV"
+
+COMMENT  Datamedia/TEC/Imlac dispaly-based TVEDIT for the PDP-10.
+
+	Written -- in SAIL to run under TENEX, 
+	  -- at IMSSS, Stanford University,
+	  -- by Pentti Kanerva (1972).
+
+
+	To compile, load, and save at IMSSS:
+	-- -------  ----  --- ---- -- -----
+		@FAIL 'cr'
+		*TVPSI_TVPSI 'cr'
+		*IOSYM_IOSYM 'cr'
+		*^C
+
+		@AIFAIL 'cr'
+		*DPY_DPY 'cr'
+		*^C
+
+		@SAIL 'cr'		    ...to compile and load
+		*TV_
+		    (message from loader)
+		^C
+		@SSAVE 0 577 TV 'cr'	    ...to save sharable
+
+
+	To read files from DECtape:
+	-- ---- ----- ---- -------
+		@COPYM
+		file names from file:  TTY:  -- must type UPPER case !!
+		output to  DSK:  -- in UPPER case
+		_ DTAn:*.*  -- UPPER case and *.*
+
+
+	To compile, load, and save at SUMEX:
+	-- -------  ----  --- ---- -- -----
+		@TV  TV 'cr' 'cr'
+		(Page.Line) 1 // 2.6	... to make IMSSS.sw = "FALSE"
+		    (finish edit)
+
+		@MACRO 'cr'
+		*TVCCL_TVCCL 'cr'
+		*^C
+
+		@FAIL 'cr'
+		*TVPSI_TVPSI 'cr'
+		*IOSYM_IOSYM 'cr'
+		*^C
+
+		@AIFAIL 'cr'
+		*DPY_DPY 'cr'
+		*^C
+
+		@SAIL 'cr'
+		*TV 'cr'
+		*^C
+
+		@LOADER 'cr'
+		*SYS:LOWTSA,/TTV,TVCCL 'esc'
+		    (message from loader)
+		^C
+		@START 'cr'		    ...to set entry vector
+		@SSAVE 0 577 TV 'cr'	    ...save sharable version
+		@	
+
+	;
+
+
+COMMENT    Conditional Compilation Switches (they all end in ".SW")
+	   ----------- ----------- --------;
+
+DEFINE
+	IMSSS.sw = FALSE,
+	SUMEX.sw = FALSE,
+	SRI10.sw = FALSE,
+	SRI20.sw = TRUE,
+	OTHER.sw = FALSE;
+
+IFC IMSSS.sw + SUMEX.sw + SRI10.sw + SRI20.sw + OTHER.sw NEQ -1  THENC
+	WARNING!!;  Bad set of assembly switches.
+ENDC
+
+IFC IMSSS.sw  THENC
+  DEFINE
+	tops20.sw = FALSE,
+	call.sw = TRUE,		COMMENT  Run-call, INFBUF return call;
+	ccl.sw  = FALSE,	COMMENT  TVCCL.REL is loaded in front
+					 of TV.REL;
+
+	newsFile = """<TV>TVNEWS""",
+	guidFile = """<TV>TVGUID""";
+	COMMENT  These two files hold the latest news and manual,
+	  respectively.  Their file protection should allow reading
+	  by all users of TV-Edit;
+ENDC
+
+IFC SUMEX.sw  THENC
+  DEFINE
+	tops20.sw = FALSE,
+	call.sw = TRUE,
+	ccl.sw  = TRUE,
+
+	newsFile = """<DOC>TV.UPDATE""",
+	guidFile = """<DOC>TV.MANUAL""";
+ENDC
+
+IFC SRI10.sw  THENC
+  DEFINE
+	SRI.sw    = TRUE,
+	tops20.sw = FALSE,
+
+	newsFile = """<DOC>TV.UPDATE""",
+	guidFile = """<DOC>TV.MANUAL""";
+ELSEC
+  IFC SRI20.sw  THENC
+    DEFINE
+	SRI.sw    = TRUE,
+	tops20.sw = TRUE,
+
+	newsFile = """DOC:TVEDIT.UPDATE""",
+	guidFile = """DOC:TVEDIT.MANUAL""";
+  ELSEC
+    DEFINE
+	SRI.sw    = FALSE;
+  ENDC
+ENDC
+
+IFC SRI.sw  THENC
+  DEFINE
+	call.sw = TRUE,
+	ccl.sw  = TRUE;
+ENDC
+	
+
+DEFINE
+	fin2.sw = tops20.sw,	COMMENT  To default to $$2F;
+	hazd.sw = FALSE,	COMMENT  Hazeltine 2000 command set;
+
+COMMENT  The next two indicate code that is in the process of being
+  dropped or added.  They are always false, but are there in order
+  that you can search for them;
+
+	past.sw = FALSE,
+	future.sw = FALSE;
+
+
+REQUIRE  4000  STRING!SPACE;
+
+DEFINE
+	req (s) = "REQUIRE  ""s""  SOURCE!FILE";
+
+	req (DEFINE.SAI);  COMMENT  SAIL definitions;
+
+	req (DPYCOM.SAI);  ! Display commands.  Requires source file
+			   !  'DPY.SAI' which in turn requires load 
+			   !  module 'DPY';
+
+	req (TVDAT);	! Global variables, defines;
+
+	req (TVSUB);	! Common subroutines (procedures);
+
+	req (TVFIL);	! Text file i/o.  Requires source files
+			!  'GETFIL' and 'TVIO';
+
+	req (TVWIN);	! In-window editing of lines;
+
+	req (TVLIN);	! In-line edit;
+
+	req (TVWRD);	! Word oriented routines;
+
+	req (TVCHR);	! Next character generation;
+
+	req (TVCOM);	! Command interpreter;
+
+	req (TVINIT);	! Initialization for the above files;
+
+	REQUIRE "TVPSI" LOAD!MODULE;	! Pseuro-interrupts;
+	EXTERNAL SUBROUTINE  psiInit;
+
+
+   SUBROUTINE		initialize;
+   !		 	----------;
+   BEGIN "initialize"
+      termInit;
+
+      IF NOT tType  THEN
+      BEGIN
+	 outStr ("
+
+TERMINAL TYPE NOT DATAMEDIA, TEC, OR IMLAC. 
+SET TYPE (USE THE 'TERM' COMMAND) AND CONTINUE.
+
+")	 ;
+	 halt.f;
+
+	 termInit;
+
+	 IF NOT tType  THEN outStr ("
+BEWARE!  TERMINAL IS TREATED AS IF IT WERE A TELETYPE.
+
+")	 ;
+      END
+      ;
+
+      spaces _
+"                                                                                ";
+    ! A string of 80 spaces;
+
+      everything _ NIL;
+      FOR char _ '177 downto 0  DO everything _ everything & char;
+
+      outStr ("
+
+	  T V - E D I T
+");
+
+      outStr ( IF tecd THEN
+("	       TEC
+")  ELSE IF dmd THEN
+("	    Datamedia
+")  else if infd then ! [1];
+("	    Infoton
+")  ELSE IF imld THEN
+("	      Imlac
+")  ELSE IF V200D THEN
+("	    Visual 200
+")  ELSE IF NIHD THEN
+("	     NIH 5200
+")  ELSE
+("	       TTY
+") )  ;
+
+      GJINF(foo, junk, junk);  ! Login dir. no. to FOO;
+ifc tops20.sw thenc
+      stringFile _ "PS:<" & (dirString _ DIRST(foo)) & ">TV-STRINGS.PMAP";
+      regBufferFile _ "PS:<" & dirString & ">TV-REGION-BUFFER.TXT;T";
+elsec
+      stringFile _ "<" & (dirString _ DIRST(foo)) & ">TV-STRINGS.PMAP";
+      regBufferFile _ "<" & dirString & ">TV-REGION-BUFFER.TXT;T";
+endc;
+
+      chrInit;		! Must come before READSTRINGS;
+      readsStrings(-1); ! Must come before WININIT;
+      filInit;
+      winInit;
+      linInit;
+      wrdInit;
+      comInit;
+
+      IF (autoCall _ call.sw AND rpgsw)  THEN
+      BEGIN "aCall" INTEGER p.plb;
+	 call (location(infBuf[0]), "GETINF");
+
+ IFC  imsss.sw  THENC  ! Old format SAIL/TV interface;
+
+	 START!CODE
+		move	 infBuf[5];
+		hrrzm	 goPage;
+		move	 infBuf[4];
+		hrrzm	 goLine;
+		hlrzm	 goByte;
+	 END 
+	 ;
+	 callFile _ cvxstr (infBuf[0]);
+
+	 WHILE last(callFile) = " "  DO callFile _ most(callFile);
+	 callFile _ callFile & "." & cvxstr(infBuf[1]);
+
+ ELSEC  ! New format of SAIL/TV interface;
+
+	 goPage _ ildb (p.plb _ '441400000000 + location (infBuf[0]));
+	 goLine _ ildb (p.plb); 
+	 goByte _ ildb (p.plb); 
+
+	 callFile _ nameScan (infBuf[1], 10);
+
+ ENDC  ! ... imsss.sw;
+
+      END "aCall"
+
+ IFC  ccl.sw  THENC
+
+      ELSE
+      BEGIN "aCCL" EXTERNAL INTEGER edChan;
+	 IF autoCall _ edChan  THEN
+	 BEGIN INTEGER i, j;
+	    FOR i _ 1 upto maxIX  DO inBuf[i] _ 0;
+	    i _ location (inBuf[1]);  j _ '211110040001;
+
+	    START!CODE "CCL" 
+	    	hrro	1, i 	  	;
+		move	2, edChan	;
+		move	3, j		;
+		JFNS			;
+		move	1, edChan	;
+		RLJFN			;
+		 HALTF			;
+		setzm	 edChan		;
+	    END "CCL"
+	    ;
+	    callFile _ nameScan (inBuf[1], maxIX);
+	 END 
+	 ;				
+      END "aCCL" 
+
+ ENDC  ! ... ccl.sw;
+      ;
+
+    ! Set our own re-entering location;
+
+ IFC  imsss.sw  THENC
+
+      START!CODE  EXTERNAL INTEGER jobRen; 
+      	movei	 reEnter;
+	hrrm	 jobRen;
+      END
+      ;
+
+ ELSEC
+
+      START!CODE  EXTERNAL INTEGER eVec1; 
+      	movei	 reEnter;
+	hrrm	 eVec1;
+      END
+      ;
+
+ ENDC
+
+   END  "initialize"
+   ;
+
+   SUBROUTINE		reInitialize;
+   !			------------;
+   BEGIN "reInitialize"
+    ! Set terminal type, LCDPY.  Turn on duplexing (for dialog);
+      dpyIni;  duxON;
+      novice _ FALSE;
+
+      IF autoCall  THEN
+       IF rpgSw
+       THEN getFile (callFile, NIL, "W")
+       ELSE getFile (callFile, NIL, 0)
+      ELSE getFile (NIL, NIL, 0)
+      ;
+
+ IFC FALSE THENC  ! .....;
+
+      FOREVER  DO
+      BEGIN "imload"
+	 termInit;  IF NOT imld  THEN DONE "imload";
+
+       ! What program is IMLAC loaded with?;
+	 START!CODE  movei 1,'100; CFIBF  END;  ! Clear input buffer;
+	 binOn;  outStr (ESC & "_");  binOff;
+
+	 IF (char _ INCHRW) = "S"  THEN DONE "imload"
+	 ELSE  IF char = "T" OR char = "N"  THEN
+	 BEGIN
+	    outStr ("
+
+Load Imlac with SET THEORY program as follows:
+
+	@ IMLOAD
+	* S 'cr' -- for set theory
+	* 'cr' -- for self load
+	@ CONTINUE -- to go to the edit
+
+");
+	    halt.f;
+	 END
+	 ;
+      END "imload" ! of FOREVER;
+      ;
+
+ ENDC ! .....;
+
+      round1 _ TRUE;
+
+    ! From here on  NO DUPLEXING;
+      duxOFF;
+
+      termReInit;
+      filReInit;
+      winReInit;
+      linReInit;
+      wrdReInit;
+      chrReInit;
+      comReInit;
+      cmtinit;
+
+      psiInit;
+
+      IF crashFile  THEN startCrash  
+      ELSE  IF autoCall AND rpgSw 
+      THEN goToPlace (goPage, goLine, goByte)
+      ELSE goPlaces
+      ;
+   END  "reInitialize"
+   ;
+
+COMMENT  
+	And here is the
+
+	 - - -	M A I N   P R O G R A M  - - -
+		-----------------------
+
+	;
+
+   initialize;
+
+   FOREVER  DO
+   BEGIN "editor"
+
+      reInitialize;
+
+      edit;
+
+    ! Save stack pointers, to allow REENTER (as well as CONTINUE);
+
+      QUICK!CODE  acDef;
+      	movem	rf, ac12;
+	movem	sp, ac16;
+	movem	p, ac17;
+      END
+      ;
+
+      IF NOT (call.sw AND rpgSw
+
+ IFC  imsss.sw  THENC
+		AND infBuf['32]
+ ELSEC
+		AND infBuf['13] LAND '774000000000
+ ENDC
+	      )
+      THEN
+      BEGIN 
+	 outstr ("
+CONTINUE
+        ...to start over
+
+");
+
+	 exit1;
+      END 
+      ;
+   END "editor" ! FOREVER;
+   ;
+END "TV"
+;
+
+COMMENT  End of file TV;
+
+

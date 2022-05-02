@@ -1,0 +1,1582 @@
+
+	!*******    Window management, line mode    ********
+	 **************************************************;
+
+
+	!****	Display-indipendent display functions   ****
+	 **************************************************;
+
+	
+FORWARD SUBROUTINE	dpyWPage;
+FORWARD SUBROUTINE	dpyLine (INTEGER y);
+
+
+SUBROUTINE	setXY (INTEGER x, y);
+!		-----
+	Set pointer to non-empty line closest to  Y.
+	;
+BEGIN "setXY"
+   xx _ x MAX 1 MIN maxX;
+ ! Make YY point to the window;
+   yy _ y MAX 1 MIN maxY;
+ ! Scan up to closest non-empty line;
+   WHILE empty(w[yy]) AND yy > 1  DO dec(yy);
+
+ ! YY is now = 1, W[1] should never be empty;
+   IF empty(w[yy])  THEN
+   BEGIN
+    ! Detect and fix invalid condition;
+      IF empty (w[yy] _ getTop)
+      THEN  BEGIN goof ("SETXY:  EMPTY W[1]"); w[yy] _ EOLstr END
+      ;
+      dpyWPage;  dpyLine(yy);
+   END
+   ;
+END "setXY"
+;
+
+SUBROUTINE	dpyWPage;
+!		--------
+	Display page and line no.,  WPAGE, WLINE,  as line 0
+	  of the display.
+	Done by updates rather than total rewrite of line 0.
+	;
+IF NOT noLine0  THEN
+BEGIN "dpyWPage"
+   updateOld (oldWPage, wPage, 6, 0);	! First page no.;
+   updateOld (oldWLine, wLine, 12, 0);	! Then line no.;
+END "dpyWPage"
+;
+
+
+SUBROUTINE	dpyLine0;
+!		--------;
+IF noLine0  THEN
+BEGIN "dpyLine0"
+ ! First assume beginning of file (page 1, line 1);
+   oldWPage _ 1;  oldWLine _ 1;  caseBlinks _ iBlinks _ FALSE;
+   doHOME;  doCL;
+  
+   dpy ("*P.1L.1" & BB & right & right & EB);
+ !     ( 0123456789.123456     7     8       9     . ), x = 0..20,
+ !	 ... those -es are ^Z BOXes;
+
+   dpy1 (IF readOnly THEN "R" ELSE IF UCFile THEN "U" ELSE "L");
+ !			   1,  x = 21, CASEORG = 20;
+
+   dpy (EB & "");
+ !     ( 2    3456789 ), x = 22..29, MESORG = 30;
+
+   noLine0 _ FALSE;  dpyWPage;
+   dpyMessage (IF novice  
+		THEN BB & " READ THE NEWS...BE INFORMED!" & EB
+		ELSE NIL);
+END "dpyLine0"
+;
+
+SUBROUTINE	clearLine (INTEGER y);
+!		---------
+	Wipe out line  Y.  Note:  This is not a line kill,
+	nor is it a line with just CRLF.
+	;
+BEGIN
+   setCursor (0, y);
+
+ IFC hazd.sw THENC
+   IF wxc[y]  THEN  BEGIN doCL; wxc[y] _ 0 END;
+ ELSEC
+   doCL;
+ ENDC
+
+END
+;
+
+
+SUBROUTINE	dpyEmptyLine (INTEGER y);
+!	 	------------;
+BEGIN clearLine(y); dpy1("E") END;
+
+
+
+SUBROUTINE	dpyPageNo (INTEGER y, page);
+!		---------;
+BEGIN "dpyPageNo"
+   clearLine(y);  dpy("PAGE ");  dpy(cvs(page));  dpy(" -----");
+
+   IF maxX > 15
+   THEN  BEGIN setCursor(maxX-6,y); dpy("--- PAGE") END
+   ;
+END "dpyPageNo"
+;
+
+INTEGER SUBROUTINE	linePage (INTEGER y);
+!	 		--------
+	Returns page number for  Y  of window.
+	N O T E:  Scans for page marks only upto  Y-1.
+	;
+BEGIN "linePage" INTEGER z, page;
+   page _ wPage;
+   FOR z _ 1 upto y-1  DO IF isPageMark(w[z])  THEN inc(page);
+   RETURN (page);
+END "linePage"
+;
+
+
+INTEGER SUBROUTINE	pageLine (INTEGER y);
+!			--------
+	Get line no. (within page) of window line  Y.
+	NOTE:  Never looks at line  W[Y].
+	;
+BEGIN "pageLine" INTEGER l, z; STRING str;
+   l _ 1;
+
+   FOR z _ y - 1 downto 1  DO
+   IF isPageMark (str _ w[z])  THEN RETURN (l)
+   ELSE IF nonEmpty(str)  THEN inc(l)
+   ;
+ ! Comes here only if scanned to top of window;
+   RETURN (wLine + l - 1);
+END "pageLine"
+;
+
+
+SUBROUTINE	backSave;
+!		--------	
+	Save current page/line numbers for use by  -@  command.
+	Called by  $$G, $$@, and $.@. 
+	;
+BEGIN backLine _ pageLine(yy); backPage _ linePage(yy);
+      dpyMessage("MARK.SET..")
+END;
+
+
+
+SUBROUTINE	updatePageMarks (INTEGER y);
+!		---------------
+	DELTAp is positive or negative according to whether
+	  page marks have been inserted or deleted.
+	Update includes lines  Y+1  through  MAXy.
+	;
+IF deltaP  THEN
+BEGIN "updatePageMarks" INTEGER newP, oldP;
+   WHILE (inc(y)) LEQ maxY  DO
+   IF isPageMark(w[y])  THEN
+   BEGIN
+      newP _ linePage(y)+1;
+      updateOld ((oldP _ newP - deltaP), newP, 5, y);
+   END
+   ;
+   deltaP _ 0;
+END "updatePageMarks"
+;
+
+FORWARD SUBROUTINE	dpyL;
+
+
+SUBROUTINE	dpyLine (INTEGER y);
+!		-------
+	Display line  Y  of window,  W[Y].
+	;
+IF NOT dpyOn  THEN RETURN
+ELSE IF NOT y  THEN BEGIN noLine0 _ TRUE; dpyLine0 END
+ELSE IF empty (w[y])  THEN dpyEmptyLine (y)
+ELSE IF isPageMark(w[y])  THEN dpyPageNo (y, linePage(y)+1)
+! So must be a line of text;
+ELSE IF lineOpen AND y = yy  THEN dpyL
+ELSE IF starts (0, 0, y)  THEN displays (w[y])
+;
+
+
+SUBROUTINE	dpyWindow;
+!		---------
+	Window buffer is assumed to be full, display it.
+	;
+IF dpyOn  THEN
+BEGIN "dpyWindow" INTEGER y;
+   doCM;   FOR y _ 0 upto maxY  DO dpyLine (y);
+END "dpyWindow"
+;
+
+
+SUBROUTINE	clearWindow;
+!		-----------
+	Put window to text buffer, clear screen.
+	;
+BEGIN "clearWindow" INTEGER y;
+   doCM;
+   FOR y _ 1 upto maxY  DO BEGIN putTop(w[y]); w[y] _ NIL END;
+END "clearWindow"
+;	
+
+FORWARD SUBROUTINE	ringInit;
+
+
+SUBROUTINE	changeMaxX (INTEGER new);
+!		----------;
+BEGIN "changeMaxX" INTEGER y, old, restX; STRING str;
+   old _ maxX;
+
+   IF (maxX _ new MAX 1 MIN maxX1) NEQ old  THEN
+   BEGIN
+      restX _ (maxX MIN old) + 1;
+
+      FOR y _ 1 upto maxY  DO
+      IF isText (str _ w[y]) AND starts (0,restX,y)
+      THEN displays (str)
+      ;
+   END
+   ;
+   setXY (xx, yy);  ringInit;
+END "changeMaxX"
+;
+
+
+SUBROUTINE	changeMaxY (INTEGER new);
+!	 	----------;
+BEGIN "changeMAXy" INTEGER y, old;
+   old _ maxY;
+
+   IF (maxY _ new MAX 1 MIN maxY1) < old  THEN
+ ! Remove lines from bottom of window;
+   FOR y _ old downto maxY+1
+   DO BEGIN putBot (w[y]); w[y] _ NIL; clearLine (y) END
+   ELSE 
+ ! Add lines to window;
+   FOR y _ old+1 upto maxY  DO BEGIN w[y] _ getBot; dpyLine(y) END
+   ;
+   setXY (xx, yy);
+END "changeMAXy"
+;
+
+INTEGER SUBROUTINE	dCount (INTEGER count);
+!	 		------
+	Returns no. of lines from current line to first
+	  page mark or end of window.
+	Used by routines terminated by page marks.
+	If count cannot be satisfied,  W[YY+DCOUNT(COUNT)]
+	  is either a page mark or empty.
+	;
+BEGIN "dCount" INTEGER i, y;
+   y _ yy;
+
+   FOR i _ 1 upto count
+   DO IF empty(w[y _ y+1]) ORIF isPageMark(w[y])  THEN RETURN (i)
+   ;
+   RETURN (count);
+END "dCount"
+;
+
+
+INTEGER SUBROUTINE	uCount (INTEGER count);
+!	 		------
+	See comment to  DCOUNT.
+	;
+BEGIN "uCount" INTEGER i, y;
+   y _ yy;
+
+   FOR i _ 1 upto count
+   DO IF empty(w[y _ y-1]) ORIF isPageMark(w[y])  THEN RETURN (i)
+   ;
+   RETURN (count);
+END "uCount"
+;
+
+SUBROUTINE	sortW (INTEGER a, b, c);
+!		-----
+	Re-order window buffer  W[1:MAXY]  between  W[A]  (inclusive)
+	   and  W[C]  (exclusive).
+	1 leq A  leq  B  leq  C  leq  MAXY+1  is assumed.
+	In symbols:  W[A:C-1]  _ ( W[B:C-1]  followed by  W[A:B-1] ).
+	This procedure called by  UPDATEWindow and some others.
+
+	WARNING:  The method of sorting might seem obscure,
+	  but it is believed to work.
+	;
+! Consider done if either  A = B  or  B = C;
+IF a < b AND b < c  THEN
+BEGIN "sortW" INTEGER  y0, y, count, ab, bc, ac;
+
+   ab _ b - a;  bc _ c - b;  ac _ c - a;
+
+ ! Upper section  W[A:B-1]  will be moved down  BC  steps,
+ ! lower section  W[B:C-1]  will be moved up  AB  steps.
+   ;
+   count _ 0;  y0 _ a;
+
+   WHILE count < ac  DO
+   BEGIN
+      y _ y0 + bc;
+		
+      WHILE y NEQ y0  DO
+      BEGIN
+	 w[y]  SWAP  w[y0];
+
+ IFC  hazd.sw  THENC  wxc[y] SWAP wxc[y0];  ENDC
+
+	 inc(count);  y _ y + (IF y < b THEN bc ELSE -ab);
+      END
+      ;
+      inc(count);  inc(y0);
+   END		
+   ;		
+END "sortW"
+;	
+
+FORWARD SUBROUTINE	scrollUP (INTEGER count);
+
+
+SUBROUTINE	updateW (INTEGER a, b, c, moveNewUp, wx, wy);
+!		-------
+	General purpose window update routine to be used when the old
+	window partially containes the new one (as in scroll, move,
+	insert and delete of lines).  The idea is to update the display
+	in such a way that the usable part is not distroyed.
+
+ A, B, C  are indeces to window array  W[1:MAXY].
+	1 leq A leq B leq C leq MAXY+1  is assumed.
+ MOVENEWUP  tells which part of the window is new text (not yet
+	displayed).  If it is 0 (i.e. false) then  W[A:B-1]  is
+	the new text and it is to be displayed below  W[B:C-1].
+	If  MOVENEWUP  is 1 (i.e. true) then  W[B:C-1] is new
+	and is to be displayed above  W[A:B-1]  (i.e. moved up).
+ WY  gives line to pint at upon return (WY  will be made valid).
+	;
+BEGIN "updateW" INTEGER deleteY, insertY, count, i, y, foo;
+	
+   IF moveNewUp
+   THEN  BEGIN deleteY _ b; insertY _ a; count _ c-b END
+   ELSE  BEGIN deleteY _ a; insertY _ a+c-b; count _ b-a END
+   ;
+
+ ! Consider done if number of new lines (=COUNT) is zero;
+
+   IF NOT count  THEN RETURN;
+
+ IFC hazd.sw THENC
+    IF NOT moveNewUp  THEN FOR i _ a upto b-1  DO wxc[i] _ 0
+    ELSE FOR i _ b upto c-1  DO wxc[i] _ 0
+    ;
+ ENDC
+
+ ! Sort window array;
+   sortW (a, b, c);
+
+ ! Update the screen;
+
+   IF count GEQ maxY AND (dmd OR infd OR v200d OR nihd) AND noLine0  THEN doCM
+   ELSE
+   BEGIN
+    ! First delete lines that are going away.  Will bottom line be 
+    !  deleted?;
+
+! !.. IF (i _ deleteY + count) LEQ maxY1  THEN  ..;
+! !.. BEGIN ..;
+
+	 setCursor (0, deleteY);
+	 IF dmd OR i LEQ maxY  THEN dpyN (count, DL)  ELSE doEEOP;
+
+! !.. END ..;
+! !.. ;
+
+    ! Then insert lines at where the new lines go;
+      setCursor (0, insertY);
+      IF insertY + count LEQ maxY  THEN dpyN (count, IL);
+   END
+   ;
+ ! Window page-line numbers might have changed;
+   IF noLine0  THEN dpyLine0  ELSE dpyWPage;
+
+ ! Display the new lines;
+   foo _ insertY + count - 1;
+
+   IF moveNewUp
+   THEN FOR y _ foo downto insertY  DO dpyLine(y)
+   ELSE FOR y _ insertY upto foo  DO dpyLine(y)
+   ;
+ ! Make sure cursor is within the window;
+   wy _ wy MAX 1 MIN maxY;
+
+COMMENT  .....some work needed from here down ......;
+
+ ! If first or last line of file got deleted, replace by CRLF;
+   IF lineKill AND empty(w[wy])
+   THEN  BEGIN w[wy] _ EOLstr; dpyLine(wy) END
+   ;
+
+   updatePageMarks (wy - 1);
+   setXY (wx, wy);
+
+ ! Check top of window;
+   IF nonEmpty (w[y _ 1])  THEN RETURN;
+
+ ! Lift first non-empty line to top of window.... Needs work !!!;
+   DO inc(y)  UNTIL  y > maxY OR nonEmpty (w[y]);
+
+   IF y > maxY ANDIF empty (w[y _ maxY] _ getBot) 
+       ANDIF empty (w[y] _ getTop)
+   THEN 
+   BEGIN  
+      goof ("UPDATEW: EMPTY FILE !!!???");
+      w[y] _ EOLstr;  dpyLine (y)  
+   END
+   ;
+	
+   yy _ y;  scrollUp (y - 1);
+
+	! SCROLLUP  calls  UPDATEW,  so we have recursion.  It should
+	! terminate since  SCROLLUP  guarantees (?) a non-empty top 
+	! line.  UPDATEW  has not been declared recursive since old 
+	! arguments are no longer needed.
+	;
+
+END "updateW"
+;
+
+SUBROUTINE	scrollUp (INTEGER count);
+!		--------
+	WY  points to current line (which must be non-empty).
+	Will not leave window totally empty.
+	Current line is kept open unless it slips out of sight.
+	;
+IF count  THEN
+BEGIN "scrollUp" INTEGER i, y; BOOLEAN wasOpen;
+   y _ 0;
+
+   FOR i _ 1 upto count  DO
+   BEGIN
+      IF y GEQ maxY  THEN DONE;
+
+    ! Is (open) line about to go off the window?;
+      IF (inc(y)) = yy  THEN
+      BEGIN
+	 leaveInsert;
+	 IF lineOpen  THEN closeLine  ELSE xx _ 1;
+      END
+      ;
+      putTop (w[y]);  w[y] _ getBot;			
+   END
+   ;
+   wasOpen _ lineOpen;  lineOpen _ FALSE;
+ ! Y points to last line that got;
+   updateW (1, y+1, maxY+1, 0, xx, yy - y);
+   lineOpen _ wasOpen;
+END "scrollUp"
+;
+
+
+SUBROUTINE	scrollDown (INTEGER count);
+!		----------
+	Will not scroll beyand first line of file.
+	;
+IF count  THEN
+BEGIN "scrollDown" INTEGER i, y; BOOLEAN outOSight, wasOpen;
+   y _ maxY + 1;  outOSight _ FALSE;
+
+   FOR i _ 1 upto count  DO
+   BEGIN
+      IF y LEQ 1 OR firstWindow  THEN DONE;
+
+      IF (dec(y)) = yy  THEN
+      BEGIN
+	 outOSight _ TRUE;  leaveInsert;
+	 IF lineOpen  THEN closeLine  ELSE xx _ 1;
+      END
+      ;
+      putBot (w[y]);  w[y] _ getTop;
+   END
+   ;
+   wasOpen _ lineOpen;  lineOpen _ FALSE;
+ ! Y points to last line that got;
+   updateW (1, y, maxY + 1, 1,
+   	    xx, IF outOSight THEN 1 ELSE (yy + maxY + 1 - y));
+   lineOpen _ wasOpen;
+END "scrollDown"
+;
+
+!   *	*   *	*   *	*   *	*   *	*   *	*   *	*   *	*
+*
+*		Cursor movement, line mode
+*
+*   *	*   *	*   *	*   *	*   *	*   *	*   *	*   *	;
+
+
+SUBROUTINE	dCR (INTEGER count);
+!		---
+	This procedure for $'CR' and read only mode CR.
+	  Will not go past EOF.
+	Terminated by count, page mark, or EOF.
+	;
+BEGIN "dCR" INTEGER i, y, fifth; BOOLEAN full;
+ ! First scan within current window;
+   i _ dCount (count);
+ 
+   IF nonEmpty (w[y _ yy+i]) OR lastWindow
+   THEN  BEGIN setXY(1,y); RETURN END
+   ;
+
+ ! So the target line is beyand current window, scan for it;
+
+   y _ 0;  full _ FALSE;
+
+ ! Do what is left of count;
+   FOR i _ count-i downto 0  DO
+   BEGIN
+      IF y = maxY  THEN  BEGIN y _ 0; full _ TRUE END;
+      putTop (w[inc(y)]);  w[y] _ getBot;
+      IF isPageMark (w[y]) OR lastWindow  THEN DONE;
+   END
+   ;
+ ! Y now points to the target, scroll up about one fifth window;
+   fifth _ (maxY+3) DIV 5;
+
+   FOR i _ 1 upto fifth  DO
+   BEGIN
+      IF y = maxY  THEN  BEGIN y _ 0; full _ TRUE END;
+      putTop (w[inc(y)]);  w[y] _ getBot;
+   END
+   ;
+
+ ! Y points to last that got, update the display;
+   IF full  THEN
+   BEGIN
+      sortW (1, y+1, maxY+1);
+      updateW (1, maxY+1, maxY+1, 0, 1, maxY-fifth);
+   END
+   ELSE updateW (1, y+1, maxY+1, 0, 1, maxY-fifth)
+   ;
+END "dCR"
+;
+
+SUBROUTINE	uCR (INTEGER count);
+!		---;
+BEGIN "uCR" INTEGER  i, y, fifth; BOOLEAN full;
+ ! On-window scan first;
+   i _ uCount (count);
+
+   IF nonEmpty (w[y _ yy-i]) OR firstWindow
+   THEN  BEGIN setXY(1,y); RETURN END
+   ;
+
+ ! Now at top line of window,  scan text buffer for page mark;
+
+ IFC TRUE  THENC
+
+   goToPlace (wPage, wLine - count + i - 1, 1);
+
+ ELSEC
+
+   y _ maxY + 1;  full _ FALSE;
+
+   FOR i _ count-i downto 0  DO
+   BEGIN
+      IF y = 1  THEN  BEGIN y _ maxY+1; full _ TRUE END;
+      putBot(w[dec(y)]);  w[y] _ getTop;
+      IF isPageMark(w[y]) OR firstWindow  THEN DONE;
+   END				
+   ;
+
+   i _ 0;  fifth _ (maxY+3) DIV 5;
+
+   IF NOT firstWindow  THEN
+   FOR i _ 1 upto fifth  DO
+   BEGIN
+      IF y = 1  THEN  BEGIN y _ maxY+1; full _ TRUE END;
+      putBot(w[dec(y)]);  w[y] _ getTop;
+      IF firstWindow  THEN DONE;
+   END
+   ;
+   IF full  THEN
+   BEGIN
+      sortW (1, y, maxY+1);
+      updateW (1, 1, maxY+1, 1, 1, i);
+   END
+   ELSE updateW (1, y, maxY+1, 1, 1, i)
+   ;
+
+ ENDC
+
+END "uCR"
+;
+
+
+DEFINE		dWindow (count) = "scrollUp (count)",
+		uWindow (count) = "scrollDown (count)";	
+!		------- ;
+
+
+FORWARD SUBROUTINE	openLine;
+FORWARD SUBROUTINE	rSP (INTEGER count);
+
+
+SUBROUTINE	GoToPlace (INTEGER goP, goL, goB);
+!		---------
+	Point to designated byte.
+	Scrolls if old and new windows overlap.
+	;
+BEGIN "GoToPlace" INTEGER page, line, byte, pg, ln, y; STRING str; 
+
+
+	BOOLEAN SUBROUTINE	above (INTEGER pg, ln);
+	!			-----;
+	RETURN (page < pg OR (page = pg AND line < ln));
+
+
+	BOOLEAN SUBROUTINE	below (INTEGER pg, ln);
+	!			-----;
+	RETURN (page > pg OR (page = pg AND line > ln));
+
+
+	SUBROUTINE	addLine (STRING line);
+	!		-------;
+	IF isPageMark (line)  THEN  BEGIN inc(pg); ln _ 1 END
+	ELSE inc (ln)
+	;
+
+
+	BOOLEAN SUBROUTINE	setsYY;
+	!			------
+		Sets  YY  to point to target line on window.
+		TRUE  iff succeeds.
+		Expects  W[MAXY+1]  to be empty.
+		Uses variables of  GOTOPLACE.
+		Side effect:  PG  and  LN  are set to those of W[yy+1].
+		;
+	BEGIN "setsYY" BOOLEAN abv;
+	   pg _ wPage;  ln _ wLine;  yy _ y _ 0;
+
+	   WHILE NOT (abv _ above (pg, ln))
+		  ANDIF nonEmpty (str _ w[inc(y)])
+	   DO  BEGIN addLine (str); yy _ y END
+	   ;
+	   RETURN (yy AND abv);
+	END "setsYY"
+	;
+
+	INTEGER rRdP, fifth;
+	LABEL goFin, goMap, goTop, goBot, goSet, goPoint;
+
+			! +  +  +  +  + ;
+
+ ! Make target honest.  NOTE:  PAGE i  page mark is last line of page
+   i - 1  but also line 0 of page  i;
+
+    IF (page _ goP) LEQ 0  THEN page _ line _ byte _ 1
+    ELSE IF NOT (line _ goL MAX 0)
+    THEN  BEGIN byte _ 1; IF page = 1 THEN line _ 1 END
+    ELSE byte _ goB MAX 1
+    ;
+    fifth _ (maxY + 2) DIV 5;
+
+ ! Super dispatch follows;
+
+    BEGIN "goTo"
+	IF starting  THEN GOTO goMap;		! Starting of edit;
+
+      ! Does new window overlap current window?;
+
+	IF nonEmpty (W[1])  THEN
+	BEGIN "w1" INTEGER n;
+	   IF above (wPage, wLine)  THEN
+	   BEGIN "onTop"
+	      IF page = wPage  
+	      THEN  BEGIN pg _ wPage; ln _ wLine; y _ gap END
+	      ELSE 
+	      BEGIN
+		 y _ top;
+
+		 IF below (pg _ tPage, ln _ tLine)  THEN
+		 BEGIN
+		    WHILE NOT above (pg, ln) AND y NEQ gap
+		    DO  BEGIN addLine (text[y]); nextt(y) END
+		    ;
+		  ! Overflow to next page?;
+		    IF pg > page  THEN  BEGIN inc(page); line _ 0 END;
+		 END
+		 ;
+	      END
+	      ;
+	      IF pg = page ANDIF (n _ nLines (y, gap) + ln - line 
+					+ (fifth MIN line)) < maxY
+	      THEN  BEGIN uWindow (n); GOTO goSet END
+	      ;
+	    ! Not close enough above, falls to CLEARWINDOW;
+	   END "onTop"
+	   ELSE IF setsYY  THEN GOTO goPoint   ! PG, LN _ P.L [bot];
+	   ELSE IF yy < maxY  THEN GOTO goSet  ! EOF;
+	   ELSE IF page = pg
+		     ANDIF (n _ line - ln + 1 + fifth) < maxY
+	   THEN  BEGIN dWindow (n); GOTO goSet END
+	   ;
+	   clearWindow;
+	END "w1"
+	;
+	IF above (tPage, tLine)  THEN GOTO goFin;
+	IF above (wPage, wLine)  THEN GOTO goTop;
+
+      ! Near EOF?;
+	IF rightOf (rRdP _ rightOf (rdPage)) < 0  THEN GOTO goBot;
+
+      ! Target line below current window.  Compute P.L for end of next
+      ! file page, to scan straight through if it is needed anyway;
+
+	y _ bot;
+
+	WHILE y NEQ free  
+	DO  BEGIN addLine (text[y]); nextt(y) END
+	;
+      ! To be honest, should  DEC (LN)  (counting LFs from now on);
+	addFFLF (pg, ln, n.ffIn, n.lfIn);
+	addDirEntry (pg, ln, rRdP);
+ 	IF above (pg, ln + slack)  THEN GOTO goBot;
+
+    END "goTo"
+    ;
+
+		! Finish -- restart;
+ goFin:
+	finSegment;
+
+ goMap:
+	mapPgLn (page, line);
+
+ goTop:
+	WHILE above (wPage, wLine)  DO putBot (getTop);
+
+      ! Window is empty and target line is in bottom text or input file.
+      ! Scan forward until target line moves to top text;
+
+ goBot:
+	DO putTop (getBot)
+	UNTIL  above (wPage, wLine) OR lastWindow
+	;
+
+      ! Bring target line to about middle of window;
+	FOR y _ (fifth + 1) MIN wLine  downto  1   ! At least once;
+	DO putBot (getTop)
+	;
+	yy _ 1;  dWindow (maxY);	! Generate the window;	
+
+ goSet:
+	IF NOT setsYY  THEN  BEGIN clearStack; byte _ 1 END;
+
+ goPoint:
+	setXY (1, yy);			! Point to target line;
+
+	IF byte > 1 AND isText (w[yy])
+	THEN  BEGIN openLine; rSP (byte - 1) END
+	;
+END "GoToPlace"
+;
+
+SUBROUTINE	goPlaces;
+!		--------
+	Go to next place as given by the list of FILEPLACES.
+	;
+BEGIN "goPlaces" STRING place;
+ ! Scan past separators and number strings starting with ".";
+   DO
+   BEGIN
+      scan (filePlaces, br.bNum, char);
+      place _ scan (filePlaces, br.eNum, junk);
+   END
+   UNTIL  char NEQ "."
+   ;
+ ! Get Page.Line and go;
+   IF nonEmpty (place)
+   THEN goToPlace ( cvd(scan(place,br.dot,char)),
+		     IF empty(place) THEN 1 ELSE cvd(place), 1 )
+   ELSE IF starting  THEN goToPlace (1, 1, 1)
+   ELSE iglCommand
+   ;
+END "goPlaces"
+;
+
+BOOLEAN SUBROUTINE	mayLBury;
+!			--------
+	Also clears  LDELCOUNT.
+	;
+IF eats _ eatCount GEQ maxGY OR (stackHas AND isPageMark(w[yy]))  THEN
+BEGIN
+   IF holdL  THEN dpyMessage (" $R'cr' TO REMEMBER LINES, "
+			        & BB & "$$.R'cr'" & EB & "TO FORGET");
+   RETURN (commandOK _ FALSE);
+END
+ELSE  BEGIN lDelCount _ 0; RETURN (TRUE) END
+;
+
+
+SUBROUTINE	bury (STRING line);
+!		----
+	A line that was killed is stored away in array GRAVE.
+	;
+IF nonEmpty (line)  THEN
+BEGIN "bury"
+   IF (inc(gy)) > maxGY  THEN gy _ 1;
+   grave[gy] _ line;  inc (lDelCount);  inc (eatCount);
+   IF isPageMark (line)  THEN dec (deltaP);
+END "bury"
+;
+
+
+STRING SUBROUTINE	digUp;
+!			-----
+	Last in, first out.  GY  points to last line put in.
+	;
+BEGIN "digUp"	STRING line;
+ ! Clear as you take;
+   line _ grave[gy];  grave[gy] _ NIL;
+
+   IF nonEmpty (line)  THEN
+   BEGIN
+      IF NOT (eatCount _ 0 MAX (eatCount-1))  THEN holdL _ FALSE;
+      dec (lDelCount);
+      IF isPageMark (line)  THEN inc (deltaP);
+   END
+   ;
+ ! Won't hurt to decrement  GY  even if GRAVE locaton was empty;
+   IF (dec(gy)) < 1  THEN gy _ maxGY;
+   RETURN (line);
+END "digUp"
+;
+
+SUBROUTINE	dDelete (INTEGER count);
+!		-------	
+	Delete current line and lines below it.
+	Terminated also by page mark, end of window, or EOF.
+	;
+IF mayLBury  THEN
+BEGIN "dDelete" INTEGER i, y;		
+   lDelSign _ 1;  y _ yy - 1;  count _ dCount (count);
+
+   FOR i _ count downto 1  DO
+   IF eatCount GEQ maxGY  THEN DONE
+   ELSE  BEGIN bury (w[inc(y)]); w[y] _ getBot END
+   ;
+ ! Y  points to last line that got;
+
+   linekill _ TRUE;
+   updateW (yy, y+1, maxy+1, 0, 1, yy);
+   linekill _ FALSE;
+END "dDelete"
+;
+
+SUBROUTINE	uDelete (INTEGER count);
+!		-------
+	Delete line(s) above the current line.
+	Terminated also by page mark or top of window.
+	;
+IF mayLBury  THEN
+ IF (count _ count MIN ( (yy MIN pageLine(yy)) - 1 )) LEQ 0  THEN ring
+ ELSE
+ BEGIN "uDelete" INTEGER y, i;
+   lDelSign _ -1;  y _ yy;
+
+   WHILE (dec(count)) GEQ 0 AND eatCount < maxGY 
+   DO BEGIN bury (w[dec(y)]); w[y] _ getBot END
+   ;
+ ! Reverse lines  W[Y:YY]  that were gotten from bottom text;
+   FOR i _ (yy - y - 2) DIV 2 downto 0  DO w[y+i] SWAP w[yy-1-i];
+
+   lineKill _ TRUE;
+   updateW (y, yy, maxY+1, 0, 1, y);
+   lineKill _ FALSE;
+ END "uDelete"
+;
+
+
+IFC FALSE THENC  ! To end of page.....;
+
+SUBROUTINE	XXuDelete (INTEGER count);
+!		-------
+	Delete line(s) above the current line.
+	Terminated also by page mark or top of window.
+	;
+IF mayLBury  THEN
+BEGIN "uDelete" INTEGER i, y;
+   lDelSign _ -1;  y _ yy;  count _ uCount (count);
+
+   FOR i _ count downto 1  DO
+   IF eatCount GEQ maxGY  THEN DONE
+   ELSE  BEGIN bury (w[dec(y)]); w[y] _ getBot END
+   ;
+   lineKill _ TRUE;
+   updateW (yy-count, yy, maxY+1, 0, 1, yy-count);
+   lineKill _ FALSE;
+END "uDelete"
+;
+
+
+SUBROUTINE	XuDelete (INTEGER count);
+!		-------
+	See comment to  DDELETE.
+	;
+IF mayLBury  THEN
+BEGIN "uDelete" INTEGER i, y;
+   lDelSign _ -1;  y _ yy + 1;  count _ uCount (count);
+
+   FOR i _ count downto 1  DO
+   IF eatCount GEQ maxGY  THEN DONE
+   ELSE  BEGIN bury (w[dec(y)]); w[y] _ getTop END
+   ;
+   linekill _ TRUE;
+   updateW (1, y, yy+1, 1, 1, yy);
+   linekill _ FALSE;
+END "uDelete"
+;
+
+ENDC  ! ....of FALSE;
+
+
+SUBROUTINE	dDotDelete (INTEGER count);
+!		----------
+	Remember this and  COUNT-1  following lines in the oops buffer.
+	;
+BEGIN "dDotDelete"
+   holdL _ TRUE;
+
+   IF mayLBury  THEN
+   BEGIN INTEGER i;
+      lDelSign _ 1;  count _ dCount (count);  dec(yy);
+
+      FOR i _ count downto 1  DO
+      IF eatCount GEQ maxGY  THEN DONE  ELSE bury (w[inc(yy)])
+      ;
+    ! Point to next line, to allow repeated remembering;
+      dCR (1);
+   END
+   ;
+END "dDotDelete"
+;
+
+
+SUBROUTINE	uDotDelete (INTEGER count);
+!		----------;
+BEGIN "uDotDelete"
+
+	SUBROUTINE	bury1;   bury (w[dec(yy)]); 
+	!		-----;
+
+			! +  +  +  + ;
+
+   holdL _ TRUE;
+
+   IF mayLBury  THEN
+    IF (count _ count MIN (yy - 1)) LEQ 0  THEN ring
+    ELSE
+    BEGIN
+       lDelSign _ -1;  bury1; 
+
+       WHILE (dec(count)) > 0 AND eatCount < maxGY 
+	      AND NOT isPageMark (w[yy-1])
+       DO bury1
+       ;
+    END
+   ;
+END "uDotDelete"
+;
+
+
+IFC FALSE THENC  ! Rest of page .....;
+
+SUBROUTINE	XuDotDelete (INTEGER count);
+!		----------;
+BEGIN "uDotDelete"
+   holdL _ TRUE;
+
+   IF mayLBury  THEN
+   BEGIN INTEGER i;
+      lDelSign _ -1;  count _ uCount (count);  inc (yy);
+
+      FOR i _ count downto 1  DO
+      IF eatCount GEQ maxGY  THEN DONE  ELSE bury (w[dec(yy)])
+      ;
+      uCR (1);
+   END
+   ;
+END "uDotDelete"
+;
+
+ENDC  ! .....one subr;
+
+
+SUBROUTINE	dRecover (REFERENCE INTEGER count);
+!		--------
+	Used as parametric procedure, hence REFERENCE INTEGER.
+	;
+BEGIN "dRecover" INTEGER i, y; STRING line;
+   IF graveEmpty  THEN fails _ TRUE;
+   y _ maxY + 1;
+
+   FOR i _ count downto 1  DO
+   IF empty (line _ digUp)  THEN DONE
+   ELSE
+   BEGIN	
+      putBot (w[dec(y)]);  w[y] _ line;
+      IF y = yy OR isPageMark(line)  THEN DONE;
+   END
+   ;
+   updateW (yy, y, maxY+1, 1, 1, yy);
+END "dRecover"
+;
+
+
+SUBROUTINE	uRecover (REFERENCE INTEGER count);
+!		--------;
+IF count  THEN
+BEGIN "uRecover" INTEGER y, maxY1, n, i; BOOLEAN gotPg; STRING line;
+   IF graveEmpty  THEN fails _ TRUE;
+   count _ count MIN (maxY - yy) MAX 1;
+   y _ maxY1 _ maxY + 1;  gotPg _ FALSE;
+
+   WHILE (dec(count)) GEQ 0 ANDIF nonEmpty (line _ digUp)  DO
+   BEGIN
+      putBot (w[dec(y)]);  w[y] _ line;
+      IF isPageMark(line)  THEN  BEGIN gotPg _ TRUE; DONE END;
+   END
+   ;
+   IF y > maxY  THEN RETURN;
+
+ ! Reverse lines  W[Y:MAXY]  that were gotten from oops buffer;
+   FOR i _ ((n _ maxY1-y) - 2) DIV 2 downto 0
+   DO w[y+i] SWAP w[maxY-i]
+   ;
+   updateW (yy, y, maxY1, 1, 1, yy);
+   dCR (n);  IF gotPg AND n > 1  THEN dCR (1);
+END "uRecover"
+;
+
+
+IFC FALSE THENC  ! To end of pg.....;
+
+SUBROUTINE	XuRecover (REFERENCE INTEGER count);
+!		--------;
+BEGIN "uRecover" INTEGER i, y; STRING line;
+   IF graveEmpty  THEN fails _ TRUE;
+   y _ 0;
+
+   FOR i _ count downto 1  DO
+   IF empty (line _ digUp)  THEN DONE
+   ELSE
+   BEGIN
+      putTop (w[inc(y)]);  w[y] _ line;
+      IF y = yy OR isPageMark(line)  THEN DONE;
+   END
+   ;
+   updateW (1, y+1, yy+1, 0, 1, yy);
+END "uRecover"
+;
+
+ENDC  ! .....FALSE one subr;
+
+
+SUBROUTINE	dInsert (INTEGER count);	
+!		-------
+	If COUNT is too large, will do to end of window only.
+	;
+IF count  THEN
+BEGIN "dInsert" INTEGER y, z;
+ ! Compute index of line to last overflow into text buffer;
+   z _ (maxY-count+1) MAX yy;
+
+ ! Put bottom lines of window to text buffer;
+   FOR y _ maxY downto z
+   DO  BEGIN putBot(w[y]); w[y] _ EOLstr END
+   ;		
+ ! .....might overflow text buffer....!!!!!!
+ !	 So what?  Most anything can! ;
+		
+   updateW (yy, y+1, maxY+1, 1, 1, yy);
+END "dInsert"
+;
+
+
+SUBROUTINE	uInsert (INTEGER count);
+!		-------;
+IF count  THEN
+BEGIN "uInsert"
+   dInsert (count _ count MIN (maxY - yy) MAX 1);
+   leaveInsert;  dCR (count);
+END "uInsert"
+;
+
+
+IFC FALSE THENC  ! This subr.....;
+
+SUBROUTINE	XuInsert (INTEGER count);
+!		-------;
+IF count  THEN
+BEGIN "uInsert" INTEGER y;
+   count _ count MIN yy;
+
+   FOR y _ 1 upto count
+   DO  BEGIN putTop(w[y]); w[y] _ EOLstr END
+   ;
+   updateW (1, y, yy+1, 0, 1, yy);
+END "uInsert"
+;
+
+ENDC  ! .....FASE this subr;
+
+FORWARD SUBROUTINE	txToOne;
+FORWARD BOOLEAN SUBROUTINE	atEOL;
+
+
+SUBROUTINE	d.C (INTEGER count; SUBROUTINE r.C1);
+!		---;
+BEGIN "d.C" INTEGER i;
+   FOR i _ dCount(count) downto 1  DO
+   BEGIN
+      openLine;  txToOne;  WHILE NOT atEOL  DO r.C1;
+      closeLine;  dCR (1);
+   END
+   ;
+END "d.C"
+;
+
+
+DEFINE
+	dLC (count) = "d.C (count, rLC1)",
+	dUC (count) = "d.C (count, rUC1)";
+
+
+SUBROUTINE	iLine (STRING line);
+!		-----
+	Insert  LINE  (assumed proper) as line  YY  of window.
+	;
+IF isText (line)  THEN
+BEGIN "iLine"
+   closeLine;  dInsert (1);  w[yy] _ line;  dpyLine (yy);
+END "iLine"
+;
+
+
+SUBROUTINE	iText (STRING str);
+!		-----
+	Chop string into proper lines and insert onto the window.
+	Throws away CR, turns LF into EOLstring.
+	;
+WHILE nonEmpty (str)  DO
+BEGIN "iText"  	INTEGER ch; STRING line;
+   line _ scan (str, sLFFFoCR, ch);
+   IF nonEmpty (line) OR ch = LF  THEN iLine (line & EOLstr);
+   IF ch = FF  THEN  BEGIN dCR(1); dMarkPage END;
+   dCR (1);
+END "iText"
+;
+
+SUBROUTINE	dMove (INTEGER  count);
+!		-----
+	Will not move down from bottom line of window.
+	Will "move" even a distance of zero.
+	;
+updateW (yy, yy+1, yy+Dcount(count+1), 0, 1, yy);
+
+
+
+SUBROUTINE	uMove (INTEGER  count);
+!		-----
+	Will not move up from top line.
+	;
+updateW (yy-uCount(count+1)+1, yy, yy+1, 1, 1, yy);
+
+
+SUBROUTINE	dCopy (INTEGER count);
+!		-----;
+IF count  THEN
+BEGIN "dCopy"  	INTEGER i, y, z; BOOLEAN full;
+   z _ yy - 1;  count _ dCount (count);
+
+   IF yy = 1  THEN
+   BEGIN
+      FOR i _ 1 upto count  DO putTop(w[inc(z)]);
+      dpyWPage;
+   END
+   ELSE 
+   BEGIN
+      y _ 0;  full _ FALSE;
+
+    ! The following  FOR-statement finishes with honest  Y and Z;
+      FOR i _ 1 upto count  DO
+      BEGIN
+	 IF (inc(y)) = yy
+	 THEN  BEGIN y _ 1; full _ TRUE END
+	 ;
+	 putTop(w[y]);  w[y] _ w[inc(z)];
+      END			
+      ;
+      IF full  THEN
+      BEGIN
+	 sortW (1, y+1, yy);
+	 updateW (1, yy, yy, 0, 1, yy);
+      END
+      ELSE updateW (1, y+1, yy, 0, 1, yy)
+      ;
+   END
+   ;
+END "dCopy"
+;
+
+SUBROUTINE	uCopy (INTEGER count);
+!		-----;
+IF count  THEN
+BEGIN "uCopy" INTEGER i, y, z; BOOLEAN full;
+   z _ yy + 1;  count _ uCount(count);
+
+   IF yy = maxY
+   THEN FOR i _ 1 upto count  DO putbot(w[dec(z)])
+   ELSE 
+   BEGIN
+      y _ maxy + 1;  full _ FALSE;
+
+      FOR i _ 1 upto count  DO
+      BEGIN
+	 IF (dec(y)) = yy
+	 THEN  BEGIN y _ maxY; full _ TRUE END
+	 ;
+	 putBot(w[y]);  w[y] _ w[dec(z)];
+      END
+      ;
+
+      IF full  THEN
+      BEGIN
+	 sortW (yy+1, y, maxY+1);
+	 updateW (yy+1, yy+1, maxY+1, 1, 1, yy);
+      END
+      ELSE updateW (yy+1, y, maxY+1, 1, 1, yy)
+      ;				
+   END
+   ;
+END "uCopy"
+;
+BOOLEAN SUBROUTINE	getYN(string mess);
+!			-----
+	Display the message and get Y or N. Return true if Y else false;
+BEGIN "getYN"
+    dpyMessage(mess);
+    expired _ TRUE;
+    RETURN (upperCase(inchRW LAND '177) = "Y")
+END
+;
+SUBROUTINE	regDelete;
+!		-----------
+	Move text between point and mark to region buffer file, 
+	deleting
+	;
+BEGIN "regDelete"
+    INTEGER stChan, count, pg, ln, displaced, i, opg, oln;
+    STRING s;
+    BOOLEAN SUBROUTINE PUTTEXT(STRING S);
+    !		       -------
+	Puts out a line.  Maintains all counters.  Returns
+	true if this is the last line that is to be transferred.
+	Note that pg and ln are left set for the next line, not
+	the current one;
+      BEGIN 
+      BOOLEAN isLast;
+      isLast _ (pg geq backPage) and (ln geq backLine);
+      count _ count + 1;
+      if s = pagemark
+	then begin ln _ 1; pg _ pg + 1 end
+	else ln _ ln + 1;
+      out(stchan,s);
+      if s = pagemark
+	then out(stchan,'12);
+      return(isLast)
+      END
+      ;
+    count _ 0; pg _ wpage; ln _ wline;
+       ! find page and line for yy;
+    for i _ 1 step 1 until yy-1 do
+      if w[i] = pageMark 
+	then begin ln _ 1; pg _ pg + 1 end
+	else ln _ ln + 1;
+    if (backPage neq pg) and not getYN (".DELETING.MORE.THAN.A.PAGE...OK?.'Y'.OR.'N'")
+      then begin clearstack; return end;
+    stchan _ openfile(regBufferFile,"WE");
+    if stchan < 0
+      then begin
+      clearstack; dpymessage(erString(!skip!));
+      return
+      end;
+    wordout(stchan,0);    ! leave space for count;
+       ! The routine works only forward, so exchange point and mark
+	 if the mark is before the current pointer;
+    if (backPage < pg) or ((backPage = pg) and (backLine < ln))
+      then begin 
+      backPage swap pg;  backLine swap ln;
+      goToPlace(pg,ln,1)
+      end;
+! Here is the main body.  Displaced is the number of spaces on the
+  screen from which text will disappear;
+    opg _ pg; oln _ ln;
+	    ! Put out text on screen;
+    deltap _ pg;   ! count how many page marks deleted;
+    for i _ yy step 1 until maxy do
+      if empty(w[i]) or putText(w[i]) then done;
+    deltap _ deltap - pg;   ! deltap is now negative no. of page marks;
+    displaced _ count;
+	    ! Put out text below screen;
+    if (i > maxy) and not lastWindow  ! i.e. still more within range;
+      then do 
+	until putText(getBot) or lastWindow;
+	    ! Now fill up window space left vacant;
+    for i _ yy step 1 until yy + displaced - 1 do
+      w[i] _ getBot;
+    backSave;
+    updatepagemarks(yy+displaced-1);
+    updatew(yy, yy+displaced, maxy+1,0,1,yy);
+            ! Put number of words dumped into file;
+    swdptr(stchan, 0);
+    wordout(stchan, count);
+    cfile(stchan);
+    END
+    ;
+
+SUBROUTINE	regDotDelete;
+!		-----------
+	Copy text between point and mark to region buffer file
+	;
+BEGIN "regDotDelete"
+    INTEGER stChan, count, pg, ln, y, opg, oln;
+    STRING line;
+    BOOLEAN SUBROUTINE PUTTEXT(STRING S);
+    !		       -------
+	Puts out a line.  Maintains all counters.  Returns
+	true if this is the last line that is to be transferred.
+	Note that pg and ln are left set for the next line, not
+	the current one;
+      BEGIN 
+      BOOLEAN isLast;
+      isLast _ (pg geq backPage) and (ln geq backLine);
+      count _ count + 1;
+      if s = pagemark
+	then begin ln _ 1; pg _ pg + 1 end
+	else ln _ ln + 1;
+      out(stchan,s);
+      if s = pagemark
+	then out(stchan,'12);
+      return(isLast)
+      END
+      ;
+    count _ 0; pg _ wpage; ln _ wline;
+       ! find page and line for yy;
+    for y _ 1 step 1 until yy-1 do
+      if w[y] = pageMark 
+	then begin ln _ 1; pg _ pg + 1 end
+	else ln _ ln + 1;
+    if (backPage neq pg) and not getYN (".COPYING.MORE.THAN.A.PAGE...OK?.'Y'.OR.'N'")
+      then begin clearstack; return end;
+    stchan _ openfile(regBufferFile,"WE");
+    if stchan < 0
+      then begin
+      clearstack; dpymessage(erString(!skip!));
+      return
+      end;
+    wordout(stchan,0);    ! leave space for count;
+       ! The routine works only forward, so exchange point and mark
+	 if the mark is before the current pointer;
+    if (backPage < pg) or ((backPage = pg) and (backLine < ln))
+      then begin 
+      backPage swap pg;  backLine swap ln;
+      goToPlace(pg,ln,1)
+      end;
+! Here is the main body.; 
+    opg _ pg; oln _ ln;
+! Is the target in the current window?;
+    for y _ yy step 1 until maxy do
+      if empty(w[y]) or putText(w[yy_y]) then done;
+    if y leq maxy or lastWindow ! We are done;
+      then setxy(1,yy)   ! so go there the easy way;
+      else begin
+! Is the target in the bottom area?;
+      while nlines(bot,free) < maxy
+	and not eof do read;
+      y _ bot;
+      while y neq free do
+        if putText(text[y])
+	  then done
+	  else nextT(y);
+      if y = free
+        then begin
+! Finally, text below the bottom (search in the dark);
+	clearwindow; forceout;
+	while bot neq free do
+	  putTop(getBot);
+	while not lastwindow do
+	  begin
+	  putTop(line _ getBot);
+	  if putText(line)
+	    then done
+	  end;
+	putBot(getTop)
+	end;
+      goToPlace(pg,ln,1);
+      end;
+    backline _ oln; backpage _ opg;
+    dpyMessage("MARK.SET..");
+            ! Put number of words dumped into file;
+    swdptr(stchan, 0);
+    wordout(stchan, count);
+    cfile(stchan);
+    END
+    ;
+
+SUBROUTINE regRestore(integer count);
+!          -------------------------
+	Restore the text saved by the $D@ command
+	Count is a dummy at the moment;
+    BEGIN
+    INTEGER stchan, count, i, onscreen, topscreen, botscreen, displaced;
+    STRING s;
+    STRING SUBROUTINE getText;
+      BEGIN
+      STRING s;
+      s _ sini(stchan, maxlength, '12);
+      if s = pagemark   ! i.e. 1st char of s is ff;
+        then begin s _ pagemark;  ! lf was added by writer;
+		   deltap _ deltap + 1 end;
+      return(s)
+      END
+      ;
+    stchan _ openfile(regBufferFile, "ROE");
+    if stchan < 0
+      then begin
+      clearstack; dpymessage(erString(!skip!));
+      return
+      end;
+    count _ wordin(stchan);   ! number of lines in file;
+    backSave;
+    deltap _ 0;
+! displaced is the number of lines currently on the screen that
+	  will be pushed off the top;
+    displaced _ count min (yy - 1);
+    for i _ 1 step 1 until displaced do
+      putTop(w[i]);
+    for i _ 1 step 1 until count - displaced do
+      putTop(getText);
+    for i _ 1 step 1 until displaced do
+      w[i] _ getText;
+    updatePagemarks(yy-1);
+    updatew(1,displaced+1,yy,0,1,yy);
+! if he is near the top of the screen, make sure he can see that
+  something happened.  Bring him to line 3, assuming there were
+  enough new lines to need it, and that there are 3 lines allowed;
+    i _ maxy min (count+1) min 3;  ! where to bring him if not there;
+    if yy < i
+      then scrolldown(i-yy);
+    cfile(stchan)
+    END
+    ;
+
+SUBROUTINE	putPageMark;
+!	 	-----------;
+BEGIN "putPageMark"
+   w[yy] _ pageMark;  dpyLine (yy);
+   inc(deltaP);  updatePageMarks (yy);  xx _ 1;
+END "putPageMark"
+;
+
+
+SUBROUTINE	dMarkPage;
+!		---------
+	Page:  Insert page mark above current line.
+	;
+BEGIN dInsert(1); putPageMark END;
+
+
+
+SUBROUTINE	uMarkPage;
+!	 	---------;
+BEGIN dMarkPage; dCR(1) END;
+
+
+INTEGER SUBROUTINE	firstVisible (STRING s);
+!			------------
+	Return first character after initial spaces and tabs,
+	  0 for an empty string.
+	;
+IF empty (s)  THEN RETURN (0)
+ELSE
+BEGIN "firstVisible" INTEGER ch;
+   DO WHILE ch _ lop(s)
+      DO IF ch NEQ " " AND ch NEQ TAB  THEN RETURN (ch)
+   UNTIL empty (s)
+   ;
+   RETURN (LF);  ! Return LF even if there was none;
+END "firstVisible"
+;
+
+
+REQUIRE  "{}{}" DELIMITERS;
+
+
+INTEGER SUBROUTINE	dFind (INTEGER count, char);
+!			-----
+	Return the no. of  Nth  line on window that starts with  CHAR.
+	No. of last line +1 if count not satisfied.
+	;
+BEGIN "dFind" INTEGER z, ch;
+   z _ yy;  char _ upperCase({char});
+
+ ! We depend on  W[MAXY+1]  being empty;
+   WHILE (dec(count)) GEQ 0  DO
+    DO IF NOT (ch _ firstVisible (w[inc(z)]))  THEN RETURN (z)
+    UNTIL upperCase(ch) = char
+   ;
+COMMENT  .......not yet final......;
+
+   RETURN (z);
+END "dFind"
+;
+
+
+INTEGER SUBROUTINE	uFind (INTEGER count, char);
+!	 		-----;
+BEGIN "uFind" INTEGER z, ch;
+   z _ yy;  char _ upperCase (char);
+
+ ! We all know that  W[0]  should always be empty;
+   WHILE (dec(count)) GEQ 0  DO
+    DO IF NOT (ch _ firstVisible (w[dec(z)]))  THEN RETURN (z)
+    UNTIL upperCase(ch) = char
+   ;
+   RETURN (z);
+END "uFind"
+;
+
+REQUIRE  UNSTACK!DELIMITERS;
+
+
+SUBROUTINE	dSearch (INTEGER count, char);
+!		-------
+	Search foreward to  Nth  line beginning with  CHAR.
+	If none found, put pointer to last line of window.
+	DFIND does the actual search.  
+	Empty W[Y] means: failed, in which case clear the stack.
+	;
+IF count AND empty (w[yy _ dFind(count,char)])  
+THEN  BEGIN dec(yy); clearStack END 
+;
+
+
+SUBROUTINE	uSearch (INTEGER count, char);
+!		-------;
+IF count AND empty (w[yy _ uFind(count,char)])  
+THEN  BEGIN inc(yy); clearStack END 
+;
+
+
+SUBROUTINE	dZap (INTEGER count, char);
+!		----;
+dDelete (dFind (count, char) - yy);
+
+
+
+SUBROUTINE	uZap (INTEGER count, char);
+!		----;
+uDelete (yy - uFind (count, char));
+
+
+COMMENT  End of file TVWIN;
+
+

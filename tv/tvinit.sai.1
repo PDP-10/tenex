@@ -1,0 +1,242 @@
+
+
+	!********   INITIALIZATION procedures   *********
+	 ***********************************************;
+
+SUBROUTINE	termInit;
+!		--------
+	Terminal initialization.  Type = 0 for non-display.
+	  Should be called also when continuing after  ^C.
+	;
+BEGIN "termInit"
+   tecd _ teck _ dmd _ dmk _ imld _ imlk _ infd _ infk _ v200d _ v200k _ nihd _ nihk _
+	FALSE; ! [1];
+   t.d _ 0; 
+
+   START!CODE
+	movei	1, -1;
+	GTTYP;			! Get terminal type;
+	movem	2, tType;
+   END
+   ;
+   IF tType = '11  THEN BEGIN tecd _ teck _ TRUE; t.d _ '200 END
+   ELSE IF tType = '12  THEN imld _ imlk _ TRUE
+   ELSE IF tType = '5  THEN dmd _ dmk _ TRUE
+   else if tType = '6  then infd _ infk _ true ! [1];
+   else if tType = 24  then v200d _ v200k _ true
+   else if tType = 25  then nihd _ nihk _ true
+   ELSE tType _ 0  ! Not a known display;
+   ;
+   noEditKey _ NOT (teck OR dmk OR imlk);
+END "termInit"
+;
+
+
+SUBROUTINE	ringInit;
+!		--------;
+ringX _ maxX - (IF IMSSS.sw THEN 7 ELSE zillion);
+
+
+SUBROUTINE	ioInit;
+!		------;
+BEGIN "ioInit"
+ ! These define fields (or byte pointers to AC0);
+   f.rdSeg _ point (8, memory[0],  8);
+   f.wrSeg _ point (8, memory[0], 17);
+
+   f.nFF _ point (12, memory[0], 11);
+   f.nLF _ point (12, memory[0], 23);
+   f.nCh _ point (12, memory[0], 35);
+
+ ! These byte pointers use AC1 for indexing;
+   p.rdSeg _ f.rdSeg LOR (links LOR '1000000);
+   p.wrSeg _ f.wrSeg LOR (links LOR '1000000);
+
+   failFile _ TRUE;
+END "ioInit"
+;
+
+
+SUBROUTINE	filInit;
+!		-------;
+BEGIN "filInit"
+ ! For skiping blanks (spaces and tabs) in answer string;
+   setBreak (br.sBl, " "&TAB, " "&TAB, "XR");
+
+ ! For reading lines from the input file;
+   setBreak (inBreaks, LF & FF, NIL, "INA");
+
+   p.byteSize _ point (6, fdb['11], 11);
+   p.mode _ point ( 1, fdb['24],  0);
+   p.page _ point (11, fdb['24], 11);
+   p.line _ point (15, fdb['24], 26);
+   p.252  _ point ( 9, fdb['24], 35);
+
+   maxLength _ 300;  textInit;  ioInit;
+END "filInit" 
+;
+
+SUBROUTINE	winInit;
+!	 	-------;
+BEGIN "winInit"
+   setBreak (br.bNum, ".0123456789", everything, "IR");
+   setBreak (br.eNum, ".0123456789", "", "XR");
+   setBreak (br.dot, ".", "", "IS");
+   setBreak (br.findatom, '40&'11&"/", null, "XRN");
+   setBreak (br.scanatom, '40&'11&"/", null, "IRNK");
+   setBreak (br.esc, '33, "", "IS");
+
+ ! Sreen dimensions are further adjusted by WINREINIT;
+   IF NOT (maxX _ ldb (p.maxX _ point (7, strFDBUSW, 23)))
+   THEN maxX _ IF sumex.sw THEN 80 ELSE 72
+   ;
+   IF NOT (maxY _ ldb (p.maxY _ point (6, strFDBUSW, 30)))
+   THEN maxY _ 23
+   ;
+ ! Grave init;  
+   gy _ gy MAX 1 MIN maxGY;
+   lDelSign _ lDelCount _ eatCount _ 0;  holdL _ FALSE;
+END "winInit"
+;
+
+
+SUBROUTINE	linInit; ;
+!	 	-------;
+
+
+SUBROUTINE	wrdInit;
+!		-------;
+BEGIN "wrdInit"
+ ! Grave init;  
+   gx _ gx MAX 1 MIN maxGX;
+   wDelSign _ wDelCount _ wCount _ 0;  holdW _ FALSE;
+END "wrdInit"
+;
+
+
+SUBROUTINE	chrInit;
+!		-------;
+BEGIN "chrInit"
+   setBreak (sLFFFoCR, LF&FF, CR, "INS");
+   setBreak (br.FF, FF, 0, "IS");
+   setBreak (br.semi, ";", 0, "IS");
+   editBit _ haltPending _ FALSE;
+END "chrInit"
+;
+
+
+SUBROUTINE	comInit;
+!		-------;
+BEGIN "comInit"
+   putIX _ 1;  clearInBuf;
+   clearStack;  newString _ NIL;  defining _ FALSE;
+   oldCommand _ CTRLC; 
+END "comInit"
+;
+
+		! + + +  RE-INITIALIZATION  + + + ;
+
+
+SUBROUTINE	termReInit;  dpyIni;
+!		----------;
+
+
+SUBROUTINE	ioReInit;
+!		--------;
+BEGIN  
+   iBufMP _ minIBufMP - 1;
+   starting _ TRUE;
+   n.input _ 0;
+   saving _ 0;  ! Semaphore-flag to disable FINCONTINUE;
+END
+;
+
+
+SUBROUTINE	filReInit;
+!		---------;
+BEGIN
+   newVersion _ badEOF OR crashFile OR NOT ownFile;
+   keepAll _ FALSE;  ioReInit;
+END
+;
+
+
+SUBROUTINE	winReInit;
+!		---------;
+BEGIN "winReInit"
+   doCM;
+   FOR foo _ maxMaxY + 1 downto 0  DO w[foo] _ NIL;
+   maxX _ maxX MIN (maxX1 _ maxCX - 2);  ! "- 1" when DM gets fixed;
+					 ! Similar "fix" in NCOMMAND;
+   maxY _ maxY MIN (maxY1 _ maxCY);
+   ringInit;
+END "winReInit"
+;
+
+
+SUBROUTINE	linReInit;
+!	 	---------;
+BEGIN "linReInit"
+   wx0 _ overHang _ 0;  oldTX _ newTX _ tx _ 1;  addS _ zillion;
+   lineOpen _ FALSE;
+   caseCount _ 0;  inUC _ UCMode _ UCFile;
+END "linReInit"
+;
+
+
+SUBROUTINE	wrdReInit;
+!		---------;
+BEGIN "wrdReInit"
+   gx _ gx MAX 1 MIN maxGX;
+END "wrdReInit"
+;
+
+
+SUBROUTINE	chrReInit;
+!		---------;
+BEGIN "chrReInit"
+
+END "chrReInit"
+;
+
+
+SUBROUTINE	comReInit;
+!		---------;
+BEGIN "comReInit"
+   oldCommand _ CTRLC;
+   numStrings _ numOlds _ 0;
+
+! ....for initial testing, at least : .......;
+   insertMode _ lineOpen _ endOfEdit _ lineKill _ FALSE;
+END "comReInit"
+;
+
+
+procedure cmtinit;			! set up comment stuff;
+    begin string filext;
+	cmtcol _ 41;
+	filext _ jfns(inchan, '000400000000);
+	if equ(filext, "SAI") then begin
+	    cmtbeg _ "!";
+	    cmtend _ ";"
+	end
+	else if equ(filext, "C") then begin
+	    cmtbeg _ "/*";
+	    cmtend _ "*/"
+	end
+	else if equ(filext, "PAS") then begin
+	    cmtbeg _ "(*";
+	    cmtend _ "*)";
+	end
+	else begin
+	    cmtend _ null;
+	    if equ(filext, "BCP") then cmtbeg _ "//"
+	    else if equ(filext, "BLI") or equ(filext, "B11") then cmtbeg _ "!"
+	    else cmtbeg _ ";"
+	end
+    end;
+
+
+COMMENT  End of file  TVINIT;
+
+

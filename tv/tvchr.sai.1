@@ -1,0 +1,649 @@
+
+!*********   Stack, Strings, Keyboard Input, Next Character   *********
+ *********************************************************************;
+
+REQUIRE  "/\{}"  DELIMITERS;
+
+COMMENT  
+		Character Conventions
+		---------------------
+			The idea is:
+	1)  All tty mod 33 spacing characters  (i.e. printing characters,
+		SP, TAB)  stand for themselves.
+	2)  CR  and  LF  both act as an  EOL-character.
+	3)  ESC  (one or two) is interpreted as the beginning of
+		a command.  The command itself is composed of printing
+		characters.  The end of a command is determined
+		by the command interpreter on the bases of the
+		command syntax.
+	4)  All other characters are potential string calls
+		(i.e. calls of text and command strings).
+		Thus it is possible to assign tv-edit commands to
+		control characters.
+
+	;
+
+
+COMMENT  
+		The wonderful world of strings
+		-------------------------------
+
+	     Strings can call themselves (this we will call a
+	'SELF CALL') and other strings.  If the last character
+	of a string is a self call, we have a loop (refered to
+	here as 'LOOPING SELF CALL').  If other than last
+	character is a self call, we have honest recursion
+	('RECURSIVE SELF CALL'), and execution of such a string
+	can result in execution stack overflow,
+	which in turn clears the stack and thus terminates the
+	execution of the string.  Also a set of strings can
+	constitute a loop or an honest recursor.
+
+		The combination of the ingredients:
+	1)  looping self calls,
+	2)  Copy command,
+		and
+	3)  storage and retrieval of lines to/from  GRAVE  buffer by the
+	delete and Oops commands allows the editer to do
+	wonderful but also weird things.   Watch out!!!!!!!!!
+;
+
+
+	    !******   Stack and String Handling   ******
+	     ******************************************;
+
+
+DEFINE		clearInBuf = "getIX _ putIX";
+!		----------;
+
+
+SUBROUTINE	clearStack;
+!		----------
+	Will leave  SY = 0.
+	;
+FOR sy _ maxSY + 1 STEP 0 WHILE sy > 0  DO stack [dec(sy)] _ NIL;
+
+
+
+FORWARD  SUBROUTINE	stringAbort;
+
+
+SUBROUTINE	stackString (STRING s);
+!		-----------
+	Put  S  to top of execution stack.
+	Stack overflow causes flushing of stack, forcing the editor to
+	  take the next character from the keyboard (input buffer).
+	;
+IF empty (s)  THEN  BEGIN ring; IF inCommand THEN abort END
+ELSE IF sy = 0  THEN stack[sy_1] _ s	 ! Empty stack;
+  ! Replace empty string at top of stack;
+ELSE IF empty(stack[sy])  THEN stack[sy] _ s	
+  ! Put to top of stack unles full;
+ELSE IF (inc(sy)) LEQ maxSY  THEN stack[sy] _ s  ELSE stringAbort
+;
+
+
+SUBROUTINE	stringAbort;
+!	 	-----------;
+BEGIN "stringAbort"
+   clearStack;   eats _ emits _ fails _ FALSE;
+   dpyOn _ TRUE;
+   dpyMessage (".STRING.EXECUTION.ABORT");
+   abort;
+END "stringAbort"
+;
+
+FORWARD STRING SUBROUTINE	getString (INTEGER id);
+FORWARD SUBROUTINE		nextNonESC;
+
+
+INTEGER SUBROUTINE	goodID (INTEGER id);
+!			------
+	Check  ID  for validity, ask to redefine if not.
+	Warn user if string already defined unless double ESC.
+	User reply does not go to input buffer.
+	;
+FOREVER  DO
+BEGIN "goodID"
+   WHILE class(id) NEQ STRINGclass  DO
+   BEGIN 
+      clearStack;  clearInBuf;  dpyMessage (".TYPE.VALID.STRING.ID");
+      nextNonESC;  id _ char;
+   END  
+   ;
+   IF doubleESC OR empty (getString(id))  THEN RETURN (id);
+
+   dpyMessage (".ALREADY.DEFINED...'Y'.TO.REDEFINE..ELSE.OTHER.ID");
+   expired _ TRUE;
+
+   IF (char _ upperCase(INCHRW LAND '177)) = "Y"  THEN RETURN (id)
+   ELSE id _ char
+   ;
+END "goodID"  ! of FOREVER;
+;
+
+
+SUBROUTINE	storeString (STRING s);
+!	 	-----------
+	First character of  S  is the string ID.
+	If that is the only character, undefine (free) the ID.
+	;
+BEGIN "storeString"  INTEGER i, j, char;
+   IF class(char _ s) NEQ stringClass  THEN RETURN;  ! Invalid;
+
+   j _ 0;
+   
+   FOR i _ 1 upto n1Strings  DO
+   IF strings[i] = char  THEN
+   BEGIN
+    ! Redefine a previously defined string;
+      strings[i] _ IF length(s) = 1 THEN NIL ELSE s;  RETURN;
+   END
+ ! Remember first unused location;
+   ELSE IF (NOT j)  AND empty(strings[i])  THEN j _ i
+   ;
+
+ ! So we have a previously unused ID;
+   IF length(s) = 1  THEN RETURN;
+
+   IF j  THEN strings[j] _ s
+   ELSE goof ("STRING SPACE IS ALREADY FULL")
+   ;			
+END "storeString"
+;
+
+SUBROUTINE	addToNewString;  newString _ newString & char;
+!		--------------
+	Append  CHAR  to  NEWSTRING.
+	;
+
+
+SUBROUTINE	callString;
+!		----------
+	CHAR  is a potential string call.
+	Put on top of stack the string defined for  CHAR.
+	;
+BEGIN "callString"  STRING str;
+   pureKeyboard _ FALSE;
+ ! Keep an eye on string calls, looping strings in particular;
+   IF (inc(callCount)) > 1000  THEN stringAbort;
+   stackString (rest (str _ getString (char)));
+END "callString"
+;
+
+
+DEFINE		STRINGinput = "callString",
+
+		stringCall = "( class(char) = STRINGclass )";
+!	  	---------- ;
+
+
+STRING SUBROUTINE	inBufString;
+!			-----------
+	Returns the input buffer as a string.
+	;
+BEGIN "inBufString"  INTEGER x;  STRING str;
+   str _ "*";  x _ putIX;
+
+   DO
+   BEGIN
+      IF (foo_inBuf[x]) LAND '200  THEN str _ str & ESC;
+      IF (foo_foo LAND '177)  THEN str _ str & foo;
+      IF (inc(x)) > maxIX  THEN x _ 1;
+   END
+   UNTIL x = putIX
+   ;
+   RETURN (str);
+END "inBufString"
+;
+
+
+STRING SUBROUTINE	getString (INTEGER id);
+!			---------
+	Get the string for this ID character.
+	;
+BEGIN "getString"  INTEGER y;
+   FOR y _ 1 upto nStrings  DO
+   IF strings[y] = id  THEN RETURN (strings[y])
+   ;
+   IF id = '10 THEN RETURN ('10&'33&"<") ELSE
+   RETURN (NIL);
+END "getString"
+;
+
+STRING SUBROUTINE	textString;
+!			----------
+	Returns the string from current cursor position to  $/
+	  page mark or end of window, whichever comes first.
+	The resulting string is ready to be defined as a string.
+	;
+BEGIN "textString"  INTEGER ch, y;  STRING str;
+   y _ yy;  str _ NIL;
+
+   WHILE isText (w[y])  DO
+   BEGIN
+      yy _ y;  openLine;
+
+      WHILE (ch _ tChar) ANDIF class(ch) NEQ EOLclass  DO
+      BEGIN
+	 movesR;
+
+	 IF ch = eDef AND last(str) = ESC  THEN
+	 BEGIN
+	  ! Remove  $/  from the end;
+	    DO str _ most(str)  UNTIL last(str) NEQ ESC;
+	    RETURN (str);
+	 END
+       ! Stop at a FF, an abortive end of defn;
+	 ELSE IF ch = FF  THEN RETURN (str)
+	 ;						
+	 str _ str & ch;
+      END
+      ;
+      str _ str & EOLchar;  closeLine;
+    ! Ready for next line;
+      xx _ 1;  inc(y);
+   END
+   ;
+ ! End of page or window came first;
+   dCR (1);  RETURN (str);
+END "textString"
+;
+
+BOOLEAN SUBROUTINE	writesStrings (INTEGER pg);
+!			-------------
+	Stores strings in file page PG of STRINGFILE (PG is the
+	  page ID letter).  If  STRINGS[1:N1STRINGS]  is empty,
+	  removes (unmaps) page PG from STRINGFILE.
+	Strings will start at word boundaries.  Writes an  FF  after
+	  each string, and a second  FF  after the last string.
+	Writes INFILE as the last string (before the doulbe FF).
+	Write  MAXX, MAXY  in user word of FDB of .PMAP file.
+	FALSE  iff  does not get the page.
+	;
+IF mapsSPage (pg, TRUE)  ! TRUE -- to write;
+THEN
+BEGIN "writesStrings" INTEGER i, j, n;
+
+	SUBROUTINE	write1 (STRING str);
+	!		------;
+	IF (n _ (length(str) + 4) DIV 5) AND j + n < '776  THEN 
+	BEGIN
+	   DO sBuffer ({(inc(j))}) _ CVASC(str)
+	   UNTIL empty (str _ str[6 TO INF])
+	   ;
+	   sBuffer({(inc(j))}) _ FF LSH 1;
+	END
+	;
+			! +  +  +  + ;
+
+   j _ -1;  ! After one INC by WRITE1 points to a word in SBUFFER;
+
+   FOR i _ 1 upto n1Strings  DO write1 (strings[i]);
+
+   IF j < 0 AND pg > 0  THEN remSPage  ! Remove empty page;
+   ELSE
+   BEGIN
+    ! Write file name and mark EOP with 2nd FF;
+ifc tops20.sw thenc
+      write1 (":"&(oldInFile _ inFile));  sBuffer ({(inc(j))}) _ FF LSH 1;
+elsec
+      write1 (oldInFile _ inFile);  sBuffer ({(inc(j))}) _ FF LSH 1;
+endc;
+    ! Remember screen dimensions;
+      dpb (maxX, p.maxX);  dpb (maxY, p.maxY);
+      CHFDB (strChan, '24, -1, strFDBUSW);
+   END
+   ;
+   relSPage;  RETURN (TRUE);
+END "writesStrings"
+ELSE RETURN (FALSE)
+;
+
+
+BOOLEAN SUBROUTINE	readsStrings (INTEGER pg);
+!			------------
+	Load STRINGS[1:N1STRINGS] and OLDINFILE from STRINGFILE pag PG.
+	Replaces only those strings which exist in the file (merge).
+	Read STRFDB24.
+	TRUE  iff  gets requested strings.
+	;
+IF mapsSPage (pg, FALSE)  THEN ! FALSE -- to read;
+BEGIN "readsStrings" STRING s, ps;
+ ! Read user word, prepare string pointer;
+   START!CODE
+	move	1, strJfn;
+	move	2, ['1000024];	! One word,,index 24;
+	movei	3, strFDBUSW;
+	GTFDB;			! Read user word;
+
+
+	movei	2, ps;		! Address of 2nd wd of str descr.;
+	movei	1, '5000;
+	movem	1, -1(2);		! Length;
+	hrlzi	1, '440700;
+	hrri	1, sBufPage LSH 9;
+	movem	1, (2);			! String pointer;
+   END
+   ;
+ ! Scan for the strings;
+   WHILE nonEmpty (s _ scan(ps,br.FF,junk))  DO
+ifc tops20.sw thenc
+   IF s = "<"  THEN oldInFile _ s  
+   ELSE IF s = ":" THEN oldInFile _ s[2 to inf]
+   ELSE storeString (s)
+elsec
+   IF s = "<"  THEN oldInFile _ s  ELSE storeString (s)
+endc;
+   ;
+   relSPage;  RETURN (TRUE);
+END "readsStrings"
+ELSE RETURN (FALSE)
+;
+
+FORWARD BOOLEAN SUBROUTINE	pure;
+
+
+SUBROUTINE	Execute;
+!		-------
+	Enable EDIT key/Execute a string from the text file.
+	$$3.14E   is required to execute execute.
+	$E  to enabel,  $0E  to disable the eidt key.
+	;
+IF pureKeyboard AND doubleESC AND count = 3 AND extension = 14
+THEN stackString (textString)  
+ELSE 
+IFC  future.sw  THENC
+  dpyMessage (IF (noEditKey _ NOT count) THEN ".EDIT.KEY.DISABLED."
+					     ELSE ".EDIT.KEY.ENABLED.")
+ELSEC
+  iglCommand
+ENDC
+;
+
+
+SUBROUTINE	quote;
+!		-----
+	Immediate text string is stored.
+	GOODID (0)  to ask user for ID.
+	;
+IF pure  THEN storeString (goodID (0) & textString)
+ELSE iglCommand
+;
+
+
+SUBROUTINE	retrieve (INTEGER ch);
+!		--------
+	$$.Rx  load (merge) strings from STRINGFILE page  x.
+	$$.R0  clear strings.
+	$Rx  retrieve the string whose ID is  x,  insert to the text.
+	$RI  retrieve the input buffer.
+	;
+IF gotDot  THEN
+  IF stackHas OR NOT doubleESC  THEN iglCommand
+  ELSE IF char = "0"  ! Clear strings or load from stringfile?;
+  THEN FOR junk _ 1 upto n1strings  DO strings[junk] _ NIL
+  ELSE dpyMessage ( IF readsStrings(ch) THEN ".OK." 
+		    ELSE ".STRINGS.NOT.AVAILABLE." )
+ELSE iText ( IF ch="I" THEN inBufString ELSE rest(getString(ch)) )
+;
+
+
+SUBROUTINE	saveStrings (INTEGER ch);
+!		-----------;
+IF doubleESC ANDIF NOT stackHas ANDIF writesStrings(ch)
+THEN dpyMessage (".OK.")
+ELSE iglCommand
+;
+
+	!******   Keyboard input buffer handling   ******
+	 ***********************************************;
+
+
+SUBROUTINE	putInBuf;
+!		--------
+	1)  "x" complements case shift on TECs.
+	2)  NULL characters thrown away.	
+	3)  ^L  aborts and makes watch for keyboard input.
+	4)  All others are converted to current case and stored in 
+		input buffer, with possible edit bit.
+	Buffer full rings the bell.
+	;
+BEGIN "putInBuf"  INTEGER ch, c1, x; 
+   IF haltPending  THEN halt;		! "HALT" will abort;
+
+   ch _ char LAND '177;   IF noEditKey  THEN char _ ch;
+
+   IF teck AND ch = "x"  THEN
+   BEGIN
+    ! Front end case shifting done here;
+      inUC _ NOT inUC;   caseCount _ 1;
+      IF char LAND '200  THEN UCMode _ inUC;  RETURN;
+   END
+   ;
+
+   IF NOT (ch _ keyBoard(ch))  THEN RETURN;
+   IF ch = callChar  THEN halt;
+
+ ! Make Line Feed into a $\-command (for "down");
+   IF ch = LF  THEN char _ (ch_"\") LOR '200;
+
+ ! Now put to buffer, ...;
+
+   IF teck  THEN
+   BEGIN
+    ! ...but first do possible case conversion for TECs;
+      IF ( (x _ class ({(c1 _ ch+'40) LAND '177})) = LCClass 
+	    AND NOT inUC )
+	  OR  (x = LCPClass AND (UCFile XOR inUC))
+      THEN ch _ c1  ! Convert to lower case;
+      ;
+   END
+   ELSE IF dmk or infk or v200k or nihk THEN
+   BEGIN
+    ! Simulated alpha lock for DATAMEDIA;
+      IF inUC AND (class({(c1 _ ch-'40) LAND '177})) = ucClass
+      THEN ch _ c1  ! Convert to upper case;
+      ;
+   END
+   ;
+   IF NOT(dec(caseCount))  THEN resetCase;
+
+ ! Compute next address;
+   IF (x _ putIX + 1) > maxIX  THEN x _ 1;
+
+   IF x NEQ getIX
+   THEN  BEGIN inBuf[putIX] _ (char LAND '200) LOR ch; putIX _ x END
+   ELSE ring  ! Buffer full, character lost;
+   ;
+END  "putInBuf"
+;
+
+
+SUBROUTINE	preScan;
+!		-------
+	Allows  ^L  to be recognized.
+	;
+IF haltPending  THEN halt;
+
+
+FORWARD SUBROUTINE	getInBuf;
+
+! ......GETINBUF  should be moved here or even earlier....;
+
+
+	    !******   Next Character Generators   ******
+	     ******************************************;
+
+
+SUBROUTINE	nextC;
+!		------
+	Load  CHAR  with next edit character.
+	Consider the sources in the following order:
+	   1)	stack:  first character of  STACK[SY]
+	   2)	input buffer
+	   3)	keyboard,  wait until something comes	
+	String calls are passed on.
+	String definition is done here, and only characters that
+	  come from the input buffer are considered.
+	;
+BEGIN "nextC"
+ ! Must allow  'Halt' command to be seen;
+   preScan;
+
+ ! Try stack;
+   WHILE sy > 0  DO
+   IF (char _ lop(stack[sy]))  THEN RETURN
+ ! For safety, clear top of stack (should not be needeed);
+   ELSE  BEGIN stack[sy]_NIL; dec(sy) END
+   ;			
+
+ ! Stack is empty, get from keyboard INPUT BUFFER,
+ !  but first some resets;
+
+ ! ....moved to "GETINBUF"....	IF haveOutput  THEN forceOut;
+ ! Watch dog parameters;
+   IF NOT holdL  THEN eatCount _ 0;
+   IF NOT holdW  THEN wCount _ 0;
+   emitCount _ callCount _ 0;  eats _ emits _ fails _ FALSE;
+	
+   getInBuf;
+END "nextC"
+;
+
+
+SUBROUTINE	nextNonESC;
+!		----------
+	Set CHAR to next non-ESC, in upper case.
+	NO string expansion.
+	;
+DO nextC  UNTIL (char _ upperCase (char)) NEQ ESC;
+
+
+SUBROUTINE	getInBuf;
+!		--------
+	Loads CHAR.
+	Character with edit bit on gets converted here into
+	  ESC and a character.
+	;
+FOREVER DO
+BEGIN "getInBuf"
+   IF (dec(iCount)) < 0  THEN
+   BEGIN
+      iCount _ 250;
+      IF writeMode  THEN WHILE top NEQ gap  DO write;
+   END
+   ;
+
+ ! First consider input buffer;
+
+   WHILE getIX NEQ putIX  DO
+   BEGIN "unBuf"
+      char _ inBuf[getIX];
+
+      IF (editBit _ NOT editBit) AND (char LAND '200)
+      THEN char _ ESC  ! Expand the edit bit;
+      ELSE 
+      BEGIN  
+	 char _ char LAND '177;  editBit _ FALSE;
+	 IF (inc(getIX)) > maxIX  THEN getIX _ 1;
+      END 
+      ;
+      IF char
+      THEN BEGIN IF defining THEN addToNewString; RETURN END
+      ;
+   END "unBuf" 
+   ;
+	     !*********
+	     *        ;		
+   IF ( char _ INCHRS ) NEQ -1
+	     !        *		
+	     *********;
+   THEN putInBuf
+   ELSE
+   BEGIN "wait"
+ ! Input buffer is empty, must wait for input.
+   But first do delayed window updating;
+
+ 	SUBROUTINE	onAgain;
+	!		-------;
+	BEGIN
+	   turnOn;  clearCursor;
+	   IF nonEmpty (w[yy])  THEN dpyLine (yy);
+	   setCursor (xx, yy);
+	END
+	;
+
+			! +  +  +  + ;
+
+      IF dpyOn AND NOT readOnly  THEN
+      BEGIN
+	 IF (UCfile EQV inUC) EQV caseBlinks  THEN dpyCase;
+	 IF insertMode XOR iBlinks  THEN dpyI;
+      END
+      ;
+      forceOut;
+
+      IF NOT dpyOn  THEN BEGIN onAgain; forceOut END ;
+
+ !***********************;
+ ;			 ;
+ ;    char _ INCHRW;	 ;
+ ;			 ;
+ !***********************;
+
+      IF char = CTRLO  THEN onAgain  ELSE putInBuf;
+      expired _ messageOn;
+   END "wait" 
+   ;
+ ! Loops back, returns when gets from buffer;
+   inc (iCount);
+END "getInBuf"  ! of FOREVER;
+;
+
+SUBROUTINE	nextChar;
+!		--------
+	Loads  CHAR  from stack or input buffer.
+	String calls are expanded here.
+	;
+FOREVER  DO
+BEGIN "nextChar"
+   nextC;
+
+   CASE  class(char)  OF
+   BEGIN
+	"NULL"	;
+	"CTRLC"	DONE;
+	"ESC"	DONE;
+	"DEL"	DONE;
+
+	"EOL"	DONE;
+	"FF"	halt;  ! Should never be here;
+	"TAB"	DONE;
+	"SP"	DONE;
+
+	"STRIN"	callString;
+	"PUNCT"	DONE;
+	"UCASE"	DONE;
+	"LCASE"	DONE;
+
+	"LCPNC"	DONE
+   END
+   ;			
+END "nextChar"
+;
+
+
+SUBROUTINE	nextCom;
+!		-------
+	Loads  CHAR  with next non-ESC character, in upper case.
+	;
+DO nextChar  UNTIL (char _ upperCase(char)) NEQ ESC;
+
+
+REQUIRE  UNSTACK!DELIMITERS;
+
+
+COMMENT  End of file TVCHR;
+
+

@@ -1,0 +1,1995 @@
+
+	    !*********   In-line editing   *********
+	     **************************************;
+
+
+DEFINE		resetCase = "inUC _ UCMode";
+!		---------;
+
+
+BOOLEAN SUBROUTINE	indicates (STRING str);
+!	 		---------
+	This procedure is modelled after "DISPLAYS", in "TECSUB".
+	In principle,  STR  is indicated in position  DPtx.
+	DPwx0  is the invisible  DPtx  immediately left of the window
+	  (DPWX0 > 0  means the line is left-shifted to display
+	   current  TX  on the window), so indicator characters need
+	   actually be sent only after  DPTX  has passed  DPWX0.
+	Caller must clear the line before first call of  INDICATES.
+	DPTX  gets updated.  
+	INDICATES  is FALSE if  DPTX  overflows the righr margin of
+	  the window  or  STR  contains any EOL-characters, TRUE o.w.
+	;
+BEGIN "indicates" INTEGER ch, ind;
+   DO
+    WHILE ch _ lop (str)  DO
+    BEGIN
+     ! Maybe past right margin?;
+       IF dpTX > dpWX0 + maxX  THEN RETURN (FALSE);  ! Yes;
+
+       ind _ 0;
+
+     ! Indicate text if in view, delay action on blank "output";
+       IF dpTX > dpWX0
+       THEN ind _ CASE class(ch)
+		  OF ( ch+'100, ch+'100, ch+'100, BOX,
+		       LE,      ch+'100, ":",     ".",
+
+		       ch+'100, ".",
+		       IF lcd THEN "." ELSE "^",
+		       IF lcd THEN "." ELSE "_",
+
+		       IF lcd THEN "." ELSE "!" )
+       ;
+       IF ind  THEN
+       BEGIN "dpyInd"
+	  IF cx NEQ (foo _ dpTX-dpWX0)
+  IFC hazd.sw THENC
+	  THEN spaceCursor (foo)
+  ELSEC
+	  THEN moveCursor (foo, cy)
+  ENDC
+	  ;
+	  dpy1(ind);
+       END  "dpyInd"
+       ;
+     ! Update X-coord and return if EOL; 
+       IF NOT (nextX (dpTX, ch))  THEN RETURN (FALSE);
+    END
+   UNTIL empty (str)
+   ;
+   RETURN (TRUE);	! End of string before right margin;
+END "indicates"
+;
+
+SUBROUTINE	indicL (BOOLEAN above);
+!	 	------
+	This procedure modelled after "UPDATEL", next page.
+	Indicate the characters (upper/lower case, control char)
+	   of the currently open line on the line above (if ABOVE) 
+	   or below the current line.
+	;
+BEGIN "indicL"	INTEGER y;
+   IF starts (wx0, wx0+1, y _ yy+(IF above THEN -1 ELSE 1))
+   THEN 
+   BEGIN INTEGER s;  STRING str;
+    ! Set scanning origin to beginning of line;
+      str _ l[s_0];
+
+    ! Display line segments;
+      IF indicates (str)  THEN
+      DO IF (inc(s)) > maxS  THEN
+       BEGIN
+	  goof ("INDICL:  L SEEMS TO HAVE NO EOL");
+	  indicates (EOLstr);  DONE;
+       END
+      UNTIL NOT indicates(l[s])
+      ;
+      showStr (0, y, "=");  showStr (maxX+1, y, "=");
+   END
+   ;
+   refreshX _ zillion;
+ ! Finally, cursor back to position;
+   moveCursor (xx, yy);  
+END "indicL"
+;
+
+SUBROUTINE	updateL;
+!	 	-------
+	Update the display of currently open line from  REFRESHx  on.
+	Make cursor position visible and leave cursor pointing there.
+	;
+BEGIN "updateL"
+   IF overHang
+   THEN refreshX _ refreshX MIN ((wx0+maxX)+(overHang MIN 0))
+   ;
+ ! Maybe current character (i.e. TX) off the screen;
+   IF tx > wx0 + maxX OR (wx0 AND tx LEQ wx0)
+   THEN refreshX _ wx0 _
+		( IF tx LEQ maxX  THEN 0  ELSE tx - (maxX+1)DIV 2 )
+   ;
+ ! Maybe some refreshing is needed;
+   IF starts (wx0, refreshX, yy)  THEN
+   BEGIN INTEGER s;  STRING str;
+    ! Set scanning origin to beginning of line;
+      str _ l[s_0];
+
+    ! Display a line segments;
+      IF displays (str)  THEN
+      DO IF (inc(s)) > maxS  THEN
+       BEGIN
+	  goof ("UPDATEL:  L SEEMS TO HAVE NO EOL");
+	  displays (EOLstr);  DONE;
+       END
+      UNTIL NOT displays(l[s])
+      ;
+   END
+   ;
+   refreshX _ zillion;  overHang _ 0;
+ ! Finally, cursor to current  TX;
+   moveCursor (xx _ tx-wx0, yy);  
+END "updateL"
+;
+
+
+SUBROUTINE	dpyL;
+!		----;
+BEGIN refreshX _ 0; updateL END;
+
+
+SUBROUTINE	doICorDC (INTEGER destX, n);
+!	 	--------
+	Insert (if N>0) or Delete (if N<0) |N| Chracters on the display
+	  so as to bring the position  DESTX - N  to position  DESTX.
+	Global variables affected: REFRESHX and OVERHANG.
+	;
+IF n  THEN
+BEGIN "doICorDC" INTEGER x, wx, wxToMaxX, absN; 
+   IF (x _ destX - (n MAX 0)) < refreshX  THEN
+   BEGIN
+
+ IFC  hazd.sw  THENC
+
+      refreshX _ x;
+
+ ELSEC
+
+    ! Distance from current window x position to right margin;
+      wxToMaxX _ maxX - (wx _ x - wx0) + 1;
+
+    ! Maybe line update more costly than rewrite;
+      IF (absN _ ABS n) GEQ
+	 (wxToMaxX MIN (wxToMaxX + overHang) MIN (nBytes - tByte)) DIV 2
+      THEN refreshX _ x
+      ELSE 
+      BEGIN
+	 moveCursor (wx, cy);
+	 WHILE (dec(absN)) GEQ 0  DO IF n > 0 THEN doIC ELSE doDC;
+	 overHang _ (overHang + n) MIN (maxX1 + 1 - maxX);
+      END
+      ;
+
+ ENDC
+
+   END
+   ;
+END "doICorDC"
+;
+
+BOOLEAN SUBROUTINE	atEOL;
+!			-----;
+BEGIN INTEGER ch;
+   RETURN ( NOT(ch _ tChar) ORIF class(ch) = EOLclass );
+END
+;
+
+
+SUBROUTINE	saveTail;
+!		--------
+	Vital tail parameters are saved.
+	;
+BEGIN t1x _ tx; t1Byte _ tByte; t1ByteX _ tByteX END;
+
+
+
+DEFINE		restoreTail = "tByTX (t1x)";
+!		----------- ;
+
+
+SUBROUTINE	txToOne;
+!		-------
+	Want all of  L  to be the tail (i.e. TX=1).
+	;
+BEGIN "txToOne"
+   tx _ tByteX _ tByte _ tsByte _ 1;
+ ! Place  TS  to where belongs;
+   FOR ts _ 0 upto maxS  DO IF nonEmpty (l[ts])  THEN DONE;
+END "txToOne"
+;
+
+
+FORWARD BOOLEAN SUBROUTINE	movesR;
+
+
+SUBROUTINE	tByByte (INTEGER n);
+!		-------
+	Want the tail for which  TBYTE = N, (N > 0).
+	;
+BEGIN "tByByte"
+   "IF n < tByte  THEN" txToOne;
+   WHILE tByte < n ANDIF movesR  DO "not'n";
+END "tByByte"
+;
+
+
+SUBROUTINE	tByTX (INTEGER x);
+!		-----
+	Want tail for which  TX = X.
+	;
+BEGIN "tByTX"
+   "IF x < tByteX  THEN" txToOne;
+
+   WHILE nextX((junk _ tx), tChar) LEQ x ANDIF movesR
+   DO "not'n, since  MOVESR  did it already"
+   ;
+   tx _ x;
+END "tByTX"
+;
+
+SUBROUTINE	collectLine;
+!	 	-----------
+	Concatenate the segments and put result in  L[0].
+	;
+IF maxS  THEN
+BEGIN "collectLine" INTEGER s;
+   FOR s _ 1 upto maxS
+   DO BEGIN l[0] _ l[0]&l[s]; l[s] _ NIL END
+   ;			
+   ts _ maxS _ 0;  tsByte _ tByte;  addS _ zillion;
+END "collectLine"
+;
+
+
+SUBROUTINE	longAbort (INTEGER n);
+!	 	---------;
+BEGIN "longAbort"
+   dpyMessage ("NEW.LINE." & cvs(n) & ".CHARACTERS....'B'.OR.'K'");
+   badAbort;
+END "longAbort"
+;
+
+SUBROUTINE	openLine;
+!	 	--------;
+IF NOT lineOpen  THEN
+BEGIN "openLine"
+   IF NOT isText(w[yy])  THEN badAbort;
+   l[0] _ w[yy];  nBytes _ length(l[0]);  
+   wx0 _ maxS _ 0;  tByTX (tx _ oldTX _ xx);
+   lineOpen _ TRUE;
+   caseCount _ 0;
+END "openLine"
+;
+
+
+SUBROUTINE	closeLine;
+!	 	---------;
+IF lineOpen  THEN
+BEGIN "closeLine" INTEGER n, x;
+   collectLine;
+	
+ ! Check for too long lines;
+   IF (n _ length(l[0])) > maxLength  THEN longAbort (n);
+
+   IF nBytes NEQ n
+   THEN goof ("CLOSELINE:  LENGTH(L[0]) AND NBYTES DIFFER")
+   ;
+   IF empty(l[0])
+   THEN BEGIN goof("CLOSELINE:  L[0] IS EMPTY"); l[0] _ EOLstr END
+   ;
+   w[yy] SWAP l[0];  lineOpen _ FALSE;
+
+   IF wx0  THEN BEGIN wx0 _ 0; dpyLine(yy) END;
+   xx _ 1;
+   resetCase;
+END "closeLine"
+;
+
+
+SUBROUTINE	dumpLine;
+!	 	--------;
+BEGIN "dumpLine" STRING dmpL;
+   IF lineOpen  THEN
+   BEGIN
+      closeLine;  ! Swaps old line and dumped L;
+      dmpL _ w[yy];  ! Save dumped L;
+      w[yy] _ l[0];  ! Recover old line;
+   END
+   ELSE w[yy] SWAP dmpL  ! Second OOPS in the row;
+   ;
+   dpyLine (yy);  xx _ 1;
+END "dumpLine"
+;
+
+SUBROUTINE	compact (INTEGER n);
+!	 	-------
+	Want  MAXS + N leq MAXMAXS.
+	Move line segments so as to eliminate empty ones.
+	If that will not suffice, collect the line.
+	Procedure is used by  BISECT and PREPERETOADD.
+	;	
+IF maxS + n > maxMAXs  THEN
+BEGIN "compact" INTEGER s, ds;
+ ! First attempt by eliminating empty segments;
+   s _ -1;  ds _ 0;
+
+   WHILE (inc(s)) LEQ maxS  DO
+   BEGIN
+    ! Maybe tail segment is being moved;
+      IF s = ts  THEN ts _ s - ds;
+! !   IF s = t1s  THEN t1s _ s - ds;
+      IF s = addS  THEN addS _ s - ds;
+
+      IF empty (l[s])  THEN inc (ds)
+      ELSE IF ds  THEN l[s-ds] _ l[s]
+      ;
+   END
+   ;
+   maxS _ maxS - ds;
+   WHILE (dec(ds)) GEQ 0  DO l[s-ds] _ NIL;
+
+ ! Maybe first attempt was not succesful;
+   IF maxS + n > maxMAXs  THEN collectLine;
+END "compact"
+;
+
+SUBROUTINE	bisect;
+!	 	------
+	Assures that the first byte of tail is the first byte of
+	  tail segment (i.e., TSbYTE=1, in preparation to delete).
+	;	
+IF tsByte > 1  THEN
+BEGIN "bisect" INTEGER s;
+   compact (1);
+ ! Make room for a new tail segment;
+   FOR s _ maxS downto ts+1  DO l[s+1] _ l[s];
+
+ ! Break current tail segment into two;
+   l[ts+1] _ l[ts] [tsByte TO INF];
+   l[ts] _ l[ts] [1 TO tsByte-1];
+
+   IF addS GEQ ts  THEN inc(addS);
+   inc(ts);  inc(maxS);  tsByte _ 1;		
+END "bisect"
+;
+
+
+DEFINE		okToAdd = "(tsByte = 1 AND addS = ts - 1)";
+!		-------;
+
+
+SUBROUTINE	prepareToAdd;
+!	 	------------
+	Want: TSbYTE = 1, TS > 0, and empty L[TS-1] (in preparation
+	  to replace or insert typing).
+	;
+! Maybe ok already;
+IF NOT okToAdd  THEN
+BEGIN "prepareToAdd" INTEGER s;
+ ! Make room for a forthcoming empty segment  L[TS-1];
+   compact (IF tsByte = 1 THEN 1 ELSE 2);  bisect;
+
+ ! Separate the head and tail by one empty segment;
+   FOR s _ maxS downto ts  DO l[s+1] _ l[s];
+   inc(maxS);  l[addS _ ts] _ NIL;  inc(ts);
+END "prepareToAdd"
+;
+
+	!******   Move tail pointer by one byte   ******
+	 **********************************************;
+
+
+
+BOOLEAN SUBROUTINE	movesR;
+!	 		------
+	Tail pointer is advanced by one byte:
+		newHEAD _ oldHEAD & car(oldTAIL)
+		newTAIL _ cdr(oldTAIL)
+	True  if pointer moves right.
+	;
+IF ts LEQ maxS  THEN
+BEGIN "movesR"
+"..?   should we use  tx  or tbytex ?? ......"
+
+   IF NOT nextX (tx,tChar)  THEN RETURN (FALSE);
+
+ ! Tail update to assure non-empty  L[TS][TSbYTE to inf]  if possible;
+   tByteX _ tx;
+
+   DO
+   BEGIN
+      inc (tByte);
+
+      IF (inc(tsByte)) > length(l[ts])  THEN
+      DO BEGIN inc (ts); tsByte _ 1 END
+      UNTIL ts > maxS OR nonEmpty (l[ts])
+      ;
+   END
+   UNTIL tChar OR ts > maxS
+   ;
+   RETURN (TRUE);
+END "movesR"
+ELSE RETURN (FALSE)
+;
+
+
+INTEGER SUBROUTINE	lopTail;
+!	 		-------
+	Eats first byte of tail unless EOL:
+		newHEAD _ oldHEAD
+		newTAIL _ cdr(oldTAIL)
+	Returns eaten character, EOL-char for EOL.
+	;
+IF ts > maxS  THEN
+BEGIN
+   goof ("LOPTAIL:  TS > MAXS  INITIALLY");
+   RETURN (EOLchar);
+END
+ELSE 
+BEGIN "lopTail" INTEGER ch;
+   DO
+    IF class (ch _ tChar) NEQ EOLclass  THEN
+    BEGIN
+       bisect;  junk _ lop(l[ts]);  dec(nBytes);
+       WHILE ts LEQ maxS AND empty(l[ts])  DO inc(ts);
+       IF ts > maxS  THEN goof ("LOPTAIL:  TS>MAXS  FINALLY");
+    END
+   UNTIL ch OR ts > maxS
+   ;
+   RETURN (ch);
+END "lopTail"
+;
+
+
+BOOLEAN SUBROUTINE	movesL;
+!	 		------;
+BEGIN "movesL"
+   DO
+    WHILE (dec(tsByte)) < 1 ANDIF (dec(ts)) GEQ 0
+    DO tsByte _ length(l[ts]) + 1
+   UNTIL tsByte LEQ 0 ORIF tChar
+   ;
+   IF tsByte > 0  THEN
+   BEGIN 
+      dec (tByte);  
+
+      CASE spacing (tChar)  OF
+      BEGIN
+	"EOL??"	tByByte (tByte);
+	"1sp"	tx _ dec(tByteX);
+	"TAB"	tByByte (tByte);
+	"funny"	tx _ dec(tByteX)
+      END
+      ;
+      RETURN (TRUE);
+   END
+   ELSE BEGIN txToOne; RETURN (FALSE) END
+   ;
+END "movesL"
+;
+
+BOOLEAN SUBROUTINE	scansR (INTEGER count1, count2, sChar, mult);
+!			------
+	TRUE  iff  scan completely succesfull.
+	First scan over  COUNT1  bytes.  Then scan for a character.
+	Character < 0 means: Scan for non-occurence of char.
+	MULT  should be -1, 0, or 1.
+	After each succesful scan, multiply char by  MULT for next scan,
+	  to facilitate TAB scan.
+	;
+BEGIN "scansR" INTEGER ch;
+ ! First scan over  COUNT1  bytes;
+   WHILE (dec(count1)) GEQ 0
+   DO IF NOT movesR  THEN RETURN (FALSE)
+   ;
+   IF NOT count2  THEN RETURN (TRUE);
+
+ ! Convert search character to (+/-)uppercase;
+   ch _ (sChar MAX -1 MIN 1)*upperCase(ABS sChar);
+
+ ! Scan for the place we want;
+   WHILE (dec(count2)) GEQ 0  DO
+   BEGIN
+      WHILE ( ( (foo _ upperCase(tChar)) NEQ ch ANDIF ch > 0 )
+	      ORIF (ch < 0 AND NOT(foo+ch)) )
+      DO IF NOT movesR  THEN RETURN (FALSE)
+      ;
+    ! Preparations for possible next round;
+      IF NOT count2  THEN RETURN (TRUE)
+      ELSE IF movesR  THEN ch _ mult*ch
+      ELSE RETURN (FALSE)
+      ;
+   END
+   ;
+   RETURN (TRUE);
+END "scansR"
+;
+
+BOOLEAN SUBROUTINE	scansL (INTEGER count1, count2, sChar, mult);
+!	 		------;
+BEGIN "scansL" INTEGER ch;
+   WHILE (dec(count1)) GEQ 0
+   DO IF NOT movesL  THEN RETURN (FALSE)
+   ;
+ ! Convert to (+/-)uppercase;
+   ch _ (sChar MAX -1 MIN 1)*upperCase(ABS sChar);
+   
+   WHILE (dec(count2)) GEQ 0  DO
+   BEGIN
+      WHILE ( ( (foo _ upperCase(tChar)) NEQ ch ANDIF ch > 0 )
+	      ORIF (ch < 0 AND NOT(foo+ch)) )
+      DO IF NOT movesL  THEN RETURN (FALSE)
+      ;
+    ! Fix head and search character for possible next round;
+      IF NOT count2  THEN RETURN (TRUE)
+      ELSE IF movesL  THEN ch _ mult*ch
+      ELSE RETURN (FALSE)
+      ;
+   END
+   ;
+ ! Request complitely satisfied;
+   RETURN (TRUE);
+END "scansL"
+;
+
+SUBROUTINE	addOne;
+!	 	------;
+BEGIN inc(tByte); inc(nBytes) END;
+
+
+
+SUBROUTINE	pad;
+!	 	---
+	Maybe we need to add padding to get from TbYTEx to TX.
+	;
+IF tByteX < tx  THEN
+BEGIN "pad" INTEGER x;
+   prepareToAdd;
+
+ ! First pad with  TABs;
+   WHILE (x _ nextTAB(tByteX)) LEQ tx
+   DO BEGIN l[addS] _ l[addS]&TAB; tByteX _ x; addOne END
+   ;
+ ! Finish up with SPaces;
+   WHILE tByteX < tx
+   DO BEGIN l[addS] _ l[addS]&" "; inc(tByteX); addOne END
+   ;
+END "pad"
+;
+
+
+SUBROUTINE	addString (STRING str);
+!	 	---------
+	Append  STR  to head section.
+	Terminated by first NULL char, EOL char, or end of string.
+	Leaves pointer to right of the added string.
+	;
+BEGIN "addString" INTEGER x, ch;
+ ! Preparations to adding;
+   IF str = TAB AND tx > tByteX AND class(tChar) = EOLclass
+   THEN BEGIN tx _ nextTAB(tx); junk _ lop(str) END
+   ;
+   pad;  prepareToAdd;
+
+ ! Add the string;
+   WHILE ch _ str  DO
+   BEGIN
+      IF NOT nextX (tx, ch)  THEN RETURN;
+      l[addS] _ l[addS] & str[1 FOR 1];
+    ! STR[1 FOR 1] instead of CH to reduce string space usage when
+    ! entering text from keyboard;
+      tByteX _ tx;  addOne;  junk _ lop (str);
+   END
+   ;
+END "addString"
+;
+
+
+SUBROUTINE	addAndDpy (STRING str);
+!		---------
+	Insert a string and make sure it gets displayed.
+	;
+IF nonEmpty (str)
+THEN BEGIN refreshX _ tx MIN refreshX; addString(str) END
+;
+
+
+	    !******   TAB processing routines   ******
+	     ****************************************;
+
+
+BOOLEAN SUBROUTINE	twoTABs;
+!			-------
+	TRUE  when second character of tail is a TAB or an EOL-char.
+	Caller should worry that the first one is a TAB.
+	;
+BEGIN "twoTABs" INTEGER ch, s;
+   ch _ TAB;  ! Want it defined in case line ends without EOL;
+
+   IF length(l[ts]) > tsByte  THEN ch _ l[ts][tsByte+1 FOR 1]
+   ELSE FOR s _ ts + 1 upto maxS
+   DO IF nonEmpty (l[s])  THEN BEGIN ch _ l[s]; DONE END
+   ;
+   RETURN (ch = TAB OR class(ch) = EOLclass);
+END "twoTABs"
+;
+
+
+SUBROUTINE	pushTABs (INTEGER nTABs, nIorD);
+!	 	--------
+	NTABS  TABs need to be absorbed by (pushed into) the tail.
+	NIORD  accumulates no of insert/delete chars to output
+	  in updating the display.
+	;
+IF (nTABs > 0 OR nIorD) ANDIF scansR (0, 1, TAB, 0)  THEN
+BEGIN "pushTABs"
+   WHILE twoTABs AND (dec(nTABs)) GEQ 0
+   DO BEGIN lopTail; nIorD _ nIorD-8 END
+   ;			
+ ! Update the display for this TAB stop;
+   IF scansR (0, 1, -TAB, 0)  THEN doICorDC (tx, nIorD);
+! !..   nIorD _ 0;
+! !..   Skip first character of tail to make next  SCANSR  work right;
+! !..   movesR;
+END "pushTABs"
+;
+
+
+SUBROUTINE	pushSPs (INTEGER  nSPs, nIorD);
+!		-------
+	NSPS  spaces need to be absorbed by the TABs of the tail.
+	NIORD is updated and passed on to  PUSHTABS.
+	;
+IF nSPs > 0 ANDIF scansR (0, 1, TAB, 0)
+THEN pushTABs ( ( nextTAB(tx) - nextTAB(tx-nSPs) ) DIV 8,
+		 nIorD + TABlength(tx) - TABlength(tx-nSPs) )
+;
+
+SUBROUTINE	delBytes (INTEGER n; BOOLEAN store);
+!	 	--------
+	First  N  bytes of tail are deleteed.	
+	If  STORE  is true, store deleted string in  CGRAVE.
+	;
+IF n AND class(tChar) NEQ EOLclass  THEN
+BEGIN "delBytes" INTEGER nDC, nIC, nTABs, x, x1, TABx, ch;
+   BOOLEAN TABgap;
+
+ ! Maybe cursor at middle of TAB;
+   pad;
+ ! Delete bytes first;
+   x _ TABx _ tx;  IF store  THEN cGrave _ NIL;
+
+   WHILE (dec(n)) GEQ 0  DO
+   BEGIN 
+      x1 _ x; 
+      IF NOT nextX(x, ch _ lopTail)  THEN DONE;
+      IF ch = TAB  THEN TABx _ x;
+      IF store  THEN cGrave _ cGrave & ch;
+   END
+   ;		
+   IF (TABgap _ ch = TAB AND tChar = TAB)  THEN x _ TABx _ x1 + 8;
+! !..   doICorDC (tx, -(nDC _ x - tx));
+   doICorDC (tx, tx - x);
+   nDC _ x - TABx;  ! No. of characters deleted past last TAB;
+
+   saveTail;
+ ! Update the tail:  insert TABs if needed;
+   IF NOT TABgap ANDIF scansR (0, 1, TAB, 0)  THEN
+   BEGIN
+      nTABs _ (nextTAB (x _ tx + nDC) - nextTAB (tx)) DIV 8;
+      nIC _ TABlength (x) - TABlength (TABx + x - t1x) + nDC;
+
+! !..! Number of ICs due to TABs to be added;
+! !..   nIC _ nextTAB(tx+nDC) - nextTAB(tx);
+
+    ! Insert TABs only if current TABs are followed by text;
+      IF scansR (0, 1, -TAB, 0)  THEN
+      BEGIN
+! !..   ! Location for update.   NDC - NIC  compensates for the 
+! !..   ! difference in lengths of first TABs;
+! !..	 x _ tx - nDC + nIC;
+       ! Compensate for previously deleted characters;
+	 WHILE (dec(nTABs)) GEQ 0  DO addString (TAB);
+	 doICorDC (tx, nIC);  ! Do this last;
+      END
+      ;
+      tByByte (t1Byte);
+   END
+   ELSE restoreTail
+   ;
+END "delBytes"
+;
+
+SUBROUTINE	dBreak (INTEGER count);
+!	 	------
+	COUNT is the number of blanks to put in front of the second 
+	  line.  Negative count means literal break with no blank
+	  adjustment.   $$B  buys COUNT = -1.
+	;
+IF tByte + 1 > maxLength
+THEN BEGIN tByByte(maxLength-1); longAbort(tByte+1) END
+ELSE 
+BEGIN "dBreak"	BOOLEAN iMode;  INTEGER ch;  STRING str;
+ ! Line is open to get valid tail params;
+   collectLine;  lineOpen _ FALSE;
+
+ ! Chop off tail of current line;
+   w[yy] _ l[0][1 TO tByte-1] & eolStr;
+
+   IF wx0  THEN dpyLine (yy)
+   ELSE 
+   BEGIN 
+
+ IFC hazd.sw THENC
+      spaceCursor (maxX+1);
+ ELSEC
+      doEEOL;  setCursor (maxX+1, yy);
+ ENDC
+
+      dpy1 (":");
+   END
+   ;
+ ! Insert tail as next line;
+
+   str _ l[0][tByte TO INF];
+   iMode _ insertMode;  insertMode _ TRUE;  eolInput;  insertMode _ iMode;
+
+ ! Strip leading blanks unless COUNT < 0;
+   IF count GEQ 0  THEN
+   WHILE (ch _ str) = " " ORIF ch = TAB  DO ch _ lop(str)
+   ;
+   openLine;  tByTX ((count+1) MIN 70);  addString (str);  tByTX (1);
+   IF visible (ch) OR count < 0  THEN dpyL;
+END "dBreak"
+;
+
+
+SUBROUTINE	uBreak (INTEGER count);
+!		------
+	Break line, leave cursor at the end of the upper line.
+	;
+BEGIN "uBreak" INTEGER x;
+   x _ tx;  dBreak (count);  closeLine;  uCR (1);  openLine;  tByTX (x);
+END "uBreak" 
+;
+
+SUBROUTINE	dJoin (INTEGER count);
+!	 	-----
+	Joins only if next line is on the screen and not a page mark.
+	Separate the texts of the two lines with COUNT space, up to 70.
+	COUNT < 0 for joining as is.   $$J  calls with COUNT = -1.
+	Checks resulting length first (very inportant to avoid abort
+	  by  ADDONE !!).
+	Leaves line open. 
+	;
+BEGIN "dJoin" STRING nxtLin;
+   IF isText (nxtLin _ w[yy+1])  THEN
+   BEGIN INTEGER x, nSP; 
+      openLine;
+
+      IF ( foo _ nBytes + (nSP _ count MIN 70) + length (nxtLin) )
+	  > 2*maxLength - 4
+      THEN longAbort (foo)
+      ;
+      x _ tx;
+
+      IF count GEQ 0 OR NOT atEOL  THEN
+      BEGIN
+       ! Remove blanks from end of first line;
+	 movesL;  WHILE movesR DO "not'n";
+	 WHILE movesL ANDIF NOT visible(tChar)  DO lopTail;  movesR;
+
+       ! Adjust X, remove leading blanks of second line;
+	 IF count GEQ 0  THEN
+	 BEGIN
+	    x _ tx;
+	    WHILE NOT visible (nxtLin)  DO junk _ lop (nxtLin);
+	 END
+	 ELSE IF x LEQ tx  THEN x _ tx  ELSE tByTX (x)  
+	 ;
+      END
+      ;
+    ! Append next line;
+      IF nonEmpty (nxtLin)  
+      THEN BEGIN addString (spaces[1 TO nSP]); addString (nxtLin) END
+      ;
+    ! Delete line from below;
+      lineOpen _ FALSE;  
+      dCR (1);  dDelete (1);  uCR (1);
+      lineOpen _ TRUE;
+    ! Set up for proper updating of display;
+      tByTX (x);  refreshX _ tx MIN (wx0 + maxX);
+   END
+   ELSE badAbort
+   ;
+END "dJoin"
+;
+
+
+SUBROUTINE	uJoin (INTEGER count);
+!		-----;
+IF isText(w[yy-1])  THEN BEGIN closeLine; uCR(1); dJoin(count) END
+ELSE badAbort
+;
+
+SUBROUTINE	Query;
+!		-----
+	Display, on line 0, tail character in 'extended ascii' and 
+	  octal, current cursor position, and top page/line no.s.
+	;
+BEGIN "query"
+   IF isPageMark(w[yy])  THEN foo _ FF
+   ELSE 
+   BEGIN 
+      IF again AND lineOpen  THEN movesR;
+      openLine;  foo _ tChar;
+   END
+   ;
+   dpyMessage ( ( IF foo < '40 THEN "^"&(foo+'100)
+		  ELSE IF foo = '177 OR (NOT lcd AND foo > '137)
+		  THEN "%"&(foo-'40) ELSE foo)
+		& "='" & cvos(foo) 
+ifc tops20.sw thenc
+		& "  " & JFNS(inChan,'222200000001)
+elsec
+		& "  " & JFNS(inChan,'022200000001)
+endc
+		& " (" & cvs(linePage(yy)) & "." & cvs(pageLine(yy))
+		& ")  X=" & cvs(tx)
+		& "  ^" & cvs(tPage) & "." & cvs(tLine) 
+		& "^"
+	      );
+END "query"
+;
+
+SUBROUTINE	dpyUcLc;
+!		-------
+	Dislay  CHAR, for UC/LC conversion.
+	Modelled after 'ADDINPUT' and 'DPYINPUT'.
+	;
+IF dpyOn AND (inSight _ (foo _ tx - wx0 - 1) < maxX)
+THEN BEGIN moveCursor(foo,yy); dpy1(char) END
+;
+
+
+SUBROUTINE	rUC1;
+!	 	----
+	First chatacter of tail is converted to upper case.
+	Global 'CHAR' is used to pass argument to 'DPYUCLC'.
+	No checking for EOL done here.
+	;
+BEGIN "rUC1" INTEGER ch, cls;
+   addString ( char _ IF (cls _ class (ch _ lopTail)) = LCclass
+		      THEN upperCase(ch) ELSE ch );
+   IF lcd AND cls = LCclass  THEN dpyUcLc;
+END "rUC1"
+;
+
+
+SUBROUTINE	rLC1;
+!	 	----;
+BEGIN "rLC" INTEGER ch;
+   addString (char _ lowerCase (ch _ lopTail));
+   IF lcd AND class(ch) = UCclass  THEN dpyUcLc;
+END "rLC"
+;
+
+
+SUBROUTINE	r.C (INTEGER count; SUBROUTINE r.C1);
+!	 	---;
+BEGIN "rLC" INTEGER ch;
+   tx _ tByteX;  prepareToAdd;
+   WHILE (dec(count)) GEQ 0 AND NOT atEOL  DO r.C1;
+END "rLC"
+;
+
+
+DEFINE	rUC (count) = "r.C (count, rUC1)",
+	rLC (count) = "r.C (count, rLC1)";
+
+
+! No   LUC  nor  LLC  exists (yet?);
+
+
+SUBROUTINE	Rcursor (INTEGER count);
+!	 	-------;
+BEGIN "Rcursor"
+   xx _ xx + count MIN maxX;
+   IF lineOpen  THEN tByTX (wx0 + xx);
+END "Rcursor"
+;
+
+
+SUBROUTINE	Lcursor (INTEGER count);
+!	 	-------;
+BEGIN "Lcursor"
+   xx _ xx-count MAX 1;
+   IF lineOpen  THEN tByTX (wx0+xx);
+END "Lcursor"
+;
+
+SUBROUTINE	rSP (INTEGER count);
+!	 	---;
+scansR (count, 0, 0, 0);
+
+
+
+SUBROUTINE	lSP (INTEGER count);
+!	 	---;
+scansL (count, 0, 0, 0);
+
+
+
+DEFINE		rEOL = "scansR (zillion, 0, 0, 0)";
+!		----;
+
+DEFINE		lEOL = "scansL (zillion, 0, 0, 0)";		
+!		----;
+
+
+SUBROUTINE	rInsert (INTEGER count);
+!	 	-------;
+IF count  THEN
+BEGIN "rInsert" INTEGER nSP, b;
+   b _ tByte;
+   addString ( spaces [1 FOR (nSP _ count MIN 70)] );
+   doICorDC (tx, nSP);  pushSPs (nSP, 0);  tByByte (b);
+END "rInsert"
+;
+
+
+SUBROUTINE	lInsert (INTEGER count);
+!		-------;
+IF count  THEN
+BEGIN "lInsert" INTEGER nSP, b;
+   movesR;
+   addString (spaces [1 FOR (nSP _ count MIN 70)]);
+   b _ tByte;  doICorDC (tx, nSP);  pushSPs (nSP, 0);  tByByte (b);
+END "lInsert"
+;
+
+
+FORWARD SUBROUTINE	rZap (INTEGER count, char);
+FORWARD SUBROUTINE	lZap (INTEGER count, char);
+
+
+SUBROUTINE	rDelete (INTEGER count);
+!		-------;
+IF NOT doubleESC OR gotCount  THEN rZap (count, 0)
+ELSE IF mayLBury
+THEN BEGIN rZap (count, 0); bury (cGrave & eolStr) END
+;
+
+
+SUBROUTINE	lDelete (INTEGER count);
+!	 	-------;
+lZap (count, 0);
+
+
+SUBROUTINE	cOops;
+!		-----
+	;
+IF empty (cGrave)  THEN dumpLine  
+ELSE BEGIN addAndDpy (cGrave); cGrave _ NIL END
+;
+
+SUBROUTINE	rSearch (INTEGER count, char);
+!	 	-------
+	Clears stack if search fails, terminating possible string
+	  execution.
+	;
+IF count ANDIF NOT scansR (1, count, char, 1)  THEN clearStack;
+
+
+
+SUBROUTINE	lSearch (INTEGER count, char);
+!	 	-------;
+IF count ANDIF NOT scansL (1, count, char, 1)  THEN clearStack;
+
+
+
+SUBROUTINE	rZap (INTEGER count, char);
+!	 	----;
+IF count  THEN
+BEGIN "rZap"
+   saveTail;  scansR (1, count, char, 1);
+   count _ tByte - t1Byte;  restoreTail;
+   IF NOT tx  THEN tx _ 1;  delBytes (count, TRUE);
+END "rZap"
+;
+
+
+SUBROUTINE	lZap (INTEGER count, char);
+!	 	----;
+IF count AND tx > 1  THEN
+BEGIN "lZap"
+   saveTail;  scansL (1, count, char, 1);
+   delBytes (t1Byte - tByte, TRUE);
+END "lZap"
+;
+INTEGER SUBROUTINE	confirmReplace;
+!			--------------
+	Display the message and get Y, N, or Q. Return it;
+BEGIN "getYN"
+  INTEGER char,x,y;
+    x _ cx; y _ cy;
+    dpyMessage("OK?..'Y','N'.OR.'Q'.TO.QUIT.HERE.");
+    setCursor(x,y);  ! so he can see what we want him to decide about;
+    forceOut;
+    expired _ TRUE;
+    WHILE TRUE DO
+      IF (char _ upperCase(inchRW LAND '177)) = "Y"
+        OR char = "N" OR char = "Q"
+          THEN RETURN(char)
+	  ELSE outchr('7);	! Beep if illegal;
+END
+;
+
+INTEGER SUBROUTINE	imbedded (STRING sub, str);
+!			--------
+	If  SUB  matches any substring of  STR  then  C  is
+	  returned where  EQU(SUB,STR[C FOR LENGTH(SUB)])  is true
+	  else 0 is returned.
+	Assumes that  SUB  is upper case but  STR  may be mixed case.
+	Match is independent of STR's case
+	This subroutine comes from Bill Sanders, modified by pk.
+	;
+START!CODE "imbedded" acDef;
+	DEFINE subc="-3(sp)", subp="-2(sp)", strc="-1(sp)", strp="(sp)";
+	DEFINE subc# = "2", subp# = "3", subch# = "4", n2# = "5", 
+			    strp# = "6", strch# = "7", n1# = "'10"; 
+
+	LABEL texit, fexit, nexit, xexit, strlop, strBot, 
+		sublop, subcon, cascon;
+	
+	hrrz	n1#, strc;
+	hrrz	subc#, subc;
+	jumple	subc#, nexit;	! Null sub matches anything;
+	subi	n1#, (subc#);	! N1# _ STRC-SUBC;
+	jumpl	n1#, fexit;
+	movei	1, 1(n1#);	! AC1 _ STRC-SUBC+1;
+
+strlop:	ildb	strch#, strp;	! Get 1st char from next str substring;
+	move 	strp#, strp;
+	movei	n2#, -1(subc#);	! N2# _ SUBC-1;
+	move	subp#, subp;
+	jrst	 subcon;
+
+sublop:	sojl	n2#, texit;
+	ildb	strch#, strp#;
+subcon:	ildb	subch#, subp#;
+	cain	strch#, (subch#);	! Equal?;
+	 jrst	 sublop;		! Yes;
+	cain	strch#, '40(subch#);	! 40 apart?;
+	 caige	strch#, "`";	! Yes. Lower case alpha or punct?;
+ strBot:  sojge	n1#, strlop;	! No. Bottom of outer (string) loop;
+	jumpl	n1#, fexit;	! To return FALSE if done;
+	skipn	 lcd;		! Lower case display?;
+	 jrst	 sublop;	! No. Match all, not just letters;
+	cail	strch#, "a";
+	 caile	strch#, "z";
+	  jrst	 strBot;
+	jrst	 sublop;
+ 
+ fexit:	setz	1,;	
+	jrst	 xexit;
+ nexit:	movei	1, 1;
+	jrst	 xexit;
+ texit:	sub	1, n1#;
+ xexit:		
+END "imbedded" 
+;
+
+INTEGER SUBROUTINE	revImbedded (STRING sub, str);
+!			-----------
+	If  SUB  matches any substring of  STR  then  C  is
+	  returned where  EQU(SUB,STR[C FOR LENGTH(SUB)])  is true
+	  else 0 is returned.  The last such case is returned.
+	Assumes that  SUB  is upper case but  STR  may be mixed case.
+	Match is independent of STR's case
+	This subroutine comes from Bill Sanders, modified by pk.
+	;
+START!CODE "revImbedded" acDef;
+	DEFINE subc="-3(sp)", subp="-2(sp)", strc="-1(sp)", strp="(sp)";
+	DEFINE subc# = "2", subp# = "3", subch# = "4", n2# = "5", 
+			    strp# = "6", strch# = "7", n1# = "'10",
+	       lastmatch# = "'11";
+
+	LABEL texit, fexit, nexit, xexit, strlop, strBot, 
+		sublop, subcon, cascon, found, don;
+	
+	seto    lastmatch#,;	! Assume no match;
+	hrrz	n1#, strc;
+	hrrz	subc#, subc;
+	jumple	subc#, nexit;	! Null sub matches anything;
+	subi	n1#, (subc#);	! N1# _ STRC-SUBC;
+	jumpl	n1#, fexit;
+	movei	1, 1(n1#);	! AC1 _ STRC-SUBC+1;
+
+strlop:	ildb	strch#, strp;	! Get 1st char from next str substring;
+	move 	strp#, strp;
+	movei	n2#, -1(subc#);	! N2# _ SUBC-1;
+	move	subp#, subp;
+	jrst	 subcon;
+
+found:	move	lastmatch#,n1#;	! found a match, save it;
+	jrst	strBot;		! and go back for more;
+
+sublop:	sojl	n2#, found;
+	ildb	strch#, strp#;
+subcon:	ildb	subch#, subp#;
+	cain	strch#, (subch#);	! Equal?;
+	 jrst	 sublop;		! Yes;
+	cain	strch#, '40(subch#);	! 40 apart?;
+	 caige	strch#, "`";	! Yes. Lower case alpha or punct?;
+ strBot:  sojge	n1#, strlop;	! No. Bottom of outer (string) loop;
+	jumpl	n1#, don;	! Done, figure out answer;
+	skipn	 lcd;		! Lower case display?;
+	 jrst	 sublop;	! No. Match all, not just letters;
+	cail	strch#, "a";
+	 caile	strch#, "z";
+	  jrst	 strBot;
+	jrst	 sublop;
+ 
+ fexit:	setz	1,;	
+	jrst	 xexit;
+ nexit:	move	1, strc;	! nil exit, say beyond end of string;
+	jrst	 xexit;
+ don:	jumpl	lastmatch#,fexit; ! if none found, fail exit;
+ texit:	sub	1, lastmatch#;	! else, return last one found;
+ xexit:		
+END "revImbedded" 
+;
+
+BOOLEAN SUBROUTINE endSearch(INTEGER b);
+!	   ---------
+	The common code between the two searches to handle the substitution
+	part and all other end duties for a search.  Return True if should
+        continue, false otherwise;
+   BEGIN  INTEGER i,j,x;  STRING line;
+   IF haltPending  THEN halt
+   ELSE IF b  
+    THEN IF NOT gotDot 
+     THEN BEGIN OPENLINE; RETURN(FALSE) END   ! OK end of normal search;
+     ELSE BEGIN  "substitute"
+     openLine;	       ! we are going to do lots of stuff within line;
+     IF numOlds = 1    ! figure out which target we found;
+       THEN i _ 1
+       ELSE BEGIN
+       line _ l[0]; for i _ 1 STEP 1 UNTIL maxS DO line _ line&l[i];
+       FOR i _ 1 STEP 1 UNTIL numOlds DO
+         IF imbedded(sOlds[i],line[b for length(sOlds[i])]) THEN DONE;
+       END;
+     updateL;	      ! ties off display for the gotoplace;
+     delBytes(length(sOlds[i]),true);
+     x _ tx;      ! save current postion, since add will move;
+     addAndDpy(sNews[i]);
+     tByTX (x);
+     updateL;	      ! ties off display for the delbytes, etc.;
+     forceOut;	      ! and make sure he sees it before typing his;
+     IF (j _ confirmreplace) = "Y"
+       THEN RETURN(TRUE)
+       ELSE BEGIN
+       delBytes(length(sNews[i]),false);
+       x _ tx;
+       addAndDpy(cgrave[inf-length(sOlds[i])+1 to inf]);
+       tBytX (x);
+       cgrave _ cgrave[1 to inf - length(sOlds[i])];
+       updateL;
+       forceOut;
+       IF haltpending
+	 THEN HALT;
+       IF j = "Q"
+         THEN RETURN(FALSE);
+       IF j = "N"
+         THEN RETURN(TRUE)
+       END
+     END
+   ELSE BEGIN clearStack; ! Failing return for either;
+              dpyMessage (IF gotDot THEN sOlds[1] ELSE sStrings[1]); 
+	      RETURN(FALSE) END;
+  END
+  ;
+
+SUBROUTINE	dTSearch (INTEGER numStr; INTEGER n);
+!	 	--------
+	Search next  N  lines (current included) for string  SSTR
+	  starting from current cursor position + 1.
+	Stop at the beginning of first match (of next line if fails).
+	If search fails, clear stack (for benefit of auto substitution).
+	SSTR  assumed to be non-empty and in upper case.
+	;
+BEGIN INTEGER b;
+IF n and numStr THEN DO
+BEGIN "dTSearch" INTEGER tb1, i, j, y, pg, ln;  STRING line;
+		 OWN SAFE STRING ARRAY targets[1:numsStr];
+		 LABEL repcommand;
+
+	SUBROUTINE	addLine (STRING line);
+	!		-------;
+	IF isPageMark (line)  THEN BEGIN inc(pg); ln _ 1 END
+	ELSE inc (ln)
+	;
+			! +  +  +  + ;
+
+   j _ 0;   ! compute total string size in j;
+   for i _ 1 step 1 until numStr do 
+     begin   ! copy into local array to avoid testing gotDot all the time;
+     targets[i] _ (line _ if gotDot then sOlds[i] else sStrings[i]);
+     j _ j + length(line);
+     end;
+   if j > sstrheapsize
+      then begin clearstack; dpyMessage("TOO.MANY.CHARACTERS");
+		 return end;
+
+   IF lineOpen OR (xx > 1 AND isText (w[yy]))
+   THEN BEGIN openLine; tb1 _ tByte + 1; closeLine END
+   ELSE tb1 _ 1
+   ;
+ ! Consider bottom of current window;
+   y _ yy;
+
+   b _ 99999;
+   WHILE (dec(n)) GEQ 0 ANDIF nonEmpty (w[y])  DO
+   BEGIN
+    ! YY gets set here;
+      FOR i _ 1 step 1 until numstr do
+        IF (j _ imbedded (targets[i], w[yy _ y][tb1 TO INF])) > 0
+	  THEN b _ b min j;
+      IF b < 99999
+        THEN BEGIN openLine; b _ tb1+b-1; tByByte (b); CONTINUE "dTSearch" END
+      ;
+      tb1 _ 1;  inc(y);
+   END
+   ;
+
+ ! Maybe line count is up and we are still on current window;
+   IF (inc(n)) LEQ 0 ORIF lastWindow
+   THEN BEGIN dCR(1); clearStack; dpyMessage (targets[1]); RETURN END
+   ;
+
+ ! Not in current window, maybe in bottom text;
+
+   WHILE nLines (bot, free) < maxY AND NOT eof  DO read;
+
+   pg _ wPage;  ln _ wLine;
+   FOR y _ 1 upto maxY  DO addLine (w[y]);
+
+   y _ bot;
+
+   WHILE y NEQ free ANDIF (dec(n)) GEQ 0  DO 
+    BEGIN "lines"
+    FOR i _ 1 step 1 until numstr do
+      IF (j _ imbedded (targets[i], line _ text[y])) > 0
+        THEN b _ b min j;
+    IF b < 99999
+      THEN DONE "lines";
+    addLine (line); nextt(y)
+    END "lines"
+   ;
+   IF b = 99999 THEN b _ 0;
+   IF NOT b AND n > 0 AND NOT haltPending  THEN
+   BEGIN
+    ! Not in bottom text, scan ahead in the dark;
+      clearWindow;  forceOut;
+      WHILE bot NEQ free  DO putTop (getBot);
+
+      BEGIN	  
+	string s;
+	integer target,fchar,i,eof,ch,topofheap;
+	integer cchar,cline,cpage,n.tmp,p.tmp,f.page;
+	simple integer procedure getchar;
+	  ! Get character from file, bypassing normal TVEDIT I/O -
+	    a separate buffer page is used, and writing is done;
+	  begin integer ch; label reloop;
+reloop:
+	  start!code label loop,getmore;
+loop:		sosge n.tmp;	! char's there?;
+		jrst getmore;	! no;
+		ildb 1,p.tmp;	! yes, get it;
+		jumpe 1,loop;	! ignore nulls;
+		cail 1,'141;	! if lower case;
+		caile 1,'172;
+		popj '17,0;  	! not, that's it;
+		trz 1,'40;	! yes, make upper;
+		popj '17,0;
+getmore:
+		push '17,2;
+		push '17,3;
+		push '17,4;
+		push '17,5;
+		push '17,6;
+		skipn wild;	! save 7 if wildcard search;
+		push '17,7;
+		end;
+	! Here if we need to get the next input page;
+	      f.page _ rightof(f.page);
+	      if f.page < 0
+		then begin 
+		eof _ true; 
+		quick!code
+		skipn wild;	! restore 7 if wildcard search;
+		pop '17,7;
+		pop '17,6;
+		pop '17,5;
+		pop '17,4;
+		pop '17,3;
+		pop '17,2;
+		end;
+		return(0) end;
+	      rd#map (f.page, sBufMP);  ! page 540 is buffer;
+	      n.tmp _ '5000;  ! local copy of n.input;
+	      p.tmp _ '440700000000 + sBuf;   ! local copy of p.input;
+		quick!code
+		pop '17,6;
+		pop '17,5;
+		pop '17,4;
+		pop '17,3;
+		pop '17,2;
+		end;
+	      go to reloop;
+	  end; ! of getchar;
+
+	cchar _ 0; cline _ wline; cpage _ wpage;
+	p.tmp _ p.input; n.tmp _ n.input; f.page _ rdpage;
+	topofheap _ sstrheapsize+1;  ! in this loop, pointer into heap;
+	for i _ 1 step 1 until numStr do  ! i is string number;
+	  begin
+	  x5[i] _ (length(targets[i]) lsh 18) + location(x4[topofheap])-1;  
+				! x5 entry points to top for this target;
+	  line _ targets[i];		 ! copy string so we can use lop;
+	  while length(line) do
+	    x4[topofheap _ topofheap-1] _ lop(line);  ! now put on stack;
+	  end;
+	target _ (numStr lsh 18) + location(x5[numStr]);
+	eof _ false;
+	start!code
+  ! 1 - current character;
+  ! 2 - pdl for char's passed;
+  ! 3 - pdl for char's logically put back into input;
+  ! 4 - pdl for target string char's - ptr into the target heap, X4;
+  ! 5 - pdl for targets.
+  !  6 - current input routine;
+	label nxplace,nxtarg,test,nextt,recycle,recycle1,recycle2,popin,don,gotlf,gotff;
+	label nexts,nexts1,nexts2,wildCheck,wild1,wild2;
+	define p="'17";
+	movei 2,access(x2[0]);
+	movei 3,access(x3[0]);
+	movei 6,getchar;
+  ! here to go to next place in file, and start with first target;
+nxplace:move 5,target;		! get to start of target list again;
+	pushj p,0(6);		! look for first target char;
+	skipe eof;
+	jrst don;		! finished if eof;
+	aos cchar;		! now keep track of where we are;
+	cain 1,'12;
+	jrst gotlf;
+	cain 1,'14;
+	jrst gotff;
+test:	
+  ! here to go to next target;
+nxtarg:	tlnn 5,'777777;		! is there a target?;
+	jrst nxplace;		! no, next place;
+	pop 5,4;		! yes, start it;
+  ! here is the loop for one target;
+nextt:	skipn wild;		! wildcard search?;
+	 jrst nexts;		! go to wildcard routine;
+	push 2,1;		! save cur. char in case of recycle;
+	came 1,0(4);		! match top of target stack?;
+	jrst recycle;		! no, recycle;
+	pop 4,0(4);		! yes, go to next char in target;
+	tlnn 4,'777777;		! any left in target stack?;
+	jrst don;		! no - success;
+	pushj p,(6);		! and next in input;
+	jrst nextt;
+
+nexts:	setz 7,;		! clear wildcard flags;
+nexts1:	push 2,1;		! save current char in case of recycle;
+	move 1,0(4);		! get current target character;
+	cain 1,"*";		! super wildcard?;
+	 tlo 7,'1;		! say in super wildcard;
+	cain 1,"%";		! single character wildcard?;
+	 tlo 7,'2;		! say in single char wildcard;
+	move 1,0(2);		! retrieve current candidate character;
+	came 1,0(4);		! match target?;
+	 jrst wildCheck;	! no, but see if in wildcard;
+	tlnn 7,1;		! in wildcard?;
+nexts2:	 pop 4,0(4);		! get next target char if not in big wild;
+	tlnn 4,'777777;		! end of the road?;
+	 jrst don;		! yes, successful;
+	pushj p,(6);		! no, get another character;
+	jrst nexts1;		! and go again;
+
+wildCheck:			! here if match failed - check wildcard;
+	tlze 7,2;		! single char?;
+	 jrst nexts2;		! it's ok, then;
+	tlnn 7,1;		! big wildcard?;
+	 jrst recycle;		! no, get next string;
+	caia;
+	 skipa 4,old4;		! retrieve old target pointer
+	pop 4,0(4);		! hold onto next character;
+	tlnn 4,'777777;		! last character?;
+	 jrst don;		! yes;
+wild1:	push p,0(6);		! get next character;
+	camn 1,(4);		! match?
+	 tlza 7,1;		! say possibly out of wildcard;
+	jrst wild1;		! no match, get another char;
+	jrst nexts2;		! get another character;
+	
+
+  ! here when we have a failure in one target to reset input for next;
+recycle:movei 6,popin;		! future inputs come from stack;
+recycle1:tlnn 2,'777777;	! anything left on stack?;
+	jrst recycle2;		! no - go ahead;
+	pop 2,1;		! yes - recycle one object;
+	push 3,1;
+	jrst recycle1;
+recycle2:pushj p,(6);		! finished recycling, get first char;
+	jrst nxtarg;		! and go find new target;
+
+gotlf:	aos cline;		! line feed - new line;
+	setzm cchar;		! and no more char's;
+	skipe haltpending;	! allow ^L to work;
+	jrst don;
+	jrst test;		! back to main routine;
+
+popin:	pop 3,1;		! input routine to get from stack;
+	tlnn 3,'777777;		! anything more?;
+	movei 6,getchar;	! no - back to normal input;
+	popj p,0;
+
+gotff:	aos cpage;		! form feed - new page;
+	setzm cline;		! line one;
+	aos cline;
+	setzm cchar;		! char one;
+	skipe haltpending;	! allow ^L to work;
+	jrst don;
+	push p,cpage;		! put out the page number;
+	pushj p,cvs;
+	pushj p,outstr;
+	push p,['40];		! and a space;
+	pushj p,outchr;
+	jrst test;		! back to main routine;
+
+don:	end;
+
+	unmap('400000000000+sBufMP);
+	if eof
+	  then b _ 0
+	  else b _ cchar;
+	pg _ cpage; ln _ cline;
+      END;
+   END
+   ;
+   goToPlace (pg, ln, b);
+
+   ;
+ ! If line is opened, next T-search starts from byte B + 1;
+END "dTSearch"
+UNTIL NOT endSearch(b)
+END
+;
+SUBROUTINE	uTSearch (STRING numStr; INTEGER n);
+!	 	--------
+	Search previous  N  lines (rest of current line counts as one) 
+	for the string  SSTR.   Each line is searched left to right, 
+	consequtive lines from bottom to top.  See comment to  SSEARCH.
+	;
+BEGIN INTEGER b;
+IF n AND numStr THEN DO
+BEGIN "uTSearch" INTEGER tb1, i, j, y, pg, ln;  STRING line;
+		OWN SAFE STRING ARRAY targets[1:numsstr];
+
+	SUBROUTINE	addLine (STRING line);
+	!		-------;
+	IF isPageMark (line)  THEN BEGIN inc(pg); ln _ 1 END
+	ELSE inc (ln)
+	;
+			! +  +  +  + ;
+
+   j _ 0;   ! compute total string size in j;
+   for i _ 1 step 1 until numStr do
+     begin
+     targets[i] _ (line _ if gotDot then sOlds[i] else sStrings[i]);
+     j _ j + length(line);
+     end;
+   if j > sstrheapsize
+      then begin clearstack; dpyMessage("TOO.MANY.CHARACTERS");
+		 return end;
+
+   IF lineOpen OR (xx > 1 AND isText (w[yy]))
+   THEN BEGIN openLine; tb1 _ tByte - 2; closeLine END
+   ELSE tb1 _ maxlength
+   ;
+ ! Consider top of current window;
+   y _ yy;
+
+   b _ 0;
+   WHILE (dec(n)) GEQ 0 ANDIF nonEmpty (w[y])  DO
+   BEGIN
+    ! YY is set here;
+      FOR i _ 1 step 1 until numstr do
+        b _ b max revImbedded (targets[i], 
+			       w[yy _ y][1 to (tb1+length(targets[i]))]);
+      IF b
+        THEN BEGIN openLine; tByByte (b); CONTINUE "uTSearch"  END
+      ;
+      tb1 _ maxlength;  dec(y);
+   END
+   ;
+
+ ! Maybe line count is up and we are still on current window;
+   IF (inc(n)) LEQ 0 ORIF firstWindow
+   THEN BEGIN uCR(1); clearStack; dpyMessage (targets[1]); RETURN END
+   ;
+
+ ! Not in current window, maybe in top text;
+
+   y _ gap;
+
+   WHILE y NEQ top ANDIF (dec(n)) GEQ 0  DO
+   BEGIN
+      lastt (y);
+      FOR i _ 1 step 1 until numstr DO
+        b _ b max revImbedded (targets[i], text[y]);
+      IF b
+	THEN DONE
+   END
+   ;
+   IF haltPending  THEN halt;
+
+   pg _ tPage;  ln _ tLine;
+
+   IF b OR n LEQ 0 OR (tPage = 1 AND tLine = 1)  THEN
+   BEGIN INTEGER z;
+      z _ top;
+      WHILE z NEQ y  DO BEGIN addLine(text[z]); nextt(z) END;
+   END
+   ELSE
+   BEGIN
+    ! Not in top text, scan back in the dark;
+      clearWindow;  forceOut;
+
+    ! Back up over lines that have alredy been examined;
+      WHILE wPage > pg OR (wPage = pg AND wLine > ln)
+      DO putBot (getTop)
+      ;
+
+      BEGIN	  
+	string s;
+	integer target,fchar,i,eof,ch,topofheap;
+	integer cchar,cline,cpage,n.tmp,p.tmp,f.page;
+
+	simple integer procedure leftof(integer pg);
+	  begin
+	  integer p,oldp;
+	  if pg < 0 then return (-1);
+	    ! we have to start at beginning and look until we find
+	      the existing page, then remember last one we saw;
+	  p _ textp;  ! first page;
+	  oldp _ -1;  ! value to return if no prev page;
+	  while (p neq pg) and (p geq 0) do   ! p geq is "impossible";
+	    p _ rightof(oldp _ p);
+	  if p = pg   ! found it;
+	    then return(oldp)  ! so return prev;
+	    else return(-1);   ! didn't find it - should be impossible;
+	  end;
+	  
+	simple integer procedure getchar;
+	  ! Get prev character from file, bypassing normal TVEDIT I/O -
+	    a separate buffer page is used, and no writing is done;
+	  begin integer ch; label reloop;
+reloop:
+	  start!code label loop,getmore;
+loop:		sosge n.tmp;	! char's there?;
+		jrst getmore;	! no;
+		decBPm (p.tmp); ! -ildb;
+		ldb 1,p.tmp;	! yes, get it;
+		jumpe 1,loop;	! ignore nulls;
+		cail 1,'141;	! if lower case;
+		caile 1,'172;
+		popj '17,0;  	! not, that's it;
+		trz 1,'40;	! yes, make upper;
+		popj '17,0;
+getmore:
+		push '17,2;
+		push '17,3;
+		push '17,4;
+		push '17,5;
+		push '17,6;
+		end;
+	! Here if we need to get the next input page;
+	      f.page _ leftof(f.page);
+	      if f.page < 0
+		then begin 
+		eof _ true; 
+		quick!code
+		pop '17,6;
+		pop '17,5;
+		pop '17,4;
+		pop '17,3;
+		pop '17,2;
+		end;
+		return(0) end;
+	      rd#map (f.page, sBufMP);  ! page 540 is buffer;
+	      n.tmp _ '5000;  ! local copy of n.input;
+	      p.tmp _ '350700001000 + sBuf;   ! local copy of p.input;
+		quick!code
+		pop '17,6;
+		pop '17,5;
+		pop '17,4;
+		pop '17,3;
+		pop '17,2;
+		end;
+	      go to reloop;
+	  end; ! of getchar;
+
+	define p.nlf.(pg) = "(f.nlf + dir + pg)",
+		 nlf.(pg) = "ldb (p.nlf.(pg))";
+
+	simple procedure synchreadonly;
+		! find place in file equiv to what has been examined;
+	  begin
+	  integer pg,ln,opg,oln,ch;
+	  f.page _ textp; ! f.page is physical disk page. this is the first;
+	  pg _ 1; ln _ 1;
+		! in the following loop opg and oln are at start of  p,
+		  and pg and ln are at start of next page;
+	  while true do
+	    begin
+	    opg _ pg; oln _ ln;
+	    pg _ pg + nff.(f.page);
+	    if nff.(f.page) > 0
+              then ln _ nlf.(f.page)+1
+	      else ln _ ln + nlf.(f.page);
+	    if (pg > tPage) or (pg = tPage and ln geq tLine)
+	      then done;
+	    f.page _ rightof (f.page)
+	    end;
+		! after this loop, f.page is page on which the tpage.tline
+		  occurs, or it occurs at the start of next page;
+		! now we position ourselves to the lf or ff just before
+		  the start of tpage.tline;
+	  rd#map(f.page,sBufMP);   ! read the page into search buffer;
+	  p.tmp _ '440700000000+sBuf;
+	  n.tmp _ 0;
+	  while (opg < tPage) or (opg = tPage and oln < tLine) do
+	    begin
+	    n.tmp _ n.tmp + 1;
+	    if (ch _ ildb(p.tmp)) = '12
+	      then oln _ oln + 1
+	    else if ch = '14
+	      then begin opg _ opg + 1; oln _ 1 end;
+	    end;
+	  ibp(p.tmp);   ! set for reverse ildb to get the lf or ff;
+	  end;
+
+	simple procedure findplace (reference integer line,char);
+	  begin
+	  integer ch,p,prevlines,foundff;
+	  char _ 1; line _ 1;
+	  if eof then return;
+	  while ((ch _ getchar) neq '12) and (ch neq '14) and not eof do
+	    char _ char + 1;
+	  ! find line number on this disk page - get page num from p.tmp;
+	  p _ '440700000000 lor (p.tmp land '777000); foundff _ false;
+	  while p neq p.tmp do   ! search from start of page;
+	    begin
+	    ch _ ildb(p);
+	    if ch = '12
+	      then line _ line + 1
+	    else if ch = '14
+	      then begin foundff _ true; line _ 1 end;
+	    end;
+	  ! if no ff on this page, have to count lines on prev.
+	    We start at first page, resetting count whenever we see
+	    a page with a formfeed on it.  At the end, we have the
+	    number of lines since the last formfeed;
+	  if foundff then return;
+	  p _ textp; prevlines _ 0;   ! start at first page, textp;
+	  while (p neq f.page) and (p geq 0) do   ! p < 0 "impossible";
+	    begin
+	    if nff.(p) > 0
+	      then prevlines _ nlf.(p)
+	      else prevlines _ prevlines + nlf.(p); 
+	    p _ rightof(p)
+	    end;
+	  line _ line + prevlines;
+	  end;
+
+! to stand any chance of understanding this code, look at the code
+  for forward search first.  This just does the same thing, but
+  reverses the target string and uses a routine that reads the
+  file backwards;
+
+	cpage _ wpage;	! line and char must be computed at the end;
+	if readOnlyMode
+	  then synchReadOnly ! sets p.tmp, n.tmp, f.page, and maps in;
+	  else begin
+	  p.tmp _ p.output; ibp(p.tmp);
+          n.tmp _ '5000 - n.output; f.page _ wrpage;
+	  end;
+	topofheap _ 0;
+	for i _ 1 step 1 until numStr do
+          begin
+	  line _ targets[i];
+	  while length(line) do
+	    x4[topofheap _ topofheap+1] _ lop(line);
+	  x5[i] _ (length(targets[i]) lsh 18) + location(x4[topofheap]);
+  	  end;
+	target _ (numstr lsh 18) + location(x5[numStr]);
+	eof _ false;
+	start!code
+  ! 1 - current character;
+  ! 2 - pdl for char's passed;
+  ! 3 - pdl for char's logically put back into input;
+  ! 4 - pdl for target string char's - ptr into the target heap, X4;
+  ! 5 - pdl for targets.
+  !  6 - current input routine;
+	label nxplace,nxtarg,test,nextt,recycle,recycle1,recycle2,popin,don,gotlf,gotff;
+	define p="'17";
+	movei 2,access(x2[0]);
+	movei 3,access(x3[0]);
+	movei 6,getchar;
+  ! here to go to next place in file, and start with first target;
+nxplace:move 5,target;		! get to start of target list again;
+	pushj p,0(6);		! look for first target char;
+	skipe eof;
+	jrst don;		! finished if eof;
+	aos cchar;		! now keep track of where we are;
+	cain 1,'14;
+	jrst gotff;
+test:	
+  ! here to go to next target;
+nxtarg:	tlnn 5,'777777;		! is there a target?;
+	jrst nxplace;		! no, next place;
+	pop 5,4;		! yes, start it;
+  ! here is the loop for one target;
+nextt:	push 2,1;		! save cur. char in case of recycle;
+	came 1,0(4);		! match top of target stack?;
+	jrst recycle;		! no, recycle;
+	pop 4,0(4);		! yes, go to next char in target;
+	tlnn 4,'777777;		! any left in target stack?;
+	jrst don;		! no - success;
+	pushj p,(6);		! yes, try next in input;
+	jrst nextt;
+
+  ! here when we have a failure in one target to reset input for next;
+recycle:movei 6,popin;		! future inputs come from stack;
+recycle1:tlnn 2,'777777;	! anything left on stack?;
+	jrst recycle2;		! no - go ahead;
+	pop 2,1;		! yes - recycle one object;
+	push 3,1;
+	jrst recycle1;
+recycle2:pushj p,(6);		! finished recycling, get first char;
+	jrst nxtarg;		! and go find new target;
+
+popin:	pop 3,1;		! input routine to get from stack;
+	tlnn 3,'777777;		! anything more?;
+	movei 6,getchar;	! no - back to normal input;
+	popj p,0;
+
+gotFf:	sos cpage;		! now on prev page;
+	skipe haltpending;	! give ^L a chance to happen;
+	jrst don;
+	push p,cpage;
+	pushj p,cvs;		! put out page no;
+	pushj p,outstr;
+	push p,['40];
+	pushj p,outchr;
+	jrst test;		! return to main code;
+
+don:	end;
+
+	pg _ cpage;
+	findplace(ln,b);
+
+	unmap('400000000000+sBufMP);
+	if eof
+	  then b _ 0;
+      END
+      ;
+   END
+   ;
+   goToPlace (pg, ln, b);
+   IF b AND numstr > 1
+	 ! if the strings overlap, our backwards search may find;
+	 ! the wrong one.  So we look again to get it right;
+     THEN BEGIN
+     j _ 0;
+     FOR i _ 1 STEP 1 UNTIL numstr DO
+       j _ j max revImbedded(targets[i],w[yy]);
+     IF j NEQ b THEN BEGIN closeLine; goToPlace (pg, ln, j) END
+     END;
+
+   ;
+ ! If line is opened, next T-search starts from byte B + 1;
+END "uTSearch"
+UNTIL NOT endSearch(b)
+END
+;
+
+SUBROUTINE	ROinput;
+!	 	-------
+	   1) TX = 1:  Ring
+	   2) TX > 1:  Move cursor LEFT one, eat if insertmode.
+	;
+IF xx = 1 AND wx0 = 0  THEN ring
+ELSE
+BEGIN
+   openLine;
+
+   IF tx > tByteX  THEN tx _ tByteX
+   ELSE BEGIN lSP(1); IF insertMode THEN rDelete(1) END
+   ;
+END
+;
+
+forward simple procedure endcmt;
+
+SUBROUTINE	EOLinput;
+!	 	--------
+	Go to next line if ther is one or may make one.
+	Insertmode:  Illegal if not at end of line.  O.w. insert a
+	  new line.
+	;
+IF insertMode AND lineOpen ANDIF NOT atEOL  THEN iglCommand
+ELSE
+BEGIN "EOLinput"
+    if cmtflag then endcmt;
+   closeLine;  xx _ 1;
+
+   IF nonEmpty (w[yy+1])  THEN inc (yy)
+   ELSE 
+   IF yy = maxY AND NOT lastWindow
+   THEN BEGIN inc(yy); scrollUP((maxY+4) DIV 5) END
+ ! No next line exists:  create one unles readonly mode;
+   ELSE IF readOnlyMode  THEN RETURN
+   ELSE 
+   IF (inc(yy)) LEQ maxY
+ ! Incremented  YY  from here down;
+   THEN BEGIN w[yy] _ EOLstr; dpyLine(yy) END
+   ELSE 
+   BEGIN 
+      putBot (EOLstr);
+      scrollUP ((maxY+4) DIV 5);
+   END
+   ;
+   IF insertMode  THEN dInsert (1);
+END "EOLinput"
+;
+
+		!******   Text input   ******
+		 ***************************;
+
+
+SUBROUTINE	addInput;
+!	 	--------
+	Input character is entered into the current line.
+	;
+BEGIN "addInput"
+   openLine;
+   IF nBytes > 2*maxLength - 3  THEN longAbort (nBytes);
+   oldTX _ tx;  addString (char);
+   inSight _ ( (newTX _ tx) LEQ wx0+maxX );
+   IF oldTX < ringX LEQ newTX  THEN ring;
+END "addInput"
+;
+
+
+SUBROUTINE	dpyInput;
+!	 	--------
+	Display input character if it is in sight.
+	;
+IF inSight  THEN 
+BEGIN 
+   dpy1 (dpyChar (char));
+
+ IFC hazd.sw THENC 
+   IF cx > wxc[cy]  THEN wxc[cy] _ cx;
+ ENDC
+
+END
+;
+
+
+SUBROUTINE	endInput;
+!	 	--------
+	Common end routine for  tabINPUT and printingINPUT.	
+	;
+IF tx NEQ newTX  THEN tByTX (newTX);
+
+
+DEFINE		CharEOL = "dpyInput";
+!	 	-------;
+
+
+SUBROUTINE	CharChar;
+!	 	---------
+	Regular character typed where one was already.
+	;
+IF insertMode
+THEN BEGIN doICorDC(newTX,1); dpyInput; pushSPs(1,0) END
+ELSE BEGIN dpyInput; lopTail END
+;
+
+
+SUBROUTINE	CharTAB;
+!	 	-------
+	Character typed at where there is a TAB.
+	;
+BEGIN dpyInput; pushSPs(1,1) END;
+
+
+
+SUBROUTINE	TABchar;
+!	 	-------
+	TAB typed at where there is a regular character.
+	;
+BEGIN "TABchar" INTEGER n;
+   doICorDC (newTX, (n _ newTX - oldTX));
+! !..  pushSPs (n, 0);
+
+   IF scansR (0, 1, TAB, 0)
+   THEN pushTABs (0, TABlength (tx) - TABlength (tx - n))
+! !..   THEN n _ TABlength (tx) - TABlength (tx - n) ..;
+   ;
+! !..   IF scansR (0, 1, -TAB, 0)  THEN doICorDC (tx, n);
+END "TABchar"
+;
+
+
+SUBROUTINE	TABtab;
+!	 	------;
+IF NOT insertMode  THEN lopTail
+ELSE IF scansR (0, 1, -TAB, 0)  ! Scan past initial TABs;
+THEN doICorDC (tx, 8)
+;
+
+SUBROUTINE	TABinput;
+!	 	--------;
+BEGIN "TABinput"
+   addInput;
+
+   CASE spacing (l[ts])  OF
+   BEGIN
+      "EOL"  ;
+      "char" TABchar;
+      "TAB"  TABtab;
+      "igl"  TABchar
+   END
+   ;
+   endInput;
+END "TABinput"
+;
+
+
+SUBROUTINE	printingInput;
+!	 	-------------;
+BEGIN "printingInput"
+   addInput;
+
+   CASE spacing (l[ts])  OF
+   BEGIN
+      "EOL"  CharEOL;
+      "char" CharChar;
+      "TAB"  CharTAB;
+      "igl"  CharChar
+   END
+   ;
+   endInput;
+END "printingInput"
+;
+
+COMMENT  End of file TVLIN;
+
+

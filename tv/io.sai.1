@@ -1,0 +1,752 @@
+
+COMMENT
+	These routines are to replace the SAIL "INPUT" and "OUT" in
+	TV-Edit.
+
+    NOTATION:  Number of variables are introduced with DEFINE or are
+otherwise special, and hence their use requires extra care.  The 
+notation is supposed to draw attention to the special "variables".
+
+	f.xxx	FIELD, an integer variable that is a byte pointer
+		  that refers to a field xxx in AC0, i.e., address 
+		  part and index field are 0.  
+		  Ex.:  LDB (F.RDSEG + LINKS + I)
+	p.xxx	Byte POINTER to xxx, an integer variable.
+		  Ex.:  ILDB (P.INPUT)
+	p.xxx!	Byte POINTER to xxx(AC1), uses AC1 as index, hence
+		  to be used only in START!CODE.
+		  Ex.:	MOVE 1, I
+			LDB  2, P.RDSEG!
+	m.xxx	MASK, DEFINEd, (i.e., introduced with DEFINE)
+		  EX.:	TLNE 1, M.RDSEG
+	xxx.	"Indexible" variable, DEFINEd.
+		  Ex.:  DIR.(I) _ -1
+		  Ex.:	X _ RDSEG.(I)
+	xx#	An AC.
+		  Ex.:  MOVE PG#, PAGE
+	#xxx	Refers to #xxx.TV file.
+		  Ex.:  RELJFN (#CHAN)
+
+;
+
+REQUIRE  "IOSYM"  LOAD!MODULE;	! "MEMORY" variables;
+
+EXTERNAL INTEGER
+	textP, safeP, holdP, freeP,
+	rdPage, wrPage, segment,
+	oFdb11, oFdb12, oFdb13, oFdb14, oFdb24, oFffp;
+
+REQUIRE  "/\{}"  DELIMITERS;
+
+
+COMMENT
+			    FILE LAYOUT
+
+File page	Contents
+---------	--------
+ 0...f-1   Text of "old" file
+ f...u-1   Free pages
+ u...767   Updated file pages, assigned form top down
+   770     TEMPPAGE, temp page used at finish time (by RECTIFY)
+771...774  Unassigned (reserved)
+   775     LINKPAGE, forward pointer chains of active, safe, held,
+	     and free pages.
+   776     DIRPAGE, run time page directory
+   777     ODIRPAGE, page directory of "old" file
+
+NOTES:	f = first free file page
+	u = first used file page thereafter
+	Page numbers are in OCTAL
+;
+
+DEFINE
+	tempPage   = "'770",
+
+	linkPage   = "'775",
+	dirPage    = "'776",
+	oDirPage   = "'777";
+
+INTEGER
+	fffp,		! First free file page;
+	fufp;		! First used thereafter;
+
+
+COMMENT
+		      MEMORY (FORK) LAYOUT
+
+Mem. Page	Contents
+---------	--------
+  0...377  SAIL low segment (variables, string space)
+400...     High segment (code)
+		-- Our PMAP section: --
+500...537  Input buffer (IBUF)
+   540	   SBUFMP, temp page for search command
+541...567  ..free..
+   570     OBUFMP, Output buffer (OBUF)
+   571     TBUFMP, temp page (for TV-STRINGS.PMAP and others)
+572...574  ..free..
+   575     LINKMP, maps file page 775
+   576     DIRMP, maps file page 776
+   577     ODIRMP, maps file page 777 (of #file)
+		-- End PMAP section --
+600...677  SAIL buffers, segment
+700...717  Emulator (for non-TENEX SAIL)
+720...737  ..currently unused..
+740...777  IDDT (767-777 only for UDDT)
+;
+
+DEFINE
+	minIBufMP = "'500",
+	maxIBufMP = "'537",
+	sBufMP	  = "'540",
+	oBufMP    = "'570",
+	tBufMP    = "'571",
+	linkMP    = "'575",
+	dirMP     = "'576",
+	oDirMP    = "'577",
+
+	iBuf = "iBufMP LSH 9",
+
+	oBuf = "oBufMP LSH 9",
+	oBuf.(i) = "memory [oBuf + i]",
+
+	tBuf = "tBufMP LSH 9",
+	tBuf.(i) = "memory [tBuf + i]",
+
+        sBuf = "sBufMP LSH 9",
+
+	links = "linkMP LSH 9",
+	links.(i) = "memory [links + i]",
+
+	dir = "dirMP LSH 9",
+	dir.(i) = "memory [dir + i]",
+
+	oDir = "oDirMP LSH 9",
+	oDir.(i) = "memory [oDir + i]";
+
+INTEGER
+	iBufMP,			! Current input buffer page;
+	n.input, p.input,	! Input count and pointer;
+	n.output, p.output;	! Output count and pointer;
+
+DEFINE	eop = "(n.input LEQ 0)";
+
+COMMENT
+			LINK PAGE LAYOUT
+
+0...770:  LINKS [i] = 
+
+	     0,		      if file page does not exist,
+  [tag, rdseg, wrseg, link],  if the page has text.
+
+
+	.-.---------.-----------.------------------------.
+	|T|  RDSEG  |   WRSEG   |          LINK          |
+	'-'---------'-----------'------------------------'
+	 0 1       8 9        17 18                    35
+
+
+	  T   = TAG, used while checking link consistency.
+	RDSEG = Segment # at time the page was read (i.e., became "old").
+	WRSEG = Segment # at time the page was written (i.e., created).
+	LINK  = Link to the next active page, -1 if end-of-file.
+
+771:  textP, pointer to string of text pages
+772:  safeP, pointer to string of safe pages
+773:  holdP, pointer to string of held pages
+774:  freeP, pointer to string of free pages
+775:  rdPage, current read page
+776:  wrPage, current write page
+777:  segment #
+;
+
+DEFINE
+
+	textP0 = "'771",
+	safeP0 = "'772",
+	holdP0 = "'773",
+	freeP0 = "'774";
+
+! Next 7 defined in IOSYM;
+
+! !	textP = "links.(textP0)",
+	safeP = "links.(safeP0)",
+	holdP = "links.(holdP0)",
+	freeP = "links.(freeP0)",
+
+	rdPage = "links.('775)",
+	wrPage = "links.('776)",
+	segment= "links.('777)";
+
+INTEGER
+	nText, nSafe, nHold, nFree,
+	f.rdSeg, f.wrSeg,	! Fields, byte pointers to AC0;
+	p.rdSeg, p.wrSeg;	! Byte pointers that use AC1 as index;
+
+! Masks for the fields, byte pointers to link array;
+DEFINE
+	m.rdSeg	= "'377000",
+	m.wrSeg = "'000377",
+	p.rdSeg.(pg) = "(f.rdSeg + links + pg)",
+	p.wrSeg.(pg) = "(f.wrSeg + links + pg)",
+	rdSeg.(pg) = "ldb (p.rdSeg.(pg))",
+	wrSeg.(pg) = "ldb (p.wrSeg.(pg))";
+	
+
+COMMENT
+		      DIRECTORY PAGE LAYOUT
+
+0...770:  DIR [i] =
+
+	  -1,		if dir entry for page  i  not yet computed.
+			NOTE:  Dir entries are computed on demand.
+   [n.ff, n.lf, n.ch],	if page  i  entry computed.
+
+
+		.------------.------------.------------.
+		|    N.FF    |    N.LF    |    N.CH    |
+		'------------'------------'------------'
+		 0         11 12        23 24        35	
+
+
+	N.FF = No. of Form Feeds in file page  i,
+	N.LF = No. of Line Feeds beyond last form feed of file page  i,
+	N.CH = No. of charactere in file page  i.
+
+771:  oFdb11, FDB['11] of finished file, for benefit of RESTORE
+772:  oFdb12,
+773:  oFdb24,
+774:  oFffp, page where old file page 0 is stored
+775:  oFdb13,
+776:  oFdb14,
+777:  DIR [777] = -1, flag for TEC/DATAMEDIA directory
+;
+
+! Next 4 defined in IOSYM;
+
+! !	oFdb11 = "dir.('771)",
+	oFdb12 = "dir.('772)",
+	oFdb24 = "dir.('773)",
+	oFffp  = "dir.('774)";
+
+INTEGER
+	n.ffIn,		! Counts FFs remaining in current input page;
+	n.lfIn,		! Counts LFs remaining, once N.FFIN = 0;
+	n.chIn,		! No. of characters on current input page;
+
+	n.ffOut,	! Counts FFs of current output page;
+	n.lfOut,	! Counts LFs since last FF;
+	n.chOut,	! Counts characters of current output page;
+
+	f.nFF, f.nLF, f.nCh;  ! Fields for the above counts--used also
+				as byte pointers that refer to AC0;
+
+DEFINE
+	p.nFF.(pg) = "(f.nFF + dir + pg)",
+	nFF.(pg) = "ldb (p.nFF.(pg))",
+	p.nCh.(pg) = "(f.nCh + dir + pg)",
+	nCh.(pg) = "ldb (p.nCh.(pg))",
+
+	FF5 =	  "'060301406030";	! To bracket dir entries with
+					  when they are on EOF-page;
+
+INTEGER
+	eofPage, eofBC, eofWC, 
+	filling,
+	saving;		! Semaphor-flag to prevent recursive call 
+			  of finish;
+
+DEFINE
+	stopOnEop = "FALSE",
+	inRange (pg) = "(0 LEQ pg < tempPage)",
+	outOfRange = "NOT inRange";
+
+
+! "Parameters" for the SAIL PMAP function;
+
+DEFINE
+	fork = "'400000000000 LOR",
+	file = "(rdJfn LSH 18) LOR",
+	#file= "(wrJfn LSH 18) LOR",
+	rd# =  "'100000000000",
+	wr# =  "'040000000000",
+	copy#= "'000400000000",
+
+	rdJfn = "inJfn", wrJfn = "outJfn";
+
+
+		!******   GENERAL UTILITY   ******
+		 ********************************;
+
+
+DEFINE	decBP (ac) =
+!	-----;
+"
+	add	ac, ['070000000000];
+	tlne	ac,  '400000;
+	 sub	ac, ['430000000001];
+",
+
+	decBPM (mem) =
+!	------;
+"
+	exch	 mem;
+	DECBP(0);
+	exch	 mem;
+";
+
+
+DEFINE	changeUSW (jfn) =
+!	---------
+	Set Mode, Page, Line in USER WORD of FDB.
+	Don't touch TV 252 flag.
+	;
+" BEGIN
+     IF writeMode  THEN
+     START!CODE
+      	movsi	1, '24;
+      	hrr	1, jfn;
+	hrroi	2, '777000;
+      	move	3, fdb['24];
+      	CHFDB;			! Change USW;
+     END
+  END
+";
+
+
+FORWARD SUBROUTINE	unmapM (INTEGER jfn, p1, pm);
+
+
+SUBROUTINE	salvage;
+!		-------
+	Move live strings from IBUF to SAIL string space.
+	Unmap IBUF, init IBUFMP to MINIBUFMP - 1.
+	;
+BEGIN "salvage"  
+
+   EXTERNAL INTEGER 
+	stLnk,		! Points to string packet chain;
+	gogTab, 	! ? table pase address;
+   ! The following are indeces to GOGTAB;
+	remChr,		! Negative count of free bytes in string space;
+	topByte,	! Pointer to free string space;
+	spdl,		! Initial SP;
+	rACs;		! Where ACs are stored while garb collecting;
+
+   EXTERNAL SUBROUTINE  strnGC;  ! String garbage collector, accepts
+				   in AC1 no. bytes requested, wants
+				   RF saved in RACS[RF];
+
+
+   SUBROUTINE	saveStr (INTEGER pointer);
+   !		-------
+	POINTER points to first word of string descriptor.
+	;
+   START!CODE "saveStr"  acDef;  LABEL go, loop, xit;
+	DEFINE ch# = "2", len# = "3", gp# = "4", pp# = "5", rem# = "6";
+
+	move	1, pointer;
+   ! Check length of string;
+	hrrz	1, (1);
+	jumpe	1, xit;		! Ignor empty string;
+   ! Check for space remaining;
+	move	user, gogtab;
+	addm	1, remChr(user);
+	skipg	 remChr(user);	! String space available?;
+	 jrst	 go;		!  Yes;
+   ! Must carbage collect;
+	movei	2, rACs(user);	! To  MOVEM  RF, RACS+RF(USER);
+	movem	rf, rf(2);	! Must save RF;
+	pushj	p, strnGC;
+
+   go:	move	1, pointer;
+	hrrz	len#, (1);
+	move	gp#, 1(1);
+	move	pp#, topByte(user);
+	movem	pp#, 1(1);	! Set new string pointer;
+	seto	;
+	hllm	 (1);		! To include in str garb collection;
+
+ loop:	ildb	ch#, gp#;	! Transfer a byte;
+	idpb	ch#, pp#;
+	sojg	len#, loop;	! More bytes to transfer?;
+
+	movem	pp#, topByte(user);	! Update str space pointer;
+  xit:
+   END "saveStr" 
+   ;
+
+   SUBROUTINE	saveBlock (INTEGER pointer, len);
+   !		---------
+	POINTER points to the first string in a block of LEN strings.
+	;
+   WHILE (dec(len)) GEQ 0  DO
+   START!CODE "saveBlock"  LABEL bot;  acDef;
+	DEFINE ptr# = "2", len# = "3", addr# = "4";
+
+	move	ptr#, pointer;
+	hrrz	len#, (ptr#);
+	jumpe	len#, bot;	! IF NONEMPTY (str)..;
+   ! Is string in IBUF?;
+	move	addr#, 1(ptr#);
+	ibp	 addr#;
+	andi	addr#, -1;
+	cail	addr#, minIBufMP LSH 9;	! ..AND it is in IBUF..;
+	 caile	addr#, maxIBufMP LSH 9 + '777;
+	  jrst	 bot;
+	push	p, ptr#;	! ..THEN SAVESTR (POINTER); 
+	pushj	p, saveStr;
+
+  bot:	movei	 2;
+	addm	 pointer;	! POINTER _ POINTER + 2;
+   END "saveBlock" 
+   ;
+
+			! +  +  +  + ;
+
+   IF iBufMP GEQ minIBufMP  THEN
+   BEGIN  INTEGER ptr;
+      ptr _ location (stLnk);
+
+      WHILE ptr _ memory [ptr]
+      DO saveBlock ((junk _ memory [ptr - 1]) LAND '777777, 
+		     junk LSH -18)
+      ;
+! Save string stack;
+      START!CODE  acDef;
+	move	user, gogtab;
+	hrrz	 spdl(user);
+	addi	 1;
+	push	p, ;		! Pointer to first entry in spdl;
+
+	movn	 spdl(user);
+	add	 sp;		! AC0 _ sp - bottom of stack;
+	andi	 -1;
+	lsh	 -1;		! Div by 2;
+	push	p, ;		! No. of entries;
+	pushj	p, saveBlock;
+      END
+      ;
+      unmapM ('400000, minIBufMP, iBufMP MIN maxIBufMP);
+   END
+   ;
+   iBufMP _ minIBufMP - 1;
+END "salvage"
+;
+
+SUBROUTINE	setBuf (INTEGER buf0, val);
+!		------
+	A one-page buffer is set to VAL.
+	;
+START!CODE "setBuf"  DEFINE buf# = "2", pp# = "3";
+	move	buf#, buf0;
+	hrlz	pp#, buf#;
+	hrr	pp#, buf#;
+	addi	pp#, 1;		! PP# _ BUF,,BUF+1;
+	move	 val;
+	movem	 (buf#);	! BUF[0] _ VAL;
+	blt	pp#, '777(buf#);! ARRBLT (BUF[1], BUF[0], '777);
+END "setBuf" 
+;
+
+
+BOOLEAN SUBROUTINE	exists (INTEGER page);
+!			------
+	TRUE  iff  file page PAGE exists.
+	;
+START!CODE "exists"
+	hrlz	1, rdJfn;	
+	hrr	1, page;
+
+	RPACS;
+
+	movsi	1, '010000;	! Page exists-bit; 
+	and	1, 2;			
+END "exists"
+;
+
+
+INTEGER SUBROUTINE	rightOf (INTEGER pg);
+!			-------
+	RETURN (IF PG < 0  THEN -1
+		ELSE IF (R _ RH(PG)) LEQ '770  THEN R  ELSE -1) .,
+	;
+START!CODE "rightOf"  LABEL eofp;
+	skipge	1, pg;
+	 jrst	 eofp;
+	hrrz	1, links(1);
+	caile	1, tempPage;
+ eofp:	 seto	1, ;
+END "rightOf"
+;
+
+
+SUBROUTINE	unMap (INTEGER ffP);	pMap (-1, ffP, 0);
+!		-----;
+
+
+
+SUBROUTINE	unMapM (INTEGER jfn, p1, pn);
+!		------;
+START!CODE "unMapM"  LABEL loop, mid, xit;  DEFINE pn# = "4";
+	hrlz	2, jfn;
+	hrr	2, p1;
+	move	pn#, pn;
+
+ loop:	jumpl	2, mid;		! No FFUFP for forks; 
+	move	1, 2;
+
+	FFUFP;		    ! More file pages?;
+
+	 jrst	 xit;		! No;
+	move	2, 1;
+
+ mid:	caige	pn#, (2);
+	 jrst	 xit;
+	seto	1, ;
+	setz	3,;
+
+	PMAP;		    ! Unmap a page;
+	
+	aoja	2, loop;	! Next page;
+  xit:
+END "unMapM"
+;
+
+
+IFC tops20.sw  THENC
+
+ SUBROUTINE	secure (INTEGER pg);
+ !		------
+	Write a page to disk.
+	;
+ START!CODE
+	hrlz	1, rdJfn;
+	hrr	1, pg;
+	movei	2, 1;		! One page only;
+	UFPGS;			! Update it on disk;
+	 HALTF;
+ END
+ ;
+
+ SUBROUTINE	rd#Map (INTEGER flP, fkP);
+ !		------;
+ IF exists (flP)  THEN pMap (file(flP), fork(fkP), rd#)
+ ELSE unmap (fork(fkP))
+ ;
+
+ELSEC
+
+ DEFINE secure (pg) = "";
+
+ DEFINE	rd#Map (flP, fkP) = "pMap (file(flP), fork(fkP), rd#)";
+
+ENDC
+
+
+INTEGER SUBROUTINE	newEntry (INTEGER pg, n);
+!			--------
+	Scan  N  bytes of  PG  and make directory entry.
+	PG is assumed to be valid (no checking done).
+	;
+BEGIN "newEntry"
+   IF NOT exists (pg)  THEN dir.(pg) _ 0
+   ELSE
+   BEGIN
+      pMap (file(pg), fork(tBufMP), rd#);
+
+      START!CODE  LABEL loop, loop1, don;
+	DEFINE	ch# = "2", bc# = "3", bp# = "4", 
+		nch# = "5", nlf# = "6", nff# = "7"; 
+
+	move	bp#, ['440700000000 + tBuf];
+	move	bc#, n;
+	movei	nch#, (bc#);
+	setzb	nlf#, nff#;
+
+loop:	sojl	bc#, don;	! A few control characters count here;
+loop1:	ildb	ch#, bp#;
+	jumpe	ch#, loop;
+	movei	nch#, (bc#);	! Count at last non-0 byte;
+	trne	ch#, LNOT(LF LOR FF);
+	 sojge	bc#, loop1;	! Most chars count here;
+	jumpl	bc#, don;
+! LF/FF counting;
+	cain	ch#, LF;
+	 aoja	nlf#, loop;
+	caie	ch#, FF;
+	 jrst	 loop;
+	setz	nlf#, ;
+	aoja	nff#, loop;
+
+don:
+! Compile directory entry into AC0;
+	move	bc#, n;		! Count at start;
+	subi	bc#, (nch#);	! Less count at end;
+	dpb	bc#, f.nCh;
+	dpb	nlf#, f.nLF;
+	dpb	nff#, f.nFF;
+
+	move	1, pg;
+	movem	 dir(1);	! Set directory word;
+      END
+      ;
+      unMap (fork(tBufMP));  ! Remove fork page;
+   END
+   ;
+   RETURN (dir.(pg));
+END "newEntry"
+;
+
+INTEGER SUBROUTINE	dirEntry (INTEGER pg);
+!			--------
+	If NFF of entry is illegal, make a valid entry first using
+	  NCH provided that it is legal.
+	For pages out of range return 0.
+	;
+IF outOfRange (pg)  THEN RETURN (0)
+ELSE
+START!CODE "dirEntry"  acDef;  DEFINE pg# = "2", nff# = "3", nch# = "4";
+	LABEL xit;
+
+	move	pg#, pg;
+	move	 dir(pg#);
+	ldb	nff#, f.nFF;	! NFF _ NFF.(PG), via AC0;
+	move	1, 0;		! AC1 _ DIR.(PG), for RETURN;
+	caig	nff#, '5000;	! RETURN ( IF NFF LEQ '5000 ..;
+	 jrst	 xit;		! .. THEN DIR.(PG) ..;
+	push	p, pg#;		! .. ELSE ..;
+	ldb	nch#, f.nCh;
+	caile	nch#, '5000;
+	 movei	nch#, '5000;
+	push	p, nch#;
+	pushj	p, newEntry;	! .. NEWENTRY (PG, NCH MIN '5000) );
+  xit:	
+END "dirEntry"  
+;
+
+SUBROUTINE	loadN.xxIn;
+!		----------
+	Unpacks  DIR (RDPAGE)  into  N.FFIN,  N.LFIN,  N.CHIN.
+	Makes the entry first if not already present.
+	;
+START!CODE "loadN.xxIn"  acDef;
+	push	p, rdPage;
+	pushj	p, dirEntry;	! Makes entry if none exists;
+	move	0, 1;		! Result in AC0, since..;
+! ..byte pointers refer to AC0;
+	ldb	1, f.nFF;
+	movem	1, n.ffIn;
+	ldb	1, f.nLF;
+	movem	1, n.lfIn;
+	ldb	1, f.nCh;
+	movem	1, n.chIn;
+END "loadN.xxIn"
+;
+
+DEFINE	addFFLF! (pg, ln, nff, nlf) =
+!	--------
+	MACRO to add FF and LF counts to PaGe and LiNe no.:
+	  PG _ PG + NFF .,
+	  LN _ IF NFF THEN NLF ELSE LN + NLF .,
+	;
+"	move	 nlf;
+	skipn	1, nff;
+	 add	 ln;
+	movem	 ln;
+	addm	1, pg;
+",
+
+	addFFLF (pg, ln, nff, nlf) =
+!	-------
+	See comment above.
+	;
+" START!CODE  addFFLF! (pg, ln, nff, nlf)  END ";
+
+
+
+SUBROUTINE	addDirEntry (REFERENCE INTEGER pg, ln; INTEGER filp);
+!		-----------;
+START!CODE "addDirEntry"  acDef;  DEFINE nff# = "2", nlf# = "3";
+	push	p, filp;
+	pushj	p, dirEntry;	! Makes entry if none exists;
+	move	0, 1;		! Dir entry to AC0;
+	ldb	nff#, f.nFF;
+	ldb	nlf#, f.nLF;
+
+	ADDFFLF! (pg, ln, nff#, nlf#);
+END "addDirEntry" 
+;
+
+
+SUBROUTINE	movePStr (INTEGER p0, pm, q0);
+!		--------
+	Move (i.e., insert) Page STRing (P0, PM) between pages Q0 and
+	  Q1,  Q1 = RIGHTOF(Q0).
+	P0 is the page to the left of first page to be moved.  The
+	  pages moved are P1...PM,  P1 = RIGHTOF(P0).
+	An attempt to move an empty page string (P0 = PM) is a no-op.
+	;
+START!CODE "movePStr"  LABEL xit;
+	DEFINE	p0# = "2", p1# = "3", pm# = "4", pm1# = "5", 
+		q0# = "6", q1# = "7";
+
+	hrre	p0#, p0;
+	hrre	pm#, pm;
+	hrre	q0#, q0;
+! Validity check;
+	jumpl	pm#, xit;	! PM past EOF?;
+	camn	p0#, pm#;
+	 jrst	 xit;		! Empty string;
+
+	hrre	p1#, links (p0#);
+	hrre	pm1#, links (pm#);
+	hrre	q1#, links (q0#);
+	
+	hrrm	pm1#, links (p0#);	! Remove from where was;
+	hrrm	q1#, links (pm#);	! Tie end of page string;
+	hrrm	p1#, links (q0#);	! Tie beginning of page string;
+  xit:
+END "movePStr"
+;
+
+
+DEFINE  moveP1 (p0, q0) = "movePStr (p0, rightOf(p0), q0)";
+!	------
+	Move (insert) page P1 to right of page Q0.  No checks.
+	;
+
+
+INTEGER SUBROUTINE	nExtraFree;
+!			----------
+	Return no. of free pages in excess of ones that might be
+	  required for forced finish (by PMAPOUT or whoever).
+	;
+RETURN ( IF readOnly THEN zillion ELSE
+	 (nFree - ((textSize + maxY1)*maxLength + n.input) DIV '5000
+	  + 1)
+       );
+
+	REQUIRE  "ioIo"  SOURCE!FILE;
+	REQUIRE  "ioSeg"  SOURCE!FILE;
+	REQUIRE  "ioFin"  SOURCE!FILE;
+	REQUIRE  "ioInit"  SOURCE!FILE;
+
+REQUIRE  UNSTACK!DELIMITERS;
+
+
+
+			! TO CONSIDER:
+
+-- Remove UNMAPs from ends of procedures.
+
+-- PMAP DIR PAGE back to file at end of read-only edit (to save work).
+
+   QUESTION:  Is it possible to PMAP to page if file opened in read
+	only mode?
+;
+
+
+COMMENT  End of file  IO;
+
+

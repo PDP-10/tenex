@@ -1,0 +1,377 @@
+
+		!******   SEGMENT FINISH   ******
+		 *******************************;
+
+FORWARD SUBROUTINE	textInit;
+FORWARD SUBROUTINE	dpyWindow;
+FORWARD SUBROUTINE	goToPlace (INTEGER pg, ln, bt);
+
+FORWARD STRING SUBROUTINE	getTop;
+FORWARD STRING SUBROUTINE	getBot;
+FORWARD SUBROUTINE	putTop (STRING line);
+FORWARD SUBROUTINE	putBot (STRING line);
+FORWARD SUBROUTINE	read;
+FORWARD SUBROUTINE	write;
+
+DEFINE			fin0 = "finSegment";
+FORWARD SUBROUTINE	fin1;
+FORWARD SUBROUTINE	finish (BOOLEAN abortSw);
+
+
+
+SUBROUTINE	finSegment;
+!		----------
+	Write text buffer first, don't touch window buffer.
+	To reduce wasted space, write subsequent read pages as long 
+	  as they fit on current write page.
+	To eliminate null bytes inside a line (FAIL fails on them),
+	  move last partial line to bottom of write page (FIXEOP).
+	Finish read and write pages.
+	Move read segment from end of write segment to hold chain.
+	;
+IF segment > 1  THEN
+BEGIN "finSegment"
+
+   SUBROUTINE	fixEOP;
+   !		------
+	Move last partial line to end of file page to prevent lines
+	  with null butes inside them.
+	;
+   START!CODE "fixEOP"  LABEL loop, put, nxt, xit;
+	DEFINE n# = "2", ch# = "3", zro# = "4", gp# = "5", pp# = "6";
+
+	movei	n#, '5000;
+	sub	n#, n.output;	! # text bytes on page;
+
+! IF 0 < N.CH < '5000..; 
+	caile	n#, 0;
+	 cail	n#, '5000;
+	  jrst	 xit;
+! ..THEN move last line to bottom of file page;
+	setz	zro#, ;
+	move	pp#, ['010700000777 + oBuf];
+	move	gp#, p.output;
+
+ loop:	ldb	ch#, gp#;
+	trne	ch#, LNOT (LF LOR FF);
+	 jrst	 put;
+	caie	ch#, LF;
+	 cain	ch#, FF;
+	  jrst	 xit;		! LF or FF terminates transfer;
+	jumpe	ch#, nxt;	! Ignor null bytes;
+  put:	dpb	ch#, pp#;
+	DECBP (pp#);
+
+  nxt:	dpb	zro#, gp#;
+	DECBP (gp#);
+
+	sojg	n#, loop;
+  xit:
+   END "fixEOP" 
+   ;
+			! +  +  +  + ;
+
+   inc (saving);  ! Prevent PMAPOUT from calling FINCONTINUE;
+
+   IF readOnly  THEN finRdPage
+   ELSE
+   BEGIN 
+! Write all of TEXT array;
+      WHILE  bot NEQ free  DO putTop (getBot);
+      WHILE  top NEQ gap  DO write;
+
+      DO
+      BEGIN "pack"  INTEGER pg;
+! Output rest of input page;
+	 START!CODE  acDef;
+		push	sp, n.input;
+		push	sp, p.input;
+		pushj	p, pMapOUT;	! PMAPOUT (INPUTSTRING);
+		setzm	 n.input;	! N.INPUT _ 0;
+	 END
+	 ;
+! Transfer next input page to current output page if fits;
+
+	 IF (pg _ rightOf (rdPage)) < 0  THEN eof _ TRUE
+	 ELSE
+	 BEGIN
+	    dirEntry (pg);  ! Make sure dir entry exists;
+	    IF nCh.(pg) > n.output  THEN DONE;  ! Does not fit;
+	    turnRdPage;
+	 END
+	 ;
+      END "pack"  UNTIL  eof
+      ;
+
+! Null byte prevention:
+  Guard against partially filled pages with no line breaks, but also
+  don't copy rest of file in case of small overflow;
+
+      IF failFile  THEN
+      BEGIN "fix" 
+	 IF NOT n.lfOut AND NOT n.ffOut AND NOT eof  THEN
+	 BEGIN 
+	    DO pMapOUT (pMapINPUT)
+	    UNTIL  n.lfOut OR n.ffOut OR eof
+	    ;
+	    IF n.input > 0  THEN  ! Finish the page that we borrowed from;
+	    BEGIN
+	       turnWrPage;  
+
+	       START!CODE  acDef;
+	    	 push	sp, n.input;
+		 push	sp, p.input;
+		 pushj	p, pMapOUT;	! PMAPOUT (INPUTSTRING);
+		 setzm	 n.input;	! N.INPUT _ 0;
+	       END
+	       ;
+	    END
+	    ;
+	 END
+	 ;
+! Finish for input and output pages;
+	 IF rightOf (rdPage) GEQ 0  THEN fixEOP;
+      END "fix"
+      ;
+      finRdPage;  finWrPage;
+! Move read segment to beg. of hold;
+      movePStr (wrPage, rdPage, holdP0);  secure (linkPage);
+   END
+   ;
+   textInit;
+   IF iBufMP > (minIBufMP + maxIBufMP) DIV 2  THEN salvage;
+   dec (saving);
+END "finSegment"
+;
+
+		!******   SEGMENT START   ******
+		 ******************************;
+
+
+SUBROUTINE	mapPgLn (INTEGER page, line);	
+!		-------
+	Initialization according to text page and line.
+	Determines RDPAGE by scanning page directory to accumulate
+	  page and line counts.  
+	Stores LEFT (RDPAGE) in WRPAGE, as required by WRMAP (causes
+	  WRMAP to link FREEP just to the left of RDPAGE).
+	Does initial read and write mapping.
+	Side effects:  Sets TPAGE, TLINE, WPAGE, WLINE.
+	;
+BEGIN "mapPgLn"  INTEGER tP, tL, nlf, lRdP;  STRING str;
+ ! TP and TL are the P.L of first complete (top) line of next file page;
+
+   segment _ (segment + 1) LAND '377 MAX 2;  eof _ FALSE;  iCount _ 500;
+
+   IF writeMode AND nExtraFree LEQ 0  THEN
+   BEGIN
+      warning ("
+
+File is filling up.
+  CONTINUE,  even if this message appears twice, and then
+  FINISH.   (Use  $$2F  if you want to keep old version for backup).
+
+");
+      haltPending _ TRUE;  ! To abort T-search;
+   END
+   ;
+   line _ line - slack;  ! Reserve space for backing up;
+   tPage _ tLine _ tP _ tL _ 1;  nlf _ 0;
+   wrPage _ lRdP _ rdPage _ textP0;
+
+   WHILE  (tP < page OR (tP = page AND tL < line))
+	  AND (rdPage _ rightOf (rdPage)) GEQ 0  ! EOF?;  DO
+   BEGIN
+
+    ! Conditional  WRPAGE _ LRDP  and subsequent  RDPAGE _ RIGHTOF
+      (WRPAGE)  guarantee that reading starts from a page with at least
+      one line break or from BEGINNING of text page 1.  The troublesome
+      spots are beginning and end of file (if first or last file page 
+      contains no line break).;
+
+      loadN.xxIn;  ! (N.FFIN, N.LFIN, N.CHIN) _ DIR (RDPAGE);
+
+      IF n.lfIn OR n.ffIn  THEN
+      BEGIN
+	 tPage _ tP;  tLine _ tL;  ! Save P.L before adding;
+	 addFFLF (tP, nlf, n.ffIn, n.lfIn);
+	 tL _ nlf + 2;  ! +2 since (split) line thrown away below;
+	 wrPage _ lRdP; 
+      END
+      ;
+      lRdP _ rdPage;
+   END
+   ;
+   rdPage _ rightOf (wrPage);  rdMap;  ! Can set EOF;
+   IF writeMode  THEN BEGIN wrMap; IF eof THEN putBot(eolStr) END;
+
+ ! Transfer (tail end of split) line into write page (unless BOF);
+   IF tPage > 1 OR tLine > 1  THEN
+   DO
+   BEGIN
+      str _ pMapINPUT;
+
+    ! Don't let page mark slip by;
+      IF breakChar = FF  THEN
+      BEGIN
+	 backFF;  IF empty (str _ most(str))  THEN dec(tLine);
+      END
+      ;
+      IF writeMode  THEN pMapOUT (str);
+   END
+   UNTIL  breakChar OR eof
+   ;
+   wPage _ tPage;  wLine _ tLine;  starting _ FALSE;
+END "mapPgLn"
+;
+
+SUBROUTINE	mapByte (INTEGER byteP);
+!		-------
+	Initial map with a byte pointer as an argument.	
+	Invalid 'BYTEP' opens the edit at EOF.
+	;
+START!CODE "mapByte"
+
+
+END "mapByte"
+;
+
+SUBROUTINE	freeHold;
+!		--------
+	Move pages from HOLD to SAFE or FREE.  Pages of the original
+	  file (WRSEG = 1) are saved, others are freed.
+	;
+BEGIN "freeHold" 
+   salvage;
+
+   WHILE  inRange (holdP)  DO
+   IF wrSeg.(holdP) = 1  THEN moveP1 (holdP0, safeP0)
+   ELSE BEGIN moveP1 (holdP0, freeP0); inc (nFree) END
+   ;
+END "freeHold"
+;
+
+SUBROUTINE	finContinue (BOOLEAN doFin1, dotFin);
+!		-----------
+	Finish-and-continue.  Called by:
+	 (a) PMAPOUT of IOIO when file full (will FIN1 to make space),
+	 (b) GETTOP of TVFIL when top part of text buffer is empty,
+	 (c) PUTBOT of TVFIL when gap full and MAKESGAP fails.
+	 (d) FCOMMAND of TVCOM in response to  $$.F (FIN1, DOTFIN true).
+	DOing FIN1 frees pages from hold.
+	For DOTF don't mark place with page marks (we are not in the 
+	  midst of a window shuffle).
+	Sets user word of FDP to GPAGE, GLINE (for crash recovery).
+	A gap of positive length is guaranteed (for PUTBOT).
+
+	WARNING:  This is most delicate subroutine for it can be called
+		while window shuffle is in progress.  It is imperative 
+		that before FIN0/1 we put to top text only (to prevent 
+		recursive call of FINCONTINUE).
+	;
+BEGIN "finContinue"  INTEGER gP, gL, y;  BOOLEAN dotF, wOk;  
+
+   SUBROUTINE	markT1;  IF NOT dotF  THEN putTop (pageMark);
+   !		------;
+
+   SUBROUTINE	markTop;  BEGIN markT1; markT1 END;
+   !		-------;
+
+			! +  +  +  + ;
+
+   inc (saving);  ! Semaphore-flag;
+   wOk _ TRUE;
+   dpyMessage (IF dotF _ dotFin 
+		THEN ".SAVING.."
+		ELSE ".WAIT.0..");
+
+ ! Remember place, save window lines, but leave also in window buffer;
+   gp _ gPage;  gL _ gLine;
+
+   IF writeMode  THEN 
+   BEGIN
+      markTop;  FOR y _ 1 upto maxY  DO putTop (w[y]);  markTop;
+   END
+   ;
+
+   IF doFin1  THEN fin1  ELSE fin0;		! --Finish--;
+   dpb (gP, p.page);  dpb (gL, p.line);  changeUSW (rdJfn);
+   mapPgLn (gP, gL); 				! --Restart--;
+
+ ! Read to where we left off;
+   IF writeMode AND NOT dotF  THEN gL _ zillion;
+
+   WHILE  (gPage < gP OR (gPage = gP AND gLine < gL)) AND NOT lastWindow
+   DO putTop (getBot)
+   ;
+
+ ! Next should come the window lines--make sure;
+	
+   IF readOnly  THEN
+   BEGIN
+      IF nonEmpty (w[1])  ! Don't junk if it is $-T;
+      THEN FOR y _ maxY - 1 downto 1  DO getBot  ! Junk;
+   END
+   ELSE
+   BEGIN "wChk"  STRING str, wStr;
+
+	DEFINE  markBot = 
+	!       -------;
+	"BEGIN putBot (pageMark); putBot (pageMark) END";
+
+	SUBROUTINE  xferStr;  putTop (str _ getBot);
+	!	    -------;
+
+	SUBROUTINE  xferMark;
+	!	    --------;
+	IF NOT dotF  
+	THEN BEGIN xferStr; wOk _ wOk AND isPageMark (str) END
+	;
+			! +  +  +  + ;
+
+      IF dotF  THEN BEGIN gP _ gPage; gL _ gLine END
+      ELSE BEGIN wOk _ gPage = gP + 1 AND gLine = 1; xferMark END 
+      ;
+      y _ 0;
+
+      WHILE  (inc(y)) LEQ maxY  DO
+      IF nonEmpty (wStr _ w[y])
+      THEN BEGIN xferStr; wOk _ wOk AND equ (str, wStr) END
+      ;
+      xferMark;  xferMark;
+
+    ! Remove saved lines if ok;
+      IF wOk  THEN
+	WHILE  top NEQ gap
+		AND (gPage > gP OR (gPage = gP AND gLine > gL))
+	DO getTop
+      ELSE
+      BEGIN "notOk"
+	 newVersion _ TRUE; 
+
+	 IF dotF  THEN
+	 BEGIN
+	    FOR y _ maxY downto 1  DO w[y] _ NIL;
+	    goToPlace (ldb(p.page), ldb(p.line), 1);
+	 END
+	 ELSE
+	 BEGIN
+	    markTop;  markBot; 
+	    goof (".FILE.MIXUP--LOOK.FOR.DOUBLE.PAGE.MARKS..");
+	 END
+	 ;
+	 clearStack;
+      END "notOk" 
+      ;
+   END "wChk"
+   ;
+   read;  ! To set EOF-flag if at end;
+   putBot (eolStr);  getBot;  ! Guarantee at least one empty gap line;
+   IF wOk  THEN dpyMessage (NIL);
+   dec (saving);	      ! Must come after last GETBOT;
+END "finContinue"
+;
+
+COMMENT  End of file IOS;
+
+

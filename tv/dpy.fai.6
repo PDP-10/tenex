@@ -1,0 +1,3355 @@
+;4-July-80 /pk
+;  (1) Fixed DOCP of Guillotine (it does not move the sursor)
+;2-Mar-80 /Eric Schoen
+;  (1) Updated Albatross to Gillotine.  New command set
+;27-Feb-80 /Eric Schoen
+;  (1) Added SCORE, SUM20, SUMEX switches for table DPYTAB
+;      This is getting ridiculous!
+;5-Oct-79 /Eric Schoen, Sumex
+;  (1) Added Heath19 as type 10 (8 dec)
+;  (2) Added ONESEG assembly switch which removes twoseg and reloc's
+;16,17-May-79 /pk
+;  (1) Assembly switches TENEX and TOPS20 (= 1 - TENEX) added 
+;  (2) More appropriate timing for Hazeltine 1500
+;24-Apr-79 /pk
+;  (1) Added ALBATROSS as type 7
+;6-Apr-79 /pk
+;  (1) Removed virtual display simulation by Hazeltine
+;4-Apr-79 /pk
+;  (1) Hazeltine BOX rather * than `
+;3-Apr-79 /pk
+;  (1) Brand new timing formulas for Teleray
+;2-Apr-79 /pk
+;  (1) Don't pass ~ (lead-in) to Hazeltine, convert to BOX
+;  (2) Teleray EEOL needs padding
+;1-Apr-79 /pk
+;  (1) Separated EEOL and EEOP of Teleray and VT
+;  (2) New EEOP for Datamedia (sequence of EEOLs)
+;30-Mar-79 /pk
+;  (1) Added padding to EEOP and CL of Teleray
+;29-Mar-79 /pk
+;  (1) Fixed PDL OVERFLOW in SEEOS
+;  (2) Removed calls to simulate erase fns for Teleray & VT52
+;28-Mar-79 /pk
+;  (1) Changed (improved) line-I/D timing for Teleray
+;27-Mar-79 /pk
+;  (1) Removed Teleray blink mode.  Unwieldy hardware.
+;  (2) Fixed Teleray EEOP.  But why does it simulate EEOS (37.53)?
+;<CUSPS.TVEDIT>DPY.FAI.13, 19-Feb-79 11:47:41, Edit by ADMIN.JQJ
+; VT52 doesn't have CLP
+;<CUSPS.TVEDIT>DPY.FAI.12, 17-Feb-79 16:40:19, Edit by ADMIN.JQJ
+; some more cleanup
+;<SOURCES.TVEDIT>DPY.FAI.4, 16-Feb-79 07:29:29, Edit by J.JQJOHNSON
+; Revised use of JRSTAB and CONTAB -- build automatically from DEFTTY,
+; and use only two words for all tty-dependent constants.
+;<CUSPS.TVEDIT>DPY.FAI.11, 15-Feb-79 08:30:19, Edit by ADMIN.JQJ
+; Cleaned up VT52 code slightly, and combined some VT52 and Teleray code
+;<CUSPS.TVEDIT>DPY.FAI.10, 15-Feb-79 08:19:40, Edit by ADMIN.JQJ
+; Fixed Hazeltine Insert mode, fixed bottom-left cursor movement
+; for Teleray and VT52, added real VT52 code.
+; Reworked redrawing of line on Hazeltine IC and DC functions
+;<CUSPS.TVEDIT>DPY.FAI.9, 12-Feb-79 21:47:05, Edit by ADMIN.JQJ
+; Fixed bug in Teleray insert-char mode
+;<CUSPS.TVEDIT>DPY.FAI.8, 12-Feb-79 21:31:54, Edit by ADMIN.JQJ
+; Rewrote Hazeltine support to use virtual dpy, and to handle bold mode
+;<CUSPS.TVEDIT>DPY.FAI.7, 12-Feb-79 20:10:12, Edit by ADMIN.JQJ
+; Implemented "virtual" dpy to simulate ch/li ins/del
+;<CUSPS.TVEDIT>DPY.FAI.5, 12-Feb-79 01:03:39, Edit by ADMIN.JQJ
+; Started adding VT52 code -- very incomplete
+;<CUSPS.TVEDIT>DPY.FAI.4, 12-Feb-79 00:07:54, Edit by ADMIN.JQJ
+; Add Teleray code.  Converted PJ, RJ to CALL, RET
+
+	TITLE  dpy Display compatibility package
+
+	sumex_1		; 1 for sumex KI10 Tenex
+	sum20_0		; 1 for Sumex 2020
+	score_0		; 1 for Stanford Dec-20's aside from Sumex-2020
+	test _ 0	; 0 for FALSE, non-0 for TRUE
+	oneseg _ 0	; 0 normally, 1 for no relocs
+
+	ifn sumex+sum20+score-1,<printx Bad switches!!!
+				 end>
+	ifn sumex,<tenex_1>
+	ife sumex,<tenex_0>
+	tops20 _ 1 - tenex
+
+COMMENT \
+	To assemble:
+
+	Display compatibility package for SAIL and assembly language
+	programs.  
+
+	SAIL users should
+
+		REQUIRE "<TV>DPY.SAI" SOURCE!FILE, or
+		REQUIRE "<TV>DPYCOM.SAI" SOURCE!FILE,
+	
+	but not both.  The former declares the external variables 
+	and procedures of DPY, the latter in addition defines (and 
+	explains) the display commands.
+
+	Assembly language programmers should copy the extarnal
+	declarations from  <TV>DPY.ASS  and load with  <TV>DPY.REL
+
+	Compactness and speed have been the primary criteria in the 
+	design of this package.  In a few places this might have led 
+	into code whose function is not immediately abvious.
+
+	Programmed by Pentti Kanerva, IMSSS, Stanford University,
+	June 1975.
+
+	\
+
+	nolit
+	xall
+	asuppress
+
+INTERNAL  cx, cy, dpyOn, bps, lcDpy, maxCX, maxCY
+INTERNAL  dpyIni, turnOn, turnOf, setCur, clrCur
+INTERNAL  dpyChr, dpyNCh, dpyStr, dpyOut
+INTERNAL  setIta, clrIta, setIns, clrIns, setBli, clrBli, setTTY, clrTTY
+INTERNAL  doRigh, doDown, doLeft, doUp, doHome
+INTERNAL  doIC, doIL, doDC, doDL, doEEOL, doEEOP, doCL, doCP, doBB, doEB
+INTERNAL  dpyTyp
+
+
+  ;; AC Assignments
+
+	zero__  0	; temporary storage
+	t1  __  1	; temporary storage (and used by simulator)
+	n1  __  2	; counter (for PUTNC1 and x.CPY), (used by sim.)
+	tmp __  3	; WARNING: "IDIV N1, xxx" clobbers  TMP (used by sim.)
+	px  __  4	; physical (dpy dependent)  X,  stored in  DPYX
+	py  __  5	; physical (dpy dependent)  Y,  stored in  DPYY
+	x   __  6	; virtual  X,  stored in  CX
+	y   __  7	; virtual  Y,  stored in  CY 
+	f   __ 10	; flags for insert, italic, blink, and tty mode
+	dpy __ 11	; display type:  0 = tty, 1 = TEC, 2 = Imlac,
+			;    3 = Datamedia, 4 = Haz 1500, 5 = Teleray 1061,
+			;    6 = VT52, 7 = Alb 15XX, 10 = Heath19
+  ;	reserved __ 12	; reserved by SAIL
+
+	ch  __ 13	; character, dpy independent 
+	ch1 __ 14	; character, dpy dependent
+	ch2 __ 15	; char, Datamedia mode change, Lead-in (ESC)
+			;   for ALB (and others?)
+	delX __ ch1	; delta X
+	delY __ ch2	; delta Y
+	sp  __ 16	; string stack pointer, as in SAIL
+	p   __ 17	; stack pointer, as in SAIL 
+
+
+  ;; Flag bits, right hand side of F
+
+	insert __ 400000
+	italic __ 200000
+	blink __  100000
+	tty __     40000
+	
+  ;; Flag bits, left hand side of F (local to low-level routines)
+
+	pital __  200000
+
+
+  ;; Constants (ASCII codes)
+
+	BEL __  7
+	LF  __ 12
+	CR  __ 15
+
+
+OPDEF	call	[pushj	p,]
+OPDEF	ret	[popj	p,]
+
+OPDEF	jsys	[104000000000]
+OPDEF	psout	[jsys	 76]
+OPDEF	rfmod	[jsys	107]
+OPDEF	sfmod	[jsys	110]
+OPDEF	gttyp	[jsys	303]
+OPDEF	haltf	[jsys	170]
+OPDEF	mtopr	[jsys	77]
+
+define ttylst {0,}
+nttys __ 0			;first internal tty type is zero
+define concat ' (a,b,c) { define ttylst {0,<b'c>} }
+define deftty ' (letter,sym) {
+    concat (\ttylst,letter)
+    t%'sym __ nttys
+    nttys __ nttys+1
+}
+define forall (a,b) {for @` ... E {b} }
+
+
+ife oneseg,<
+	TWOSEG
+	RELOC	400000
+	RELOC	0
+>
+
+  ; SAFE is where important AC's are kept between calls to dpy package
+  ; The AC's are saved and restored with a BLT
+
+safe:	block  12
+
+	dpyX  _  safe + px
+	dpyY  _  safe + py
+	cx    _  safe + x
+	cy    _  safe + y
+	flags _  safe + f
+	dpyTyp _ safe + dpy
+
+
+  ; the next 2 lines of code go to low segment
+
+next:	doInit		; this will force initialization
+cpopj:	ret
+
+
+maxX:
+maxCX:	=71	; Maximum X value of display,  0 leq X leq MAXX 
+maxY:
+maxCY:	=23	; Maximum Y value of display,  0 leq Y leq MAXY
+pFlags:	 0	; Flags of physical display
+
+p.dBuf:	point 7,dBuf,-1	; Byte pointer to dpy buffer
+n.dBuf:	 0	; Byte count to end of buffer
+bps:	=2400	; Line speed, Bits Per Second
+fast:	0	; -1 for 9600-bps Datamedia (I/D commands need padding)
+		;  0 otherwise
+dpyOn:	-1	; Display on (not in ^O)
+lcDpy:	-1	; LowerCase Display
+
+	dBufSz __ 200	; the buffer itself is declared at end of file
+
+ife oneseg,<
+	RELOC	; now high segment
+>
+begCod:
+
+
+;		      Display Dependent Routines
+;		      ==========================
+
+	subttl TTY display dependent routines
+;				 TTY
+;				 ===
+
+deftty(q,tty)
+
+COMMENT	\
+	All tty movement is delayed until a printing character is sent.
+	\
+
+	q.maxX	__ =71
+	q.maxY	__ =23
+	q.lcDp	__ -1
+
+	q.fill  __ 177
+
+	q.BB  __ " "
+	q.EB  __ " "
+	q.BOX __ "*"
+
+
+ife oneseg,<
+	RELOC
+>
+
+qx:	q.maxX+1; Position of true print head.  (DX,DY) is the
+qy:	-1	;   position of virtual print head (it is ahead).
+
+q.dirt:	-1	; True if current line has been written on, in which
+              	;   case backing up buys automatic new line.
+q.over:	 0	; True means to allow overprinting, i.e., to inhibit 
+		;   automatic new line on backing up (see comment 
+		;   above), in which case backing up sets  Q.BACK.
+q.back:	 0	; We have actually backed up on a dirty line, in order 
+		;  to point or overprint.
+
+ife oneseg,<
+	RELOC
+>
+
+
+q.init:	movei	zero, q.maxX+1
+	movem	zero, qx
+	setom	 q.dirt
+q.doSB:
+q.doCB:
+q.quit:
+q.ring:	ret
+
+
+q.doCh:	cain	ch, " "		; is it a space?
+	 jrst	 q.Sp		; ..yes, delay spacing
+	call	 q.chk
+	call	 putCh
+	setom	 q.dirt		; mark current line as dirty
+
+q.incX:	aos	1, qx		; INC(QX)
+	cain	1, q.maxX+1	; past right margin?
+	 sos	 qx		; ..yes, undo INC(QX)
+
+q.Sp:	caie	px, q.maxX
+	 aoj	px,		; move cursor that the world believes in
+	ret
+
+
+q.LF:	movem	py, qy
+	setzm	 q.dirt
+	setzm	 q.over
+	setzm	 q.back
+	movei	ch1, LF
+	jrst	 putCh1
+
+
+q.move:			; called from dev independent reoutines
+q.doLC:	movei	px, (x)		; fake the move.  The moving is
+	movei	py, (y)		;   delayed until something is
+	ret			;   actually printed
+
+
+q.dpyO:				; entry for user-issued FORCEOUT
+q.chk1:	setom	 q.over		; entry for  Q.DODC, to allow overprint
+	skipa
+q.chk:	 setzm	 q.over		; entry for normal printing
+	camn	px, qx
+	 came	py, qy
+	  jrst	 q.set
+	skipe	 q.back		; in place.  About to overprint?
+	 skipe	 q.over		; ..yes, but is that so bad?
+	  ret			; ..no, stay put
+
+q.set:	setz	n1,
+	caml	px, qx		; are we past the target?
+	 jrst	 q.movY		; ..no
+	skipe	 q.dirt		; ..yes
+	 setom	 q.back		; backing up on a dirty line!
+	movei	ch1, CR
+	call	 putCh1
+	exch	n1, qx		; N1 _ length of CR action,  QX _ 0
+	idivi	n1, =25		; NOTE:  Clobbers TMP!!
+	aoj	n1,		; N1 _ time to allow for CR
+
+q.movY:	came	py, qy
+	 jrst	 q.feed
+	skipe	 q.back		; About to overprint?
+	 skipe	 q.over		; ..yes, but is that so bad?
+	  jrst	 q.time		; ..no, stay on current line
+q.feed:	call	 q.LF		; makes QY = PY
+	soj	n1,		; LF counts as one fill
+
+q.time:	jumple	n1, q.movX
+	movei	ch1, q.fill
+	call	 putNC1
+
+q.movX:	movei	n1, (px)	; target X
+	move	zero, n1
+	exch	zero, qx
+	sub	n1,		; N1 _ PX - QX
+	movei	ch1, " "
+	jrst	 putNC1		; space to position
+
+
+	; TTY Insert/Delete !!
+
+  ; Note:  Q.DOIC/DC will not update  QX
+
+q.doIC:	call	 q.chk
+	setom	 q.dirt
+	movei	ch1, "/"
+	jrst	 putCh1
+
+
+q.doDC:	call	 q.chk1		; Q.CHK1  to allow overprinting
+	setom	 q.dirt
+	movei	ch1, "\"
+	jrst	 putCh1
+
+
+q.doCP:	call	 q.LF
+q.doLF:
+q.doEP:
+q.doDL:
+q.doIL:	setom	 qy
+q.doEL:	ret
+
+
+	LIT
+
+	subttl TEC display dependent routines
+;				 TEC
+;				 ===
+
+deftty(t,tec)
+
+	t.maxX	__ =79
+	t.maxY	__ =23
+	t.lcDp	__ 0
+
+
+		; TEC Display Commands
+
+	t.EEOL	__ 143	; c 
+	t.IC	__ 144	; d 
+	t.IL	__ 145	; e 
+	t.righ	__ 147	; g 
+	t.down	__ 150	; h 
+	t.HOME	__ 151	; i 
+	t.LCA	__ 154	; l 
+	t.EEOP	__ 163	; s 
+	t.DC	__ 164	; t 
+	t.DL	__ 165	; u 
+	t.CP	__ 166	; v 
+	t.left	__ 167	; w 
+	t.up	__ 170	; x 
+
+	t.BB	__ 173	; { 
+	t.EB	__ 174	; | 
+	t.fill	__ 177
+
+	t.BOX	__  32	; ^Z, all bright "BOX" character
+
+
+t.init:
+t.quit:
+t.doSB:
+t.doCB:
+t.dpyO:	ret
+
+
+t.ring:	movei	ch1, t.fill	; one fill to flip the bell's flop
+	jrst	 putCh1
+
+
+t.doCh:	trne	f, insert
+	 call	 t.doIC
+	call	 putCh
+t.incX:	caie	px, t.maxX
+	 aoja	px, cpopj	; INC(PX)
+	setz	px,
+	caie	py, t.maxY
+	 aoja	py, lineOv	; INC(PY)
+	setz	py,
+	trnn	f, tty		; Last line.  Want to scroll?
+	 ret			; ..no
+	call	 t.doUp		; ..yes, cursor to lower left corner
+
+	; falls to  T.DOLF
+
+t.doLF:	movei	ch1, LF		; for last line LF only, to sctoll 
+	jrst	 putCh1
+
+
+t.move:	movei	0, (x)
+	addi	0, (y)
+
+	movei	1, (delX)
+	addi	1, (delY)	; ac1:  bytes by incrementing
+
+  ; what is the fastest move?
+	caige	0, (1)
+	 jrst	 t.hWin		; home wins over move
+	caig	1, 3		; home loses
+	 jrst	 t.movX		; move wins
+	jrst	 t.doLC		; LCA wins
+
+t.hWin:	cail	0, 3		; close to home?
+	 jrst	 t.doLC		; ..no, do LCA
+	call	 t.doHo		; ..yes 
+
+t.movX:	jumpl	x, t.movY	; prevent hanging in case of igl  X
+	caig	x, t.maxX
+t.mvX1:	 cain	x, (px)
+	  jrst	 t.movY
+	movei	1, t.doRi	; assume right move
+	caig	x, (px)		; ..but is it?
+	 movei	1, t.doLe	; ..nop, left instead
+	call	 (1)
+	jrst	 t.mvX1
+
+t.movY:	jumpl	y, cpopj
+	caig	y, t.maxY
+t.mvY1:	 cain	y, (py)
+	  ret
+	movei	1, t.doDo
+	caig	y, (py)
+	 movei	1, t.doUp
+	call	 (1)		; up/down move 
+	jrst	 t.mvY1
+
+
+t.doLC:	movei	ch1, t.LCA	; do absolute move
+	call	 putCh1
+	movei	px, (x)
+	movei	ch1, (x)
+	trc	ch1, 177
+	call	 putCh1
+	movei	py, (y)
+	movei	ch1, (y)
+	trc	ch1, 177
+	jrst	 putCh1		; will RET
+
+
+t.doRi:	movei	ch1, t.righ
+	caie	px, t.maxX
+	 aoja	px, putCh1 	; INC(PX)
+	setz	px,
+	skipa
+
+t.doDo:	 movei	ch1, t.down
+	cain	py, t.maxY
+	 seto	py,             ; -1, incremented below
+	aoja	py, putCh1	; INC(PY)
+
+
+t.doLe:	movei	ch1, t.left
+	sojge	px, putCh1
+	movei	px, t.maxX
+	skipa
+
+t.doUp:	 movei	ch1, t.up
+	sojge	py, putCh1
+	movei	py, t.maxY
+	jrst	 putCh1
+
+
+t.doHo:	movei	ch1, t.home	; home cursor 
+	jrst	 pxy0Pu
+
+
+	; TEC Insert/Delete
+
+t.doIC:	movei	ch1, t.ic
+	jrst	 putCh1
+
+
+t.doIL:	movei	ch1, t.IL
+	jrst	 px0Put
+
+
+t.doDC:	movei	ch1, t.dc
+	jrst	 putCh1
+
+
+t.doDL:	movei	ch1, t.dl
+	jrst	 px0Put
+
+
+t.doEL:	movei	ch1, t.eeol	; Erase to End Of Line
+	jrst	 putCh1
+
+
+t.doEP:	movei	ch1, t.eeop	; Erase to End Of Page
+	jrst	 px0Put
+
+
+t.doCP:	movei	ch1, t.cp	; Clear Memory 
+	jrst	 pxy0Pu
+
+
+	LIT
+
+	subttl Imlac display dependent routines
+;			        IMLAC
+;			        =====
+
+deftty(i,iml)
+
+	i.maxX	__ =79
+	i.maxY	__ =39
+	i.lcDp	__ -1
+
+
+		; IMLAC Display Commands
+
+	i.LCA	__  1	; ^A 
+	i.home	__  3	; ^C 
+	i.up	__  4	; ^D 
+	i.righ	__  5	; ^E 
+	i.left	__ 10	; ^H = BS
+	i.down	__ 12	; ^J = LF
+	i.EEOP	__ 13	; ^K = VT
+	i.CP	__ 14	; ^L = FF
+	i.SB	__ 16	; ^N 
+	i.CB	__ 17	; ^O 
+	i.EEOL	__ 20	; ^P 
+	i.DC	__ 26	; ^V 
+	i.IC	__ 27	; ^W 
+	i.DL	__ 30	; ^X 
+	i.IL	__ 31	; ^Y 
+	i.DEL	__ 177
+
+	i.BB  __ " "
+	i.EB  __ " "
+	i.BOX __ "*"
+
+	i.fill	__ 37
+
+
+i.doSB:	movei	ch1, i.SB
+	jrst	 putCh1
+
+i.doCB: movei	ch1, i.CB
+	jrst	 putCh1
+
+
+i.init:
+i.quit:
+i.dpyO:	ret
+
+
+i.ring:	jrst	 chkXY		; since BELL is displayed at cursor 
+	
+
+i.doCh:	trne	f, insert
+	 call	 i.doIC
+	call	 putCh
+i.incX:	caie	px, i.maxX
+	 aoja	px, cpopj	; INC(PX)
+	setz	px,
+	caie	py, i.maxY
+	 aoja	py, lineOv	; INC(PY)
+	setz	py,
+	trnn	f, tty		; Last line.  Want to scroll?
+	 ret			; ..no
+	call	 i.doUp		; ..yes, cursor to lower left corner
+
+	; falls to  I.DOLF
+
+i.doLF:	movei	ch1, LF		; for last line LF only, to sctoll 
+	jrst	 putCh1
+
+
+i.move:	movei	0, (x)
+	addi	0, (y)
+
+	movei	1, (delX)
+	addi	1, (delY)	; ac1:  bytes by incrementing
+
+  ; what is the fastest move?
+	caige	0, (1)
+	 jrst	 i.hWin		; home wins over move
+	caig	1, 3		; home loses
+	 jrst	 i.movX		; move wins
+	jrst	 i.doLC		; LCA wins
+
+i.hWin:	cail	0, 3		; close to home?
+	 jrst	 i.doLC		; ..no, do LCA
+	call	 i.doHo		; ..yes 
+
+i.movX:	jumpl	x, i.movY	; prevent hanging in case of igl  X
+	caig	x, i.maxX
+i.mvX1:	 cain	x, (px)
+	  jrst	 i.movY
+	movei	1, i.doRi	; assume right move
+	caig	x, (px)		; ..but is it?
+	 movei	1, i.doLe	; ..nop, left instead
+	call	 (1)
+	jrst	 i.mvX1
+
+i.movY:	jumpl	y, cpopj
+	caig	y, i.maxY
+i.mvY1:	 cain	y, (py)
+	  ret
+	movei	1, i.doDo
+	caig	y, (py)
+	 movei	1, i.doUp
+	call	 (1)		; up/down move 
+	jrst	 i.mvY1
+
+
+i.doLC:	movei	ch1, i.LCA	; do absolute move
+	call	 putCh1
+	movei	px, (x)
+	movei	ch1, (x)
+	trc	ch1, 177
+	call	 putCh1
+	movei	py, (y)
+	movei	ch1, (y)
+	trc	ch1, 177
+	jrst	 putCh1		; will RET
+
+
+i.doRi:	movei	ch1, i.righ
+	caie	px, i.maxX
+	 aoja	px, putCh1 	; INC(PX)
+	setz	px,
+	skipa
+
+i.doDo:	 movei	ch1, i.down
+	cain	py, i.maxY
+	 jrst	 putCh1		; scroll from last line
+	aoja	py, putCh1	; INC(PY)
+
+
+i.doLe:	movei	ch1, i.left
+	sojge	px, putCh1
+	movei	px, i.maxX
+	skipa
+
+i.doUp:	 movei	ch1, i.up
+	sojge	py, putCh1
+	movei	py, i.maxY
+	jrst	 putCh1
+
+
+i.doHo:	movei	ch1, i.home	; home cursor 
+	jrst	 px0Put
+
+
+	; Imlac Insert/Delete
+
+i.doIC:	movei	ch1, i.ic
+	jrst	 putCh1
+
+
+i.doIL:	movei	ch1, i.IL
+	jrst	 px0Put
+
+
+i.doDC:	movei	ch1, i.dc
+	jrst	 putCh1
+
+
+i.doDL:	movei	ch1, i.dl
+	jrst	 px0Put
+
+
+i.doEL:	movei	ch1, i.eeol	; Erase to End Of Line
+	jrst	 putCh1
+
+
+i.doEP:	movei	ch1, i.eeop	; Erase to End Of Page
+	jrst	 px0Put
+
+
+i.doCP:	movei	ch1, i.cp	; Clear Memory 
+	jrst	 pxy0Pu
+
+
+	LIT
+	subttl Datamedia 2500 display dependent routines
+;			      DATAMEDIA
+;			      =========
+
+deftty(d,dm)
+
+	d.maxX	__ =79
+	d.maxY	__ =23
+	d.lcDp	__ -1
+
+;		   DATAMEDIA display commands
+
+	d.home	__  2	; ^B
+	d.left	__ 10	; ^H = BS
+	d.down	__ 12	; ^J = LF
+	d.LCA	__ 14	; ^L = FF
+	d.blin	__ 16	; ^N
+	d.ital	__ 17	; ^O
+	d.inse	__ 20	; ^P
+	d.EEOL	__ 27	; ^W
+	d.unlo	__ 30	; ^X
+	d.up	__ 32	; ^Z
+	d.righ	__ 34	; ^\
+	d.roll	__ 35	; ^]
+	d.CP	__ 36	; ^^
+
+	d.IC	__ d.righ
+	d.IL	__ d.down
+	d.DC	__ d.left
+	d.DL	__ d.up
+
+	d.fill	__ 177
+
+	d.BOX __ "*"	; BOX
+	d.BB  __ " "	; simulated Begin Blink char, to take space
+	d.EB  __ " "	; simulated End Blink char 
+
+
+ife oneseg,<
+	RELOC
+>
+
+d.eat:	0	; Special DATAMEDIA variable to fight design bug
+
+ife oneseg,<
+	RELOC
+>
+
+
+d.rese:	setzb	px, py		; reset to be used by D.DOCP
+	movei	zero, insert!italic!blink!tty
+	andcam	zero, pFlags
+d.ate:	setzm	 d.eat
+d.doSB:
+d.doCB:
+	ret
+
+
+d.quit:	call	 d.off
+d.ttOn:	movei	zero, tty
+	movei	ch2, d.roll
+	jrst	 d.on
+
+
+d.itOn:	movei	zero, italic
+	iorm	zero, pFlags	; ; set flag only (the bright
+	ret			; ;  characters are protected!)
+
+; ; ..and this is what it should be in the future
+	movei	ch2, d.ital
+	jrst	 d.on
+
+
+d.blOn:	movei	zero, blink
+	movei	ch2, d.blin
+	jrst	 d.on
+
+
+d.inOn:	movei	zero, blink
+	andcam	zero, pFlags	; I/D mode inhibits blink mode!!!
+	movei	zero, insert
+	movei	ch2, d.inse
+d.on:	iorm	 pFlags
+	jrst	 putCh2
+
+
+d.init:	setzm	 fast
+	move	zero, bps
+	caile	 =4800
+	 setom	 fast		; faster than 4800 bps
+d.off:	movei	zero, insert!italic!blink!tty
+	andcam	zero, pFlags
+	movei	ch2, d.unlo
+	jrst	 putCh2		; will RET
+
+
+d.dpyO:
+d.ring:	ret
+
+
+d.doCh:	call	 d.chkF		; will also INCX
+	call	 putCh
+	aoje	ch2, lineOv
+	ret
+
+
+d.chkF:	move	zero, pFlags
+	trc	zero, (f)	; AC0 _ PFLAGS xor F 
+	trnn	zero, insert!italic!blink!tty  ; all flags match? 
+	 jrst	 d.incX		; ..yes
+	andcmi	zero, (f)	; ..no
+	trne	zero, insert!italic!blink!tty  ; any flags to remove? 
+	 call	 d.off		; ..yes, clear all
+
+	jumpe	f, d.incX	; any flags to set?
+	move	tmp, pFlags	; ..yes
+	andcai	tmp, (f)	; flags that need to be set, to TMP
+	trne	tmp, insert
+	 call	 d.inOn
+	trne	tmp, italic
+	 call	 d.itOn
+	trne	tmp, tty
+	 call	 d.ttOn
+	trne	tmp, blink
+	 call	 d.blOn		; inhibited by I/D mode
+
+d.incX:
+	caie	px, d.maxX
+	 aoja	px, d.ate
+	setom	 d.eat		; automatic new line
+	setz	px,
+	skipa
+d.incY:	 setzm	 d.eat
+	caie	py, d.maxY
+	 aoja	py, d.liOv	; INC(PY)
+	move	zero, pFlags
+	trnn	zero, tty
+	 setz	py,
+	ret
+
+d.liOv:	setz	ch2,
+	trne	f, tty
+	 seto	ch2,
+	ret
+
+
+d.move:	movei	zero, (x)
+	addi	zero, (y)
+	move	1, pFlags
+	trne	1, insert   ; in I/D, MOVE and LCA require xtra char
+	 subi	zero, 1	    ; ac0:  bytes through HOME (-1 if in I/D)
+
+	movei	1, (delX)
+	addi	1, (delY)   ; ac1:  bytes by incrementing (-1 if in I/D)
+
+  ; what is the fastest move?
+	caige	zero, (1)
+	 jrst	 d.hWin		; home wins over move
+	caig	1, 3		; home loses
+	 jrst	 d.movX		; move wins
+	jrst	 d.doLC		; LCA wins
+
+d.hWin:	cail	zero, 3		; close to home?
+	 jrst	 d.doLC		; ..no, do LCA
+	call	 d.doHo		; ..yes 
+
+d.movX:	jumpl	x, d.movY	; prevent hanging in case of igl  X
+	caig	x, d.maxX
+d.mvX1:	 cain	x, (px)
+	  jrst	 d.movY
+	movei	1, d.doRi	; assume right move
+	caig	x, (px)		; ..but is it?
+	 movei	1, d.doLe	; ..nop, left instead
+	call	 (1)
+	jrst	 d.mvX1
+
+d.movY:	jumpl	y, cpopj
+	caig	y, d.maxY
+d.mvY1:	 cain	y, (py)
+	  ret
+	movei	1, d.doDo
+	caig	y, (py)
+	 movei	1, d.doUp
+	call	 (1)		; up/down move 
+	jrst	 d.mvY1
+
+
+d.doLC:	movei	ch1, d.lca	; do absolute move
+	call	 d.noID
+	movei	px, (x)
+	movei	ch1, (x)
+	trc	ch1, 140
+	call	 putCh1
+	movei	py, (y)
+	movei	ch1, (y)
+	trc	ch1, 140
+	jrst	 putCh1		; will RET
+
+
+d.doRi:	movei	ch1, d.righ
+	call	 d.noID
+	jrst	 d.incX
+
+
+d.doDo:	movei	ch1, d.down
+	skipe	 d.eat
+	 call	 d.noID
+	call	 d.noID
+	setzm	 d.eat
+	jrst	 d.incY
+
+
+d.doLe:	jumpe	px, cpopj	; already at left margin?
+	soj	px,
+	movei	ch1, d.left
+
+	; falls to  D.NOID
+
+d.noID:	move	zero, pFlags		; accepts char in  CH1
+	trne	 insert
+	 call	 d.off
+	jrst	 putCh1
+
+
+d.doUp:	jumpe	py, cpopj	; already on top line?
+	movei	ch1, d.up
+	soja	py, d.noID	; DEC(PY)
+
+
+d.doHo:	call	 d.rese		; home cursor 
+	movei	ch1, d.home
+	jrst	 putCh1
+
+
+d.doLF:	move	zero, pFlags		; for last line LF only, to sctoll 
+	trne	zero, insert
+	 call	 d.off
+	move	zero, pFlags
+	trnn	zero, tty
+	 call	 d.ttOn
+	movei	ch1, LF
+	jrst	 putCh1
+
+
+d.doIC:	movei	ch1, d.ic
+
+	; falls to  D.DOID
+
+d.doID:	move	zero, pFlags		; command character is in CH1
+	trnn	zero, insert
+	 call	 d.inOn
+	skipn	 fast
+	 jrst	 putCh1		; "slow" Datamedia, command only
+	call	 putCh1
+	movei	ch1, d.fill	; one fill for 9600 bps DM
+	jrst	 putCh1
+
+
+d.doIL:	movei	ch1, d.IL
+	call	 d.doID
+  ; put  ((30-py)*bps - 2400) DIV 14400  padding characters
+	movei	n1, =30
+	subi	n1, (py)
+	imul	n1, bps
+	subi	n1, =2400
+	idivi	n1, =14400	; NOTE:  Clobbers  TMP!
+	add	n1, fast	; -1 if 9600 bps, 0 o.w.
+	movei	ch1, d.fill
+	jrst	 putNC1
+
+
+d.doDC:	movei	ch1, d.dc
+	jrst	 d.doID
+
+
+d.doDL:	movei	ch1, d.dl
+	jrst	 d.doID
+
+
+d.doEL:	movei	ch1, d.eeol	; Erase to End Of Line
+	jrst	 putCh1
+
+
+d.doEP:
+
+;-pk;	call	 d.doDL		; Erase to End Of Page.  CH1 gets D.DL
+;	movei	n1, d.maxY
+;	subi	n1, (py)
+;-pk;	jrst	 putNC1
+
+	push	p, x		;+pk;
+	setz	x,		;
+	call	 chkXY		;
+	skipa			;
+d.doE1:	 call	 d.doDo		;
+	call	 d.doEL		;
+	caige	py, d.maxY	;
+	 jrst	 d.doE1		;
+d.doE2:	pop	p, x		;
+	ret			;+pk;
+
+
+d.doCP:	call	 d.rese		; Clear Memory
+	movei	ch1, d.cp
+	jrst	 putCh1
+
+
+	LIT
+
+	subttl Hazeltine 1500 display dependent routines
+
+;			HAZELTINE
+;			=========
+
+deftty(h,haz)
+
+	h.maxy__ =23
+	h.maxx__ =78
+	h.lcDp__ -1
+
+;-pk;	h.BOX__"`"		;box on some hazeltines
+	h.BOX__"*"		; . . . but not on all		;+pk;
+	h.BB__" "
+	h.EB__" "
+
+	h.bi__ =31		;begin italics
+	h.ei__ =25
+	h.home__22	;^R
+	h.up__14	;^L	
+	h.down__13	;^K
+	h.right__20	;^P
+	h.left__10	;^H
+	h.ldin__176	;tilde, H1500 lead-in character
+	h.eeol__17	;^O
+	h.eeop__30	;^X
+	h.il__32	;^Z
+	h.dl__23	;^S
+	h.CP__34	;^\
+	h.LCA__21	;^Q
+	h.fill__177
+
+h.doSB:
+h.doCB:
+h.quit:
+h.ring:
+h.dpyO:	ret
+
+
+h.init:
+;-pk;	call sinit
+	movei ch1,h.ei		;clear italic mode if set
+	call h.lead		; can't use h.itof since flags may be wrong
+	jrst h.doCP		;start with a clear page
+
+
+;Move routine copied from i.move
+h.move:	movei zero,(x)
+	addi zero,(y)
+	movei t1,(delx)
+	addi t1,(dely)
+	caige zero,(t1)
+	 jrst h.hwin
+	caig t1,3
+	 jrst h.movx
+	jrst h.doLC
+h.hwin:	cail zero,3
+	 jrst h.doLC
+	call h.doHo
+h.movx:	jumpl x,h.movy
+	caig x,h.maxx
+h.mvx1:	cain x,(px)
+	 jrst h.movy
+	movei t1,h.doRi
+	caig x,(px)
+	 movei 1,h.doLe
+	call (t1)
+	jrst h.mvx1
+h.movy:	jumpl y,cpopj
+	caig y,h.maxy
+h.mvy1:	cain y,(py)
+	 ret
+	movei t1,h.doDo
+	caig y,(py)
+	 movei 1,h.doUp
+	call (t1)
+	jrst h.mvy1
+
+
+h.doLC:	movei px,(x)
+	movei py,(y)
+h.dLC0:	movei ch1,h.LCA		;to here if px,py already set up
+	call h.lead		; as destination of move
+	movei ch1,140(px)
+	cail ch1,177
+	subi ch1,140
+	call putch1
+	movei ch1,40(py)
+	jrst putch1
+
+
+h.doCh:
+	cain ch,h.ldin						;+pk;
+	 movei ch,h.box		;translate ~ into BOX		;+pk;
+	trnn f,insert		;if not insert mode, then
+	 jrst h.doc0		; just send the char
+	call h.doic		; make room
+	call h.move		;put the cursor back
+h.doc0:	trne f,italic		;italic mode?
+	 jrst [	call h.iton	;yes.  Make sure pital is on
+		movei ch1,200(ch)	;and set meta bit
+		jrst h.doc1 ]
+	call h.itof		;no.  Turn off pital
+	move ch1,ch		;and get copy w/out meta bit
+h.doc1:	call putCh		;write the char to output buffer
+;-pk;	call sputc1		;and to virtual display memory
+	caie px,h.maxx
+	 aoja px,cpopj
+	setz px,
+	caie py,h.maxy
+	 aoja py,lineOv
+	trnn f,tty
+	 ret
+	movei ch1,CR		;send CRLF
+	call putch1
+;fall through to h.doLF
+
+h.doLF:
+;-pk;	call sscrol		;simulate scrolling in virtual tty
+	movei ch1,LF
+	jrst putch1
+
+h.iton:	tloe f,pital		;set italic
+	 ret			;already set.
+	movei ch1,h.bi		;send foreground-follows
+	jrst h.lead
+
+h.itof:	tlzn f,pital		;clear italic
+	 ret			;already clear
+	movei ch1,h.ei		;send background-follows
+
+;fall through to h.lead
+h.lead:	push p,ch1
+	movei ch1,h.ldin
+	call putch1
+	pop p,ch1
+	jrst putch1
+
+
+		; Hazeltine Insert, Delete, Erase
+
+;;;  NOTE:  TELERAY TIMING IS USED FOR NOW  /pk
+
+h.doIL:	skipa	ch1, [h.IL]					;+pk;
+h.doDL:	 movei	ch1, h.DL					;
+	setz	px,		;IL, DL takes you to col 0	;
+	call	 h.lead						;
+; Try ~ .5 x 57 ms. worst case (center of screen is slowest):	;
+;  (25 - py)*bps Div 4050  for  py Geq 12			;
+;   (2 + py)*bps Div 4050  for  py < 12				;
+	movei	n1, =25						;
+	subi	n1, (py)					;
+	caile	n1, =13						;
+	 subi	n1, =27						;
+	movm	n1, n1						;
+	imul	n1, bps						;
+	idivi	n1, =4050	; Up to .5 x 57 ms.		;
+	movei	ch1, h.fill					;
+	jrst	 putNC1		; Send that many		;+pk;
+
+;-pk;--------
+; h.doDL:	movei ch1,h.dl
+;	setz px,		;DL on haz takes you to col 0.
+;	call h.lead
+;	movei n1,=24
+;	movei ch1,h.fill
+;-pk;	call putNC1
+;-pk;	jrst sDL		;simulate DL in virtual display
+;	jrst putNC1						;+pk;
+;
+; h.doIL:	movei ch1,h.il
+;	setz px,		;IL on haz takes you to col 0.
+;	call h.lead
+;; try DM timing:  ((30-py)*bps-2400) div 14400
+;	movei n1,=30
+;	subi n1,(py)
+;	imul n1,bps
+;	subi n1,=2400
+;	idivi n1,=14400
+;	movei ch1,h.fill
+;-pk;	call putNC1
+;-pk;	jrst sIL		;simulate
+;	jrst putNC1						;+pk;
+;-pk;--------
+
+h.doDC:
+;-pk;	call sDC
+;-pk;	jrst h.cpy		;redraw rest of line
+
+h.doIC:
+;-pk;	call sIC
+	movei ch1,7		; bel, to tell it's wrong	;+pk;
+	jrst putCh1						;+pk;
+
+repeat 0,<							;+pk;
+
+;fall through to h.cpy
+
+;redraw line from virtual display.  n.b. REV VIDEO not implemented
+h.cpy:	push p,ch		;save, since it's used by caller sometimes
+	movei ch1,h.eeol	;clear rest of line
+	call h.lead
+	setz n1,
+h.cpy0:	ildb ch,tmp		;pick up next char
+	jumpe ch,h.cpyx		;all done
+	cain ch," "		;space? (ital. spaces are just sent as space)
+	 aoja n1,h.cpy0		; yes.  just account, to be sent later
+	jumpe n1,h.cpy5		;if no intervening space, just ignore
+	addi px,(n1)		;note movement of n1 spaces
+	cail n1,5		;send spaces, or LCA?
+	 jrst [	call h.dLC0	;LCA takes 4 chars
+		jrst h.cpy4 ]
+	movei ch1," "		;send a space
+	call putnc1		;...n1 of them
+h.cpy4:	setz n1,		;set up for the next set of spaces
+				;now, send the character
+h.cpy5:	trze ch,777600		;italic?
+	 jrst [	call h.iton	;yes, set Bold mode
+		jrst h.cpy7 ]
+	call h.itof		;no.  Make sure Bold mode off
+h.cpy7:	call putch		;send the char.
+	aoja px,h.cpy0		;back for more
+h.cpyx:	pop p,ch
+	ret
+> ; end repeat 0						;+pk;
+
+
+h.doEL:	movei ch1, h.eeol
+	call h.lead
+;-pk;	jrst sEEOL
+; Try ~ 4 ms. max:  (80 - px)*bps Div 188000		;+pk;
+	movei	n1, =80					;
+	subi	n1, (px)				;
+	imul	n1, bps					;
+	idivi	n1, =188000	; Fits in 1/2-wd	;
+	movei	ch1, h.fill				;
+	jrst	 putNC1		; Send that many	;+pk;
+
+;-pk;--------
+;	THIS IN FACT WAS IN ERROR--BEGINNING OF LINE NOT CLEARED
+; h.doEP:	movei ch1,h.eeop
+;-pk;	call h.lead
+;-pk;	jrst sEEOS
+;	jrst h.lead			;+pk;
+;
+; h.doCP:	movei ch1,h.CP
+;	setzb px,py
+;	call h.lead
+;	movei n1,=15
+;	movei ch1,h.fill
+;-pk;	call putNC1
+;-pk;	jrst sCP
+;	jrst putNC1			;+pk;
+;-pk;--------
+
+
+h.doEP:	jumpe	px, h.dEP1				;+pk;
+	push	p, x					;
+	setz	x,					;
+	call	 h.doLC					;
+	pop	p, x					;
+h.dEP1:	movei	ch1, h.eeop				;
+h.dEP2:	call	 h.lead					;
+; Try ~ 48 ms. worst case:  (25 - py)*bps Div 4700	;
+	movei	n1, =25					;
+	subi	n1, (py)				;
+	imul	n1, bps					;
+	idivi	n1, =4700	; Up to 48 ms.		;
+	movei	ch1, h.fill				;
+	jrst	 putNC1		; Send that many	;
+							;
+							;
+h.doCP:	movei	ch1, h.cp				;
+	setzb	px, py					;
+	jrst	 h.dEP2					;+pk;
+
+
+h.doHo:	movei ch1,h.home
+	setzb px,py
+	jrst h.lead
+
+h.doUp:	jumpe py,cpopj
+	movei ch1,h.up
+	soja py,h.lead
+
+h.doDo:	movei ch1,h.down
+	cain py,h.maxy
+	 ret
+	aoja py,h.lead
+
+h.doLe:	movei ch1,h.left
+	skipe px
+	 soja px,putch1
+	jumpe py,cpopj		;at (0,0) do nothing
+	movei px,h.maxx		;otherwise, wrap to end of previous line
+	soja py,putch1
+
+h.doRi:	movei ch1,h.righ
+	caie px,h.maxx
+	 aoja px,putch1
+	cain py,h.maxy		;at (23,79) ?
+	 ret			;yes, cursor stays put
+	setz px,		;wrap cursor to start of next line
+	aoja py,putch1
+
+	LIT
+
+	subttl Teleray display dependent routines
+
+;				TELERAY
+;				=======
+
+deftty(r,tel)
+
+	r.maxX	__ =79
+	r.maxY	__ =23
+	r.lcDp	__ 1
+
+		; Teleray Display Commands
+
+	r.EEOL	__ "K"
+	r.IC	__ "P"
+	r.IL	__ "L"
+	r.LCA	__ "Y"
+repeat 0,<			;the following use VT52 codes
+	r.ldch  __ 33		;esc
+	r.up	__ "A"
+	r.down	__ "B"		;or LF
+	r.righ	__ "C"		;or space, which doesn't wrap
+	r.left	__ "D"
+	r.HOME	__ "H"
+	r.EEOP	__ "J"
+>;repeat 0
+	r.CP	__ 14		;no leadin
+	r.DC	__ "Q"
+	r.DL	__ "M"
+;-pk;	r.field __ "R"		;then BB or EB  ;; didn't work!
+	r.BB	__ " "		;~pk;
+	r.EB	__ " "		;~pk;
+	r.fill	__ 177
+
+	r.BOX	__  "*"
+
+
+r.init:
+r.ring:	
+r.quit:
+r.doSB:		;+pk;
+r.doCB:		;+pk;
+r.dpyO:	ret
+
+
+r.doCh:	trne	f, insert
+	 call	 r.doIC
+	call	 putCh
+r.incX:	caige	px, r.maxX
+	 aoja	px, cpopj	; INC(PX)
+	setz	px,
+	caige	py, r.maxY
+	 aoja	py, [	call r.dLC0
+			trnn f,tty	;tty mode?
+			 ret	; no
+			jrst r.doel ]
+	setz	py,
+	trnn	f, tty		; Last line.  Want to scroll?
+	 jrst	 r.doHO		; ..no
+	call	 r.doUp		; ..yes, cursor to lower left corner
+
+	; falls to  R.DOLF
+r.doLF:	movei	ch1, LF		; for last line LF only, to scroll
+	jrst	 putCh1
+
+
+r.doCP:	movei	ch1, r.CP	; Clear Screen
+;-pk;	setzb	px, py
+;-pk;	jrst	 putCh1
+;-pk;	call	 putCh1					;+pk;
+	call	 pxy0Pu					;
+; Try ~ 48 ms.:  (25 - 0)*bps Div 4700			;
+	movei	n1, =25					;
+	imul	n1, bps					;
+	idivi	n1, =4700	; 48 ms.		;
+	movei	ch1, r.fill				;
+	jrst	 putNC1		; Send that many	;+pk;
+
+repeat 0,<
+
+; r.move, r.doLC, r.dLC0, r.doHo, r.xPut, r.doUp, r.doEL, and r.doEP,
+; ===================================================================
+; use VT52 code
+; =============
+
+r.move:	movei	zero, (x)
+	addi	zero, (y)
+
+	movei	1, (delX)
+	addi	1, (delY)	; ac1:  bytes by incrementing
+
+  ; what is the fastest move?
+	caige	zero, (1)
+	 jrst	 r.hWin		; home wins over move
+	caig	1, 3		; home loses
+	 jrst	 r.movX		; move wins
+	jrst	 r.doLC		; LCA wins
+
+r.hWin:	cail	zero, 3		; close to home?
+	 jrst	 r.doLC		; ..no, do LCA
+	call	 r.doHo		; ..yes 
+
+r.movX:	jumpl	x, r.movY	; prevent hanging in case of igl  X
+	caig	x, r.maxX
+r.mvX1:	 cain	x, (px)
+	  jrst	 r.movY
+	movei	1, r.doRi	; assume right move
+	caig	x, (px)		; ..but is it?
+	 movei	1, r.doLe	; ..nop, left instead
+	call	 (1)
+	jrst	 r.mvX1
+
+r.movY:	jumpl	y, cpopj
+	caig	y, r.maxY
+r.mvY1:	 cain	y, (py)
+	  ret
+	movei	1, r.doDo
+	caig	y, (py)
+	 movei	1, r.doUp
+	call	 (1)		; up/down move 
+	jrst	 r.mvY1
+
+
+r.doLC:	movei	py, (y)
+	movei	px, (x)
+r.dLC0:	movei	ch1, r.LCA	; do absolute move
+	call	r.lead		; requires leadin
+	movei	ch1, " " (py)	; code for row
+	call	 putCh1
+	movei	ch1, " " (px)	; code for column
+	jrst	 putCh1		; will RET
+
+
+; Routines on this page are REPEAT 0-ed out in favor of VT52 routines
+; ===================================================================
+
+r.doRi:	movei	ch1, r.righ
+	caie	px, r.maxX
+	 aoja	px, r.lead 	; INC(PX)
+	setz	px,
+	skipa
+
+r.doDo:	 movei	ch1, r.down
+	cain	py, r.maxY
+	 seto	py,             ; -1, incremented below
+	aoja	py, r.lead	; INC(PY)
+
+r.doLe:	movei	ch1, r.left
+	sojge	px, r.lead
+	movei	px, r.maxX
+	skipa
+
+r.doUp:	 movei	ch1, r.up
+	sojge	py, r.lead
+	movei	py, r.maxY
+	jrst	 r.lead
+
+r.doHo:	movei	ch1, r.home	; home cursor 
+r.xyPu:	setz	py,
+r.xPut:	setz	px,
+	jrst	 r.lead
+
+
+r.doEP:	movei	ch1, r.eeop	; Erase to End Of Page
+	jrst	 r.xPut
+
+r.doEL:	movei	ch1, r.eeol	; Erase to End Of Line
+; fall through to r.lead
+
+r.lead:	push	p, ch1
+	movei	ch1, r.ldch	; first, send lead character
+	call	 putCh1
+	pop	p, ch1
+	jrst	 putCh1		; then, send function code
+>;repeat 0
+
+r.doEL:	movei	ch1, v.eeol	; Erase to End Of Line	;+pk;
+	call	 v.lead					;
+; Try ~ 4 ms. max:  (80 - px)*bps Div 188000		;
+	movei	n1, =80					;
+	subi	n1, (px)				;
+	imul	n1, bps					;
+	idivi	n1, =188000	; Fits in 1/2-wd	;
+	movei	ch1, r.fill				;
+	jrst	 putNC1		; Send that many	;+pk;
+
+
+r.doEP:	push	p, x					;+pk;
+	setz	x,					;
+	call	 chkXY					;
+	movei	ch1, v.eeop	; Erase to End Of Page	;
+	call	 v.lead					;
+	pop	p, x					;
+; Try ~ 48 ms. worst case:  (25 - py)*bps Div 4700	;
+	movei	n1, =25					;
+	subi	n1, (py)				;
+	imul	n1, bps					;
+	idivi	n1, =4700	; Up to 48 ms.		;
+	movei	ch1, r.fill				;
+	jrst	 putNC1		; Send that many	;+pk;
+
+
+	; Teleray Insert/Delete
+
+r.doIC:	skipa	ch1, [r.ic]	; Insert Char
+
+r.doDC:	 movei	ch1, r.dc	; Delete Char
+;-pk;	jrst	 r.lead
+	call	 r.lead					;+pk;
+							;
+; Try ~ 4.5 ms. worst case:  (80 - px)*bps Div 162000	;
+	movei	n1, =80					;
+	subi	n1, (px)				;
+	imul	n1, bps					;
+	idivi	n1, =162000	; Fits in 1/2-word	;
+	movei	ch1, r.fill				;
+	jrst	 putNC1		; Send that many	;+pk;
+
+
+r.doDL:	skipa	ch1, [r.dl]	; Delete Line
+r.doIL:	 movei	ch1, r.IL	; Insert Line
+	call	 r.xPut
+
+;-pk; ; try 70 ms. worst case.  (35-py)*bps div 4000
+;	movei	n1, =35
+;	subi	n1, (py)
+;	imul	n1, bps
+;-pk;	idivi	n1, =4000	; 24 to 70 ms.
+
+; Try ~ 57 ms. worst case:  (25 - py)*bps Div 4050	;+pk;
+	movei	n1, =25					;
+	subi	n1, (py)				;
+	imul	n1, bps					;
+	idivi	n1, =4050	; Up to 57 ms.		;+pk;
+
+	movei	ch1, r.fill
+	jrst	 putNC1		; Send that many
+
+
+;-pk; r.doSB:
+; r.doCB:
+;	movei	ch1, r.field	; Start protected field
+;-pk;	jrst	 r.lead
+
+	LIT
+
+	subttl VT52 display dependent routines
+
+;				VT52
+;				====
+
+
+deftty(v,vt52)
+
+v.ring:	v.quit:	v.doSB:	v.doCB:	v.dpyO:	ret
+
+	v.maxX __ =79
+	v.maxY __ =23
+	v.BOX  __ "*"
+	v.BB   __ " "
+	v.EB   __ " "
+	v.lcDp __ 1
+
+	v.ldch  __ 33		;ESC
+	v.EEOL	__ "K"
+	v.HOME	__ "H"
+	v.LCA	__ "Y"
+	v.EEOP	__ "J"
+
+	v.left	__ "D"
+	v.up	__ "A"
+	v.righ	__ "C"		;or space
+	v.down	__ "B"		;or LF
+
+ifn tops20,<
+
+
+v.init:	call	 sinit		; set up virtual display
+	jrst	 v.doCP		; and start fresh
+
+
+v.doCh:	trnn	f, insert
+	 jrst	 v.doC1
+	call	 v.doIC		; make room
+	call	 v.move		; put cursor back
+v.doC1:	move	ch1, ch
+	call	 putCh
+	call	 sputc1		; simulate
+;v.incx:
+	caige	px, v.maxX
+	 aoja	px, cpopj	; INC(PX)
+	setz	px,
+	caige	py, v.maxY
+	 aoja	py, [	call v.dLC0
+			trnn f,tty	;tty mode?
+			 ret	; no
+			jrst v.doel ]
+	setz	py,
+	trnn	f, tty		; Last line.  Want to scroll?
+	 jrst	 v.doHO		; No.
+	call	 v.doUp		; ..yes, cursor to lower left corner
+
+	; falls to  V.DOLF
+v.doLF:	call	 sscrol		; simulate scrolling in virtual display
+	movei	ch1, LF		; for last line LF only, to scroll
+	jrst	 putCh1
+
+> ;ifn tops20
+
+; cursor movement.
+;
+;  The code on this and the next page is shared by Teleray
+;  =======================================================
+
+r.move:
+v.move:	movei	zero, (x)
+	addi	zero, (y)
+
+	movei	1, (delX)
+	addi	1, (delY)	; ac1:  bytes by incrementing
+
+  ; what is the fastest move?
+;+pk;		OPTIMIZING STILL NEEDS WORK
+
+	caige	zero, (1)
+	 jrst	 v.hWin		; home wins over move
+	caig	1, 3		; home loses
+	 jrst	 v.movX		; move wins
+	jrst	 v.doLC		; LCA wins
+
+v.hWin:	cail	zero, 3		; close to home?
+	 jrst	 v.doLC		; ..no, do LCA
+	call	 v.doHo		; ..yes 
+
+v.movX:	jumpl	x, v.movY	; prevent hanging in case of igl  X
+	caig	x, v.maxX
+v.mvX1:	 cain	x, (px)
+	  jrst	 v.movY
+	movei	1, v.doRi	; assume right move
+	caig	x, (px)		; ..but is it?
+	 movei	1, v.doLe	; ..nop, left instead
+	call	 (1)
+	jrst	 v.mvX1
+
+v.movY:	jumpl	y, cpopj
+	caig	y, v.maxY
+v.mvY1:	 cain	y, (py)
+	  ret
+	movei	1, v.doDo
+	caig	y, (py)
+	 movei	1, v.doUp
+	call	 (1)		; up/down move 
+	jrst	 v.mvY1
+
+e.doLC:
+r.doLC:
+v.doLC:	movei	py, (y)
+	movei	px, (x)
+e.dLC0:
+r.dLC0:
+v.dLC0:	movei	ch1, e.LCA	; do absolute move
+	call	v.lead		; requires leadin
+	movei	ch1, " " (py)	; code for row
+	call	 putCh1
+	movei	ch1, " " (px)	; code for column
+	jrst	 putCh1		; will RET
+
+
+;  The code on this and the next page is shared by Teleray and Heath
+;  =================================================================
+
+; cursor movement, cont.
+
+e.doRi:
+v.doRi:	movei	ch1, e.righ
+	caie	px, e.maxX
+	 aoja	px, e.lead 	; INC(PX)
+	skipa	px, [0]
+
+e.doDo:
+v.doDo:	 movei	ch1, e.down
+	cain	py, e.maxY
+	 seto	py,             ; -1, incremented below
+	aoja	py, e.lead	; INC(PY)
+
+
+e.doLe:
+v.doLe:	movei	ch1, e.left
+	sojge	px, e.lead
+	skipa	px, [e.maxX]
+
+e.doUp:
+r.doUp:
+v.doUp:	 movei	ch1, e.up
+	sojge	py, e.lead
+	movei	py, e.maxY
+	jrst	 e.lead
+
+
+e.doHo:
+r.doHo:
+v.doHo:	movei	ch1, e.home	; home cursor 
+;-pk; v.xyPu:
+e.xypu:	setz	py,
+r.xPut:
+e.xput:
+;-pk; v.xPut:
+	setz	px,
+;	jrst	 v.lead
+
+e.lead:
+r.lead:
+v.lead:	push	p, ch1
+	movei	ch1, e.ldch	; first, send lead character
+	call	 putCh1
+	pop	p, ch1
+	jrst	 putCh1		; then, send function code
+
+
+;-pk; r.doEL:
+v.doEL:
+	jrst	 sEEOL					;+pk;
+;-pk;	call	 sEEOL
+;	movei	ch1, v.eeol	; Erase to End Of Line
+;-pk;	jrst	 v.lead
+
+
+;-pk; r.doEP:
+v.doEP:	push	p, x					;+pk;
+	setz	x,					;
+	call	 chkXY					;+pk;
+	call	 sEEOS
+;-pk;	movei	ch1, v.eeop	; Erase to End Of Page
+;-pk;	jrst	 v.xPut
+	pop	p, x					;+pk;
+	ret
+
+
+v.doCP:	call	 sCP
+	call	v.doHo		; Home cursor, then
+	movei	ch1, v.eeop	; Erase to End Of Page
+	jrst	 v.lead
+
+ifn tops20,<
+
+	; VT52 Insert/Delete -- simulated
+
+v.doDC:	call	 sDC
+	jrst	 v.cpy		; redraw rest of line
+
+v.doIC:	call	 sIC
+;fall through to v.cpy
+
+;redraw rest of line from virtual display.  TMP contains POINT 9,...
+v.cpy:	push	p, ch		; save, since it's used by caller sometimes
+	movei	ch1, v.eeol	; clear rest of line
+	call	 v.lead
+	setz	 n1,
+v.cpy0:	ildb	ch, tmp		; pick up next char
+	jumpe	ch, v.cpyx	; all done
+	cain	ch, " "		; space?
+	 aoja	n1, v.cpy0	;  yes.  just account, to be sent later
+	jumpe	n1, v.cpy5	; if no intervening space, just ignore
+	addi	px, (n1)	; note movement of n1 spaces
+	cail	n1, 5		; send spaces, or LCA?
+	 jrst [	call v.dLC0	; LCA takes 4 chars
+		jrst v.cpy4 ]
+	movei	ch1, " "	; send a space
+	call	 putnc1		;  ...n1 of them
+v.cpy4:	setz	n1,		; set up for the next set of spaces
+v.cpy5:	call	 putch		; send the char.
+	aoja	px, v.cpy0	; back for more
+v.cpyx:	pop	p, ch
+	ret
+
+
+v.doDL:	call	 sDL
+	skipa
+
+v.doIL:	call	 sIL
+
+; we have to redraw the screen...
+	jumpe	px, v.doi1	; y is ok first time through
+v.doi0:	setz	px,
+	call	 v.dLC0		; DCA to beginning of line
+v.doi1:	move	tmp, rowptr(py)	; the line to print next
+	call	 v.cpy		; send it
+	caige	py, v.maxY	; last line?
+	 aoja	py, v.doi0	; no.
+	ret			; all done
+
+
+	LIT
+> ;ifn tops20
+
+	subttl Albatross/Gillotine display-dependent routines
+
+;			        ALBATROSS/GILLOTINE
+;			        ===================
+
+deftty(a,alb)
+
+	a.maxX	__ =79
+	a.maxY	__ =23
+	a.lcDp	__ -1
+
+
+		; ALB Display Commands
+
+	a.right	__ 02	; ^B
+	a.down	__ 04	; ^D
+	a.left	__ 01	; ^A
+	a.up	__ 03	; ^C
+	a.home	__ 05	; ^E
+	a.LCA	__ 06	; ^F
+	a.SB	__ 16	; ^N  -- hokey, needs fixing
+	a.CB	__ 17	; ^O  -- hokey, needs fixing
+	a.IC	__ 25	; ^U
+	a.IL	__ 27	; ^W
+	a.DC	__ 24	; ^T
+	a.DL	__ 26	; ^V
+	a.EEOL	__ 34	; ^\
+	a.EEOP	__ 35	; ^]
+	a.CL	__ 30	; ^X
+	a.CP	__ 31	; ^Y
+	a.LDX	__ 32	; ^Z
+	a.ldCh	__ 33	; ESC
+
+  ; Command charactes for ESCape sequences
+	a.wOff	__ "d"
+	a.cOn	__ "f"
+	a.page	__ "i"
+	a.scro	__ "j"
+
+  ; Other characters
+	a.BB	__ " "
+	a.EB	__ " "
+	a.BOX	__ "*"
+	a.fill	__ 177
+
+
+a.init:	movei	ch1, a.page
+	call	 a.lead
+
+a.rset:	movei	ch1, a.CB
+	call	 putCh1
+	movei	ch1, a.wOff
+	call	 a.lead
+	movei	ch1, a.cOn
+
+a.lead:	movei	ch2, a.ldCh
+	call	 putCh2		; first the lead character
+	jrst	 putCh1		; then, send function code
+
+
+a.quit:	movei	ch1, a.scro
+	call	 a.lead
+	jrst	 a.rset
+
+
+a.doSB:	movei	ch1, a.SB
+	jrst	 putCh1
+
+a.doCB: movei	ch1, a.CB
+	jrst	 putCh1
+
+
+a.ring:
+a.dpyO:	ret
+	
+
+a.doCh:	trne	f, insert
+	 call	 a.doIC
+	call	 putCh
+a.incX:	caie	px, a.maxX
+	 aoja	px, cpopj	; INC(PX)
+	setz	px,
+	caie	py, a.maxY
+	 aoja	py, lineOv	; INC(PY)
+	setz	py,
+	trnn	f, tty		; Last line.  Want to scroll?
+	 ret			; ..no
+	skipa			; ..yes, simulate scroll
+a.doLF:			; for last line LF only
+	 call	 a.doHo		; simulate scroll
+	call	 a.doDL
+	jrst	 a.doLC
+	
+
+		; Alb Cursor Control
+
+;;  NOTE:  CODE BELOW DOES NOT MAKE FULL USE OF  CR.  /pk
+
+a.move:	movei	0, (x)
+	addi	0, (y)
+
+	movei	1, (delX)
+	addi	1, (delY)	; ac1:  bytes by incrementing
+
+  ; what is the fastest move?
+	caige	0, (1)
+	 jrst	 a.hWin		; home wins over move
+	caig	1, 3		; home loses
+	 jrst	 a.movX		; move wins
+	jrst	 a.tryX		; LDX or LCA wins
+
+a.hWin:	cail	0, 3		; close to home?
+	 jrst	 a.tryX		; ..no, LDX or LCA
+	call	 a.doHo		; ..yes 
+
+a.movX:	jumpl	x, a.movY	; prevent hanging in case of igl  X
+	caig	x, a.maxX
+a.mvX1:	 cain	x, (px)
+	  jrst	 a.movY
+	movei	1, a.doRi	; assume right move
+	caig	x, (px)		; ..but is it?
+	 movei	1, a.doLe	; ..nop, left instead
+	call	 (1)
+	jrst	 a.mvX1
+
+a.movY:	jumpl	y, cpopj
+	caig	y, a.maxY
+a.mvY1:	 cain	y, (py)
+	  ret
+	movei	1, a.doDo
+	caig	y, (py)
+	 movei	1, a.doUp
+	call	 (1)		; up/down move 
+	jrst	 a.mvY1
+
+
+a.tryX:	caie	py, (y)		; same line?
+	 jrst	 a.doLC		; ..no
+	jumpn	x, a.doLX
+	movei	ch1, cr		; CR will do
+	jrst	 px0Put
+	
+a.doLX:	movei	ch1, a.ldX	; move within a line
+a.dLX:	call	 putCh1
+	movei	px, (x)
+	movei	ch1, (x)
+	addi	ch1, 40
+	jrst	 putCh1
+
+
+a.doLC:	movei	ch1, a.LCA	; do absolute move
+	call	 a.dLX
+	movei	py, (y)
+	movei	ch1, (y)
+	addi	ch1, 40
+	jrst	 putCh1
+
+
+		; More Alb Cursor Controls
+
+a.doRi:	cain	px, a.maxX	; already at right margin?
+	 ret			; ..yes, stick
+	movei	ch1, a.righ
+	aoja	px, putCh1 	; INC(PX)
+	
+
+a.doDo:	cain	py, a.maxY
+	 ret
+	movei	ch1, a.down
+	aoja	py, putCh1	; INC(PY)
+
+
+a.doLe:	jumpe	px, cPopJ
+	movei	ch1, a.left
+	soja	px, putCh1
+
+
+a.doUp:	jumpe	py, cPopJ
+	movei	ch1, a.up
+	soja	py, putCh1
+
+
+a.doHo:	movei	ch1, a.home	; home cursor 
+	jrst	 pxy0Pu
+
+
+		; Alb Insert, Delete, Erase
+
+;;;  NOTE:  TELERAY TIMING IS USED FOR THE TIME BEING  /pk
+
+a.doIC:	skipa	ch1, [a.ic]
+a.doDC:	 movei	ch1, a.dc
+	call	 putCh1
+; Try ~ 4.5 ms. worst case:  (80 - px)*bps Div 162000
+	movei	n1, =80
+	subi	n1, (px)
+	imul	n1, bps
+	idivi	n1, =162000	; Fits in 1/2-word
+	movei	ch1, a.fill
+	jrst	 putNC1
+
+
+a.doIL:	skipa	ch1, [a.IL]
+a.doDL:	 movei	ch1, a.dl
+	call	 putCh1
+; Try ~ 6.5 ?? ms. worst case:  100*bps Div 162000
+	movei	n1, =100
+	imul	n1, bps
+	idivi	n1, =162000	; Fits in 1/2-word
+	movei	ch1, a.fill
+	jrst	 putNC1
+	
+
+a.doEL:	movei	ch1, a.eeol	; Erase to End Of Line
+	call	 putCh1
+; Try ~ 4 ms. max:  (80 - px)*bps Div 188000
+	movei	n1, =80
+	subi	n1, (px)
+	imul	n1, bps
+	idivi	n1, =188000	; Fits in 1/2-wd
+	movei	ch1, a.fill
+	jrst	 putNC1		; Send that many
+
+
+a.doEP:	jumpe	px, a.dEP1
+	movei	ch1, CR
+	call	 px0Put
+a.dEP1:	movei	ch1, a.eeop	; Erase to End Of Page
+a.dEP2:	call	 putCh1
+; Try ~ 48 ms. worst case:  (25 - py)*bps Div 4700
+	movei	n1, =25
+	subi	n1, (py)
+	imul	n1, bps
+	idivi	n1, =4700	; Up to 48 ms.
+	movei	ch1, a.fill
+	jrst	 putNC1		; Send that many
+
+
+a.doCP:	movei	ch1, a.cp	; Clear Screen
+;-pk;	setzb	px, py
+	jrst	 a.dEP2
+
+
+	LIT
+
+	subttl Heath19 display dependant routines
+
+;				Heath19
+;				=======
+
+deftty(e,h19)
+	e.maxX __ =79
+	e.maxY __ =24		;24 lines and a special message line
+	e.lcDp __ -1
+
+		;h19 Display Commands, through ESCape sequences
+
+	e.right __ 103	; C
+	e.down 	__ 102	; B
+	e.left	__ 104	; D
+	e.up	__ 101	; A
+	e.home	__ 110	; H
+	e.lca	__ 131	; Y
+	e.cp	__ 105	; E
+	e.eeop	__ 112	; J
+	e.eeol	__ 113	; K
+	e.el	__ 154	; l	;blank entire line
+	e.il	__ 114	; L	;insert line 
+	e.dl	__ 115	; M	;delete line
+	e.dc	__ 116	; N	;delete character
+	e.ic	__ " "	;	;send space in insert to move columns over
+	e.eim	__ 100	; @	;enter insert character mode
+	e.erm	__ 117	; O	;leave insert character mode
+	e.ldch	__  33	; ESC
+	
+;	other characters
+	e.egrh	__ 106	; F	;enter graphics mode
+	e.lgrh	__ 107	; G	;leave graphics mode
+	e.box	__ "*"	; 
+	e.erv	__ 160	; p	;enter reverse video mode
+	e.lrv	__ 161	; q	;leave reverse video mode
+	e.BB	__ " "	;	;simulated blink character, to take space
+	e.EB	__ " "	;	;sim. end blink character
+
+;	configuration commands
+	e.hsm	__ 170	; x	;set mode (s)
+	e.rm	__ 171	; y	;reset mode (s)
+	e.sm	__   3	;	;hold screen mode
+	e.acr	__  =9	;	;auto carriage return 
+	e.akm	__  75	; =	;alternate keypad mode
+
+e.rset:
+e.init:	movei	ch1,e.rm	;take out of hold screen mode
+	call	e.lead
+	movei	ch1,e.sm
+	call	putCh1
+
+repeat 0,<
+;New TV (March, 1980) uses special Heath keypad sequences from alternate mode
+;but other programs don't.  These commands should be in TV somewhere near
+;TERMINIT in TVINIT.
+	movei	ch1,e.akm	;enter alternate keypad mode
+	call	e.lead
+>
+
+e.off:	movei	zero,insert!italic!blink!tty
+	andcam	zero,pFlags
+	push	p,ch1
+	movei	ch1,e.erm	;exit insert character mode
+	call	e.lead
+	pop	p,ch1
+	
+e.doSB:
+e.doCB:
+e.quit:	
+e.ring:
+e.dpyO:	ret
+
+e.doCh:	call	e.chkF			;check flags
+	call	putCh
+	ret
+	 
+e.chkF:	move	zero, pFlags
+	trc	zero, (f)		;xor current flags with result flags
+	trnn	zero, insert!italic!blink!tty	;already got them?
+	 jrst	e.incX			;worry about cursor position, then
+	andcmi	zero, (f)		;have to change some flags
+	trne	zero,insert!italic!blink!tty  ;remove those that are to go
+	 call	e.off			;there are some
+	jumpe	f,e.incX		;any flags to set? If not, set cursor
+	move	tmp, pFlags
+	andcai	tmp, (f)		;gets flags to set in Tmp
+	trne	tmp,insert		;set insert?
+	 call	e.inOn			;set insert mode
+	trne	tmp,italic		;italics?
+	 call	e.itOn			;set italic mode
+	trne	tmp,tty			;set tty mode?
+	 call	e.ttOn			;do that
+	trne	tmp,blink		;blink mode (not on H19)
+	 call	e.blOn			;do something
+
+e.incX:	caie	px,e.maxX		;end of screen?
+	 aoja	px,cpopj		;nope, increment PX and fall through
+	setz	px,			;yes, go to next line
+	caie	py,e.maxY		;and check for last line
+	 aoja	py,lineOv		;ok
+	setz	py,			;go to top of screen
+	trnn	f,tty			;unless in tty mode
+	 ret				;not tty mode, ok
+	call	e.doUp			;tty...move cursor to lower left
+
+	;falls to e.doLF
+
+e.doLF: movei	ch1,LF			;for last line only, to scroll
+	jrst	e.lead			
+
+e.move:	movei	0, (x)
+	addi	0, (y)
+	
+	movei	1, (delX)
+	addi	1, (delY)
+
+	;what's the fastest move?
+
+	caige	0, (1)
+	 jrst	e.hWin			;home's faster than move
+	caig	1, 3			;home loses
+	 jrst	e.movX			;move wins
+	jrst	e.doLC			;LCA wins
+
+e.hWin:	cail	0, 3			;close to home?
+	 jrst	e.doLC			;nope, LCA still wins
+	call	e.doHo
+
+
+e.movX:	jumpl	x,e.movY
+	caig	x,e.maxX
+e.mvX1:  cain	x, (px)			;any X movement?
+ 	  jrst	e.movY			;no, check Y
+	movei	1,e.doRi		;assume right movement
+	caig	x, (px)			;but check first
+	 movei	1,e.doLe		;see, it was left!
+	call	(1)			;call the movers
+	jrst	e.mvX1			;go back for more
+
+;H19 won't move cursor on illegal Y coords
+e.movY:	cain	y, (py)			;any Y movement?
+	 ret				;no, all done
+	movei	1,e.doDo		;assume move is down
+	caig	y, (py)			;check
+	 movei	1,e.doUp
+	call	(1)			;do it
+	jrst	e.movY			;go for more
+
+;e.doLC,e.doRi,e.doLe,e.doDo,e.doUp,e.doHo share code with Teleray and VT52
+
+
+e.blOn:	movei	zero,blink
+e.on:	iorm	zero,pFlags
+	ret
+
+e.itOn:	movei	zero,italic
+	jrst	e.on
+	
+e.ttOn:	movei	zero,tty
+	jrst	e.on
+
+e.inOn:	movei	zero,insert
+	iorm	zero,pFlags
+	push	p,ch1
+	movei	ch1,e.eim
+	call	e.lead
+	pop	p,ch1
+	ret
+
+e.doIC:	movei	ch1,e.ic
+	move	zero,pFlags
+	trnn	zero,insert		;in insert mode?
+	 call	e.inOn			;put terminal in that mode
+	call	putCh1			;insert the space, 
+	movei	ch1,e.left		;and back cursor by 1
+	jrst	e.lead
+
+e.doIL:	movei	ch1,e.IL		;insert line zeroes x-pos
+	jrst	e.xPut
+
+e.doDL:	movei	ch1,e.DL		;delete line, zeroes x-pos
+	jrst	e.xPut
+
+e.doDC:	movei	ch1,e.DC		;delete character
+	jrst	e.lead
+
+e.doEL:	movei	ch1,e.eeol		;erase eol
+	jrst	e.lead
+
+e.doEP:	movei	ch1,e.eeop		;erase eop
+	jrst	e.lead
+
+e.doCP:	movei	ch1,e.cp		;blank page
+	jrst	e.xypu
+
+	LIT
+
+
+;;	=====  End of Display Dependent Routines  =====
+
+	subttl Dispatch tables
+
+  ;; Macro to generate dispatch (JRST) tables indexed by DPY
+  ; Example:  JRSTAB (DOCP)  generates
+  ;
+  ;.DOCP: JRST	 Q.DOCP
+  ;	  JRST	 D.DOCP
+  ;	  JRST	 H.DOCP
+
+DEFINE	jrstab ' (name)  {	 
+.'name:
+    forall (\ttylst) {
+	jrst	...`.'name
+	}
+}
+
+  ;; Macro to generate tables of constants indexed by DPY
+  ;; Generates two halfword constants
+
+;table of display widths and lengths
+dpysiz: forall (\ttylst) {
+	...`.maxX,,...`.maxY
+	}
+
+
+  ;; Macro to generate a table of display characteristics indexed by DPY.
+  ;; Generates four 7-bit (character), and one 8-bit, fields
+  ;; (one char. not currently used, and only one bit of fl1 is used)
+
+dpypar:	forall (\ttylst) {
+	byte (7) <...`.BOX>,<...`.BB>,<...`.EB>,0 (8) <...`.LcDP>
+	}
+
+;table, indexed by GTTYP value, of internal terminal type numbers
+dpytab:	
+ifn sumex,<
+	repeat =9,<t%tty>	; 0 to 8 are not displays
+	t%tec			; 9 - TEC
+	t%iml			; 10 - Imlac
+	t%dm			; 11 - dm2500
+	repeat 5,<t%tty>	; 12-16 not displays
+	t%tel			; 17 - Teleray 1061
+	t%h19			; 18 - Heath H19
+	t%alb			; 19 - Albatross/Gillotine
+> ; end ifn sumex
+ifn sum20,<
+	repeat =5,<t%tty>	; 0 to 4 are not displays
+	t%dm			; 5 - dm2500
+	T%tty			; 6  - hp2645
+	t%haz			; 7  - Hazeltine 15XX
+	repeat =7,<t%tty>
+	t%vt52
+	t%tty
+	t%tec			; 17 - TEC
+	t%alb			; 18 - Albatross/Gillotine
+	t%tel			; 19 - Teleray 1061
+	repeat 2,<t%tty>	; 20-21 not displays
+	t%h19			; 22 - Heath H19
+> ; end ifn sum20
+ifn score,<
+	repeat =5,<t%tty>	; 0 to 4 are not displays
+	t%dm			; 5 - dm2500
+	T%tty			; 6  - hp2645
+	t%haz			; 7  - Hazeltine 15XX
+	repeat =7,<t%tty>
+	t%vt52
+	t%tty
+	t%tec			; 17 - TEC
+	repeat 3,<t%tty>	; 18 to 20 are not displays
+	t%alb			; 21 - Albatross/Gillotine
+	t%tel			; 22 - Teleray 1061
+	repeat 2,<t%tty>	; 23-24 not displays
+	t%h19			; 25 - Heath H19
+> ;end ifn score
+ldpytb__.-dpytab
+	subttl DPYINI
+
+;; 	Routines for the outside world to call, in SAIL format
+;	======================================
+
+
+DEFINE	enter	{jsp	tmp, enter.}
+DEFINE	leave	{jsp	tmp, leave.}
+DEFINE	jspRet	{jrst	 (tmp)}
+
+
+;  DPYINI -- Initialize the display
+;  ======
+dpyIni:
+
+IFN test, <
+
+	hrroi	1, [asciz %
+WARNING:
+  LOAD MODULE "<TV>DPY" WAS ASSEMBLED WITH "TEST" SWITCH ON!
+%]
+	PSOUT
+
+	HALTF
+
+	>
+
+  ; get display type
+
+	movei	1, -1
+	GTTYP			; Get Terminal TYPe
+
+	movei	zero, t%tty	; assume TTY, 0
+	caig	2, ldpytb	; in range?
+	 move	zero, dpytab(2)	; yes.  Get internal type from table
+	movem	zero, dpyTyp
+	
+IFN tops20, <
+
+  ; get terminal speed
+	movei	2, 27		; Get speed
+	MTOPR
+	tlz	3, -1		; Just output rate
+	caile	3, =9600
+	 movei	3, =9600	; Assume 9600 for net i guess
+	movem	3, bps
+>
+
+  ; init flags, cursor, buffer, 
+
+	call	 clrCur		; make cursor illegal
+	call	 turnOn
+	setzm	 flags
+
+	ENTER			; pick parameters
+
+  ; set parameters:  width, height, uc/lc
+	hlrz	zero, dpysiz (dpy)	;width
+	movem	zero, maxX
+	hrrz	zero, dpysiz (dpy)	;height
+	movem	zero, maxY
+
+	ldb	zero, [ point 8,dpypar(dpy),35 ]	;Lower-case flag
+	movem	zero, lcDpy	;0 if upper-case only
+
+  ; device dependent initialization
+	call	 @.init (dpy)
+
+	LEAVE			; save once more
+
+	jrst	 nexCom		; initialize NEXT and leave (will RET)
+
+JRSTAB (init)
+
+	subttl Routines to set/clear Italic, Blink, and TTY modes
+
+;;	The external routines of this page affect FLAGS only
+;	  and not CX, CY.  No transmission.
+
+;  SETITA -- set italic mode
+;  ======
+setIta:	movei	1, doStIt
+	jrst	 waveF
+
+;  CLRITA -- clear italic mode
+;  ======
+clrIta:	movei	1, doClIt
+	jrst	 waveF
+
+
+;  SETINS -- set insert mode
+;  ======
+setIns:	movei	1, doStIn
+	jrst	 waveF
+
+;  CLRINS -- clear insert mode
+;  ======
+clrIns:	movei	1, doClIn
+	jrst	 waveF
+
+
+;  SETTTY -- set tty mode
+;  ======
+setTTY:	movei	1, doStTT
+	jrst	 waveF
+
+;  CLRTTY -- clear tty mode
+;  ======
+clrTTY:	movei	1, doClTT
+
+waveF:	move	f, flags
+	call	 (1)		; AC1 points to clear/set flag routine
+	movem	f, flags
+	ret
+
+	subttl Cursor movement routines
+;;	The external rotuines of this page affect CX, CY, and FLAGS
+;	  but do not trasmit (note: cursor movement is delayed).
+
+;  DORIGH -- move cursor right
+;  ======
+doRigh:	movei	1, ..doRi
+	jrst	 xyf
+
+;  DODOWN -- move cursor down
+;  ======
+doDown:	movei	1, ..doDo
+	jrst	 xyf
+
+;  DOLEFT -- move cursor left
+;  ======
+doLeft:	movei	1, ..doLe
+	jrst	 xyf
+
+;  DOUP -- move cursor up
+;  ====
+doUp:	movei	1, ..doUp
+	jrst	 xyf
+
+
+;  DOHOME -- move cursor home
+;  ======
+doHome:	movei	1, ..doHo
+
+xyf:	move	x, cx
+	move	y, cy
+	move	f, flags
+	call	 (1)
+	movem	f, flags
+	movem	y, cy
+	movem	x, cx
+	ret
+
+	subttl Routines to ins/del line/char, cleol, cleop, etc.
+
+;;	The external routines of this page transmit
+;	  and possibly affect CX, CY, and FLAGS.
+
+;  DOIC -- insert a character
+;  ====
+doIC:	movei	1, ..doIC
+	jrst	 ntr
+
+;  DOIL -- insert a line
+;  ====
+doIL:	movei	1, ..doIL
+	jrst	 ntr
+
+;  DODC -- delete a character
+;  ====
+doDC:	movei	1, ..doDC
+	jrst	 ntr
+
+;  DODL -- delete a line
+;  ====
+doDL:	movei	1, ..doDL
+	jrst	 ntr
+
+
+;  DOEEOL -- erase to end of line
+;  ======
+doEEOL:	movei	1, ..doEL
+	jrst	 ntr
+
+;  DOEEOP -- erase to end of page
+;  ======
+doEEOP:	movei	1, ..doEP
+	jrst	 ntr
+
+;  DOCL -- clear line
+;  ====
+doCL:	movei	1, ..doCL
+	jrst	 ntr
+
+;  DOCP -- clear page
+;  ====
+doCP:	movei	1, ..doCP
+	jrst	 ntr
+
+
+;  DOBB -- begin blinking field
+;  ====
+doBB:	movei	1, ..doBB
+	jrst	 ntr
+
+;  DOEB -- end blinking field
+;  ====
+doEB:	movei	1, ..doEB
+	jrst	 ntr
+
+
+;  SETBLI -- set blink mode
+;  ======
+setBli:	movei	1, ..doSB
+	jrst	 ntr
+
+;  CLRBLI -- clear blink mode
+;  ======
+clrBli:	movei	1, ..doCB
+
+ntr:	move	zero, [xwd dpyX, px]	; eNTeR
+	blt	 dpy
+	call	 (1)		; ..with address of routine in AC1
+	move	zero, [xwd px, dpyX]
+	blt	 flags
+	ret
+
+	subttl TURNOF, TURNON, CLRCUR, SETCUR, DPYOUT
+
+;  TURNOF -- set TTY mode, clear all others, leave binary mode,
+;  ======		clear DPYON, undefine DPYX/Y
+turnOf:	skipn	 dpyOn
+	 call	 turnOn		; will flush buffer
+	ENTER
+	movei	f, tty		; tty mode only
+	call	 chkXY		; bring cursor up-to-date
+	call	 @ .dpyO (dpy)	; for benefit of QTY
+	call	 @ .quit (dpy)	; for benefit of Datamedia
+	call	 forceO
+	setzm	 dpyOn
+	LEAVE
+
+	movei	1, -1
+	RFMOD
+	trz	2, 300
+	tro	2, 100
+	SFMOD			; set ASCII mode 
+
+	jrst	 clrCu1		; to clear cursor and exit
+
+JRSTAB (quit)
+
+
+;  TURNON -- flush and initialaze DBUF, DPYON _ -1, undefine DPYX/Y
+;  ======
+turnOn: movei	1, -1
+	RFMOD
+	trz	2, 300
+	SFMOD			; set binary mode 
+	call	 dBufIn
+	setom	 dpyOn
+	jrst	 clrCu2
+
+
+;  CLRCUR -- Clear (clobber) cursor
+;  ======
+clrCur:	movei	zero, insert!blink
+	andcam	 flags		; clear some modes
+clrCu1:	movei	zero, 400000		; make cursor illegal 
+	movem	zero, cx
+	movem	zero, cy
+clrCu2:	movei	zero, 200000		; ..and physical differ from logical
+	movem	zero, dpyX		; ..for CHKXY to work
+	movem	zero, dpyY
+	ret
+
+
+;  SETCUR (INTEGER x, y) -- Set cursor to column  X  row  Y
+;  ======
+setCur:	movei	zero, insert!blink!tty
+	andcam	 flags		; clear some modes
+
+	pop	p, 1		; save return address in AC1 
+
+	pop	p, y
+	andi	y, 177
+	camg	y, maxY		; ignor invalid  y
+	 movem	y, cy
+
+	pop	p, x
+	andi	x, 177		; convert to  x  value (complement)
+	camg	x, maxX		; ignor invalid  x
+	 movem	x, cx
+
+	jrst	 (1)		; return
+
+
+;  DPYOUT -- Force output of current dpy buffer
+;  ======
+dpyOut:	ENTER
+	call	 chkXY		; bring cursor up-to-date
+	call	 @ .dpyO (dpy)	; for benefit of QTY
+	call	 forceO
+	LEAVE
+	ret
+
+JRSTAB (dpyO)
+
+	subttl DPYCHR, DPYNCH, DPYSTR
+
+;; String interpreter
+
+;  DPYCHR (INTEGER char) -- Display one CHARacter	
+;  ======
+dpyChr:	ENTER
+
+	move	ch, -1(p)
+	call	 do
+
+	LEAVE
+	sub	p, [(2)2]
+	jrst	@ 2(p)
+
+
+
+;  DPYNCH (INTEGER n, char) -- Display  N  CHARacters
+;  ======
+dpyNCh:	ENTER
+
+dpyN1:	sosge	 -2(p)
+	 jrst	 dpyNX
+	move	ch, -1(p)
+	call	 do
+	jrst	 dpyN1
+
+dpyNX:	LEAVE
+	sub	p, [(3)3]
+	jrst	@ 3(p)
+
+
+
+;  DPYSTR (STRING str) -- Display a STRing
+;  ======
+dpyStr:	ENTER
+	hrres	 -1(sp)		; clean LH of STR length
+
+dpySt1:	sosge	 -1(sp)
+	 jrst	 dpySt2		; done
+	ildb	ch, (sp)	; Next byte from STR
+	call	 do
+	jrst	 dpySt1
+
+dpySt2:	LEAVE
+	sub	sp, [(2)2]
+	ret
+
+	subttl ENTER and LEAVE -- interfacing to Sail, etc.
+
+  ; ENTER restores AC's when a display routine is entered
+
+enter.:	move	zero, [xwd dpyX, px] ; load AC's  PX, PY, X, Y, F, DPY
+	blt	 dpy
+	JSPRET
+
+
+  ; LEAVE saves AC's before leaving a display routine
+
+leave.:	move	zero, [xwd px, dpyX] ; store AC's  X, Y, PX, PY, F
+	blt	 flags
+	JSPRET
+
+
+	LIT
+
+	subttl Internal subroutines
+;;		      Common internal routines
+;		      ========================
+
+
+  ;	Current contents of output buffer are forced out.
+  ;	Note:  An extra word at end for ASCIZ.
+
+forceO:	skipn	 dpyOn
+	 jrst	 dBufIn
+	hrrz	 n.dBuf		; remaining byte count
+	cain	 dBufSz*5	; anything in buffer?
+	 jrst	 dBufIn		; ..no
+	setz
+	idpb	 p.dBuf		; zero byte to mark end of buffer
+
+	hrroi	1, dBuf		; string pointer
+	PSOUT			; faster-than-hell output
+
+dBufIn:	move	zero, [point 7,dBuf,-1] ; initialize the buffer
+	movem	zero, p.dBuf
+	movei	zero, dBufSz*5
+	movem	zero, n.dBuf
+	ret
+
+
+fOut:	call	 forceO
+	sos	 n.dBuf		; adjust byte count
+	ret
+
+
+putCh2:	sosg	 n.dBuf		; Put  CH2
+	 call	 fOut
+	idpb	ch2, p.dBuf
+	ret
+
+
+putNC1:	sojl	n1, cpopj	; Put  N1  CH1's
+	call	 putCh1
+	jrst	 putNC1
+
+
+pxy0Pu:	setz	py,		; used by Home and Clear
+px0Put:	setz	px,
+putCh1:	sosg	 n.dBuf		; Put  CH1
+	 call	 fOut
+	idpb	ch1, p.dBuf
+	ret
+
+
+putCh:	sosg	 n.dBuf		; Put CH--buffer full?
+	 call	 fOut		; ..yes
+	idpb	ch, p.dBuf
+	ret
+
+
+	LIT
+
+	subttl String interpreter automaton
+		; The String Interpreter Automaton
+		; --- ------ ----------- ---------
+
+
+doInit:	push	p, ch		; <<<, Auto-initialization
+	call	 dpyIni
+	pop	p, ch		; >>>
+
+	; falls to  DO  a second time over
+
+
+  ;; DO ONE BYTE.  Called by the routines declared internal in this
+  ;;   subroutine package.  Entered with a frech byte in  CH.
+
+do:	andi	ch, 177
+	jumpe	ch, cpopj	; ignore NULL
+	jrst	@ next		; RESUME--go to current state
+
+
+doLCA:	trz	f, insert!blink!tty  ; leave insert, blink, tty modes
+
+	jsr	 next
+
+lcX:	trc	ch, 177		; convert to  x  value (complement)
+	camg	ch, maxX	; ignor invalid  x
+	 movei	x, (ch)
+
+	jsr	 next
+
+lcY:	trc	ch, 177		; convert to  y  value
+	camg	ch, maxY	; ignor invalid  y
+	 movei	y, (ch)
+
+nexCom:	jsr	 next
+
+  ;; This is where  JRST @ NEXT  at  DO + 2  usually takes us--with
+  ;;   a fresh byte in  CH--to start the processing of the byte, 
+  ;;   i.e., this is the initial state of the automatan
+
+	caige	ch, 41
+	 jrst	 dispat (ch)	; 0...40:  CTRL characters, Space
+	caige	ch, 140
+	 jrst	 doText		; 41...137:  punct, upper case
+	cain	ch, 177
+	 jrst	 doDEL		; 177:  DEL
+	skipn	 lcDpy		; 140...176:  lower case
+	 subi	ch, 40		; convert to upper
+doText:	call	 chkXY		; let physical cursor catch up
+	call	 @ .doCh (dpy)	; do display-dependent stuff
+	jrst	 incX		; then move logical cursor
+
+JRSTAB (doCh)
+
+
+doESC:	jsr	 next		; go get next byte
+
+	call	 nexCom		; set NEXT here, allows  $F  to  DOLCA
+
+IFN test, <
+	trz	ch, 100		; translate 100..177 to 0..77 for testing
+	>
+IFE test, <
+	trze	ch, 100		; translate 100..177 to 0..77, accept 1xx
+	>
+	 caile	ch, "f"&77
+	  ret			; out of range, ignor
+	jrst	 dispat (ch)
+
+	subttl INCX, INCY, etc
+  ; INCX computes new (X,Y) resulting from transmission a text character
+  ;  that is worth one space.  Old (X,Y) are assumed to be valid--they
+  ;  have just been checked by CHKXY.
+
+incX:	came	x, maxX
+	 aoja	x, cpopj
+	setz	x,
+incY:	came	y, maxY
+	 aoja	y, cpopj
+	trnn	f, tty		; is scrolling wanted?
+	 setz	y,		; ..no, wrap around to top line
+	ret
+
+
+resCXY:	trz	f, insert!blink!tty
+
+chkXY:	caie	x, (px)
+	 jrst	 moveXY
+	cain	y, (py)
+	 ret
+moveXY:	jumpl	x, lost		; assure valid  (X,Y)
+	jumpl	y, lost
+	camg	x, maxX
+	 camle	y, maxY
+	  jrst	 lost
+	movei	delX, (x)
+	subi	delX, (px)
+	movm	delX, delX
+	movei	delY, (y)
+	subi	delY, (py)
+	movm	delY, delY
+	jrst	@ .move (dpy)
+JRSTAB (move)
+
+lost:	setz	x,		; invalid (X,Y)
+	move	y, maxY
+	call	 @ .doLC (dpy)	; LCA to get there for sure
+	jrst	 doLF
+JRSTAB (doLC)
+
+
+lineOv:	trnn	f, tty		; x.INCX detected line overflow
+	 ret			; not TTY mode, don't clear
+	jrst	 doLF1		; clear newly entered line
+
+	subttl control char dispatch table
+dispat:	ret		; ^@  00, and ESC @ (and ESC ^@ if TEST)
+	jrst	..doRi	; ^A  01, and ESC A (and ESC ^A if TEST)
+	jrst	..doDo	; ^B  02, ......
+	jrst	..doLe	; ^C  03
+
+	jrst	..doUp	; ^D  04
+	jrst	..doHo	; ^E  05
+	jrst	doLCA	; ^F  06
+	jrst	..ring	; ^G  07  BEL
+
+	jrst	doBS	; ^H  10  BS
+	jrst	doTAB	; ^I  11  TAB
+	jrst	doLF	; ^J  12  LF
+	jrst	doVT	; ^K  13  VT
+
+	jrst	doFF	; ^L  14  FF
+	jrst	doCR	; ^M  15  CR
+	jrst	doStIt	; ^N  16  SO
+	jrst	doClIt	; ^O  17  SI
+
+	jrst	doStIn	; ^P  20
+	jrst	doClIn	; ^Q  21
+	jrst	..doIC	; ^R  22
+	jrst	..doIL	; ^S  23
+
+	jrst	..doDC	; ^T  24
+	jrst	..doDL	; ^U  25
+	jrst	..doEL	; ^V  26
+	jrst	..doEP	; ^W  27
+
+	jrst	..doCL	; ^X  30
+	jrst	..doCP	; ^Y  31
+	jrst	doBOX	; ^Z  32  SUB
+	jrst	doESC	; ^[  33  ESC ($)
+
+	ret		; ^\  34
+	ret		; ^]  35
+	ret		; ^^  36
+	ret		; ^_  37
+
+	jrst	doSP	; SP  40, and $` (and $ Sp if TEST)
+
+  ; ESCape command dispatch continues below
+	jrst	..doBB	; $a  141, (and $! if TEST)
+	jrst	..doEB	; $b  142, (and $" if TEST)
+	jrst	..doSB	; $c  143, (and $# if TEST)
+
+	jrst	..doCB	; $d  144, (and $$--that's ESC DOLLAR--if TEST)
+	jrst	doStTT	; $e  145, (and $% if TEST)
+	jrst	doClTT	; $f  146, (and $& if TEST)
+
+
+doSP:	trnn	f, tty		; Space, 40
+	 jrst	 doText
+	came	x, maxX
+	 aoja	x, cpopj
+	jrst	 doCRLF
+
+	subttl cursor movement
+		; Cursor Movement (LCA on 2 pages up)
+
+  ;; Note:  All cursor movement is delayed until something is printed
+
+
+..doRi:	came	x, maxX		; RIGHT cursor
+	 aoja	x, reset	; inc(x)
+	setz	x,
+..doDo:	came	y, maxY		; DOWN cursor
+	 aoja	y, reset	; inc(y)
+	setz	y,
+	jrst	 reset
+
+
+..doLe:	sojge	x, reset	; LEFT cursor--dec(x)
+	move	x, maxX
+..doUp:	sojge	y, reset	; UP cursor--dec(y)
+	move	y, maxY
+	jrst	 reset
+
+
+..doHo:	setzb	x, y		; ..DOCP  calls  ..DOHO  for a reset
+reset:	trz	f, insert!blink!tty
+	ret
+
+	subttl display commands
+			; Display Commands
+
+  ;; Insert/Delete
+
+..doIC:	call	 resCXY		; Insert Character
+	jrst	 @ .doIC (dpy)
+JRSTAB (doIC)
+
+
+..doIL:	call	 resCXY		; Insert Line
+	jrst	 @ .doIL (dpy)
+JRSTAB (doIL)
+
+
+..doDC:	call	 resCXY		; Delete Character
+	jrst	 @ .doDC (dpy)
+JRSTAB (doDC)
+
+
+..doDL:	call	 resCXY		; Delete Line
+	jrst	 @ .doDL (dpy)
+JRSTAB (doDL)
+
+
+..doEL:	call	 resCXY		; Erase End Of Line
+	jrst	 @ .doEL (dpy)
+JRSTAB (doEL)
+
+
+..doEP:	call	 resCXY		; Erase End Of Page
+	jrst	 @ .doEP (dpy)
+JRSTAB (doEP)
+
+
+..doCL:	push	p, x		; Clear Line, <<<
+	setz	x,
+	call	 ..doEL
+	pop	p, x		; >>>
+	ret
+
+
+..doCP:	call	 ..doHo		; Clear Page--home resets for us
+	tro	f, tty
+	jrst	 @ .doCP (dpy)
+JRSTAB (doCP)
+
+	subttl special character output
+  ;; Special character output
+
+
+doBOX:	ldb	ch, [ point 7,dpypar(dpy),6]	; BOX character
+	jrst	 doText
+
+
+..doBB:	call	 ..doSB		; Set blink mode
+	ldb	ch, [ point 7,dpypar(dpy),13]	; Begin Blink character
+	jrst	 doText
+
+
+..doEB:	call	 ..doCB		; End Blink character--clear blink mode
+	ldb	ch, [ point 7,dpypar(dpy),20 ]
+	jrst	 doText
+
+
+  ;; Mode change commands.  Note 1:  DOSTIT, DOCLIT  are tty commands.
+  ;;  Note 2:  Many other commands cause mode change as a side effect
+
+
+..doSB:	tro	f, blink	; Set Blink mode
+	jrst	.doSB (dpy)
+JRSTAB (doSB)
+
+
+..doCB:	trz	f, blink	; Clear Blink mode
+	jrst	.doCB (dpy)
+JRSTAB (doCB)
+
+
+  ; INSERT and TTY modes are mutually exclusive
+
+doStTT:	tro	f, tty		; Set TTY mode 
+clInBl:	trza	f, insert!blink	; Clear Insert and Blink modes
+
+doClIn:	 trz	f, insert	; Clear Insert mode 
+	ret
+
+
+doStIn:	tro	f, insert	; Set Insert mode (and clear TTY)
+
+doClTT:	trz	f, tty		; Clear TTY mode 
+	ret
+
+	subttl "Teletype" commands
+			; "Teletype" commands
+
+  ; Effect on modes:
+  ;	("+" = set mode, "-" = clear mode, "." = no effect)
+  ;
+  ;		BEL  BS TAB  LF  VT  FF  CR  SO  SI
+  ; Insert mode	 .   -   .   -   -   -   -   .   .
+  ; Italic mode	 .   .   .   .   .   .   .   +   -
+  ; Blink mode	 .   -   .   -   -   -   -   .   .
+  ; TTY mode	 .   +   .   +   +   +   .   .   .
+
+
+..ring:	call	 .ring (dpy)	; 7 - BEL
+	movei	ch, BEL
+	jrst	 putCh
+JRSTAB (ring)
+
+
+doBS:	sojge	x, doStTT	; 10 - Back Space 
+	aoja	x, doStTT
+
+
+doTAB:	movei	ch, " "		; 11 - HT, horizontal TAB
+doTAB1:	call	 doSP
+	trne	x, 7
+	 jrst	 doTAB1
+	ret
+
+
+ ;; doLF:			; 12 - Line Feed, look below  DOFF
+
+doVT:	skipa	ch, ["."]	; 13 - Vertical Tab
+
+doFF:	movei	ch, "-"		; 14 - Form Feed
+	push	p, x		; <<<
+	call	 doCRLF
+draw:	call	 doText		; a line of .'s or -'s
+	trne	x, 7
+	 jrst	 draw
+	pop	p, x		; >>>
+	skipa
+
+doCRLF:	 setz	x,		; a new line
+
+doLF:	call	 doStTT		; 12 - Line Feed.  Does not use CH.
+	came	y, maxY
+	 aoja	y, doLF1	; LF within window
+	call	 chkXY
+	jrst	 .doLF (dpy)	; LF from last line (to scroll)
+JRSTAB (doLF)
+
+doLF1:	push	p, f		; <<<, within-window line feed
+	call	 ..doCL
+	pop	p, f		; >>>
+	ret
+
+
+doCR:	setz	x,		; 15 - Carriage Return
+	jrst	 clInBl
+
+
+doStIt:	troa	f, italic	; 16 - ^N, shift out, Set Italic mode 
+doClIt:	 trz	f, italic	; 17 - ^O, shift in, Clear Italic mode 
+	ret
+
+
+doDEL:	jumpe	x, ..ring	; 177 - Rub Out
+	push	p, f		; <<<
+	call	 doBS
+	call	 ..doDC
+	pop	p, f		; >>>
+	ret
+
+	subttl virtual dpy simulator (for dpys w/out c/l ins/del)
+
+ife oneseg,<
+	reloc
+>
+
+ifn tenex,<
+sinit:	hrroi	1,[asciz/
+Virtual display simulator unavailable in TENEX DPY!!!
+/]
+	psout
+	haltf
+> ;ifn tenex
+
+ifn tops20,<
+
+width  __ =80			;maximum width we can simulate
+length __ =24			;maximum length we can simulate
+
+blanks:	block width/4+1
+screen:	block <length+1>*<width/4+1>
+rowptr:	for i _ 0,length-1,1<
+	point 9,screen+i*<width/4+1>
+>
+ife oneseg,<
+	reloc
+>
+
+;initialize display simulator
+sinit:	move n1,maxX
+	move tmp,[point 9,blanks]
+	movei t1," "
+	idpb t1,tmp
+	sojg n1,.-1
+	setz t1,
+	idpb t1,tmp
+	setzb x,y
+	jrst seeos		;clear screen
+
+;simulate insert-line
+sil:	move n1,rowptr+length-1
+	movni tmp,1-length-400000(y)
+	movs tmp,tmp
+	hrri tmp,rowptr+length-2
+	pop tmp,1(tmp)
+	jumpl tmp,.-1
+	movem n1,rowptr(y)
+	jrst scl1		;clear the inserted line
+
+;simulate scrolling
+sscrol:	move n1,rowptr
+	move tmp,[rowptr+1,,rowptr]
+	jrst sdl1		;go delete top line
+
+;simulate delete-line
+sdl:	move n1,rowptr(y)
+	movsi tmp,rowptr+1(y)
+	hrri tmp,rowptr(y)
+sdl1:	blt tmp,rowptr+length-2
+	movem n1,rowptr+length-1
+	move n1,maxY
+	move n1,rowptr(n1)
+	jrst scl1		;clear last line
+
+;simulate clear current line
+;returns n1/ pointer to rest of line
+scl:	move n1,rowptr(y)
+scl1:	movsi tmp,blanks
+	hrri tmp,(n1)
+	blt tmp,width/4(n1)
+	ret
+
+;simulate cleol
+;returns n1/ pointer to rest of line
+seeol:	skipn tmp,x		;is x zero?
+	 jrst scl		;yes.  Use fast way
+	adjbp tmp,rowptr(y)
+	push p,tmp
+	movei ch1," "		;fill with spaces
+seeol0:	ildb n1,tmp		;pick up char that was there
+	dpb ch1,tmp		;replace it with a space
+	jumpn n1,seeol0		;loop until end of line
+	dpb n1,tmp		;put null back in
+	pop p,n1
+	ret
+
+;simulate clear from current x/y to eos
+seeos:	call seeol		;first, clear the rest of the line
+;-pk;	movsi t1,-length
+;-pk;	adjsp t1,1(y)		;point to next line - PDL OVERFLOW!
+;-pk;	jumpge t1,cpopj		;all done if on last line
+	hrlzi	t1, -length(y)	; point to...			;+pk;
+	hrri	t1, (y)		; ...next line			;+pk;
+	aobjp	t1, cpopj	; all done if on last line	;+pk;
+scls0:	move n1,rowptr(t1)	;pick up line pointer
+	call scl1		;clear it
+	aobjn t1,scls0
+	ret
+
+;simulate clear page.  Leaves cursor as it is
+scp:	movsi t1,-length
+scp0:	move n1,rowptr(t1)
+	call scl1
+	aobjn t1,scp0
+	ret
+
+;simulate put character at current position
+sputc1:	movei tmp,(x)		;get a copy of current position
+	adjbp tmp,rowptr(y)	;form byte ptr in tmp
+	idpb ch1,tmp		;put the char. in place
+	ret
+
+;simulate insert blank character
+;returns tmp/ pointer to rest of line
+sic:	movei tmp,(x)		;now, insert a space at x-pos
+	adjbp tmp,rowptr(y)
+	push p,tmp		;save ptr to rest of line
+	movei ch1," "
+sic1:	ildb n1,tmp
+	jumpe n1,sic2
+	dpb ch1,tmp
+	ildb ch1,tmp
+	dpb n1,tmp
+	jumpn ch1,sic1
+	setz n1,
+	dpb n1,tmp
+sic2:	pop p,tmp
+	ret
+
+;simulate delete character
+;returns tmp/ pointer to rest of line
+sdc:	move tmp,x		;first, delete a char at x-pos
+	adjbp tmp,rowptr(y)
+	push p,tmp
+	move n1,tmp		;save trailing pointer
+	ibp tmp			;leading pointer
+sdc1:	ildb ch1,tmp		;pick up next char
+	idpb ch1,n1		;and put it in current
+	jumpn ch1,sdc1
+	movei ch1," "		;add a space at end to preserve length
+	dpb ch1,n1		;overwrite first null
+	pop p,tmp
+	ret
+
+> ;ifn tops20
+	subttl end of the world
+endCod:
+
+	LIT
+endLit:
+
+
+
+IFN  test, {
+
+		; Test block
+
+OPDEF	pbin 	[jsys	73]
+
+
+g:	movei	zero, doInit
+	movem	zero, next
+	move	p, [iowd 100,4000]
+
+play:	PBIN
+	move	ch, 1
+	call	 do
+	call	 chkXY
+	call	 @ .dpyO (dpy)
+	call	 forceO
+	jrst	 play
+
+
+patch:	block 100
+
+} ; this page
+
+
+ife oneseg,<
+	RELOC
+>
+
+	VAR		; variables to low segment
+
+dBuf:	block <dBufSz+2>	; display buffer, 640 bytes
+endVar:
+ife oneseg,<
+	RELOC
+>
+
+IFN  test, { END g }
+IFE  test, { END }
+

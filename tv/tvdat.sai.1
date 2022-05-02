@@ -1,0 +1,1200 @@
+
+
+	!*****   Global Definitions and Variables   ******
+	 ************************************************;
+
+
+EXTERNAL INTEGER  x22;
+
+
+!			BREAK TABLES
+			************
+   All Break Tables are defined here, for we need to know what is
+   used and what is available.
+;
+
+DEFINE	
+	inBreaks = 1,	  COMMENT  File input break table;
+	sLFFFoCR = 2,	  COMMENT  Break on LF, FF, omit CR,
+				   used by ITEXT in TVWIN;
+
+	br.FF    = 4,	  COMMENT  Scan to Form Feed, used by 
+				   READSSTRINGS, in TVCHR;
+
+    COMMENT  The next three are used by GOPLACES in TVWIN to scan
+	     FILEPLACES for Page.Line numbers;
+
+	br.bNum = 5,	  COMMENT  Skip to Beg. of number string;
+	br.eNum = 6,	  COMMENT  Scan to End and of same;
+	br.dot  = 7,	  COMMENT  Scan to ".";
+
+	br.sBl  = 8,	  COMMENT  Skip spaces and tabs, for GETCASE;
+	br.semi = 9,	  COMMENT  To scan file name but not extension;
+	br.findatom = 10, COMMENT  To find next non-space/tab;
+        br.scanatom = 11, COMMENT  To return to next space/tab/slash;
+	br.esc = 12;	  COMMENT  To separate search strings;
+
+!		MEMORY utilization by SAIL programs:
+		******
+	  0-377  low core, SAIL corget gets from here
+	400-577  high core (...usable above where loader quits...)
+	600-677  buffers, segment
+	700-717  emulater (not needed by fully TENEXized programs)
+	720-737  ...currently unused...
+	740-777  IDDT (UDDT uses 767-777 only)
+;
+
+IFC tops20.sw  THENC
+ DEFINE
+	UFPGS = "JSYS '525";
+ENDC
+
+DEFINE
+	CTRLC =	  '3,
+	CTRLH =  '10,
+	CTRLO =  '17,
+
+	EOLchar = LF,
+	EOLstr  = """
+""",
+	pageMark = FF,
+	callChar = FF,   COMMENT  Abort character, ^L;
+	BDef =	"""/""", COMMENT  Beginning of string Definition;
+	EDef =	"""/""", COMMENT  End of same;
+
+	EET = """$""",	COMMENT  'ESC' indicator in text;
+	LE  = """\""";	COMMENT  EOL indicator in text;
+
+
+
+INTEGER
+  	char,		! Current character to act upon.  This is a 
+			  global that almost everybody looks at;
+	foo,		! A very short term temporary.  Use at your 
+			  own risk!;
+	junk;		! Common write-only variable;
+
+STRING
+	spaces,		! A string of some 80 SPaces;
+	everything;	! The ASCII characters 177...0;
+
+	!******   THE TERMINAL:  Keyboard and Display   ******
+	 ****************************************************;
+
+
+IFC  hazd.sw  THENC
+
+  DEFINE
+	home= "('176 & '22)",
+	CP  = "('176 & '34 & '177 & '177)",
+	IL  = "('176 & '32 & '177 & '177)",
+	DL  = "('176 & '23 & '177 & '177)",
+	LCA = "('176 & '21)";
+	
+ENDC
+
+
+INTEGER
+	t.d,		! TABLE offset, 0 for DM and Imlac, 200 for TEC;
+	tType;		! Terminal type;
+
+BOOLEAN
+	tecd, teck,	! TEC Dispay, TEC Keyboard;
+	dmd, dmk,	! Ditto, Datamedia..;
+	imld, imlk, 	! ..and Imlac;
+	hazD, hazK,	! ..Hazeltine 15XX series;
+	rayD, rayK,	! ..Teleray 1061;
+	vt52D, vt52K,	! ..VT52 or HP2645 (not yet working);
+	albD, albK,	! ..Albatross 15XX (custom Stanford mod Hazeltine);
+	heathD, heathK, ! ..Heath (Zenith) H19;
+	infD, infK,
+	v200D, v200K,
+	nihD, nihK,	! ..Rutgers ttys for compatibility;
+
+	noEditKey,	! The keyboard has no edit key;
+	editBit,	! True iff current character is a '200-bit 
+			  expanded to an ESC.  Managed by GETINBUF;
+
+	inUC,		! Keyboard input is buffered in upper case;
+	UCmode,		! What is loaded into INUC when a line is
+			  opened;
+	UCfile,		! File written in upper case mainly.
+			  If UCFILE and INUC are not equivalent,
+			  blink the case letter on the message line;
+	caseBlinks;	! Case letter is blinking on line 0;
+
+INTEGER  
+	caseCount,	! Decremented for each keyboard input.
+			  When count reaches zero, case is reset;
+	putIX,		! Points to NEXT get location;
+	getIX;		! Points to NEXT put location;
+			! PUTix=GETix  means buffer empty;
+
+DEFINE
+	maxIX = 30;	! Input buffer size;
+
+INTEGER ARRAY
+	inBuf [1:maxIX];! Circular buffer for keyboard input;
+
+
+		!=== Window and window buffer ===;
+
+DEFINE
+	tecHeight = 24,  tecWidth = 80,
+	dmHeight  = 24,  dmWidth  = 80,
+	imlHeight = 40,  imlWidth = 80,
+	hazHeight = 26,  hazWidth = 74;
+
+! Upper-left corner of the display has coordinates (0,0),
+  lower-right corner has coordinates (TVWIDTH-1, TVHEIGHT-1).
+  Datamedia width is set to 79 instead of 80 since spacing from 
+  column 80 to column 1 causes the next LF to be eaten.  This is 
+  a bug in Datamedia logic.
+   -- The new TVDPY tries to overcome this bug (with some overhead).
+  Hence we now have DMWIDTH = 80.
+;
+
+IFC  hazd.sw  THENC
+
+  DEFINE
+	tvHeight = hazHeight,  tvWidth = hazWidth;
+
+  INTEGER ARRAY
+	wxc [0:tvHeight];	! WXC[LINE]  is the first clear char 
+				  position of line--used for line up-
+				  dating because Hazeltine cannot EEOL;
+ELSEC
+
+  DEFINE
+COMMENT JERRY AGIN MODIFIED TH NEXT TWO STATEMENTS DUE TO SAIL COMPILER ERROR;
+	tvHeight = 40, COMMENT (tecHeight MAX dmHeight MAX imlHeight),;
+	tvWidth  = 80; COMMENT (tecWidth MAX dmWidth MAX imlWidth);
+
+ENDC
+
+
+STRING ARRAY
+	w [0:tvHeight];
+
+
+! W[0]  and  W[TVHEIGHT]  are always empty.
+  W[1] through W[MAXY]  hold the text of the current display.
+  Line  y  of  W  is line  y  of display.
+  Line zero of the display shows page and line no. of W[1].
+;
+
+! The following should always be valid:
+!	1 leq XX leq MAXX leq MAXX1 leq MAXMAXX
+!	1 leq YY leq MAXY leq MAXY1 leq MAXMAXY
+;
+INTEGER
+! !...	cx, cy,		! Actual cursor coordinates, in TVDPY;
+	xx, yy,		! Virtual cursor coordinates, where it is to be;
+	maxX, maxY,	! Current dimensions of dpy text area;
+	maxX1, maxY1,	! Maximums for current terminal type;
+	p.maxX, p.maxY,	! Byte pointers to STRFDBUSW, holds defaults;
+	ringX;		! Ring near right margin, set by RINGINIT;
+
+! The following two are the absolute maximums;
+DEFINE
+	maxMaxX = "(tvWidth - 2)",
+	maxMaxY = "(tvHeight - 1)",
+
+	wPage = "gPage",
+	wLine = "gLine";	! Page/line no. of W[1];
+
+INTEGER
+	oldWPage,		! To facilitate updating;
+	oldWLine;
+
+
+		!=== Screen updating ===;
+
+	! Arguments for  STARTS and DISPLAYS;
+
+INTEGER
+	dpWX0,		! X-coordinate of left frame w.r.t. text;
+	dpTX,		! Cursor position w.r.t. text;
+	refreshX;	! The line on the display needs
+			  to be rewritten from  REFRESHx on;
+
+
+! Variables pertinent to the display of currently open line  L;
+
+INTEGER
+	wx0,		! X for L at left frame, i.e. WX0+1
+			  is the first visible position of L;
+  	overHang;	! Net no. of characters on screen
+			  beyand right frame (resulting from
+			  IC and DC commands to TEC);
+
+BOOLEAN
+	inSight;	! TX on current screen after ADDINPUT;
+
+
+
+! Mode and message display on line 0;
+
+DEFINE
+	iOrg = 18,	COMMENT  I for insert mode displayed at (IORG,0);
+	caseOrg = 20,
+	mesOrg = 30;	COMMENT  Message starts at (MESORG, 0);
+
+! Blinking "L" is displayed at (CASEORG,0) if UCFILE not INUC.
+  Similarly "U";
+
+
+BOOLEAN
+	novice,		! Tell him to read the news;
+	round1,		! To control display of top page at TPORG. 
+			  Looked at by  RESTART (in TECFIL);
+! ... "DPYON" is a PSI-variable declared in the file DPY;
+! !...	dpyOn,		! Maintain the display.  Complemented by CTRL-O,
+			  turned on by return from keyboard wait;
+	messageOn,	! True iff DPYMESSAGE was last called with
+			  non-empty argument.   Keyboard wait with
+			  message on turns  EXPIRED  on;
+	noLine0,	! Line 0 wiped out (by Clear Memory);
+	expired;	! Delays turning off of message on line 0.
+			  When true, next  EDITOR  cycle clears 
+			  message.  See COMMENT to MESSAGEON;
+
+
+	!******   Text File Input/Output, Scans   ******
+	 **********************************************;
+
+
+! NOTE:  BREAK TABLES defined on page 1 of this file;
+
+INTEGER
+	inChan, outChan, strChan, inJFN, outJFN, strJFN, strFDBUSW,
+
+	fileMode,	! Editing mode as accepted in initial
+			  dialog (W,L,U,R);
+	sPage,		! String file page last opened by 
+			  MAPSSPAGE, used by REMSPAGE;
+
+! Bytes of user setable word FDB['24], tell how to restart;
+	p.mode,		! bit 0,  0 for L, 1 for U;
+	p.page,		! bits 1-11,  WPAGE at last write finish;
+	p.line,		! bits 12-26,  WLINE of same;
+	p.252,		! bits 27-35,  flag to indicate TV file;
+
+	p.byteSize,	! from FDB['11];
+
+	maxLength,	! Maximum line length in bytes;
+	breakChar;
+
+BOOLEAN	
+	rushed,		! ESC typed to accept default options;
+	sameFile,	! Same file as last time;
+	ownFile,	! INFILE is in connected directory;
+	newFile,	! No file by this name exists yet;
+	eof;
+
+STRING
+	dirString,	! Name of login directory;
+	stringFile,	! <DIRSTRING>TV-STRINGS.PMAP;
+	regBufferFile,	! <DIRSTRING>TV-REGION-BUFFER.TXT;
+	inFile,		! Name of the file being edited;
+	oldInFile,	! As stored in TV-STRINGS.PMAP;
+	outFile,	! Temporary name for updated file;
+
+	filePlaces,	! Page.Line list for +G-command;
+	answer;		! Used in initial dialog in GETFIL;
+
+DEFINE
+	fileName = "inFile";
+
+
+! A fork page for string file input and output;
+
+DEFINE	
+	sBufPage = '577,
+	sBuffer(i) = "memory[i + sBufPage LSH 9]";
+
+
+INTEGER ARRAY	
+	fdb [0:'24],	! File Descriptor Block;
+
+! Information exchange between programs;
+
+	infBuf [0:'37];
+
+! For  GETINF  UUO.  The calling program (SAIL for instance) is
+  supposed to load the info buffer with:			
+    infBuf:	sixbit /<file to edit>/
+    infBuf+1:	sixbit /<ext>/
+	...
+    infBuf+4:	byte number,,line number
+    infBuf+5:	page number
+	...
+    infBuf+'33:	name of calling program
+	...
+  For details, see Bob Smith's "Automatic Interfacing to IMSSS 
+  Editors"
+;
+
+STRING
+	callFile;	! SAIL file to edit;
+
+INTEGER
+	goPage, goLine, goByte;
+
+BOOLEAN
+	autoCall;	! Initially the AND of CALL.SW
+			  and RPGSW,  Falsified by Fcommand;
+EXTERNAL INTEGER
+	rpgsw;		! TRUE iff TV was started by
+			  another program (SAIL for instance);
+
+INTEGER
+	fileLength,	! In bytes, from FDB, Converted to 7-biters;
+	byteSize;	! From FDB, not converted;
+
+BOOLEAN
+	failFile,	! If TRUE, lines may not have null bytes inside;
+	starting,
+
+	sosFile, 
+	sosFate,	! True if wants SOS line numbers deleted when
+			  file is copied;
+	crashFile, 	! File has crashed and needs straightening out;
+	badEOF,		! FFFP was not EOFpage + 1;
+
+	finNV,
+	newVersion, 	! Give new version at finish; 
+	keepAll;	! Retain all versions and pages at finish;
+
+DEFINE
+	slack = 50;	COMMENT  No. lines for backing up by MAPPGLN;
+
+		!******   Text buffer   ******
+		 ****************************;
+
+
+DEFINE
+	textMin = 1,
+	textMax = 150,
+	textSize= "(textMax - textMin + 1)";
+
+
+STRING ARRAY
+	text [1:textMax];	! Text buffer;
+
+
+! The text buffer is circular buffer for lines.
+  Text buffer comes in four contiguous sections:
+  TOP text, GAP of empty lines, BOTTOM text, and FREE area.
+  The first line of top text overflows to output file.
+  Lines from the input file are appended to the bottom text.
+  The current window has the lines from the gap.
+
+  Top, gap, and bottom texts can all be empty (i.e., no lines),
+  but free buffer must have at least one free (i.e., empty) line.
+  Thus  TOP = FREE  implies  TOP = GAP = BOT = FREE, and all of TEXT
+  is free.
+;
+
+! Next four variables are indeces (pointers) to TEXT buffer;
+
+INTEGER
+	top,	    ! First line of top text;		
+	gap,	    ! First "line" after top;
+	bot,	    ! First line of bottom text;
+	free,	    ! First free "line" after bottom;
+
+	tPage,	    ! Page number of TEXT[TOP];
+	tLine,	    ! Line number of same;
+	gPage,	    ! ..ditto, for GAP (and Window);
+	gLine,
+
+	readCount,	! No. of lines read so far...for debuging;
+	backPage,	! The place of last  G  or  T  command...;
+	backLine;	! ...for  -G  command to go back to;
+
+DEFINE
+	firstWindow = "(gPage=1 AND gLine=1)",
+	lastWindow = "(eof AND bot=free)";
+
+
+   !******   Temporary storage for deleted lines and words   ******
+    **************************************************************;
+
+
+DEFINE
+	maxGY = "TVheight";
+
+
+PRELOAD!WITH	NIL;	! To prevent initialization;
+
+OWN STRING ARRAY
+	grave [1:maxGY];
+
+! Last in, first out stack with a leaking bottom;
+
+
+
+
+INTEGER
+	 gy,		! Pointer to top of  GRAVE;
+
+! Last effective line delete params for use by  "Recover" command;
+
+	lDelSign,	! Set by "u/dDelete";
+
+	lDelCount,	! Cleared by "u/dDelete",
+			  updated by  "bury" and "digUp";
+
+	deltaP;		! Count for  UPDATEPAGEMARKS.
+			   > 0 means pg-marks have been added,
+			   < 0 menas ... deleted.;
+
+
+DEFINE
+	graveEmpty = "empty(grave[gy])";
+
+BOOLEAN
+	holdL;		! TRUE indicates that oops-buffer
+			  was told to remember lines that have
+			  not yet been popped out.;
+
+DEFINE
+	maxGX = 16;
+
+PRELOAD!WITH	NIL;
+
+OWN STRING ARRAY
+	wGrave [1:maxGX];
+
+INTEGER
+	gx,		! Pointer to NEXT 'free' location in word grave;
+
+	wCount,		! No. of words 'saved';
+
+	wDelSign,	! See corresponding L-variables;
+	wDelCount;
+
+BOOLEAN
+	holdW;
+
+STRING
+	cGrave;		! Last string deleted using char mode delete;
+
+
+	!******   Current line, Character mode   ******
+	 *********************************************;
+
+
+DEFINE
+	maxMaxS = 15;
+
+STRING ARRAY
+	l [0:maxMaxS+1];  ! Currently open line.
+			    NOTE:  It comes in segments;
+
+BOOLEAN
+	lineOpen;
+
+INTEGER
+	tx,	! Text X-coordinate for  L;
+	oldTX,	! Same prior to command in line mode;
+	newTX,	! Ditto, but after command execution;
+
+	nBytes,	! No. of bytes on currently open line;
+
+	tByte,	! Tail Byte number: 1st byte of tail;
+	tByteX,	! X coordinate of same;
+	ts,	! Tail Segment;
+	tsByte,	! Tail byte in tail segment;
+
+	addS,	! Segment last being appended to;
+	maxS,	! Current maximum line Segment no.
+		  0 leq MAXs leq MAXmAXs.
+		  L[MAXs]  should always end in  EOLstring;
+	t1x,	! Temporary save locations for above;
+	t1Byte,
+	t1ByteX;
+
+DEFINE
+	tChar = "l[ts][tsByte FOR 1]";	! First chatacter of tail;
+
+
+		!******   Strings and Stack   ******
+		 **********************************;
+
+
+DEFINE
+	n1Strings = 24;		! Max no. of user-defined strings.
+				! Exclude ctrl-CIJLMOT;
+IFC  FALSE  THENC
+
+  DEFINE
+	nStrings  = "(n1Strings + 6)";  ! Must be  "+ # predefined";
+
+  PRELOAD!WITH  
+	[n1Strings]	NIL,
+	
+	"A",
+
+
+		    "^",
+
+
+	"<",			">",
+
+	"(",			")";
+
+ELSEC
+
+  DEFINE
+	nStrings =  "(n1Strings + 1)";
+
+  PRELOAD!WITH
+	[n1Strings]	NIL,
+
+  	"A";
+
+ENDC
+
+OWN STRING ARRAY
+	strings [1:nStrings];
+
+
+! Stored strings have the structure:
+  <String ID character> <effective string> ;
+
+DEFINE
+	maxSY = 20;
+
+STRING ARRAY
+	stack [0:maxSY];
+
+INTEGER
+	sy;		! Pointer to top string in stack.
+			  STACK[0]  is always empty.
+			  SY=0 implies empty stack but not vice versa.
+			  Removing of the last character of  STACK[SY]
+			  leaves an empty  STACK[SY]  but  SY neq 0.
+			  Hence, a non-zero  SY  means that the most
+			  resent character came from the stack.				
+			;
+DEFINE
+	fromStack = "sy",
+	fromKeyboard = "(NOT sy)",
+	stackHas = "length(stack[1])",
+	stackEmpty = "(NOT length(stack[1]))";
+
+BOOLEAN
+	inCommand,	! To abort if undefined string is called
+			  within a command, e.g., $ BS, when BS is
+			  not defined, used to leave  $  hanging;
+	defining;	! String definition in progress.  Controlled
+			  by BEGDEFINE, ENDDEFINE, interracts with
+			  DPYMESSAGE;
+STRING
+	newString;	! The string being defined;
+
+
+! The following counts have been accumulated since last keyboard input.
+  They are used to control the editing allowed by strings alone	;				    
+
+INTEGER
+	callCount,	! Number of string calls;
+	eatCount,	! Net no. of lines killed;
+	emitCount;	! No. of new lines genereted;
+
+
+! Flags controlled by these counts and others.  They will buy a string 
+  execution abort at  NEXTCHAR ;
+
+BOOLEAN
+	eats,	
+	emits,
+	fails;
+
+INTEGER
+	iCount;		! Input counter, to auto-save top text.
+			  MAPPGLN sets to 500, GETINBUF countes down.
+			  On reaching 0, saves top text on output page
+			  and sets counter to 250;
+
+	!******   Command parameters and modes   ******
+	 *********************************************;
+
+
+! The following are command parameters filled by 'COMMANDINPUT'.
+  Old parameters are stored for the 'Again' command ;
+
+INTEGER
+  	sign,
+	count,		! WARNING:  COUNT is also a local variable 
+			  in many procedures!!!!! ;
+	extension,
+	command,	! 7-bit ascii character;
+	mode,		! 0=character, 1=word, 2=line, 3=region mode;
+	sChar,		! Search Character:  Character argument
+			  for SEARCH, ZAP, or RETRIEVE-command;
+	octalChar,	! Last character got by OCTAL input;
+
+	oldSign,
+	oldCount,		
+	oldExtension,
+	oldCommand,
+	oldMode;
+
+BOOLEAN
+	doubleESC,
+	gotCount,
+	gotDot,
+	gotStar,
+
+	oldDoubleESC,
+	oldGotCount,
+	oldGotDot,
+	oldGotStar;
+		
+DEFINE maxstr = (tvWidth - mesOrg),  
+       numsstr = 10,
+       sstrheapsize = maxstr * 5;  
+
+SAFE OWN INTEGER ARRAY		! see dtsearch for definitions;
+	x2[0:maxstr],		! character save stack;
+	x3[0:maxstr],		! another character save stack;
+	x4[0:sstrheapsize],	! search string heap;
+	x5[1:numsstr];		! pointers to search strings in heap;
+
+BOOLEAN
+	gotesc;		! True if search string terminated in esc;
+
+SAFE OWN STRING ARRAY
+	sStrings[1:numsstr],	! Search Strings;
+	sOlds[1:numsstr],	! Search Strings for .T;
+	sNews[1:numsstr];	! Replacements for .T;
+
+INTEGER
+	numStrings,		! Number of search strings;
+	numOlds,		! Number of replacements;
+	old4;			! old string heap (x4);
+
+BOOLEAN	
+	pureKeyboard,	! True if all characters of command came from
+			  the keyboard.  Some commands are considered 
+			  valid only if they come from the keyboard;
+	again,		! True when executing the AGAIN-command.  Some
+			  commands have additional cursoe movement when
+			  executed again, e.g., $=;
+	wild,		! wildcArd search;
+	commandOK;
+
+INTEGER
+	ac12, ac16, ac17,    ! To save SAIL stack pointers  P
+			       and SP.  Used by  ABORT for
+			       immediate return to  EDITOR;
+	abortP;		     ! AC17 (=P) at last abort;
+				
+
+	!******   Editing modes, Flags, Pseudo-interupts   ******
+	 *******************************************************;
+
+
+BOOLEAN	
+	readOnlyMode,
+
+	insertMode,
+	iBlinks,
+
+	endOfEdit,
+
+	lineKill;	! Kill command in line mode;
+
+DEFINE
+	readOnly = "readOnlyMode",
+	writeMode = "(NOT readOnlyMode)",
+
+	charMode = "(mode=0)",
+	wordMode = "(mode=1)",
+	lineMode = "(mode=2)",
+	regionMode = "(mode=3)";
+
+
+!   *	*   *	*   *	*   *	*   *	*   *	*   *	*   *	*   *
+*
+*		Pseudo-interrupts
+*
+*   *	*   *	*   *	*   *	*   *	*   *	*   *	*   *	*   ;
+
+
+INTERNAL BOOLEAN
+	haltPending;	! Set by  ^L  pseudo-interrupt,
+			  cleared by whoever responds to "HALT".
+			  It is internal for the benefit of "TECPSI";
+
+!	comment stuff;
+
+integer	cmtcol;
+boolean cmtflag;
+string cmtbeg, cmtend;
+
+    !******   Character Classification and Character Table   ******
+     *************************************************************;
+
+
+! The following is the finest classification of
+  characters beyand the ASCII code itself ;
+
+DEFINE	
+	NULLclass =  0,		COMMENT  Always thrown away;
+	CTRLCclass=  1,		COMMENT  Internal no-op;
+	ALTMclass =  2,
+	DELclass  =  3,
+
+	EOLclass  =  4,
+	FFclass   =  5,		COMMENT  Page mark;
+	TABclass  =  6,
+	SPclass   =  7,
+
+	STRINGclass='10,
+	PUNCTclass= '11,	COMMENT  Printing non-letter;
+	UCclass   = '12,
+	LCclass   = '13,
+
+	LCPclass  = '14;	COMMENT  "Lower Case" punct.;
+
+
+! Constants for building the character table.
+  Bits 0-8 defined on next page
+     9-15  KEYBOARD transliteration, the "k!"
+    16-22  DPYCHARACTER at input time, "d!"
+    23-29  UPPERCASE, "u!"
+    30-31  SPACING for the character, "s!":
+	    0 = EOL character,
+	    1 = text character worth one space,
+	    2 = TAB, and
+	    3 = non-text character (CTRL, DEL).
+    32-35  CLASS.
+;
+DEFINE	s!="LSH 4", k!="LSH 20", d!="LSH 13", u!="LSH 6", box!="BOX d!",
+
+	NULLcl(c) = "NULLclass  + 3 s! + 0 k! + box! + 0 u!",
+	CTRLCcl(c)= "CTRLCclass + 3 s! + 0 k! + box! + c u!",
+	ALTMcl(c) = "ALTMclass  + 3 s! + c k! +EET d!+ c u!",
+	DELcl(c)  = "DELclass   + 3 s! + c k! + box! + c u!",
+
+	EOLcl(c)  = "EOLclass   + 0 s! + c k! + LE d!+ EOLchar u!",
+	FFcl(c)   = "FFclass    + 3 s! + c k! + box! + c u!",
+	TABcl(c)  = "TABclass   + 2 s! + c k! +'40 d!+ c u!",
+	SPcl(c)   = "SPclass    + 1 s! + c k! + c d! + c u!",
+
+	STRINGcl(c)="STRINGclass+ 3 s! + c k! + box! + c u!",
+	PUNCTcl(c)= "PUNCTclass + 1 s! + c k! + c d! + c u!",
+	UCcl(c)   = "UCclass    + 1 s! + c k! + c d! + c u!",
+
+	LCcl(c)   = "LCclass	+ 1 s! + c k! + c d! +(c-'40)u!",
+	LCPcl(c)  = "LCPclass	+ 1 s! + c k! + c d! +     c u!";
+
+! Similar set for TECs;
+
+DEFINE
+	t.NULLcl(c) = "NULLclass  + 3 s! + 0 k! + box! + 0 u!",
+	t.CTRLCcl(c)= "CTRLCclass + 3 s! + 0 k! + box! + c u!",
+	t.ALTMcl(c) = "ALTMclass  + 3 s! + c k! +EET d!+ c u!",
+	t.DELcl(c)  = "DELclass   + 3 s! + c k! + box! + c u!",
+
+	t.EOLcl(c)  = "EOLclass   + 0 s! + c k! + LE d!+ EOLchar u!",
+	t.FFcl(c)   = "FFclass    + 3 s! + c k! + box! + c u!",
+	t.TABcl(c)  = "TABclass   + 2 s! + c k! +'40 d!+ c u!",
+	t.SPcl(c)   = "SPclass    + 1 s! + c k! + c d! + c u!",
+
+	t.STRINGcl(c)="STRINGclass+ 3 s! + c k! + box! + c u!",
+	t.PUNCTcl(c)= "PUNCTclass + 1 s! + c k! + c d! + c u!",
+	t.UCcl(c)   = "UCclass    + 1 s! + c k! + c d! + c u!",
+
+	t.LCcl(c,k) = "LCclass    + 1 s! + k k! +(c-'40)d!+(c-'40)u!",
+	t.LCPcl(c,d)= "LCPclass	  + 1 s! + c k! +    d d! +(c-'40)u!";
+
+
+! Command execution is partly table driven.
+  'COMMANDDUTIES' is the table of bits that control
+  that part of execution.  The bits are:
+;
+
+DEFINE
+
+modes =	       "'400000000000",  COMMENT  This command requires
+					mode specificatin;
+iglAbort =	'200000000000,  COMMENT  This command is illegal;
+xyAbort =	'100000000000,  COMMENT  This command requires
+					valid Cursor X and Y;
+
+readOnlyAbort =	 '40000000000,  COMMENT  Command modifies file and
+					thus requires write mode;
+pageMarkAbort =  '20000000000,  COMMENT  Command expects current
+					line to be a text line;
+leaveI =	 '10000000000,  COMMENT  Leave insert mode before
+					executing the command;
+
+closeL =	  '4000000000,  COMMENT  Close current line before
+					executing the command;
+openL =		  '2000000000,  COMMENT  Open current line before
+					executing the command;
+
+COMMENT  The above checks are carried out before command dispatch
+	by the procedure  PREexecute.
+	Masks (LOR) for some of these bits are:
+	;
+
+aborts =  iglAbort + xyAbort + readOnlyAbort + pageMarkAbort;
+
+
+PRESET!WITH		! To put in high seg;
+
+! NULL=^@=^shP; NULLcl  ('0)  + iglAbort,
+! ^A;		STRINGcl('1)  + iglAbort,
+! ^B;		STRINGcl('2)  + iglAbort,
+! CTRLC;	CTRLCcl ('3)  + iglAbort, 
+
+		STRINGcl('4)  + iglAbort,	! ^D...^G,  4-7;
+		STRINGcl('5)  + iglAbort,
+		STRINGcl('6)  + iglAbort,
+		STRINGcl('7)  + iglAbort,
+
+! BS=^H;	STRINGcl('10) + iglAbort,
+! TAB=^I;	TABcl   ('11) + iglAbort,
+! LF=^J;	EOLcl   ('12) + xyAbort + leaveI + closeL,
+! VT=^K;	STRINGcl('13) + iglAbort,
+
+! FF=^L;	FFcl    ('14) + iglAbort,
+! CR=^M;	EOLcl   ('15) + xyAbort + leaveI + closeL,
+		STRINGcl('16) + iglAbort,	! ^N...^Z,  16-32;
+		STRINGcl('17) + iglAbort,
+
+! ^P;		STRINGcl('20) + iglAbort,
+		STRINGcl('21) + iglAbort,
+		STRINGcl('22) + iglAbort,
+		STRINGcl('23) + iglAbort,
+
+! ^T;		STRINGcl('24) + iglAbort,
+		STRINGcl('25) + iglAbort,
+		STRINGcl('26) + iglAbort,
+		STRINGcl('27) + iglAbort,
+
+! ^X;		STRINGcl('30) + iglAbort,
+		STRINGcl('31) + iglAbort,
+		STRINGcl('32) + iglAbort,
+! ESC=^[=^shK;	ALTMcl  ('33) + iglAbort,
+
+! ^\ = ^shL;	STRINGcl('34) + iglAbort,	! ^\...^_,  34-37;
+! ^] = ^shM;	STRINGcl('35) + iglAbort,
+! ^^ = ^shN;	STRINGcl('36) + iglAbort,
+! ^_ = ^shO;	STRINGcl('37) + iglAbort,
+
+
+! '40;	SPcl   (""" """) + xyAbort + leaveI + openL,
+ 	PUNCTcl("""!""") + iglAbort,
+! ";	PUNCTcl  ('42)   + xyAbort + leaveI + openL,
+ 	PUNCTcl("""#""") + iglAbort,
+
+! '44;	PUNCTcl("""$""") + iglAbort,
+	PUNCTcl("""%""") + iglAbort,
+	PUNCTcl("""&""") + iglAbort,
+	PUNCTcl("""'""") + xyAbort + readOnlyAbort + pageMarkAbort,
+
+! '50;	PUNCTcl("""(""") + xyAbort + leaveI + openL,
+	PUNCTcl(""")""") + xyAbort + leaveI + openL,
+	PUNCTcl("""*""") + iglAbort,
+	PUNCTcl("""+""") + iglAbort,
+
+! '54;	PUNCTcl(""",""") + iglAbort,
+	PUNCTcl("""-""") + iglAbort,
+	PUNCTcl(""".""") + iglAbort,
+	PUNCTcl("""/""") + 0,
+
+! '60;	PUNCTcl("""0""") + iglAbort,
+	PUNCTcl("""1""") + iglAbort,
+	PUNCTcl("""2""") + iglAbort,
+	PUNCTcl("""3""") + iglAbort,
+
+! '64;	PUNCTcl("""4""") + iglAbort,
+	PUNCTcl("""5""") + iglAbort,
+	PUNCTcl("""6""") + iglAbort,
+	PUNCTcl("""7""") + iglAbort,
+
+! '70;	PUNCTcl("""8""") + iglAbort,
+	PUNCTcl("""9""") + iglAbort,
+	PUNCTcl(""":""") + iglAbort,
+	PUNCTcl(""";""") + xyAbort + leaveI,
+
+! '74;	PUNCTcl("""<""") + xyAbort + leaveI,
+	PUNCTcl("""=""") + xyAbort,
+	PUNCTcl(""">""") + xyAbort + leaveI,
+	PUNCTcl("""?""") + iglAbort,
+
+
+PUNCTcl("""@""") + leaveI + closeL,			    ! '100;
+UCcl("""A"""),
+UCcl("""B""") + xyAbort + readonlyabort + openL,
+UCcl("""C""") + xyAbort + readOnlyAbort + pageMarkAbort
+	      + leaveI + modes,
+
+UCcl("""D""") + xyAbort + leaveI + modes,
+UCcl("""E""") + xyAbort + pageMarkAbort + leaveI + openL,
+UCcl("""F""") + leaveI + closeL,
+UCcl("""G""") + leaveI + closeL,
+
+UCcl("""H""") + xyAbort + readOnlyAbort,		    ! '110;
+UCcl("""I""") + xyAbort + readOnlyAbort,
+UCcl("""J""") + xyAbort + readOnlyAbort + pageMarkAbort,
+UCcl("""K""") + xyAbort + readOnlyAbort + leaveI + openL,
+
+UCcl("""L""") + xyAbort + readOnlyAbort,
+UCcl("""M""") + xyAbort + readOnlyAbort + pageMarkAbort
+	      + leaveI + modes,
+UCcl("""N""") + 0,
+UCcl("""O""") + xyAbort + readOnlyAbort + leaveI,
+
+UCcl("""P""") + xyAbort + readOnlyAbort + leaveI + closeL,  ! '120;
+UCcl("""Q""") + xyAbort + readOnlyAbort + pageMarkAbort,
+UCcl("""R""") + xyAbort + leaveI + modes,
+UCcl("""S""") + xyAbort + leaveI + modes,
+
+UCcl("""T""") + xyAbort + leaveI,
+UCcl("""U""") + xyAbort + readOnlyAbort,
+UCcl("""V""") + xyAbort + readOnlyAbort + pageMarkAbort,
+UCcl("""W""") + xyAbort,
+
+UCcl("""X""") + leaveI,					    ! '130;
+UCcl("""Y""") + leaveI + closeL,
+UCcl("""Z""") + xyAbort + readOnlyAbort + leaveI + modes,
+PUNCTcl("""[""") + iglAbort,
+
+PUNCTcl("""\""") + xyAbort + leaveI,			    ! '134;
+PUNCTcl("""]""") + iglAbort,
+PUNCTcl("""^""") + xyAbort + leaveI,
+PUNCTcl("""_""") + iglAbort,
+
+
+! '140;
+! %@;	LCPcl("""`""") + iglAbort,
+	LCcl ("""a""") + iglAbort,
+	LCcl ("""b""") + iglAbort,
+	LCcl ("""c""") + iglAbort,
+
+	LCcl ("""d""") + iglAbort,
+	LCcl ("""e""") + iglAbort,
+	LCcl ("""f""") + iglAbort,
+	LCcl ("""g""") + iglAbort,
+
+! '150;	LCcl ("""h""") + iglAbort,
+	LCcl ("""i""") + iglAbort,
+	LCcl ("""j""") + iglAbort,
+	LCcl ("""k""") + iglAbort,
+
+	LCcl ("""l""") + iglAbort,
+	LCcl ("""m""") + iglAbort,
+	LCcl ("""n""") + iglAbort,
+	LCcl ("""o""") + iglAbort,
+
+! '160;	LCcl ("""p""") + iglAbort,
+	LCcl ("""q""") + iglAbort,
+	LCcl ("""r""") + iglAbort,
+	LCcl ("""s""") + iglAbort,
+
+	LCcl ("""t""") + iglAbort,
+	LCcl ("""u""") + iglAbort,
+	LCcl ("""v""") + iglAbort,
+	LCcl ("""w""") + iglAbort,
+
+! '170;	LCcl ("""x""") + iglAbort,
+	LCcl ("""y""") + iglAbort,
+	LCcl ("""z""") + iglAbort,
+! %[;	LCPcl("""{""") + iglAbort,
+
+! %\;	LCPcl("""|""") + iglAbort,
+! %];	LCPcl("""}""") + iglAbort,	! DEC system ALT MODE;
+! %^;	LCPcl("""~""") + iglAbort,
+! DEL=%_='177; DELcl('177) + xyAbort + leaveI,
+
+
+! NULL=^@=^shP; t.NULLcl  ('0)  + iglAbort,
+! ^A;		t.STRINGcl('1)  + iglAbort,
+! ^B;		t.STRINGcl('2)  + iglAbort,
+! CTRLC;	t.CTRLCcl ('3)  + iglAbort, 
+
+		t.STRINGcl('4)  + iglAbort,	! ^D...^G,  4-7;
+		t.STRINGcl('5)  + iglAbort,
+		t.STRINGcl('6)  + iglAbort,
+		t.STRINGcl('7)  + iglAbort,
+
+! BS=^H;	t.STRINGcl('10) + iglAbort,
+! TAB=^I;	t.TABcl   ('11) + iglAbort,
+! LF=^J;	t.EOLcl   ('12) + xyAbort + leaveI + closeL,
+! VT=^K;	t.STRINGcl('13) + iglAbort,
+
+! FF=^L;	t.FFcl    ('14) + iglAbort,
+! CR=^M;	t.EOLcl   ('15) + xyAbort + leaveI + closeL,
+		t.STRINGcl('16) + iglAbort,	! ^N...^Z,  16-32;
+		t.STRINGcl('17) + iglAbort,
+
+! ^P;		t.STRINGcl('20) + iglAbort,
+		t.STRINGcl('21) + iglAbort,
+		t.STRINGcl('22) + iglAbort,
+		t.STRINGcl('23) + iglAbort,
+
+! ^T;		t.STRINGcl('24) + iglAbort,
+		t.STRINGcl('25) + iglAbort,
+		t.STRINGcl('26) + iglAbort,
+		t.STRINGcl('27) + iglAbort,
+
+! ^X;		t.STRINGcl('30) + iglAbort,
+		t.STRINGcl('31) + iglAbort,
+		t.STRINGcl('32) + iglAbort,
+! ESC=^[=^shK;	t.ALTMcl  ('33) + iglAbort,
+
+! ^\ = ^shL;	t.STRINGcl('34) + iglAbort,	! ^\...^_,  34-37;
+! ^] = ^shM;	t.STRINGcl('35) + iglAbort,
+! ^^ = ^shN;	t.STRINGcl('36) + iglAbort,
+! ^_ = ^shO;	t.STRINGcl('37) + iglAbort,
+
+
+! '40;	t.SPcl   (""" """) + xyAbort + leaveI + openL,
+ 	t.PUNCTcl("""!""") + iglAbort,
+! ";	t.PUNCTcl  ('42)   + xyAbort + leaveI + openL,
+ 	t.PUNCTcl("""#""") + iglAbort,
+
+! '44;	t.PUNCTcl("""$""") + iglAbort,
+	t.PUNCTcl("""%""") + iglAbort,
+	t.PUNCTcl("""&""") + iglAbort,
+	t.PUNCTcl("""'""") + xyAbort + readOnlyAbort + pageMarkAbort,
+
+! '50;	t.PUNCTcl("""(""") + xyAbort + leaveI + openL,
+	t.PUNCTcl(""")""") + xyAbort + leaveI + openL,
+	t.PUNCTcl("""*""") + iglAbort,
+	t.PUNCTcl("""+""") + iglAbort,
+
+! '54;	t.PUNCTcl(""",""") + iglAbort,
+	t.PUNCTcl("""-""") + iglAbort,
+	t.PUNCTcl(""".""") + iglAbort,
+	t.PUNCTcl("""/""") + 0,
+
+! '60;	t.PUNCTcl("""0""") + iglAbort,
+	t.PUNCTcl("""1""") + iglAbort,
+	t.PUNCTcl("""2""") + iglAbort,
+	t.PUNCTcl("""3""") + iglAbort,
+
+! '64;	t.PUNCTcl("""4""") + iglAbort,
+	t.PUNCTcl("""5""") + iglAbort,
+	t.PUNCTcl("""6""") + iglAbort,
+	t.PUNCTcl("""7""") + iglAbort,
+
+! '70;	t.PUNCTcl("""8""") + iglAbort,
+	t.PUNCTcl("""9""") + iglAbort,
+	t.PUNCTcl(""":""") + iglAbort,
+	t.PUNCTcl(""";""") + xyAbort + leaveI,
+
+! '74;	t.PUNCTcl("""<""") + xyAbort + leaveI,
+	t.PUNCTcl("""=""") + xyAbort,
+	t.PUNCTcl(""">""") + xyAbort + leaveI,
+	t.PUNCTcl("""?""") + iglAbort,
+
+
+t.PUNCTcl("""@""") + leaveI + closeL,			    ! '100;
+t.UCcl("""A"""),
+t.UCcl("""B""") + xyAbort + readonlyabort + openL,
+t.UCcl("""C""") + xyAbort + readonlyabort + pagemarkabort
+	        + leaveI + modes,
+
+t.UCcl("""D""") + xyAbort + leaveI + modes,
+t.UCcl("""E""") + xyAbort + pageMarkAbort + leaveI + openL,
+t.UCcl("""F""") + leaveI + closeL,
+t.UCcl("""G""") + leaveI + closeL,
+
+t.UCcl("""H""") + xyAbort + readOnlyAbort,		    ! '110;
+t.UCcl("""I""") + xyAbort + readonlyabort,
+t.UCcl("""J""") + xyAbort + readOnlyAbort + pageMarkAbort,
+t.UCcl("""K""") + xyAbort + readOnlyAbort + leaveI + openL,
+
+t.UCcl("""L""") + xyAbort + readOnlyAbort,
+t.UCcl("""M""") + xyAbort + readOnlyAbort + pageMarkAbort
+	        + leaveI + modes,
+t.UCcl("""N""") + 0,
+t.UCcl("""O""") + xyAbort + readOnlyAbort + leaveI,
+
+t.UCcl("""P""") + xyAbort + readOnlyAbort + leaveI + closeL,  ! '120;
+t.UCcl("""Q""") + xyAbort + readOnlyAbort + pageMarkAbort,
+t.UCcl("""R""") + xyAbort + leaveI + modes,
+t.UCcl("""S""") + xyAbort + leaveI + modes,
+
+t.UCcl("""T""") + xyAbort + leaveI,
+t.UCcl("""U""") + xyAbort + readOnlyAbort,
+t.UCcl("""V""") + xyAbort + readOnlyAbort + pageMarkAbort,
+t.UCcl("""W""") + xyAbort,
+
+t.UCcl("""X""") + leaveI,				    ! '130;
+t.UCcl("""Y""") + leaveI + closeL,
+t.UCcl("""Z""") + xyAbort + readOnlyAbort + leaveI + modes,
+t.PUNCTcl("""[""") + iglAbort,
+
+t.PUNCTcl("""\""") + xyAbort + leaveI,			    ! '134;
+t.PUNCTcl("""]""") + iglAbort,
+t.PUNCTcl("""^""") + xyAbort + leaveI,
+t.PUNCTcl("""_""") + iglAbort,
+
+
+! '140;							! i  f  v ;
+! %@;	t.LCPcl("""`""","""'""") + iglAbort,		! g  b  r ;
+	t.LCcl ("""a""","""A""") + iglAbort,		! w  d  t ;
+	t.LCcl ("""b""","""\""") + iglAbort,		! h  e  u ;
+	t.LCcl ("""c""",  '12  ) + iglAbort,	! LF;	! x  c  s ;
+
+	t.LCcl ("""d""","""^""") + iglAbort,	       ! TAB _  00;
+	t.LCcl ("""e""","""=""") + iglAbort,		! [  \  ] ;
+	t.LCcl ("""f""","""_""") + iglAbort,		! (  ^  ) ;
+	t.LCcl ("""g""","""[""") + iglAbort,		! <  =  > ;
+							! 00 LF 37;
+! '150;	t.LCcl ("""h""","""<""") + iglAbort,
+	t.LCcl ("""i""",  '11  ) + iglAbort,	! TAB;
+	t.LCcl ("""j""","""J""") + iglAbort,
+	t.LCcl ("""k""","""K""") + iglAbort,
+
+	t.LCcl ("""l""","""L""") + iglAbort,
+	t.LCcl ("""m""","""M""") + iglAbort,
+	t.LCcl ("""n""","""N""") + iglAbort,
+	t.LCcl ("""o""","""O""") + iglAbort,
+
+! '160;	t.LCcl ("""p""","""P""") + iglAbort,
+	t.LCcl ("""q""","""Q""") + iglAbort,
+	t.LCcl ("""r""","""]""") + iglAbort,
+	t.LCcl ("""s""",  '37  ) + iglAbort,	! CR;
+
+	t.LCcl ("""t""",""")""") + iglAbort,
+	t.LCcl ("""u""",""">""") + iglAbort,
+	t.LCcl ("""v""",0)       + iglAbort,
+	t.LCcl ("""w""","""(""") + iglAbort,
+
+! '170;	t.LCcl ("""x""",0)       + iglAbort,	! Case shift;
+	t.LCcl ("""y""","""Y""") + iglAbort,
+	t.LCcl ("""z""","""Z""") + iglAbort,
+! %[;	t.LCPcl("""{""","""<""") + iglAbort,
+
+! %\;	t.LCPcl("""|""","""!""") + iglAbort,
+! %];	t.LCPcl("""}""",""">""") + iglAbort,	! DEC system ALT MODE;
+! %^;	t.LCPcl("""~""","""-""") + iglAbort,
+! DEL=%_='177;	t.DELcl('177)    + xyAbort + leaveI ;
+
+
+
+SAFE OWN INTEGER ARRAY   table [0:'377];
+
+DEFINE
+	class     (char) = "(	    table [char]	 LAND  '17 )",
+	classTable(word) = "(		word		 LAND  '17 )",
+	spacing   (char) = "( (table [char]     LSH  -4) LAND   '3 )",
+	upperCase (char) = "( (table [char+t.d] LSH  -6) LAND '177 )",
+	dpyChar   (char) = "( (table [char+t.d] LSH -13) LAND '177 )",
+	keyBoard  (char) = "( (table [char+t.d] LSH -20) LAND '177 )";
+
+
+COMMENT  End of file TVDAT;
+
+

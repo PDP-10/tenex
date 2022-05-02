@@ -1,0 +1,1556 @@
+
+     !*********   TV-Edit Command Decoder/Interpreter   *********
+      **********************************************************;
+
+COMMENT  
+			The idea is:
+	1)  All tty mod 33 spacing characters  (i.e. printing
+		characters, SP, TAB)  stand for themselves.
+	2)  CR  and  LF  both act as an  EOL-character.
+	3)  ESC  (one or two) is interpreted as the beginning of
+		a command.  The command itself is composed of printing
+		characters.  The end of a command is determined
+		by the command interpreter on the bases of the
+		command syntax.
+	4)  All other characters are potential string calls
+		(i.e. calls of text and command strings).
+		Thus it is possible to assign tv-edit commands to
+		control characters.
+
+;
+
+
+COMMENT			Command format
+			--------------
+	A command starts with one or two  ESC characters.
+	All  ESCs  between the initial one(s) and the end
+		of the command are ignored.
+		Exception:  A searching command with a string argument
+		(double-ESC  S  and  Z) might use ESC for
+		something meaningful,  havn't desided yet.
+	The command is executed immediately after it has been
+		complitely recieved.
+	An illegal command rings the  BELL.
+
+
+	The commands fall into three syntactic categories:
+
+1)  non-counting commands (P, J, B, A) are exactly one character long,
+2)  counting commands (I, K, C, M, W, G, <SP>, <DEL>, <CR>, U, D, L, R,
+	X, Y)	use a count do determine the extent of the command,
+	and
+3)  searching commands (S, Z) use a count and a target (single
+	character or a string) to determine the extent of the command.
+
+<non-counting command> _ {P, J, B, A}
+
+<counting command> _ {+,-,<>} * (UNSIGNED INTEGERS U {<>}) * {I, K, ..., R}
+
+<searching command> _ {+,-,<>} * (UNSIGNED ITEGERS U {<>}) * {S, Z} * <target>
+
+
+<target> _ <character> | CR <character> | <line>
+
+
+
+....WARNING:  This description of the syntax is not necessarily
+	complete, final, nor fully accurate.
+
+;
+
+
+REQUIRE "{}{}" DELIMITERS;
+
+FORWARD SUBROUTINE	getMode;
+
+DEFINE
+	disp (cm,wm,lm,rm) = "CASE mode OF BEGIN cm; wm; lm; rm END";
+
+
+DEFINE		enterInsert = "insertMode _ TRUE";
+!		-----------;
+
+
+BOOLEAN SUBROUTINE	pure;
+!			----;
+RETURN ( NOT(stackHas OR sign OR gotCount OR gotDot) );
+
+
+
+SUBROUTINE	setSChar;
+!		--------
+	Set Search CHARacter to next character.
+	Scans past ESCs first.
+	N O T E:  .....No expansion of string calls....!!!
+	   (presumably for string targets?!?!?!?!)
+	;
+IF NOT again  THEN
+BEGIN "setSChar" 
+   IF NOT charMode THEN nextNonESC; 
+ ! In char mode use the character itself as an argument;
+   sChar _ char;
+END "setSChar"  
+;
+SUBROUTINE 		nextStrChar (BOOLEAN returnLC);
+!			-----------
+	Like nextCom, but tells us if we got an esc, to allow
+	us to know is last char in string was esc;
+BEGIN
+  gotesc _ false;
+  do begin
+    nextchar;
+    if char = esc
+      then gotesc _ true
+      else if returnLC 
+	then char _ uppercase(char)
+    end
+   until char neq esc
+END;
+
+STRING SUBROUTINE	inString (BOOLEAN returnLC);
+!			--------
+	String argument getter for  $'  and  $T-commands.
+	Returns a string according to typeout on line 0.
+	Allows DEL-editing only.
+	;
+BEGIN "inString" STRING str;
+   setCursor (mesOrg, 0);
+
+ IFC hazd.sw THENC
+   spaceCursor (maxX1 + 1);  setCursor (mesOrg, 0);
+ ELSEC
+   doEEOL;
+ ENDC
+
+   str _ NIL;  messageOn _ TRUE;  expired _ FALSE;
+
+   FOREVER  DO
+   BEGIN "miniEdit"
+      nextStrChar (returnLC);	! Non-ESC, upper case;
+
+      IF class(char) = EOLclass THEN DONE "miniEdit";
+
+      IF char = DEL THEN
+      BEGIN INTEGER x;
+	 IF length (str) THEN str _ most (str)  ELSE ring;
+       ! Reposition, since ^O might have misplaced us;
+	 setCursor (x _ mesOrg + length (str), 0);
+
+ IFC hazd.sw THENC
+	 dpy1 (" ");  setCursor (x, 0);
+ ELSEC
+	 doEEOL;
+ ENDC
+
+      END
+      ELSE  IF cx > maxX1 THEN BEGIN clearStack; ring END
+      ELSE 
+      BEGIN
+	 str _ str & char;
+	 dpy1 ( IF char > '37 THEN dpyChar(char) ELSE BOX );
+      END
+      ;
+    ! Go get next character;
+   END "miniEdit" ! FOREVER;
+   ;
+   dpy1 (LE);  forceOut;  RETURN (str);
+END "inString"
+;
+
+SUBROUTINE	recover;
+!		-------
+	Get words or lines from the appropriate 'Oops' buffer.
+	Called by  O and R-commands.
+	$$.R'mode' clears body count in the event that grave is full.
+	;
+BEGIN "recover"
+
+	SUBROUTINE	clr (INTEGER maxN; REFERENCE INTEGER n; 
+			     REFERENCE BOOLEAN hold);
+	!		---;
+	IF n GEQ maxN AND doubleESC
+	    AND NOT (stackHas OR sign OR gotCount)
+	THEN BEGIN n _ 0; hold _ FALSE END
+	ELSE iglCommand 
+	;
+
+	SUBROUTINE	rec (INTEGER delSign, delCount;  
+			     SUBROUTINE minusRecover, plusRecover);
+	!		---;
+	BEGIN INTEGER n;
+	   n _ IF doubleESC AND NOT gotCount AND delCount GEQ 0
+		THEN delCount ELSE count
+	   ;
+	 ! Set sign for benefit of 'again' command;
+	   IF NOT sign AND delSign < 0  THEN sign _ -1;
+	   IF sign < 0  THEN minusRecover (n)  ELSE plusRecover (n);
+	END
+	;
+
+			! +  +  +  + ;
+	
+   IF gotDot THEN
+   CASE mode OF
+   BEGIN
+      iglCommand;
+      clr (maxGX, wCount, holdW);
+      clr (maxGY, eatCount, holdL);
+      iglCommand
+   END
+   ELSE
+   CASE mode OF
+   BEGIN
+      iglCommand;
+      rec (wDelSign, wDelCount, lwRecover, rwRecover);
+      rec (lDelSign, lDelCount, uRecover, dRecover);
+      rec (1, 1, regRestore, regRestore)
+   END
+   ;
+END "recover"
+;
+
+SUBROUTINE	iglCommand;
+!	  	----------;
+BEGIN ring; commandOK _ FALSE END;
+
+
+
+SUBROUTINE	CTRLCCommand;	ring;
+!		------------
+	This one will just return, an internal no-op;
+
+
+SUBROUTINE	octal;
+!		-----
+	Arbitraty character input, in octal.
+	Inputs an octal number, converts to  ASCII  character,
+	  and passes it on as a text character.
+	Restrictions:	1)  Ignors  NULL, FF.
+	  2)  Upper to lower case conversion decided later.
+	;
+BEGIN "octal" STRING str;
+   IF NOT again AND nonEmpty (str _ inString(true))
+   THEN octalChar _ cvo(str) LAND '177
+   ;
+   char _ octalChar;  setCursor (xx, yy);
+
+   CASE class (char) OF
+   BEGIN 
+	"NULL"	goof (".NULL.IS.ILLEGAL.");
+	"CTRLC"	printingInput;
+	"ESC"	printingInput;
+	"DEL"	printingInput;
+
+	"EOL"	EOLinput;
+	"FF"	goof (".FORM.FEED.IS.ILLEGAL.");
+	"TAB"	tabInput;
+	"SP"	printingInput;
+
+	"str"	printingInput;
+	"punct"	printingInput;
+	"UC"	printingInput;
+	"LC"	printingInput;
+
+	"LCpun"	printingInput
+   END  
+   ;
+END "octal"
+;
+
+SUBROUTINE	begDefine;
+!	  	---------
+	Beginning of string definition.
+	See comment to "ENDDEFINE".
+	;
+BEGIN "begDefine" INTEGER i;
+   FOR i _ n1Strings downto 1  DO IF empty(strings[i]) THEN DONE;
+
+   IF i = 0  THEN dpyMessage (".WARNING...FULL....TYPE.ID")
+   ELSE dpyMessage (".TYPE.STRING.ID")
+   ;
+   nextNonESC;
+
+ ! String ID becomes first char of string;
+   newString _ goodID (char);		! "GOODid" can abort;
+ ! Force clearing of current string for this ID;
+   storeString (newString);  
+   defining _ TRUE;  dpyMessage (NIL);  ! In that order;
+END "begDefine"
+;
+
+
+SUBROUTINE	endDefine (INTEGER id; BOOLEAN ok);
+!	  	---------
+	End of string definition.
+	If not OK, abort string definition.
+	If ID not 0, append it to string (make a self calling string).
+	Sign or count makes this just an illegal command.
+	Also no part of command  may come from the stack.
+	;
+BEGIN "endDefine"
+   IF ok THEN
+   BEGIN
+    ! First remove ESC-/ from end of string;
+      DO newString _ most (newString)  UNTIL last (newString) NEQ ESC;
+      ;
+      IF id THEN newString _ newString & id;
+      storeString (newString);  
+   END
+   ;
+   defining _ FALSE;  dpyMessage (newString _ NIL);  ! In that order;
+END "endDefine"
+;
+
+
+SUBROUTINE	slashCommand;
+!		------------
+	Beginnig or End of string definition.
+	;
+IF NOT pure  THEN badAbort
+ELSE  IF defining  THEN endDefine (0, TRUE)  ELSE begDefine
+;
+
+
+SUBROUTINE	equCommand;
+!		----------;
+IF doubleESC THEN
+BEGIN
+   IF again THEN BEGIN closeLine; dCR(1) END;
+   openLine;  indicL (sign GEQ 0);
+END
+ELSE query
+;
+
+
+SUBROUTINE		atCommand;
+!			---------
+		$@	Set the mark here.
+	       $$@	Exchange point and mark.
+	       $.@      Go to next place in place list.
+	      $$.@	  ", setting mark first.
+	;
+BEGIN "atCommand" INTEGER pg, ln;
+  pg _ backPage;  ln _ backLine;  
+  if gotDot
+    then begin
+      if doubleESC then backSave;
+      goPlaces
+      end
+    else begin
+      backSave;
+      if doubleESC then goToPlace(pg,ln,1)
+      end
+END "atCommand" 
+;
+
+
+simple integer procedure findcmt;		! see if there in one on the current line;
+    begin
+	closeline;
+	return (imbedded(cmtbeg, w[yy]))
+    end;
+
+procedure aligncmt(integer byte);			! line up an old comment right;
+    begin integer x1, x2;
+	openline;
+	tbybyte(byte);
+	if tx neq cmtcol then begin
+	    if tx < cmtcol then begin
+		xx _ tx;
+		lcursor(1);
+		linsert(cmtcol - tx - 1)
+	    end
+	    else begin
+		x1 _ tx;
+		l.words(1);
+		x2 _ cmtcol max ((tx + 8) land '777770 + 1);
+		if x1 > x2 then begin
+		    tbytx(x2);
+		    rdelete(x1 - x2)
+		end
+		else if x1 < x2 then begin
+		    tbytx(x1);
+		    linsert(x2 - x1)
+		end
+	    end
+	end
+    end;
+
+simple procedure newcmt;			! put in a new comment;
+    begin
+	openline;
+	txtoone;
+	scansr(zillion, 0, 0, 0);
+	if (xx _ tx) < cmtcol then rcursor(cmtcol - tx) else rcursor(((tx + 8) land '777770 + 1) - tx);
+	addanddpy(cmtbeg);
+	rcursor(length(cmtbeg) + 1);
+	cmtflag _ true
+    end;
+
+simple procedure delcmt;			! delete any comment there now;
+    if (foo _ findcmt) > 0 then begin
+	openline;
+	tbybyte(foo);
+	l.words(1);
+	delbytes(nbytes - tbyte, true);
+	cmtflag _ false
+    end;
+
+simple procedure semicmd;			! [semi] command;
+    if gotcount then cmtcol _ count min maxx
+    else if gotdot then cmtcol _ tx
+    else if sign < 0 then delcmt
+    else if (junk _ findcmt) > 0 then aligncmt(junk) else newcmt;
+
+simple procedure endcmt;			! close up any current comment;
+    if cmtflag then begin
+	cmtflag _ false;
+	if not empty(cmtend) and findcmt > 0 then begin
+	    openline;
+	    scansr(zillion, 0, 0, 0);
+	    addanddpy(cmtend);
+	    updatel
+	end
+    end;
+
+FORWARD SUBROUTINE	dispatch;
+
+
+SUBROUTINE	ACommand;
+!		--------
+	Do the last (good) command again.
+	;
+IF defining AND pure THEN	! Define and call a self-looping string; 
+BEGIN "selfCall" INTEGER id;
+   endDefine (id _ first (newString), TRUE);
+   command _ CTRLC;  ! Guard against endless recursion of  ACOMMND;
+   char _ id;  callString;  ! Issue self call;
+END "selfCall"
+ELSE 
+IF oldCommand = "A"  THEN BEGIN command _ CTRLC; iglCommand END
+ELSE
+BEGIN "again"
+ ! Repeat the last command, use new count (not quite) and the 'OR' 
+ ! of old and new doubleESC;
+
+   doubleESC _ doubleESC OR oldDoubleESC;
+   IF doubleESC AND NOT gotCount  THEN count _ oldCount;
+   gotCount _ gotCount OR oldGotcount;
+   gotDot _ gotDot OR oldGotDot;
+   gotStar _ gotStar OR oldGotStar;
+   IF extension = 1  THEN extension _ oldExtension;
+   IF NOT sign THEN sign _ oldSign;
+   mode _ oldMode;  command _ oldCommand;
+   again _ TRUE;  dispatch;
+END "again"
+;
+
+SUBROUTINE	FCommand;
+!		--------
+	FINISH:
+	$$nF   Double ESC:  Finish the edit.
+		n = ""  for default on new version,
+		n =  0  to abort the edit,
+		n =  1  for no new version, 
+		n > 1  to force new version.
+	$$.F  Dot with double ESC:  Save and continue (RUG-F).
+	;
+ifc not tops20.sw thenc IF sign  THEN badAbort
+ELSE endc IF readOnly AND NOT doubleESC
+THEN dpyMessage ("Type  $$F  to finish.")
+ELSE IF gotDot  THEN dpyMessage (" $$.F  has been changed to  $F")
+ELSE
+BEGIN "fCommand" 
+ IFC fin2.sw  THENC
+   newversion _ if gotcount then (count neq 1) else (autocall = 0);
+ ELSEC
+   IF gotCount  THEN newVersion _ (count > 1);
+ ! This is really in the wrong place.  Should be under DOUBLEESC;
+ ENDC
+
+   IF NOT doubleESC  THEN
+   BEGIN INTEGER saveXX; 
+      saveXX _ cx;  ! XX already clobbered by CLOSELINE;
+      finContinue (TRUE, TRUE);  ! Changes USW;
+      xx _ saveXX;
+   END 
+   ELSE
+   BEGIN "doFin" INTEGER finP, finL; STRING program; 
+   ifc tops20.sw thenc label prarg1, prarg2;
+	if sign < 0 then quick!code
+	move	1, ['2400000];	! .prast,,.fhslf;
+	movei	2, prarg1;	! Addr of block;
+	movei	3, 3;		! Length of block;
+	'104000000545;	! PRARG;
+	jrst	prarg2;	! kludge;
+prarg1:	1;		! Repeat last CCL type command;
+	'400740000002;
+	0;
+prarg2:
+	end; endc
+      dpb (finP _ linePage(yy), p.page);
+      dpb (finL _ pageLine(yy), p.line);
+      filePlaces _ cvs(finP) & "." & cvs(finL) & "," & filePlaces;
+      finish(count = 0);  endOfEdit _ TRUE;
+
+      outstr ("
+
+... F I N I S H E D  " & fileName 
+		& (IF writeMode AND finNV THEN " [New version]
+" ELSE "
+"));
+
+IFC  imsss.sw THENC
+
+      IF call.sw AND rpgsw AND infBuf['32]  THEN
+      BEGIN 
+	 DO outstr ("
+TYPE
+ S  to  " & cvxstr (infBuf['33]) & "
+ T  to edit some more
+
+*")
+	 UNTIL (char _ upperCase (INCHRW LAND '177)) = "S"
+			ORIF char = "T"
+	 ;
+	 outStr ("
+");  ! Acknowledge;
+! Autoreturn;
+	 IF char = "S"  
+	 THEN call ('1000000 + location (infBuf['32]), "RUN")
+	 ;
+	 autoCall _ FALSE;
+      END
+      ;
+
+ELSEC
+
+      IF call.sw AND rpgsw 
+	  AND nonEmpty (program _ nameScan (infBuf['13], 5))
+      THEN
+      BEGIN 
+	 DO outstr ("
+TYPE
+ S  to  " & program & "
+ T  to edit some more
+
+*")
+	 UNTIL (char _ upperCase (INCHRW LAND '177)) = "S"
+			ORIF char = "T"
+	 ;
+	 outStr ("
+");  ! Acknowledge;
+! Autoreturn;
+	 IF char = "S"  THEN runPrg (program, 1, FALSE);
+
+	 autoCall _ FALSE;
+      END
+      ;
+
+ENDC
+
+   END "doFin" 
+   ;
+END "fCommand"
+;
+
+SUBROUTINE	plusGCommand;
+!		------------
+
+	Go:  Go to designated <page>.<line>
+		The page number is absolute if no sign but a count
+		was given.  Otherwisw it is relative to current page.
+	Extension is used as target line no.
+	$mG, $m.G  page m, line 1
+	$G, $+G    next page, line 1
+	$.G, $+0G  this page, line 1
+	$.nG	   this page, line n
+	$+m.nG     this page + m, line n
+	Note:  $$ means to save current place as BACKPAGE.LINE
+	;
+BEGIN "plusG" INTEGER pg;
+   pg _ linePage(yy);  IF doubleESC  THEN backSave;
+
+   goToPlace ( IF sign THEN pg + (IF gotCount THEN count ELSE 1)
+		ELSE IF gotCount THEN count
+		ELSE IF gotDot THEN pg ELSE pg + 1,
+	       extension, 1 )
+   ;
+END "plusG" 
+;
+
+
+SUBROUTINE	minusGCommand;
+!	 	-------------;
+BEGIN "minusG"
+   IF doubleESC  THEN backSave;
+
+   goToPlace ( linePage(yy) - (IF gotCount THEN count ELSE 1),
+	       extension, 1 );				
+END "minusG" 
+;	
+
+FORWARD SUBROUTINE	LCommand;
+FORWARD SUBROUTINE	UCommand;
+
+
+SUBROUTINE	HCommand;
+!		--------
+	Complement current case.
+	;
+IF gotDot THEN
+ IF gotCount OR NOT doubleESC  THEN iglCommand
+ ELSE
+ BEGIN
+    fileMode _ IF (inUC _ ucMode _ ucFile _ NOT ucFile)
+	       THEN "U" ELSE "L";
+    dpb (inUC, p.mode);  dpyCase;
+ END
+ELSE IF inUC THEN LCommand  ELSE UCommand
+;
+
+
+SUBROUTINE	ICommand;
+!		--------
+	Enter insert mode, insert.
+	;
+BEGIN "ICommand"  OWN STRING iStr;
+   IF NOT (again AND (char _ iStr[INF FOR 1])) THEN
+   BEGIN
+      enterInsert;  iStr _ NIL;
+      DO BEGIN nextC; iStr _ iStr&char END  UNTIL char NEQ ESC;
+   END
+   ;
+   IF char = DEL THEN
+   BEGIN
+      openLine;
+      IF sign < 0  THEN lwInsert (count)  ELSE rwInsert (count);
+   END
+   ELSE 
+   IF class(char) = EOLclass THEN
+   BEGIN
+      closeLine;
+      IF sign < 0  THEN uInsert (count)  ELSE dInsert (count);
+   END
+   ELSE 
+   IF length(iStr) = 1 OR upperCase(char) NEQ "A"
+   THEN stackString (iStr)  ! Don't stack  $A;
+   ;
+END "ICommand"
+;
+
+
+SUBROUTINE	LCommand;
+!		--------
+	GOTDOT:  Change to lower case,
+	o.w.,  set lower case for next  COUNT  incoming characters.
+	Pure double ESC buys permanent lower case.
+	;
+IF gotDot THEN 
+BEGIN "dotL"
+   IF NOT again THEN getMode;  openLine;
+   disp (rLC(count), rwLC(count), dLC(count));
+END "dotL" 
+ELSE 
+BEGIN "LCommand"
+   IF doubleESC AND (NOT sign) AND (NOT gotCount)  THEN UCmode _ FALSE
+   ELSE openLine
+   ;
+   IF inUC _ NOT(caseCount _ count)  THEN resetCase;
+END "LCommand"
+;
+
+SUBROUTINE	NCommand;
+!		--------
+	No-op refresh of the current line (single ESC)
+	  or the whole window (double ESC).
+	$0N  gets line 0 refresh.
+	;
+IF count = 0 THEN dpyLine (0)
+ELSE 
+BEGIN "NCommand"
+! .....should also save and restore side scroll of line ....;
+   clearCursor;
+
+   IF (doubleESC AND NOT sign AND NOT gotCount)
+       OR yy < 0 OR yy > maxY1 OR empty(w[yy])
+   THEN
+   BEGIN "bigN"  INTEGER mxX, mxY, mxX1;
+    ! Get up-to-date dimensions;
+      dpyIni;  duxOn;  duxOff;  ! Will TERMINIT for us;
+
+      mxX _ maxX MIN (mxX1 _ maxCX - 2);  ! "- 1" when DM gets fixed; 
+					  ! Similar "fix" in WINREININT;
+      mxY _ maxY MIN maxCY; 
+
+    ! If new window dimensions are smaller, shrink;
+      IF mxX < maxX OR mxY < maxY THEN
+      BEGIN
+	 dpyOn _ FALSE;  leaveInsert;  closeLine;
+	 changeMaxX (mxX);  changeMaxY (mxY);
+	 turnOn;  ! Will  DPYON _ TRUE;
+      END
+      ;
+      maxX1 _ mxX1;  maxY1 _ maxCY;  dpyWindow;
+   END "bigN"
+   ELSE
+   BEGIN "lilN"  INTEGER y1, y2;
+      IF sign < 0  
+      THEN BEGIN y1 _ 0 MAX (yy-count); y2 _ yy-1 END
+      ELSE BEGIN y1 _ yy; y2 _ (yy+count-1) MIN maxY END
+      ;
+      WHILE y1 LEQ y2  DO BEGIN dpyLine(y1); inc(y1) END;
+   END "lilN"
+   ;
+   setCursor((xx _ xx MAX 0 MIN maxX1+1), (yy _ yy MAX 0 MIN maxY1));
+END "NCommand"
+;
+
+
+SUBROUTINE	OCommand;
+!		--------
+	Oops:  Undo previous delete command.
+	   If the delete was in
+	   ... character mode:  Undelete.  Second 'Oops' will restore the
+		    line to what it was as it was opened.
+	   ... word mode:  Recover word(s).
+	   ... line mode:  Recover line(s).
+	   ... region mode:  Recover region.
+
+		Effective sign = sign*(last effective sign).
+		   DoubleESC without a count:
+			Use effective count of last delete ("D" or "Z").
+		   O.w. (default) count is used to get previously
+			deleted lines from OOPS buffer onto the screen.
+	;
+IF oldCommand = "D" OR oldCommand = "K"
+    OR oldCommand = "Z" OR oldCommand = "O" THEN 
+BEGIN "OCommand"
+   mode _ oldMode;
+
+   IF lineOpen AND lineMode  THEN BEGIN mode _ 0; dumpLine END
+   ELSE IF NOT lineOpen AND wordMode THEN iglCommand
+   ELSE
+   BEGIN
+      IF NOT sign  THEN sign _ oldSign;
+      IF doubleESC AND NOT gotCount  THEN count _ oldCount;
+      IF charMode  THEN cOops  ELSE recover;
+   END
+   ;
+END "OCommand"
+ELSE IF lineOpen  THEN BEGIN mode _ 0; dumpLine END
+ELSE iglCommand
+;
+
+SUBROUTINE	RCommand;
+!		--------
+	Recover previously deleted lines or words.
+	Retrieve strings, input buffer (char mode).
+	;
+IF readOnly AND NOT gotDot  THEN iglCommand
+ELSE IF NOT charMode  THEN recover
+ELSE IF sign OR gotCount  THEN iglCommand
+ELSE retrieve (IF again THEN sChar ELSE (sChar _ char))  
+;
+
+SUBROUTINE	plusSCommand;
+!		------------
+	Search:  Search to  SearchCHARacter
+	;
+BEGIN "plusSCommand"
+   setSChar;
+
+   CASE mode OF
+   BEGIN
+      rSearch (count, sChar); 
+      rwSearch(count, sChar);
+      dSearch (count, sChar);
+      iglCommand
+   END
+   ;
+END "plusSCommand"
+;
+
+
+SUBROUTINE	minusSCommand;
+!		-------------;
+BEGIN "minusSCommand"
+   setSChar;
+
+   CASE mode OF
+   BEGIN
+	lSearch (count, sChar);
+	lwSearch(count, sChar);
+	uSearch (count, sChar);
+        iglCommand
+   END
+   ;
+END "minusSCommand"
+;
+
+INTEGER SUBROUTINE	TComStr;
+!			-------
+	Get TSEARCH string arguments.  Use old if new is empty.
+	Side effect:  Set back place if $$ and no count.
+	The strings themselves go in sStrings for $T, and
+	  sOlds and sNews for $.T  The number used are saved
+	  in numStrings and numOlds, but this number is also
+	  returned
+	;
+BEGIN "TComStr" STRING s; INTEGER numStr;
+   IF again THEN RETURN (IF gotDot THEN numOlds ELSE numStrings);
+   numStr _ 0;   ! numStr is the number he has typed;
+   wild _ gotStar;
+   WHILE numStr < numsStr DO ! if less than maximum legal;
+     BEGIN
+     IF gotDot
+       THEN BEGIN setCursor(mesOrg-4,0); dpy("OLD:") END;
+     IF empty (s _ inString(true))
+       THEN DONE;
+     numStr _ numStr + 1;
+     IF not gotDot
+       THEN sStrings[numStr] _ s
+       ELSE BEGIN
+       sOlds[numStr] _ s;
+       setCursor(mesOrg-4,0); dpy("NEW:");
+       sNews[numStr] _ inString(false)
+       END;
+     IF not gotEsc THEN DONE
+     END;
+   IF gotDot
+     THEN BEGIN setCursor(mesOrg-4,0); dpy("") END;
+   IF numStr = 0  ! nothing typed;
+     THEN RETURN (IF gotDot THEN numOlds ELSE numStrings)
+     ELSE RETURN (IF gotDot THEN (numOlds _ numStr) ELSE (numStrings _ numStr));
+END "TComStr"
+;
+
+SUBROUTINE	UCommand;
+!		--------
+	GOTDOT:  Change to upper case characters on current line.
+	o.w.,  set upper case for next  COUNT  incoming characters.
+	$$U  buys permanent upper case.
+	;
+IF gotDot THEN 
+BEGIN "dotU"
+   IF NOT again THEN getMode;  openLine;
+   disp (rUC(count), rwUC(count), dUC(count));
+END "dotU" 
+ELSE 
+BEGIN "UCommand"
+   IF doubleESC AND (NOT sign) AND (NOT gotCount)  THEN UCmode _ TRUE
+   ELSE openLine
+   ;
+   IF NOT(inUC _ (caseCount _ count))  THEN resetCase;
+END "UCommand"
+;
+
+
+SUBROUTINE	VCommand (BOOLEAN dwn);
+!		--------
+	If  DWN  is true, go down, up otherwise.
+	$\  and  $^  do not respect window boundaries or EOF.
+	;
+IF count THEN
+BEGIN "VCommand" INTEGER x, x0, oTX;
+   x _ xx;  x0 _ wx0;  oTX _ oldTX;  closeLine;
+ ! Ok to call CLOSELINE even if already closed;				
+
+   IF doubleESC OR gotCount OR sign 
+   THEN setXY (x, yy + (IF dwn THEN count ELSE -count))
+   ELSE BEGIN IF dwn THEN eolInput ELSE uCR(1); xx _ x END
+   ;
+ ! Use left-shift of previously open line;
+   IF x0 AND isText (w[yy])
+   THEN BEGIN openLine; tByTX(oTX); wx0 _ x0; dpyL END
+   ;
+END "VCommand"
+;
+
+
+DEFINE		 plusVCommand = "VCommand (TRUE)";
+!		 ------------;
+
+DEFINE		minusVCommand = "VCommand (FALSE)";
+!		-------------;
+
+
+SUBROUTINE	QCommand;
+!		--------
+	insert character
+;
+begin
+    openline;
+    do nextc until char geq '40;
+    addanddpy(char);
+end;
+
+SUBROUTINE	Excommand;
+!		---------
+	exchange characters
+;
+if tbyte < 2 then iglcommand
+else begin
+    foo _ tbyte;
+    closeline;
+    openline;
+    tbybyte(foo);
+    foo _ l[0][tbyte - 2 for 1];
+    junk _ l[0][tbyte - 1 for 1];
+    if foo < '40 or junk < '40 then iglcommand
+    else begin
+	l[0] _ l[0][1 to tbyte - 3] & junk & foo & l[0][tbyte to inf];
+	refreshx _ refreshx min (tbytex - 2)
+    end
+end;
+
+SUBROUTINE	dotWCommand (INTEGER targY);
+!		-----------
+	$n.W -- current line becomes  nth  from the top
+	$-n.W -- current line becomes  nth  from the bottom
+	;
+IF (junk _ yy - (targY MAX 1 MIN maxY)) > 0  THEN dWindow (junk)
+ELSE IF junk < 0  THEN uWindow (-junk)
+ELSE ring  ! Already on target line;
+;
+
+
+SUBROUTINE	XCommand;
+!		--------
+	$nX   Move cursor to column  n.
+	$$nX  Change the window width to  n.
+	;
+IF sign OR gotCount  THEN
+BEGIN "XCommand" INTEGER x;
+   x _ IF NOT sign THEN count ELSE maxX+(sign*count);
+
+   IF doubleESC  THEN BEGIN closeLine; changeMaxX(x) END
+   ELSE
+   BEGIN
+      IF isText(w[yy])
+      THEN BEGIN openLine; tByTX(x MAX 1 MIN tx+maxLength) END
+      ELSE xx _ x MAX 1 MIN maxX
+      ;
+   END
+   ;
+END "XCommand"
+ELSE badAbort
+;
+
+
+SUBROUTINE	YCommand;
+!		--------
+	$nY   Move cursor to line  n.
+	$$nY  Change the window height to  n  lines.
+	;
+IF sign NEQ 0 OR gotCount THEN
+BEGIN INTEGER y;
+   y _ IF sign = 0 THEN count  ELSE maxY + (sign*count);
+   IF doubleESC  THEN changeMaxY (y)  ELSE setXY (xx, y);
+END
+ELSE badAbort
+;
+
+
+SUBROUTINE	plusZCommand;
+!		------------;
+BEGIN
+   setSChar;
+
+   CASE mode OF
+   BEGIN
+      rZap (count, sChar);
+      rwZap(count, sChar);
+      dZap (count, sChar);
+      iglCommand
+   END
+   ;
+END
+;
+
+
+SUBROUTINE	minusZCommand;
+!  		-------------;
+BEGIN
+   setSChar;
+
+   CASE mode OF
+   BEGIN
+      lZap (count, sChar);
+      lwZap(count, sChar);
+      uZap (count, sChar);
+      iglCommand
+   END
+   ;
+END
+;
+
+
+DEFINE	igl (s) = "goof (""COMMANDDISPATCH: "" & ""s"")";
+
+
+SUBROUTINE	punctDispatch;
+!  		-------------
+	Command characters in ascending order:  "'()/<=>@[\]^
+	Illegal commands supposedly filtered out by PREEXSECUTE.
+	;
+IF command LEQ ")" THEN 
+BEGIN "quote'()"
+   IF command = ")" THEN
+    IF sign GEQ 0 THEN
+     IF gotDot THEN r.Words (count)  ELSE rWords (count)
+    ELSE IF gotDot THEN rEnd.Words (count)  ELSE rEndWords (count)
+   ELSE
+   IF command = "(" THEN
+    IF sign GEQ 0 THEN
+     IF gotDot THEN l.Words (count)  ELSE lWords (count)
+    ELSE IF gotDot THEN lEnd.Words (count)  ELSE lEndWords (count)
+   ELSE IF command = "'" THEN octal
+   ELSE		     "''"     quote
+   ;
+END "quote'()"
+ELSE IF command LEQ ">" THEN 
+BEGIN "/<=>"
+   	IF command = ">" THEN rCursor (count)
+   ELSE IF command = "=" THEN equCommand
+   ELSE IF command = "<" THEN lCursor (count)
+   else if command = ";" then semicmd
+   ELSE			      slashCommand
+   ;
+END "/<=>"
+ELSE 
+BEGIN "@\^"
+	IF command = "@" THEN atCommand
+   ELSE		     "\^"     VCommand (command = "\")
+   ;
+END "@\^"
+;
+
+
+FORWARD SUBROUTINE	checkEdit;
+
+
+SUBROUTINE	plusDispatch;
+!		------------
+	Dispatch for POSITIVE count (rather, non-negative sign).
+	;
+CASE command - "A" OF
+BEGIN "plusDispatch"
+   "A"	ACommand;
+   "B"	dBreak (IF gotCount THEN count ELSE IF doubleESC THEN -1 ELSE 0);
+   "C"	disp ( , rwCopy(count), dCopy(count));
+
+   "D"	IF gotDot  
+	THEN disp (saveStrings(char), rwDotDelete(count), 
+		    dDotDelete(count), regDotDelete)
+	ELSE IF readOnly THEN iglCommand
+	ELSE disp (rDelete(count), rwDelete(count), dDelete(count),
+		    regDelete)
+	;
+   "E"	execute;
+   "F"	FCommand;
+   "G"	plusGCommand;
+
+   "H"	HCommand;
+   "I"	ICommand;
+   "J"	dJoin (IF doubleESC AND NOT gotCount THEN -1 ELSE count);
+   "K"	BEGIN mode _ 0; rDelete(count) END;
+
+   "L"	LCommand;
+   "M"	disp ( , rwMove(count), dMove(count));
+   "N"	NCommand;
+   "O"	OCommand;
+
+   "P"	dMarkPage;
+   "Q"	QCommand;
+   "R"	RCommand;
+   "S"	plusSCommand;
+
+   "T"	dTSearch (TComStr, count);
+   "U"	UCommand;
+   "V"	Excommand;
+   "W"	IF gotDot THEN dotWCommand (count)
+	ELSE dWindow ( IF doubleESC OR gotCount THEN count
+		        ELSE (3*maxY + 1) DIV 4 );
+
+   "X"	XCommand;
+   "Y"	YCommand;
+   "Z"	plusZCommand
+END "plusDispatch"
+;
+
+
+SUBROUTINE	minusDispatch;
+!		-------------
+	Dispatch for negative count.
+	;
+CASE command - "A" OF
+BEGIN "minusDispatch"
+   "A"	ACommand;
+   "B"	uBreak (IF gotCount THEN count ELSE IF doubleESC THEN -1 ELSE 0);
+   "C"	disp ( , lwCopy(count), uCopy(count));
+	
+   "D"	IF gotDot  
+	THEN disp ( ,lwDotDelete(count), uDotDelete(count),
+			regDotDelete)
+	ELSE IF readOnly THEN iglCommand
+	ELSE disp (lDelete(count), lwDelete(count), uDelete(count),
+			regDelete)
+	;
+   "E"	execute;
+   "F"	FCommand;
+   "G"	minusGCommand;
+
+   "H"	iglCommand;
+   "I"	ICommand;
+   "J"	uJoin (IF doubleESC AND NOT gotCount THEN -1 ELSE count);
+   "K"	BEGIN mode _ 0; lDelete(count) END;
+
+   "L"	iglCommand;
+   "M"	disp ( , lwMove(count), uMove(count));
+   "N"	NCommand;
+   "O"	OCommand;
+
+   "P"	uMarkPage;
+   "Q"	QCommand;
+   "R"	RCommand;
+   "S"	minusSCommand;
+
+   "T"	uTSearch (TComStr, count);
+   "U"	iglCommand;
+   "V"	Excommand;
+   "W"	IF gotDot THEN dotWCommand (maxY - count + 1)
+	ELSE uWindow ( IF doubleESC OR gotCount THEN count
+			ELSE (3*maxY + 1) DIV 4 );
+
+   "X"	XCommand;
+   "Y"	YCommand;
+   "Z"	minusZCommand
+END "minusDispatch"
+;
+
+
+SUBROUTINE	preDispatch (INTEGER duties);
+!		-----------
+	Execute table driven part of the instruction.
+	;
+BEGIN "preDispatch"
+ ! Check validity of command;
+   IF (aborts LAND duties)
+
+       ANDIF
+
+       ( (iglAbort LAND duties)
+	 OR
+	 ( (XYabort LAND duties)
+	   AND
+	   ( yy > maxY OR yy < 1 OR empty (w[yy])
+	     OR xx > maxX OR xx < 1
+	   )
+	 )
+	 OR
+	 ( (readOnlyAbort LAND duties) AND readOnly )
+	 OR
+	 ( (pageMarkAbort LAND duties) AND isPageMark(w[yy]) )
+       ) 
+   THEN badAbort
+   ;
+
+ ! Any mode changes?;
+   IF leaveI LAND duties THEN leaveInsert;
+
+   IF modes LAND duties THEN
+   CASE mode OF
+   BEGIN
+      "char"	IF command NEQ "R" THEN openLine;
+    ! R  for retrieving a defined string is a special case:
+    ! The string gets inserted ABOVE the crrent line;
+      "word"	openLine;
+      "line"	closeLine;
+      "region"  begin end
+   END
+   ELSE IF openL LAND duties THEN openLine
+   ELSE IF closeL LAND duties THEN closeLine
+   ;
+END "preDispatch"
+;
+
+SUBROUTINE	postDispatch (INTEGER duties);
+!		------------;
+IF commandOK THEN
+BEGIN "postDispatch"
+   oldSign _ sign;
+   oldCount _ count;
+   oldExtension _ extension;
+   oldCommand _ command;
+   oldMode _ mode;
+
+   oldDoubleESC _ doubleESC;
+   oldGotCount _ gotCount;
+   oldGotDot _ gotDot;
+   oldGotStar _ gotStar;
+END "postDispatch"
+;
+
+SUBROUTINE	dispatch;
+!		--------;
+BEGIN "dispatch"  INTEGER duties, class1;
+ ! Pre-execution of commands is table driven.  Get table entry;
+   preDispatch (duties _ table[command]);
+   class1 _ classTable (duties);
+
+   IF sign GEQ 0 THEN
+   CASE class1 OF
+   BEGIN 
+	"NULL"	igl (NULL);
+	"CTRLC"	CTRLCCommand;
+	"ESC"	igl (ESC);
+	"DEL"	IF xx = 1 AND wx0 = 0  
+		THEN BEGIN closeLine; uCR(count) END
+		ELSE BEGIN openLine; lSP(count) END
+		;
+	"CR"	IF doubleESC OR sign OR gotCount THEN dCR (count)
+		ELSE eolInput
+		;
+	"FF"	igl (FF);
+	"TAB"	igl (TAB);
+	"SP"	rSP (count);
+
+	"STRIN"	igl (STRING);
+	"PUNCT"	punctDispatch;
+	"UCASE"	plusDispatch;
+	"LCASE"	igl (LCASE);
+
+	"LCpun"	igl (LCPUNCT)
+   END
+   ELSE 
+   CASE class1 OF
+   BEGIN
+	"NULL"	igl (NULL);
+	"CTRLC"	CTRLCCommand;
+	"ESC"	igl (ESC);
+	"DEL"	rSP (count);
+
+	"CR"	uCR (count);
+	"FF"	igl (FF);
+	"TAB"	igl (TAB);
+	"SP"	lSP (count);
+
+	"STRIN"	igl (STRING);
+	"PUNCT"	punctDispatch;
+	"UCASE"	minusDispatch;
+	"LCASE"	igl (LCASE);
+
+	"LCpun"	igl (LCPUNCT)
+   END
+   ;
+   postDispatch (duties);
+END "dispatch"
+;
+
+SUBROUTINE	commandInput;
+!		------------
+	The first ESC of a command has already been seen.
+	;
+BEGIN "commandInput"
+
+	BOOLEAN SUBROUTINE	getsSign;
+	!			--------;
+	BEGIN "getsSign"
+	   IF (sign _ IF char = "+" THEN 1
+			ELSE IF char = "-" THEN -1 ELSE 0)
+	   THEN nextCom
+	   ;
+	   RETURN (sign);
+	END "getsSign"
+	;
+
+
+	BOOLEAN SUBROUTINE	getsNumber (REFERENCE INTEGER n);  
+	!			----------
+		Reads positive number into  N (1 if gets none).
+		;
+	BEGIN "getsNumber"  BOOLEAN got;
+	   n _ got _ 0;			
+
+	   WHILE (char GEQ "0") AND (char LEQ "9")  DO
+	   BEGIN
+	      n _ 10*n + cvd (char);
+	      got _ TRUE;  nextCom;
+	   END
+	   ;
+	   n _ (IF got THEN n LAND '377777777777  ELSE 1);
+	   RETURN (got);
+	END "getsNumber"			
+	;
+
+
+	SUBROUTINE	getCount;
+	!		--------;
+	BEGIN "getCount"
+	   IF NOT (gotCount _ getsNumber(count))  AND  doubleESC
+	   THEN count _ zillion
+	   ;
+	   IF (gotDot _ (char = ".")) THEN nextCom
+	   ELSE IF (gotStar _ (char = "*")) THEN nextCom
+	   ELSE BEGIN extension _ 1; RETURN END
+	   ;
+	   getsNumber (extension);
+	END "getCount"
+	;
+
+	BOOLEAN SUBROUTINE	mapInf;
+	!			------;
+	![1]  For infoton terminals, check for special keys and map
+	   to predeclared commands. ;
+	BEGIN "mapinf"
+	  INTEGER oldch;
+	  IF (char = "[") or (char = "?")
+	  THEN BEGIN
+	  oldch _ char; gotcount _ false; gotdot _ false;
+	  if doubleESC then count _ zillion else count _ 1;
+	  sign _ 0;
+	  nextChar; char _ char land '177;
+	  IF oldch = "["
+	   THEN CASE char of
+	    BEGIN
+	    ["A"] char _ "^";
+	    ["B"] char _ "\";
+	    ["C"] char _ ">";
+	    ["P"] char _ "W";
+	    ["M"] char _ ")";
+	    ["L"] char _ "(";
+	    ["H"] begin char _ "T"; doubleESC _ true; count _ zillion end;
+	    ["J"] char _ "I";
+	    ["N"] char _ "K";
+	    ["r"] begin char _ "D"; mode _ 1 end;
+	    ["q"] begin char _ "D"; mode _ 2 end;
+	    ["Z"] begin char _ "R"; mode _ 2 end;
+	    ["4"] BEGIN nextChar;
+			if (char land '177) = "h"
+			   then begin char _ "W"; sign _ -1 end
+			   else char _ "["
+		  END;
+	    else  char _ "[" ! illegal special key;
+	    END
+	   ELSE CASE char OF
+            BEGIN 
+	    ["w"] begin char _ "W"; sign _ -1 end;
+	    ["x"] char _ "^";
+	    ["y"] char _ "W";
+	    ["t"] char _ "<";
+	    ["u"] begin char _ "T"; doubleESC _ true; count _ zillion end;
+	    ["v"] char _ ">";
+	    ["q"] char _ "(";
+	    ["r"] char _ "\";
+	    ["s"] char _ ")";
+	    ["p"] char _ "K";
+	    ["l"] begin char _ "D"; mode _ 1 end;
+	    ["n"] begin char _ "D"; mode _ 2 end;
+	    ["m"] char _ "I";
+	    ["M"] begin char _ "R"; mode _ 2 end;
+	    else char _ "?"  ! illegal key;
+	    END;
+	  command _ char;
+	  if char neq oldch then return(true);
+	  END;
+	return(false)
+	END "mapinf"
+	;
+			! +  +  +  + ;
+
+   inCommand _ TRUE;  again _ FALSE; 
+ ! Command for defining a string must be pure keyboard input;
+   pureKeyboard _ fromKeyboard;
+
+ ! Accept possible second ESC;
+   nextChar;  char _ uppercase (char);
+   IF (doubleESC _ (char=ESC)) THEN nextCom;
+
+ ! [1] For Infoton, handle funny keys generating escape sequences
+	but must work for all types in case of macros defined on i400;
+   if not mapinf
+   then begin "noi400"
+
+ ! Accept possible  SIGN  and  COUNT, order does not matter;
+   IF getsSign THEN getCount  ELSE BEGIN getCount; getsSign END;
+
+ ! Accept the  COMMAND;
+   command _ char;
+
+ ! Maybe a mode specification is needed;
+   IF table[command] LAND modes THEN getMode;
+   end "noi400" ;
+
+   dispatch;
+END "commandInput"
+;
+
+
+SUBROUTINE	getMode;
+!		-------;
+BEGIN "getMode" 
+   nextNonESC;  ! Upper case, no string expansion;
+
+   mode _ IF char = DEL THEN 1
+	   ELSE IF char = "@" THEN 3
+	   ELSE IF class(char) = EOLclass THEN 2 
+	   ELSE 0
+   ;
+END "getMode" 
+;
+
+SUBROUTINE	safeEdit;
+!		--------
+	No validity checks done here.
+	;
+CASE class (char) OF
+BEGIN "safeEdit"
+	"NULL"	goof("EDIT NULL");
+	"CTRLC is internal no-op"  ;
+	"ESC"	COMMANDinput;
+	"DEL"	ROinput;
+
+	"EOL"	EOLinput;
+	"FF"	goof("EDIT FF");
+	"TAB"	TABinput;
+	"SP"	PRINTINGinput;
+
+	"STRIN"	STRINGinput;
+	"PUNCT"	PRINTINGinput;
+	"UCASE"	PRINTINGinput;
+	"LCASE" PRINTINGinput;
+
+	"LCpun"	printingInput
+END "safeEdit"
+;
+
+
+SUBROUTINE	xyCheck;
+!		-------;
+BEGIN preDispatch(xyAbort); safeEdit END;
+
+
+
+SUBROUTINE	writeCheck;
+!		----------;
+BEGIN "writeCheck"
+   preDispatch (xyAbort + readOnlyAbort + pageMarkAbort);
+   safeEDIT;
+END "writeCheck"
+;
+
+
+SUBROUTINE	checkEdit;
+!		---------;
+CASE class (char) OF
+BEGIN "checkEdit"
+	"NULL"	goof("EDIT NULL");
+	"CTRLC is internal no-op"  ;
+	"ESC"	COMMANDinput;
+	"DEL"	xyCheck;
+
+	"EOL"	xyCheck;
+	"FF"	goof("EDIT FF");
+	"TAB"	WRITEcheck;
+	"SP"	WRITEcheck;
+
+	"STRIN"	STRINGinput;
+	"PUNCT"	WRITEcheck;
+	"UCASE"	WRITEcheck;
+	"LCASE" WRITEcheck;
+
+	"LCpun"	writeCheck
+END "checkEdit"
+;
+
+SUBROUTINE	abort;
+!		-----
+	Restore stack pointers.
+	;
+START!CODE "abort" acDef;
+	setzm	 inCommand;	! INCOMMAND _ FALSE;
+	movem	p, abortP;	! For debugger to see;
+	move	rf, ac12;	! Restore vital ACs;
+	move	sp, ac16;
+	move	p, ac17;
+	jrst	 @ 1(p);	! Return to EDIT;
+END "abort"
+;
+
+
+SUBROUTINE	badAbort;
+!		--------;
+BEGIN leaveInsert; commandOK _ FALSE; ring; abort END;
+
+
+
+SUBROUTINE	halt;
+!		----;
+BEGIN "halt"
+   clearStack;  clearInBuf;
+   haltPending _ FALSE;
+   IF defining  THEN endDefine (0, FALSE);
+   IF messageOn  THEN dpyMessage(NIL);
+   char _ oldCommand _ CTRLC;
+   ring;  abort;
+END "halt"
+;
+
+
+SUBROUTINE	reEnter;
+!		-------;
+QUICK!CODE
+	movei	 CTRLC;
+	movem	 char;		! Define character to be NO-OP;
+	setzm	 commandOK;	! commandOK _ FALSE;
+	jrst	 abort;
+END
+;
+
+SUBROUTINE	edit;
+!		----
+
+	......initially we always CHECKedit ......
+	;
+
+WHILE NOT endOfEdit  DO
+BEGIN "edit"
+ ! First finish up old edit cycle;
+
+   IF expired THEN dpyMessage (NIL);
+
+   IF lineOpen THEN updateL
+   ELSE IF cx NEQ xx OR cy NEQ yy  THEN moveCursor (xx, yy)
+   ;
+ ! Keep strings from doing too much damage;
+   IF stackHas AND (NOT commandOK OR eats OR emits OR fails)
+   THEN stringAbort
+   ;
+
+ ! Then start new edit cycle;
+
+   oldTX _ tx;  overHang _ 0;  inCommand _ FALSE;  commandOK _ TRUE;
+
+ ! Save stack pointers for possible abort by  ABORT;
+   START!CODE  acDef;
+	movem	rf, ac12;
+	movem	sp, ac16;	! Save SP;
+	movem	p, ac17;	! Save P;
+   END
+   ;
+
+   nextChar;
+
+ ! ABORT  brings us here...;
+   checkEdit;
+
+ ! ... or here;
+END "edit" ! of WHILE NOT ENDOFEDIT;
+;
+
+REQUIRE UNSTACK!DELIMITERS;
+
+COMMENT  End of file  TVCOM;
+
+
